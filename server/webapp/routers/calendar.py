@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+import fixtures
 from msgraph_client import (
     MSGraphError,
     MSGraphNotBootstrapped,
@@ -186,6 +187,14 @@ async def today_calendar(
 ) -> TodayCalendarResponse:
     """List the day's calendar events. RSVP filter is applied server-side."""
     allowed = _parse_rsvp_filter(rsvp_filter)
+
+    if fixtures.fixture_mode():
+        raw_events = fixtures.load_calendar_events(date)
+        events = [_shape_event(ev) for ev in raw_events]
+        events = [ev for ev in events if ev.rsvp_status in allowed]
+        events.sort(key=lambda ev: ev.start)
+        return TodayCalendarResponse(date=date, rsvp_filter=allowed, events=events)
+
     start_iso, end_iso = _local_day_bounds_iso(date)
 
     try:
@@ -231,6 +240,14 @@ async def calendar_event(graph_event_id: str) -> CalendarEvent:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="missing_event_id",
         )
+    if fixtures.fixture_mode():
+        raw = fixtures.load_calendar_event_by_id(graph_event_id)
+        if raw is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="event_not_in_fixture",
+            )
+        return _shape_event(raw)
     try:
         client = await get_client()
         raw = await client.get_json(f"/me/events/{graph_event_id}")

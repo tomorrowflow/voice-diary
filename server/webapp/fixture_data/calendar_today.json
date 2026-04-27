@@ -1,0 +1,55 @@
+{
+  "comment": "Bundled MS Graph fixtures — used when MSGRAPH_FIXTURE_MODE=true. Override by writing JSON files of the same names under <DATA_DIR>/fixtures/. Dates auto-shift to today on read; only the time-of-day matters here.",
+  "value": [
+    {
+      "id": "FIXTURE-AAMkAD-1on1-sabine",
+      "subject": "1:1 mit Sabine Lehmann",
+      "start":   { "dateTime": "2026-01-01T10:00:00", "timeZone": "Europe/Berlin" },
+      "end":     { "dateTime": "2026-01-01T10:30:00", "timeZone": "Europe/Berlin" },
+      "isAllDay": false,
+      "showAs": "busy",
+      "bodyPreview": "Wöchentliches 1:1 — BYOD policy, Q2 OKRs, Team Workload.",
+      "responseStatus": { "response": "accepted", "time": "2026-01-01T08:00:00Z" },
+      "organizer":   { "emailAddress": { "name": "Sabine Lehmann", "address": "sabine.lehmann@nordwerk.com" } },
+      "attendees": [
+        { "type": "required", "status": { "response": "accepted" }, "emailAddress": { "name": "Sabine Lehmann", "address": "sabine.lehmann@nordwerk.com" } },
+        { "type": "required", "status": { "response": "accepted" }, "emailAddress": { "name": "Lukas Brandt",        "address": "lukas.brandt@nordwerk.com" } }
+      ],
+      "recurrence": null,
+      "webLink": "https://outlook.office365.com/owa/?itemid=FIXTURE-1on1-sabine"
+    },
+    {
+      "id": "FIXTURE-AAMkAD-byod-sync",
+      "subject": "BYOD Policy Sync",
+      "start":   { "dateTime": "2026-01-01T11:00:00", "timeZone": "Europe/Berlin" },
+      "end":     { "dateTime": "2026-01-01T12:00:00", "timeZone": "Europe/Berlin" },
+      "isAllDay": false,
+      "showAs": "busy",
+      "bodyPreview": "Cross-team sync — Tobias, Sabine, Legal. Goal: agree on a draft policy by Donnerstag.",
+      "responseStatus": { "response": "tentativelyAccepted", "time": "2026-01-01T08:00:00Z" },
+      "organizer":   { "emailAddress": { "name": "Tobias Krüger", "address": "tobias.krüger@nordwerk.com" } },
+      "attendees": [
+        { "type": "required", "status": { "response": "accepted" },           "emailAddress": { "name": "Tobias Krüger",     "address": "tobias.krüger@nordwerk.com" } },
+        { "type": "required", "status": { "response": "tentativelyAccepted" }, "emailAddress": { "name": "Sabine Lehmann",  "address": "sabine.lehmann@nordwerk.com" } },
+        { "type": "required", "status": { "response": "accepted" },           "emailAddress": { "name": "Lukas Brandt",         "address": "lukas.brandt@nordwerk.com" } },
+        { "type": "optional", "status": { "response": "notResponded" },       "emailAddress": { "name": "Legal Counsel",        "address": "legal@nordwerk.com" } }
+      ],
+      "recurrence": null,
+      "webLink": "https://outlook.office365.com/owa/?itemid=FIXTURE-byod-sync"
+    },
+    {
+      "id": "FIXTURE-AAMkAD-deepwork",
+      "subject": "Deep Work — Architektur Review Q2",
+      "start":   { "dateTime": "2026-01-01T14:00:00", "timeZone": "Europe/Berlin" },
+      "end":     { "dateTime": "2026-01-01T15:30:00", "timeZone": "Europe/Berlin" },
+      "isAllDay": false,
+      "showAs": "busy",
+      "bodyPreview": "Solo-Block für Architektur-Review der Q2-Roadmap.",
+      "responseStatus": { "response": "organizer", "time": "2026-01-01T08:00:00Z" },
+      "organizer":   { "emailAddress": { "name": "Lukas Brandt", "address": "lukas.brandt@nordwerk.com" } },
+      "attendees": [],
+      "recurrence": null,
+      "webLink": "https://outlook.office365.com/owa/?itemid=FIXTURE-deepwork"
+    }
+  ]
+}

@@ -33,7 +33,7 @@ router = APIRouter()
 
 PROBE_TIMEOUT = 2.0  # seconds — keep this snappy
 
-ProbeResult = Literal["ok", "down", "skipped", "not_bootstrapped"]
+ProbeResult = Literal["ok", "down", "skipped", "not_bootstrapped", "fixture"]
 OverallStatus = Literal["ok", "degraded", "down"]
 
 
@@ -96,7 +96,14 @@ async def _probe_ollama() -> ProbeResult:
 
 
 async def _probe_msgraph() -> ProbeResult:
-    """Token freshness check: cache loaded + at least one account."""
+    """Token freshness check: cache loaded + at least one account.
+
+    In fixture mode the probe reports `fixture` so the iOS UI can show a
+    distinct dev-mode banner.
+    """
+    import fixtures
+    if fixtures.fixture_mode():
+        return "fixture"  # type: ignore[return-value]
     if not (os.getenv("MSGRAPH_CLIENT_ID") and os.getenv("MSGRAPH_TENANT_ID")):
         return "skipped"
     try:
@@ -130,7 +137,7 @@ async def health() -> HealthResponse:
     #   "ok"        — everything that isn't 'skipped' is 'ok'
     #   "down"      — postgres or whisper is 'down' (no audio path possible)
     #   "degraded"  — anything else is failing
-    relevant = [v for v in upstream.values() if v != "skipped"]
+    relevant = [v for v in upstream.values() if v not in ("skipped", "fixture")]
     if upstream["postgres"] == "down" or upstream["whisper"] == "down":
         overall: OverallStatus = "down"
     elif all(v == "ok" for v in relevant):
