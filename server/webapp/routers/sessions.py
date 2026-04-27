@@ -75,8 +75,6 @@ def _whisper_url() -> str:
     import os as _os
     return _os.getenv("WHISPER_URL", "http://whisper:9000")
 
-SYNC_SEGMENT_THRESHOLD = 5
-
 # In-memory status map. Per-process is fine — the iOS client polls within
 # a single session; a restart loses status but the bundle on disk survives.
 _session_status: dict[str, SessionStatus] = {}
@@ -212,17 +210,17 @@ async def post_session(
             detail="whisper_unavailable",
         )
 
-    if len(parsed.segments) <= SYNC_SEGMENT_THRESHOLD:
-        results = await _process_session(parsed, session_dir)
-    else:
-        background_tasks.add_task(_process_session_bg, parsed, session_dir)
-        results = pending_results
+    # Always process asynchronously. iOS polls /api/sessions/{id}/status
+    # if it wants per-segment results; the upload itself returns immediately
+    # so URLSession's idle timeout doesn't fire on long Ollama/LightRAG
+    # passes (SPEC §10.5).
+    background_tasks.add_task(_process_session_bg, parsed, session_dir)
 
     return SessionAccepted(
         session_id=session_id,
         received_at=received_at,
         processing_status_url=f"/api/sessions/{session_id}/status",
-        segments=results,
+        segments=pending_results,
     )
 
 
