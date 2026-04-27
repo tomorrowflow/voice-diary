@@ -45,6 +45,21 @@ public struct DebugUploadView: View {
                     Button("Queue erneut versuchen") {
                         Task { await SessionUploader.shared.flush() }
                     }
+                    Button("Verwaiste Einträge entfernen") {
+                        Task {
+                            let n = await SessionUploader.shared.purgeOrphans()
+                            statusText = n > 0 ? "Entfernt: \(n)" : "Keine verwaisten Einträge."
+                        }
+                    }
+                    Button(role: .destructive) {
+                        Task {
+                            await SessionUploader.shared.clear()
+                            statusText = "Queue geleert."
+                            lastResponse = nil
+                        }
+                    } label: {
+                        Text("Queue komplett löschen")
+                    }
                 }
             }
             .navigationTitle("Test-Upload")
