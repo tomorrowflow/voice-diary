@@ -34,7 +34,6 @@ from fastapi import (
     APIRouter,
     BackgroundTasks,
     Depends,
-    File,
     HTTPException,
     Request,
     UploadFile,
@@ -99,7 +98,6 @@ def _safe_relative_path(name: str) -> Path:
 async def post_session(
     request: Request,
     background_tasks: BackgroundTasks,
-    manifest: UploadFile = File(...),
 ) -> SessionAccepted:
     """Accept and process an iOS session bundle.
 
@@ -109,9 +107,21 @@ async def post_session(
         segments/s02.m4a=@s02.m4a
         ...
         raw/session.m4a=@session.m4a
+
+    All parts are read from one `request.form()` call. We do *not* declare
+    `manifest` as a `File(...)` parameter — doing so causes FastAPI to
+    consume the body for that field alone and the subsequent `form()` then
+    sees only the manifest, dropping the audio parts.
     """
-    # Parse the manifest first so a malformed bundle fails fast.
-    raw_manifest = await manifest.read()
+    form = await request.form()
+
+    manifest_file = form.get("manifest")
+    if not isinstance(manifest_file, UploadFile):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="manifest_part_missing",
+        )
+    raw_manifest = await manifest_file.read()
     try:
         manifest_dict = json.loads(raw_manifest)
         parsed = Manifest.model_validate(manifest_dict)
@@ -131,21 +141,27 @@ async def post_session(
     session_dir.mkdir(parents=True, exist_ok=True)
     (session_dir / "manifest.json").write_bytes(raw_manifest)
 
-    # Re-stream the multipart body to capture segment audio parts. FastAPI
-    # already parsed the manifest field above; we walk the form again.
-    form = await request.form()
     expected_paths = {seg.audio_file for seg in parsed.segments}
     if parsed.raw_session_audio:
         expected_paths.add(parsed.raw_session_audio)
 
+    received_field_names: list[str] = []
     saved: dict[str, Path] = {}
     for field_name, field_value in form.multi_items():
+        received_field_names.append(field_name)
         if field_name == "manifest":
             continue
         if not isinstance(field_value, UploadFile):
+            logger.warning(
+                "session %s: non-file form field %s (type=%s) — skipping",
+                session_id, field_name, type(field_value).__name__,
+            )
             continue
         if field_name not in expected_paths:
-            logger.warning("session %s: unexpected part %s — skipping", session_id, field_name)
+            logger.warning(
+                "session %s: unexpected part %s — skipping (expected: %s)",
+                session_id, field_name, sorted(expected_paths),
+            )
             continue
         rel = _safe_relative_path(field_name)
         dest = session_dir / rel
@@ -159,9 +175,13 @@ async def post_session(
     if missing:
         # Clean up the partial bundle.
         shutil.rmtree(session_dir, ignore_errors=True)
+        logger.warning(
+            "session %s rejected — received parts: %s; expected audio: %s",
+            session_id, received_field_names, sorted(expected_paths),
+        )
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"missing_parts: {sorted(missing)}",
+            detail=f"missing_parts: {sorted(missing)}; received: {received_field_names}",
         )
 
     received_at = utcnow_iso()
