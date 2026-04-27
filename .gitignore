@@ -38,6 +38,10 @@ ios/**/xcuserdata/
 ios/**/*.xcworkspace/xcuserdata/
 ios/**/*.xcodeproj/xcuserdata/
 ios/**/*.xcodeproj/project.xcworkspace/xcuserdata/
+# XcodeGen owns the Xcode project — generated, not tracked.
+ios/VoiceDiary.xcodeproj/
+ios/.build/
+ios/Package.resolved
 *.ipa
 *.dSYM.zip
 *.dSYM
