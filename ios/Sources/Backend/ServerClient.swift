@@ -31,7 +31,11 @@ public actor ServerClient {
 
     public init() {
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
+        // 90 s of idle is enough headroom for Tailscale handshakes plus the
+        // server's synchronous parts (ffmpeg + Whisper). The actual session
+        // ingest endpoint returns 202 immediately and processing happens in
+        // a background task on the server; iOS polls for status if needed.
+        config.timeoutIntervalForRequest = 90
         config.timeoutIntervalForResource = 600
         // The SessionUploader queue handles retry, so we don't need
         // URLSession to spin waiting for connectivity itself — fail fast
