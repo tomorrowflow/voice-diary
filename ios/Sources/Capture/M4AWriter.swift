@@ -26,12 +26,16 @@ public final class M4AWriter {
         let temp = finalURL.appendingPathExtension("tmp")
         try? FileManager.default.removeItem(at: temp)
 
+        // iOS's AAC-LC encoder rejects an explicit CBR strategy at 16 kHz
+        // mono (returns AudioConverterSetProperty failure on EncodeBitRate).
+        // Use a quality hint and a soft bitrate target instead — the encoder
+        // is free to flex within ±~10%, which the Whisper sidecar tolerates.
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: M4AWriter.sampleRate,
             AVNumberOfChannelsKey: M4AWriter.channels,
+            AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
             AVEncoderBitRateKey: M4AWriter.bitrate,
-            AVEncoderBitRateStrategyKey: AVAudioBitRateStrategy_Constant,
         ]
         self.file = try AVAudioFile(
             forWriting: temp,
