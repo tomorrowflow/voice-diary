@@ -15,7 +15,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s - %(message)s")
+from logging_setup import CorrelationIdMiddleware, configure_logging  # noqa: E402
+
+configure_logging()
 logger = logging.getLogger(__name__)
 
 import httpx
@@ -91,6 +93,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Diary Transcript Review", lifespan=lifespan)
+app.add_middleware(CorrelationIdMiddleware)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
