@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Review: {{ transcript.filename }}{% endblock %}
+{% block body_class %}review-layout{% endblock %}
+{% block nav_transcript %}active{% endblock %}
+{% block context_bar %}
+<div class="context-bar">
+  <span class="context-bar-label">Transcript:</span>
+  <span class="context-bar-value">{{ transcript.filename }}</span>
+  <span class="context-bar-sep">&middot;</span>
+  <span class="context-bar-value">{{ transcript.date }}</span>
+  <span class="context-bar-sep">&middot;</span>
+  <span class="context-bar-value">{{ transcript.author or 'Unknown' }}</span>
+</div>
+{% endblock %}
+{% block content %}
+
+<header>
+  <h1>Review: {{ transcript.filename }}</h1>
+  <div class="header-meta">
+    <div><strong>Date:</strong> {{ transcript.date }}</div>
+    <div><strong>Author:</strong> {{ transcript.author }}</div>
+    <div><strong>Dictionary:</strong> {{ person_count }} persons, {{ term_count }} terms</div>
+  </div>
+</header>
+
+<div class="calendar-panel" id="calendar-panel">
+  <div class="calendar-header" onclick="toggleCalendar()">
+    <span class="calendar-title">
+      <span class="calendar-icon">&#128197;</span>
+      Schedule for {{ transcript.date }}
+    </span>
+    <span class="calendar-event-count" id="calendar-event-count"></span>
+    <span class="calendar-toggle" id="calendar-toggle">&#9660;</span>
+  </div>
+  <div class="calendar-body" id="calendar-body">
+    <div class="calendar-loading" id="calendar-loading">Loading schedule...</div>
+    <div class="calendar-events" id="calendar-events"></div>
+    <div class="calendar-fyi" id="calendar-fyi"></div>
+  </div>
+</div>
+
+<div class="auto-corrections-banner" id="auto-corrections-banner" style="display:none">
+  <span class="auto-corrections-icon">&#9889;</span>
+  <span class="auto-corrections-text" id="auto-corrections-text"></span>
+  <button class="auto-corrections-dismiss" onclick="document.getElementById('auto-corrections-banner').style.display='none'">&times;</button>
+</div>
+
+<div class="status-bar">
+  <div class="stat"><span class="stat-dot green"></span>
+    <span><strong id="auto-count">0</strong> auto-corrected</span></div>
+  <div class="stat"><span class="stat-dot yellow"></span>
+    <span><strong id="suggested-count">0</strong> suggested</span></div>
+  <div class="stat"><span class="stat-dot blue"></span>
+    <span><strong id="new-count">0</strong> new</span></div>
+  <div class="stat"><span class="stat-dot red"></span>
+    <span><strong id="unresolved-count">0</strong> need review</span></div>
+  <div class="stat" id="fluency-stat" style="display:none"><span class="stat-dot orange"></span>
+    <span><strong id="fluency-count">0</strong> disfluent</span></div>
+</div>
+
+<div class="main">
+  <div class="transcript-panel">
+    <h2>Transcript with Entity Detection</h2>
+    <div class="transcript-text" id="transcript"></div>
+  </div>
+
+  <div class="selection-popup" id="selection-popup">
+    <div class="selection-popup-label">Mark as entity:</div>
+    <div class="selection-popup-text" id="selection-popup-text"></div>
+    <div class="selection-popup-matches" id="selection-popup-matches"></div>
+    <div class="selection-popup-divider" id="selection-popup-divider"></div>
+    <div class="selection-popup-newlabel" id="selection-popup-newlabel">Add as new:</div>
+    <div class="selection-popup-types">
+      <button onclick="addManualEntity('PERSON')">Person</button>
+      <button onclick="addManualEntity('ORGANIZATION')">Organization</button>
+      <button onclick="addManualEntity('TERM')">Term</button>
+      <button onclick="addManualEntity('CONCEPT')">Concept</button>
+      <button onclick="addManualEntity('TECHNOLOGY')">Technology</button>
+      <button onclick="addManualEntity('PROJECT')">Project</button>
+      <button onclick="addManualEntity('ROLE')">Role</button>
+      <button onclick="addManualEntity('LOCATION')">Location</button>
+      <button onclick="addManualEntity('EVENT')">Event</button>
+    </div>
+  </div>
+
+  <div class="entity-sidebar">
+    <div class="sidebar-header"><h2>Detected Entities</h2></div>
+    <div class="entity-list" id="entity-list"></div>
+    <div class="llm-log-panel" id="llm-log-panel">
+      <div class="llm-log-header" onclick="toggleLlmLog()">
+        <span class="llm-log-title">
+          <span class="llm-log-icon" id="llm-log-icon">&#9679;</span>
+          LLM Validation
+        </span>
+        <span class="llm-log-status" id="llm-log-status">waiting</span>
+        <span class="llm-log-toggle" id="llm-log-toggle">&#9650;</span>
+      </div>
+      <div class="llm-log-body" id="llm-log-body">
+        <div class="llm-log-output" id="llm-log-output"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="autocomplete-dropdown" id="autocomplete-dropdown"></div>
+
+<div class="llm-overlay" id="llm-overlay">
+  <div class="llm-overlay-content">
+    <div class="llm-overlay-spinner"></div>
+    <div class="llm-overlay-text" id="llm-overlay-text">Processing transcript...</div>
+    <div class="llm-overlay-sub" id="llm-overlay-sub">Starting...</div>
+    <button class="btn btn-secondary llm-overlay-skip" onclick="skipProcessing()">Skip</button>
+  </div>
+</div>
+
+<footer>
+  <div class="footer-info">
+    <span id="correction-summary">Loading...</span>
+  </div>
+  <div class="footer-actions">
+    <button class="btn btn-reset" id="reset-btn" onclick="resetTranscript()">Reset</button>
+    <button class="btn btn-save-draft" id="save-btn" onclick="saveDraft()">Save</button>
+    <button class="btn btn-primary" id="submit-btn" onclick="submitReview()">
+      Save &amp; Process &#8594;
+    </button>
+  </div>
+</footer>
+
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)resolveModal(null)">
+  <div class="modal">
+    <div class="modal-header" id="modalHeader"></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Server-rendered data
+  const TRANSCRIPT_ID = {{ transcript.id }};
+  sessionStorage.setItem('currentTranscriptId', TRANSCRIPT_ID);
+  const TRANSCRIPT_DATE = '{{ transcript.date }}';
+  const TRANSCRIPT_AUTHOR = '{{ transcript.author or "Florian Wolf" }}';
+  const LLM_ENABLED = {{ llm_enabled | tojson }};
+  const TRANSCRIPT_STATUS = '{{ transcript.status }}';
+  const NEEDS_PROCESSING = {{ needs_processing | tojson }};
+  let rawTranscript = {{ raw_text | tojson }};
+  let entities = {{ entities_json | safe }};
+  let activeEntityIdx = null;
+  var inlineEdits = [];
+  const appliedCorrections = {{ applied_corrections | safe }};
+  // Show banner for dictionary corrections applied during page load
+  (function() {
+    if (!appliedCorrections || appliedCorrections.length === 0) return;
+    var bannerText = document.getElementById('auto-corrections-text');
+    var banner = document.getElementById('auto-corrections-banner');
+    if (!bannerText || !banner) return;
+    var totalCount = appliedCorrections.reduce(function(sum, c) { return sum + c.count; }, 0);
+    var details = appliedCorrections.map(function(c) {
+      return c.original + ' \u2192 ' + c.corrected + (c.count > 1 ? ' (\u00d7' + c.count + ')' : '');
+    }).join(', ');
+    bannerText.textContent = totalCount + ' auto-correction' + (totalCount !== 1 ? 's' : '') + ': ' + details;
+    banner.style.display = '';
+  })();
+
+</script>
+<script src="/static/app.js"></script>
+{% endblock %}

@@ -1,0 +1,380 @@
+{% extends "base.html" %}
+{% block title %}Process: {{ transcript.filename }}{% endblock %}
+{% block nav_process %}active{% endblock %}
+
+{% block context_bar %}
+<div class="context-bar">
+  <span class="context-bar-label">Processing:</span>
+  <span class="context-bar-value">{{ transcript.filename }}</span>
+  <span class="context-bar-sep">&middot;</span>
+  <span class="context-bar-value">{{ transcript.date }}</span>
+  <span class="context-bar-sep">&middot;</span>
+  <span class="context-bar-value">{{ transcript.author or 'Unknown' }}</span>
+</div>
+{% endblock %}
+{% block content %}
+<header>
+  <h1>Process: {{ transcript.filename }}</h1>
+  <div class="header-meta">
+    <div><strong>Date:</strong> {{ transcript.date }}</div>
+    <div><strong>Author:</strong> {{ transcript.author }}</div>
+    <div id="doc-status-meta"></div>
+  </div>
+</header>
+
+<div class="process-container">
+
+  <!-- Left: Pipeline -->
+  <div class="process-pipeline">
+    <div class="pipeline-steps">
+      <div class="pipeline-step pending" id="step-context">
+        <div class="pipeline-step-icon">&#9679;</div>
+        <div class="pipeline-step-info">
+          <div class="pipeline-step-name">Context</div>
+          <div class="pipeline-step-desc">Query LightRAG for historical context</div>
+        </div>
+      </div>
+      <div class="pipeline-step pending" id="step-summary">
+        <div class="pipeline-step-icon">&#9679;</div>
+        <div class="pipeline-step-info">
+          <div class="pipeline-step-name">Summary</div>
+          <div class="pipeline-step-desc">Compress context via LLM</div>
+        </div>
+      </div>
+      <div class="pipeline-step pending" id="step-analysis">
+        <div class="pipeline-step-icon">&#9679;</div>
+        <div class="pipeline-step-info">
+          <div class="pipeline-step-name">Analysis</div>
+          <div class="pipeline-step-desc">Extract structured data via LLM</div>
+        </div>
+      </div>
+      <div class="pipeline-step pending" id="step-document">
+        <div class="pipeline-step-icon">&#9679;</div>
+        <div class="pipeline-step-info">
+          <div class="pipeline-step-name">Document</div>
+          <div class="pipeline-step-desc">Generate narrative markdown</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="pipeline-actions">
+      <button class="btn btn-primary" id="startBtn" onclick="startProcessing()">Start Processing</button>
+      <button class="btn btn-secondary" id="reprocessBtn" onclick="startProcessing()" style="display:none">Re-process</button>
+    </div>
+
+    <div class="pipeline-log" id="pipelineLog">
+      <div class="llm-log-output" id="logOutput"></div>
+    </div>
+  </div>
+
+  <!-- Right: Document -->
+  <div class="process-document">
+    <div class="document-tabs">
+      <button class="document-tab active" data-tab="preview" onclick="switchTab('preview')">Preview</button>
+      <button class="document-tab" data-tab="edit" onclick="switchTab('edit')">Edit</button>
+      <button class="document-tab" data-tab="analysis" onclick="switchTab('analysis')">Analysis JSON</button>
+    </div>
+
+    <div class="document-tab-content active" id="tab-preview">
+      <div class="document-preview" id="documentPreview">
+        <div class="document-empty">No document generated yet. Click "Start Processing" to begin.</div>
+      </div>
+    </div>
+
+    <div class="document-tab-content" id="tab-edit">
+      <textarea class="document-editor" id="documentEditor" placeholder="Document markdown will appear here..."></textarea>
+    </div>
+
+    <div class="document-tab-content" id="tab-analysis">
+      <div class="analysis-json" id="analysisJson">
+        <div class="document-empty">No analysis data yet.</div>
+      </div>
+    </div>
+
+    <div class="document-footer">
+      <div class="document-footer-info" id="docFooterInfo">
+        {% if doc.id %}
+          Version {{ doc.version }}
+          {% if doc.lightrag_ingested %}
+            &middot; <span class="ingested-badge">Ingested {{ doc.lightrag_ingested_at }}</span>
+          {% else %}
+            &middot; Not yet ingested
+          {% endif %}
+        {% else %}
+          Not processed yet
+        {% endif %}
+      </div>
+      <div class="document-footer-actions">
+        <button class="btn btn-save-draft" id="saveBtn" onclick="saveDocument()" disabled>Save</button>
+        <button class="btn btn-primary" id="ingestBtn" onclick="ingestDocument()" disabled>Send to LightRAG</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+var TRANSCRIPT_ID = {{ transcript.id }};
+sessionStorage.setItem('currentTranscriptId', TRANSCRIPT_ID);
+var currentDocId = {{ doc.id if doc.id else 'null' }};
+var currentMarkdown = {{ doc_markdown_json | safe }};
+var currentAnalysis = {{ doc_analysis_json | safe }};
+var isIngested = {{ 'true' if doc.lightrag_ingested else 'false' }};
+var processing = false;
+var evtSource = null;
+
+// Init — restore state from existing document
+(function() {
+  if (currentMarkdown) {
+    renderPreview(currentMarkdown);
+    document.getElementById('documentEditor').value = currentMarkdown;
+    document.getElementById('saveBtn').disabled = false;
+    document.getElementById('ingestBtn').disabled = false;
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('reprocessBtn').style.display = '';
+    // Mark pipeline steps as done (document was previously processed)
+    ['context', 'summary', 'analysis', 'document'].forEach(function(s) { setStep(s, 'done'); });
+    appendLog('Document loaded from database (version ' + {{ doc.version }} + ')', 'ok');
+  }
+  if (currentAnalysis) {
+    renderAnalysis(currentAnalysis);
+  }
+  if (isIngested) {
+    updateIngestButton(true);
+  }
+})();
+
+function switchTab(tab) {
+  document.querySelectorAll('.document-tab').forEach(function(t) {
+    t.classList.toggle('active', t.dataset.tab === tab);
+  });
+  document.querySelectorAll('.document-tab-content').forEach(function(c) {
+    c.classList.toggle('active', c.id === 'tab-' + tab);
+  });
+}
+
+function renderPreview(md) {
+  var el = document.getElementById('documentPreview');
+  el.innerHTML = marked.parse(md);
+  el.classList.add('has-content');
+}
+
+function renderAnalysis(data) {
+  var el = document.getElementById('analysisJson');
+  if (!data) {
+    el.innerHTML = '<div class="document-empty">No analysis data yet.</div>';
+    return;
+  }
+  var sections = ['relationships', 'projects', 'decisions', 'todos', 'insights', 'recurring_themes'];
+  var html = '';
+  for (var i = 0; i < sections.length; i++) {
+    var key = sections[i];
+    var items = data[key] || [];
+    html += '<div class="analysis-section">';
+    html += '<div class="analysis-section-header" onclick="this.parentElement.classList.toggle(\'collapsed\')">';
+    html += '<span class="analysis-section-arrow">&#9660;</span>';
+    html += '<span class="analysis-section-name">' + key + '</span>';
+    html += '<span class="analysis-section-count">' + items.length + '</span>';
+    html += '</div>';
+    html += '<pre class="analysis-section-body">' + escHtml(JSON.stringify(items, null, 2)) + '</pre>';
+    html += '</div>';
+  }
+  el.innerHTML = html;
+}
+
+function setStep(id, state) {
+  var el = document.getElementById('step-' + id);
+  el.className = 'pipeline-step ' + state;
+  var icon = el.querySelector('.pipeline-step-icon');
+  if (state === 'active') icon.innerHTML = '<span class="pipeline-spinner"></span>';
+  else if (state === 'done') icon.innerHTML = '&#10003;';
+  else if (state === 'error') icon.innerHTML = '&#10007;';
+  else icon.innerHTML = '&#9679;';
+}
+
+function appendLog(msg, level) {
+  var log = document.getElementById('logOutput');
+  var cls = level === 'error' ? 'log-error' : level === 'ok' ? 'log-ok' : '';
+  log.innerHTML += '<div class="llm-log-line ' + cls + '">' + escHtml(msg) + '</div>';
+  log.scrollTop = log.scrollHeight;
+}
+
+function startProcessing() {
+  if (processing) return;
+  processing = true;
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('reprocessBtn').disabled = true;
+  document.getElementById('logOutput').innerHTML = '';
+
+  // Reset steps
+  ['context', 'summary', 'analysis', 'document'].forEach(function(s) { setStep(s, 'pending'); });
+
+  evtSource = new EventSource('/api/transcripts/' + TRANSCRIPT_ID + '/process-document');
+
+  evtSource.addEventListener('log', function(e) {
+    var d = JSON.parse(e.data);
+    appendLog(d.message, d.level);
+  });
+
+  evtSource.addEventListener('context', function(e) {
+    setStep('context', 'done');
+    appendLog('Context retrieved', 'ok');
+  });
+
+  evtSource.addEventListener('summary', function(e) {
+    setStep('summary', 'done');
+    var d = JSON.parse(e.data);
+    appendLog('Summary: ' + (d.summary || '').substring(0, 100) + '...', 'ok');
+  });
+
+  evtSource.addEventListener('analysis', function(e) {
+    setStep('analysis', 'done');
+    var d = JSON.parse(e.data);
+    currentAnalysis = d.analysis;
+    renderAnalysis(currentAnalysis);
+    var counts = [];
+    if (d.analysis.relationships) counts.push(d.analysis.relationships.length + ' relationships');
+    if (d.analysis.projects) counts.push(d.analysis.projects.length + ' projects');
+    if (d.analysis.todos) counts.push(d.analysis.todos.length + ' TODOs');
+    appendLog('Analysis: ' + counts.join(', '), 'ok');
+  });
+
+  evtSource.addEventListener('document', function(e) {
+    setStep('document', 'done');
+    var d = JSON.parse(e.data);
+    currentDocId = d.doc_id;
+    currentMarkdown = d.markdown;
+    isIngested = false;
+    renderPreview(currentMarkdown);
+    document.getElementById('documentEditor').value = currentMarkdown;
+    document.getElementById('saveBtn').disabled = false;
+    document.getElementById('ingestBtn').disabled = false;
+    updateIngestButton(false);
+    document.getElementById('docFooterInfo').textContent = 'Version ' + d.version + ' \u00b7 Not yet ingested';
+  });
+
+  evtSource.addEventListener('done', function(e) {
+    evtSource.close();
+    processing = false;
+    document.getElementById('startBtn').style.display = 'none';
+    document.getElementById('reprocessBtn').style.display = '';
+    document.getElementById('reprocessBtn').disabled = false;
+    appendLog('Processing complete', 'ok');
+  });
+
+  evtSource.addEventListener('error', function(e) {
+    if (evtSource.readyState === EventSource.CLOSED) return;
+    try {
+      var d = JSON.parse(e.data);
+      appendLog('Error: ' + d.message, 'error');
+      // Mark current active step as error
+      ['context', 'summary', 'analysis', 'document'].forEach(function(s) {
+        var el = document.getElementById('step-' + s);
+        if (el.classList.contains('active')) setStep(s, 'error');
+      });
+    } catch(ex) {
+      appendLog('Connection error', 'error');
+    }
+    evtSource.close();
+    processing = false;
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('reprocessBtn').disabled = false;
+  });
+
+  evtSource.addEventListener('step', function(e) {
+    var d = JSON.parse(e.data);
+    setStep(d.step, d.state);
+  });
+
+  evtSource.onerror = function() {
+    if (evtSource.readyState === EventSource.CLOSED) return;
+    evtSource.close();
+    processing = false;
+    appendLog('Connection lost', 'error');
+    document.getElementById('startBtn').disabled = false;
+    document.getElementById('reprocessBtn').disabled = false;
+  };
+}
+
+function saveDocument() {
+  if (!currentDocId) return;
+  var md = document.getElementById('documentEditor').value;
+  fetch('/api/documents/' + currentDocId + '/save', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({markdown: md})
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      currentMarkdown = md;
+      renderPreview(md);
+      showToast('Document saved');
+    } else {
+      showToast('Save failed: ' + (d.message || ''), true);
+    }
+  })
+  .catch(function(err) { showToast('Error: ' + err.message, true); });
+}
+
+function ingestDocument() {
+  if (!currentDocId) return;
+  document.getElementById('ingestBtn').disabled = true;
+  document.getElementById('ingestBtn').textContent = 'Ingesting...';
+  fetch('/api/documents/' + currentDocId + '/ingest', { method: 'POST' })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    if (d.status === 'ok') {
+      isIngested = true;
+      updateIngestButton(true);
+      var ts = d.ingested_at ? d.ingested_at.replace('T', ' ').substring(0, 16) : '';
+      document.getElementById('docFooterInfo').innerHTML =
+        document.getElementById('docFooterInfo').innerHTML.replace(/ \u00b7 Not yet ingested/, '') +
+        ' &middot; <span class="ingested-badge">Ingested ' + ts + '</span>';
+      showToast('Document ingested into LightRAG');
+    } else {
+      showToast('Ingestion failed: ' + (d.message || ''), true);
+      document.getElementById('ingestBtn').disabled = false;
+      document.getElementById('ingestBtn').textContent = 'Send to LightRAG';
+    }
+  })
+  .catch(function(err) {
+    showToast('Error: ' + err.message, true);
+    document.getElementById('ingestBtn').disabled = false;
+    document.getElementById('ingestBtn').textContent = 'Send to LightRAG';
+  });
+}
+
+function updateIngestButton(ingested) {
+  var btn = document.getElementById('ingestBtn');
+  if (ingested) {
+    btn.textContent = 'Re-ingest to LightRAG';
+    btn.disabled = false;
+    btn.classList.add('btn-ingested');
+  } else {
+    btn.textContent = 'Send to LightRAG';
+    btn.disabled = false;
+    btn.classList.remove('btn-ingested');
+  }
+}
+
+function escHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+function showToast(msg, isError) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast visible' + (isError ? ' error' : ' success');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.classList.remove('visible'); }, 3000);
+}
+</script>
+{% endblock %}

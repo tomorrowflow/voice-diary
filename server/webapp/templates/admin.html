@@ -1,0 +1,898 @@
+{% extends "base.html" %}
+{% block title %}Dictionary Admin{% endblock %}
+{% block nav_dictionary %}active{% endblock %}
+{% block content %}
+
+<header>
+  <h1>Dictionary</h1>
+  <div class="header-meta">
+    <div><strong id="totalPersons">0</strong> persons</div>
+    <div><strong id="totalTerms">0</strong> terms</div>
+    <div><strong id="totalVariations">0</strong> variations total</div>
+  </div>
+</header>
+
+<div class="tabs">
+  <div class="tab active" data-tab="persons" onclick="switchTab('persons', this)">
+    Persons<span class="tab-count" id="tc-persons">0</span>
+  </div>
+  <div class="tab" data-tab="terms" onclick="switchTab('terms', this)">
+    Terms<span class="tab-count" id="tc-terms">0</span>
+  </div>
+</div>
+
+<div class="content">
+
+  <!-- === PERSONS TAB === -->
+  <div class="tab-panel active" id="panel-persons">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="search-box">
+          <span class="search-icon">&#128269;</span>
+          <input type="text" id="searchPersons" placeholder="Search persons..." oninput="onPersonSearch()">
+        </div>
+      </div>
+      <div class="toolbar-right">
+        <div class="status-filter" id="personStatusFilter">
+          <button class="filter-btn active" onclick="filterPersonStatus('all', this)">All<span class="filter-count" id="pf-all">0</span></button>
+          <button class="filter-btn" onclick="filterPersonStatus('active', this)">Active<span class="filter-count" id="pf-active">0</span></button>
+          <button class="filter-btn" onclick="filterPersonStatus('inactive', this)">Inactive<span class="filter-count" id="pf-inactive">0</span></button>
+        </div>
+        <button class="btn-add" onclick="toggleAddPerson()">+ Add Person</button>
+      </div>
+    </div>
+
+    <div class="add-form" id="addPersonForm">
+      <h3>Add New Person</h3>
+      <div class="detail-grid">
+        <div class="detail-field"><label>First Name</label><input type="text" id="newPFirstName"></div>
+        <div class="detail-field"><label>Last Name</label><input type="text" id="newPLastName"></div>
+        <div class="detail-field"><label>Role</label><input type="text" id="newPRole"></div>
+        <div class="detail-field"><label>Company</label><input type="text" id="newPCompany"></div>
+        <div class="detail-field"><label>Department</label><input type="text" id="newPDepartment"></div>
+        <div class="detail-field full"><label>Context / Description</label><textarea id="newPContext" rows="2"></textarea></div>
+      </div>
+      <div class="detail-actions" style="margin-top:12px;">
+        <div></div>
+        <div class="detail-actions-right">
+          <button class="btn-cancel" onclick="toggleAddPerson()">Cancel</button>
+          <button class="btn-save" onclick="addPerson()">Add Person</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="entity-grid" id="personGrid"></div>
+    <div class="no-results" id="noPersons">No persons match your search.</div>
+
+    <div class="pagination" id="personPagination">
+      <div class="pagination-info" id="personPaginationInfo"></div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="per-page">
+          <span>Show</span>
+          <select id="personPerPage" onchange="changePersonPerPage(this.value)">
+            <option value="10" selected>10</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div class="pagination-controls" id="personPaginationControls"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- === TERMS TAB === -->
+  <div class="tab-panel" id="panel-terms">
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="search-box">
+          <span class="search-icon">&#128269;</span>
+          <input type="text" id="searchTerms" placeholder="Search terms..." oninput="onTermSearch()">
+        </div>
+      </div>
+      <div class="toolbar-right">
+        <div class="status-filter" id="termStatusFilter">
+          <button class="filter-btn active" onclick="filterTermStatus('all', this)">All<span class="filter-count" id="tf-all">0</span></button>
+          <button class="filter-btn" onclick="filterTermStatus('active', this)">Active<span class="filter-count" id="tf-active">0</span></button>
+          <button class="filter-btn" onclick="filterTermStatus('inactive', this)">Inactive<span class="filter-count" id="tf-inactive">0</span></button>
+        </div>
+        <button class="btn-add" onclick="toggleAddTerm()">+ Add Term</button>
+      </div>
+    </div>
+
+    <div class="add-form" id="addTermForm">
+      <h3>Add New Term</h3>
+      <div class="detail-grid">
+        <div class="detail-field"><label>Canonical Term</label><input type="text" id="newTName"></div>
+        <div class="detail-field">
+          <label>Category</label>
+          <select id="newTCategory">
+            <option value="company">Company</option>
+            <option value="concept">Concept</option>
+            <option value="department">Department</option>
+            <option value="product">Product</option>
+            <option value="project">Project</option>
+            <option value="technology">Technology</option>
+            <option value="term">Term</option>
+          </select>
+        </div>
+        <div class="detail-field full"><label>Context / Description</label><textarea id="newTContext" rows="2"></textarea></div>
+      </div>
+      <div class="detail-actions" style="margin-top:12px;">
+        <div></div>
+        <div class="detail-actions-right">
+          <button class="btn-cancel" onclick="toggleAddTerm()">Cancel</button>
+          <button class="btn-save" onclick="addTerm()">Add Term</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="filter-bar" id="termCategoryFilter"></div>
+
+    <div class="entity-grid" id="termGrid"></div>
+    <div class="no-results" id="noTerms">No terms match your search.</div>
+
+    <div class="pagination" id="termPagination">
+      <div class="pagination-info" id="termPaginationInfo"></div>
+      <div style="display:flex;align-items:center;gap:16px;">
+        <div class="per-page">
+          <span>Show</span>
+          <select id="termPerPage" onchange="changeTermPerPage(this.value)">
+            <option value="10" selected>10</option>
+            <option value="25">25</option>
+            <option value="50">50</option>
+            <option value="all">All</option>
+          </select>
+        </div>
+        <div class="pagination-controls" id="termPaginationControls"></div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="modalOverlayClick(event)">
+  <div class="modal" id="modal">
+    <div class="modal-header" id="modalHeader"></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var PERSONS = {{ persons_json | safe }};
+var TERMS = {{ terms_json | safe }};
+
+var activePersonFilter = 'all';
+var activeTermCategory = 'all';
+var activeTermStatus = 'all';
+var expandedPerson = null;
+var expandedTerm = null;
+var personPage = 1;
+var personPerPage = 10;
+var termPage = 1;
+var termPerPage = 10;
+var personSearchTimer = null;
+var termSearchTimer = null;
+
+// === HELPERS ===
+function esc(s) { return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function showToast(msg, isError) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast visible' + (isError ? ' error' : '');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.classList.remove('visible'); }, 2500);
+}
+
+function updateTotalVariations() {
+  var total = 0;
+  for (var i = 0; i < PERSONS.length; i++) total += PERSONS[i].variations.length;
+  for (var i = 0; i < TERMS.length; i++) total += TERMS[i].variations.length;
+  document.getElementById('totalVariations').textContent = total;
+}
+
+function api(method, url, body) {
+  var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
+  if (body) opts.body = JSON.stringify(body);
+  return fetch(url, opts).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  });
+}
+
+// === TAB SWITCHING ===
+function switchTab(tab, el) {
+  document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+  document.querySelectorAll('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+  el.classList.add('active');
+  document.getElementById('panel-' + tab).classList.add('active');
+}
+
+// === DEBOUNCED SEARCH ===
+function onPersonSearch() {
+  clearTimeout(personSearchTimer);
+  personSearchTimer = setTimeout(function() { personPage = 1; renderPersons(); }, 200);
+}
+function onTermSearch() {
+  clearTimeout(termSearchTimer);
+  termSearchTimer = setTimeout(function() { termPage = 1; renderTerms(); }, 200);
+}
+
+// === PAGINATION HELPERS ===
+function renderPaginationControls(containerId, currentPage, totalPages, goFn) {
+  var html = '';
+  html += '<button class="page-btn nav" onclick="' + goFn + '(' + (currentPage - 1) + ')"' +
+    (currentPage <= 1 ? ' disabled' : '') + '>&lsaquo;</button>';
+  var pages = [];
+  for (var p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || (p >= currentPage - 1 && p <= currentPage + 1)) {
+      pages.push(p);
+    } else if (pages[pages.length - 1] !== '...') {
+      pages.push('...');
+    }
+  }
+  for (var i = 0; i < pages.length; i++) {
+    if (pages[i] === '...') {
+      html += '<span style="color:#484f58;padding:0 4px;">...</span>';
+    } else {
+      html += '<button class="page-btn' + (pages[i] === currentPage ? ' active' : '') +
+        '" onclick="' + goFn + '(' + pages[i] + ')">' + pages[i] + '</button>';
+    }
+  }
+  html += '<button class="page-btn nav" onclick="' + goFn + '(' + (currentPage + 1) + ')"' +
+    (currentPage >= totalPages ? ' disabled' : '') + '>&rsaquo;</button>';
+  document.getElementById(containerId).innerHTML = html;
+}
+
+// ======================================================================
+//  PERSONS
+// ======================================================================
+
+function getFilteredPersons() {
+  var q = document.getElementById('searchPersons').value.trim().toLowerCase();
+  return PERSONS.filter(function(p) {
+    if (activePersonFilter !== 'all' && p.status !== activePersonFilter) return false;
+    if (q) {
+      var hay = (p.canonical_name + ' ' + p.role + ' ' + p.department + ' ' + p.company + ' ' +
+        (p.context || '') + ' ' + p.variations.map(function(v){return v.text;}).join(' ')).toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+
+function renderPersons() {
+  var filtered = getFilteredPersons();
+  var showAll = personPerPage === Infinity;
+  var totalPages = showAll ? 1 : Math.max(1, Math.ceil(filtered.length / personPerPage));
+  if (personPage > totalPages) personPage = totalPages;
+  var start = showAll ? 0 : (personPage - 1) * personPerPage;
+  var pageRows = showAll ? filtered : filtered.slice(start, start + personPerPage);
+  var grid = document.getElementById('personGrid');
+
+  if (pageRows.length === 0) {
+    grid.innerHTML = '';
+    document.getElementById('noPersons').classList.add('visible');
+    document.getElementById('personPagination').style.display = 'none';
+  } else {
+    document.getElementById('noPersons').classList.remove('visible');
+    document.getElementById('personPagination').style.display = '';
+    var html = '';
+    for (var i = 0; i < pageRows.length; i++) html += buildPersonRow(pageRows[i]);
+    grid.innerHTML = html;
+  }
+
+  var end = showAll ? filtered.length : Math.min(start + personPerPage, filtered.length);
+  document.getElementById('personPaginationInfo').textContent =
+    filtered.length === 0 ? '' :
+    showAll ? 'Showing all ' + filtered.length :
+    'Showing ' + (start + 1) + '-' + end + ' of ' + filtered.length;
+  renderPaginationControls('personPaginationControls', personPage, totalPages, 'goPersonPage');
+  updatePersonCounts();
+}
+
+function goPersonPage(p) {
+  var filtered = getFilteredPersons();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / personPerPage));
+  if (p < 1 || p > totalPages) return;
+  personPage = p;
+  renderPersons();
+}
+
+function changePersonPerPage(val) {
+  personPerPage = val === 'all' ? Infinity : parseInt(val);
+  personPage = 1;
+  renderPersons();
+}
+
+function buildPersonRow(p) {
+  var isExpanded = expandedPerson === p.id;
+  var cls = 'entity-row' + (isExpanded ? ' expanded' : '') + (p.status !== 'active' ? ' inactive' : '');
+  var varHtml = '';
+  for (var i = 0; i < p.variations.length; i++) {
+    var v = p.variations[i];
+    varHtml += '<span class="variation-tag"><span>' + esc(v.text) + '</span>' +
+      (v.type ? '<span class="var-type">' + v.type + '</span>' : '') +
+      '<span class="var-remove" onclick="event.stopPropagation();removePersonVar('+p.id+','+v.id+')">&times;</span></span>';
+  }
+
+  return '<div class="' + cls + '" data-id="' + p.id + '">' +
+    '<div class="entity-summary" onclick="togglePerson(' + p.id + ')">' +
+      '<div class="entity-main">' +
+        '<span class="status-dot ' + p.status + '"></span>' +
+        '<span class="entity-name">' + esc(p.canonical_name) + '</span>' +
+        '<span class="entity-meta">' + esc(p.role || '') +
+          (p.company ? '<span class="entity-meta-sep">|</span>' + esc(p.company) : '') +
+          (p.context ? '<span class="entity-meta-sep">|</span>' + esc(p.context.length > 60 ? p.context.substring(0, 60) + '...' : p.context) : '') +
+        '</span>' +
+      '</div>' +
+      '<div class="entity-right">' +
+        '<span class="category-badge cat-person">Person</span>' +
+        '<span class="var-count">' + p.variations.length + ' var' + (p.variations.length !== 1 ? 's' : '') + '</span>' +
+        '<span class="expand-arrow">&#9654;</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="entity-detail">' +
+      '<div class="detail-grid">' +
+        '<div class="detail-field"><label>First Name</label><input type="text" value="' + esc(p.first_name || '') + '" data-field="first_name"></div>' +
+        '<div class="detail-field"><label>Last Name</label><input type="text" value="' + esc(p.last_name || '') + '" data-field="last_name"></div>' +
+        '<div class="detail-field"><label>Role</label><input type="text" value="' + esc(p.role || '') + '" data-field="role"></div>' +
+        '<div class="detail-field"><label>Company</label><input type="text" value="' + esc(p.company || '') + '" data-field="company"></div>' +
+        '<div class="detail-field"><label>Department</label><input type="text" value="' + esc(p.department || '') + '" data-field="department"></div>' +
+        '<div class="detail-field"><label>Status</label><select data-field="status">' +
+          '<option value="active"' + (p.status === 'active' ? ' selected' : '') + '>Active</option>' +
+          '<option value="inactive"' + (p.status === 'inactive' ? ' selected' : '') + '>Inactive</option>' +
+        '</select></div>' +
+        '<div class="detail-field full"><label>Context / Description</label><textarea data-field="context">' + esc(p.context || '') + '</textarea></div>' +
+      '</div>' +
+      '<div class="variations-section">' +
+        '<div class="variations-header"><h4>Variations (' + p.variations.length + ')</h4>' +
+          '<button class="btn-add-var" onclick="event.stopPropagation();promptAddPersonVar(' + p.id + ')">+ Add Variation</button>' +
+        '</div>' +
+        '<div class="variation-list">' + varHtml + '</div>' +
+      '</div>' +
+      '<div class="detail-actions">' +
+        '<div class="detail-actions-left">' +
+          '<button class="btn-admin-delete" onclick="event.stopPropagation();deletePerson(' + p.id + ')">Delete</button>' +
+        '</div>' +
+        '<div class="detail-actions-right">' +
+          '<button class="btn-cancel" onclick="event.stopPropagation();togglePerson(null)">Cancel</button>' +
+          '<button class="btn-save" onclick="event.stopPropagation();savePerson(' + p.id + ')">Save Changes</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function togglePerson(id) {
+  expandedPerson = expandedPerson === id ? null : id;
+  renderPersons();
+}
+
+function updatePersonCounts() {
+  var q = document.getElementById('searchPersons').value.trim().toLowerCase();
+  var counts = { all: 0, active: 0, inactive: 0 };
+  for (var i = 0; i < PERSONS.length; i++) {
+    var p = PERSONS[i];
+    if (q) {
+      var hay = (p.canonical_name + ' ' + p.role + ' ' + p.department + ' ' + p.company + ' ' + (p.context || '')).toLowerCase();
+      if (hay.indexOf(q) === -1) continue;
+    }
+    counts.all++;
+    if (counts[p.status] !== undefined) counts[p.status]++;
+  }
+  document.getElementById('pf-all').textContent = counts.all;
+  document.getElementById('pf-active').textContent = counts.active;
+  document.getElementById('pf-inactive').textContent = counts.inactive;
+  document.getElementById('tc-persons').textContent = PERSONS.length;
+  document.getElementById('totalPersons').textContent = PERSONS.filter(function(p){return p.status==='active';}).length;
+  updateTotalVariations();
+}
+
+function filterPersonStatus(status, btn) {
+  activePersonFilter = status;
+  personPage = 1;
+  document.querySelectorAll('#personStatusFilter .filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  renderPersons();
+}
+
+function savePerson(id) {
+  var p = PERSONS.find(function(p){ return p.id === id; });
+  var row = document.querySelector('.entity-row[data-id="'+id+'"]');
+  var data = {};
+  row.querySelectorAll('.detail-field input, .detail-field select, .detail-field textarea').forEach(function(el) {
+    var field = el.getAttribute('data-field');
+    if (field) data[field] = el.value;
+  });
+  api('PUT', '/api/admin/persons/' + id, data).then(function() {
+    Object.assign(p, data);
+    p.canonical_name = (data.first_name + ' ' + data.last_name).trim();
+    expandedPerson = null;
+    renderPersons();
+    showToast('Person saved: ' + p.canonical_name);
+  }).catch(function(e) {
+    showToast('Error saving person: ' + e.message, true);
+  });
+}
+
+function deletePerson(id) {
+  var p = PERSONS.find(function(p){ return p.id === id; });
+  modalConfirm('Delete Person', 'Delete <strong>' + esc(p.canonical_name) + '</strong> and all their variations?', {
+    danger: true, confirmLabel: 'Delete', confirmCls: 'btn-admin-delete'
+  }).then(function(ok) {
+    if (!ok) return;
+    api('DELETE', '/api/admin/persons/' + id).then(function() {
+      PERSONS = PERSONS.filter(function(p){ return p.id !== id; });
+      expandedPerson = null;
+      renderPersons();
+      showToast('Person deleted');
+    }).catch(function(e) {
+      showToast('Error deleting person: ' + e.message, true);
+    });
+  });
+}
+
+function removePersonVar(pid, vid) {
+  api('DELETE', '/api/admin/persons/' + pid + '/variations/' + vid).then(function() {
+    var p = PERSONS.find(function(p){ return p.id === pid; });
+    p.variations = p.variations.filter(function(v){ return v.id !== vid; });
+    renderPersons();
+  }).catch(function(e) {
+    showToast('Error removing variation: ' + e.message, true);
+  });
+}
+
+function promptAddPersonVar(pid) {
+  modalPrompt('Add Person Variation', [
+    { key: 'text', label: 'Variation text', placeholder: 'e.g. Flo, Florian W.' },
+    { key: 'type', label: 'Type', options: ['nickname', 'asr_correction', 'misspelling', 'canonical'], value: 'nickname' }
+  ]).then(function(result) {
+    if (!result || !result.text.trim()) return;
+    api('POST', '/api/admin/persons/' + pid + '/variations', { text: result.text.trim(), type: result.type }).then(function(resp) {
+      var p = PERSONS.find(function(p){ return p.id === pid; });
+      p.variations.push({ id: resp.id, text: result.text.trim(), type: result.type });
+      renderPersons();
+      showToast('Variation added: ' + result.text.trim());
+    }).catch(function(e) {
+      showToast('Error adding variation: ' + e.message, true);
+    });
+  });
+}
+
+function toggleAddPerson() {
+  document.getElementById('addPersonForm').classList.toggle('visible');
+}
+
+function addPerson() {
+  var first = document.getElementById('newPFirstName').value.trim();
+  var last = document.getElementById('newPLastName').value.trim();
+  if (!first || !last) { modalAlert('Missing Fields', 'First and last name are required.'); return; }
+  var data = {
+    first_name: first, last_name: last,
+    role: document.getElementById('newPRole').value.trim(),
+    department: document.getElementById('newPDepartment').value.trim(),
+    company: document.getElementById('newPCompany').value.trim(),
+    context: document.getElementById('newPContext').value.trim()
+  };
+  api('POST', '/api/admin/persons', data).then(function(resp) {
+    var newP = {
+      id: resp.id, canonical_name: resp.canonical_name,
+      first_name: first, last_name: last,
+      role: data.role, department: data.department, company: data.company,
+      context: data.context, status: 'active',
+      variations: [{ id: null, text: resp.canonical_name, type: 'canonical' }]
+    };
+    PERSONS.push(newP);
+    toggleAddPerson();
+    document.getElementById('newPFirstName').value = '';
+    document.getElementById('newPLastName').value = '';
+    document.getElementById('newPRole').value = '';
+    document.getElementById('newPDepartment').value = '';
+    document.getElementById('newPCompany').value = '';
+    document.getElementById('newPContext').value = '';
+    renderPersons();
+    showToast('Person added: ' + newP.canonical_name);
+  }).catch(function(e) {
+    showToast('Error adding person: ' + e.message, true);
+  });
+}
+
+// ======================================================================
+//  TERMS
+// ======================================================================
+
+var CAT_COLORS = {
+  company:    ['#58a6ff', '#1c2541'],
+  department: ['#3fb950', '#1f3a28'],
+  technology: ['#39d2c0', '#0d2d3a'],
+  project:    ['#f778ba', '#3a1f2e'],
+  concept:    ['#e3b341', '#2d2a1f'],
+  product:    ['#a371f7', '#2a1f36'],
+  term:       ['#d29922', '#2d1f11']
+};
+
+function getCategories() {
+  var cats = {};
+  for (var i = 0; i < TERMS.length; i++) cats[TERMS[i].category] = (cats[TERMS[i].category] || 0) + 1;
+  return cats;
+}
+
+function buildCategoryFilter() {
+  var cats = getCategories();
+  var keys = Object.keys(cats).sort();
+  var html = '<button class="filter-btn' + (activeTermCategory === 'all' ? ' active' : '') + '" onclick="filterTermCategory(\'all\', this)">All<span class="filter-count">' + TERMS.length + '</span></button>';
+  for (var i = 0; i < keys.length; i++) {
+    var c = CAT_COLORS[keys[i]] || ['#8b949e', '#21262d'];
+    html += '<button class="filter-btn' + (activeTermCategory === keys[i] ? ' active' : '') +
+      '" data-cat="' + keys[i] + '" style="--cat-color:' + c[0] + ';--cat-bg:' + c[1] + '"' +
+      ' onclick="filterTermCategory(\'' + keys[i] + '\', this)">' +
+      keys[i].charAt(0).toUpperCase() + keys[i].slice(1) +
+      '<span class="filter-count">' + cats[keys[i]] + '</span></button>';
+  }
+  document.getElementById('termCategoryFilter').innerHTML = html;
+}
+
+function getFilteredTerms() {
+  var q = document.getElementById('searchTerms').value.trim().toLowerCase();
+  return TERMS.filter(function(t) {
+    if (activeTermCategory !== 'all' && t.category !== activeTermCategory) return false;
+    if (activeTermStatus !== 'all' && t.status !== activeTermStatus) return false;
+    if (q) {
+      var hay = (t.canonical_term + ' ' + (t.context || '') + ' ' + t.category + ' ' +
+        t.variations.map(function(v){ return v.text; }).join(' ')).toLowerCase();
+      if (hay.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+
+function renderTerms() {
+  var filtered = getFilteredTerms();
+  var showAll = termPerPage === Infinity;
+  var totalPages = showAll ? 1 : Math.max(1, Math.ceil(filtered.length / termPerPage));
+  if (termPage > totalPages) termPage = totalPages;
+  var start = showAll ? 0 : (termPage - 1) * termPerPage;
+  var pageRows = showAll ? filtered : filtered.slice(start, start + termPerPage);
+  var grid = document.getElementById('termGrid');
+
+  if (pageRows.length === 0) {
+    grid.innerHTML = '';
+    document.getElementById('noTerms').classList.add('visible');
+    document.getElementById('termPagination').style.display = 'none';
+  } else {
+    document.getElementById('noTerms').classList.remove('visible');
+    document.getElementById('termPagination').style.display = '';
+    var html = '';
+    for (var i = 0; i < pageRows.length; i++) html += buildTermRow(pageRows[i]);
+    grid.innerHTML = html;
+  }
+
+  var end = showAll ? filtered.length : Math.min(start + termPerPage, filtered.length);
+  document.getElementById('termPaginationInfo').textContent =
+    filtered.length === 0 ? '' :
+    showAll ? 'Showing all ' + filtered.length :
+    'Showing ' + (start + 1) + '-' + end + ' of ' + filtered.length;
+  renderPaginationControls('termPaginationControls', termPage, totalPages, 'goTermPage');
+  updateTermCounts();
+}
+
+function buildTermRow(t) {
+  var isExpanded = expandedTerm === t.id;
+  var cls = 'entity-row' + (isExpanded ? ' expanded' : '') + (t.status !== 'active' ? ' inactive' : '');
+  var catCls = 'cat-' + t.category;
+  var varHtml = '';
+  for (var i = 0; i < t.variations.length; i++) {
+    var v = t.variations[i];
+    varHtml += '<span class="variation-tag"><span>' + esc(v.text) + '</span>' +
+      '<span class="var-remove" onclick="event.stopPropagation();removeTermVar('+t.id+','+v.id+')">&times;</span></span>';
+  }
+  var ctx = (t.context || '');
+  var contextShort = ctx.length > 80 ? ctx.substring(0, 80) + '...' : ctx;
+
+  var categories = ['company','concept','department','product','project','technology','term'];
+  var catOptions = '';
+  for (var c = 0; c < categories.length; c++) {
+    catOptions += '<option value="' + categories[c] + '"' + (t.category === categories[c] ? ' selected' : '') + '>' +
+      categories[c].charAt(0).toUpperCase() + categories[c].slice(1) + '</option>';
+  }
+
+  return '<div class="' + cls + '" data-id="' + t.id + '">' +
+    '<div class="entity-summary" onclick="toggleTerm(' + t.id + ')">' +
+      '<div class="entity-main">' +
+        '<span class="status-dot ' + t.status + '"></span>' +
+        '<span class="entity-name">' + esc(t.canonical_term) + '</span>' +
+        '<span class="entity-meta">' + esc(contextShort) + '</span>' +
+      '</div>' +
+      '<div class="entity-right">' +
+        '<span class="category-badge ' + catCls + '">' + t.category + '</span>' +
+        '<span class="var-count">' + t.variations.length + ' var' + (t.variations.length !== 1 ? 's' : '') + '</span>' +
+        '<span class="expand-arrow">&#9654;</span>' +
+      '</div>' +
+    '</div>' +
+    '<div class="entity-detail">' +
+      '<div class="detail-grid">' +
+        '<div class="detail-field"><label>Canonical Term</label><input type="text" value="' + esc(t.canonical_term) + '" data-field="canonical_term"></div>' +
+        '<div class="detail-field"><label>Category</label><select data-field="category">' + catOptions + '</select></div>' +
+        '<div class="detail-field full"><label>Context / Description</label><textarea data-field="context">' + esc(t.context || '') + '</textarea></div>' +
+        '<div class="detail-field"><label>Status</label><select data-field="status">' +
+          '<option value="active"' + (t.status === 'active' ? ' selected' : '') + '>Active</option>' +
+          '<option value="inactive"' + (t.status === 'inactive' ? ' selected' : '') + '>Inactive</option>' +
+        '</select></div>' +
+      '</div>' +
+      '<div class="variations-section">' +
+        '<div class="variations-header"><h4>Variations (' + t.variations.length + ')</h4>' +
+          '<button class="btn-add-var" onclick="event.stopPropagation();promptAddTermVar(' + t.id + ')">+ Add Variation</button>' +
+        '</div>' +
+        '<div class="variation-list">' + varHtml + '</div>' +
+      '</div>' +
+      '<div class="detail-actions">' +
+        '<div class="detail-actions-left">' +
+          '<button class="btn-admin-delete" onclick="event.stopPropagation();deleteTerm(' + t.id + ')">Delete</button>' +
+        '</div>' +
+        '<div class="detail-actions-right">' +
+          '<button class="btn-cancel" onclick="event.stopPropagation();toggleTerm(null)">Cancel</button>' +
+          '<button class="btn-save" onclick="event.stopPropagation();saveTerm(' + t.id + ')">Save Changes</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function toggleTerm(id) {
+  expandedTerm = expandedTerm === id ? null : id;
+  renderTerms();
+}
+
+function goTermPage(p) {
+  var filtered = getFilteredTerms();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / termPerPage));
+  if (p < 1 || p > totalPages) return;
+  termPage = p;
+  renderTerms();
+}
+
+function changeTermPerPage(val) {
+  termPerPage = val === 'all' ? Infinity : parseInt(val);
+  termPage = 1;
+  renderTerms();
+}
+
+function filterTermCategory(cat, btn) {
+  activeTermCategory = cat;
+  termPage = 1;
+  document.querySelectorAll('#termCategoryFilter .filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  renderTerms();
+}
+
+function filterTermStatus(status, btn) {
+  activeTermStatus = status;
+  termPage = 1;
+  document.querySelectorAll('#termStatusFilter .filter-btn').forEach(function(b) { b.classList.remove('active'); });
+  btn.classList.add('active');
+  renderTerms();
+}
+
+function updateTermCounts() {
+  var q = document.getElementById('searchTerms').value.trim().toLowerCase();
+  var counts = { all: 0, active: 0, inactive: 0 };
+  for (var i = 0; i < TERMS.length; i++) {
+    var t = TERMS[i];
+    if (q) {
+      var hay = (t.canonical_term + ' ' + (t.context || '') + ' ' + t.category + ' ' +
+        t.variations.map(function(v){ return v.text; }).join(' ')).toLowerCase();
+      if (hay.indexOf(q) === -1) continue;
+    }
+    if (activeTermCategory !== 'all' && t.category !== activeTermCategory) continue;
+    counts.all++;
+    if (counts[t.status] !== undefined) counts[t.status]++;
+  }
+  document.getElementById('tf-all').textContent = counts.all;
+  document.getElementById('tf-active').textContent = counts.active;
+  document.getElementById('tf-inactive').textContent = counts.inactive;
+  document.getElementById('tc-terms').textContent = TERMS.length;
+  document.getElementById('totalTerms').textContent = TERMS.filter(function(t){return t.status==='active';}).length;
+  buildCategoryFilter();
+  updateTotalVariations();
+}
+
+function saveTerm(id) {
+  var t = TERMS.find(function(t){ return t.id === id; });
+  var row = document.querySelector('.entity-row[data-id="'+id+'"]');
+  var data = {};
+  row.querySelectorAll('.detail-field input, .detail-field select, .detail-field textarea').forEach(function(el) {
+    var field = el.getAttribute('data-field');
+    if (field) data[field] = el.value;
+  });
+  api('PUT', '/api/admin/terms/' + id, data).then(function() {
+    Object.assign(t, data);
+    expandedTerm = null;
+    renderTerms();
+    showToast('Term saved: ' + t.canonical_term);
+  }).catch(function(e) {
+    showToast('Error saving term: ' + e.message, true);
+  });
+}
+
+function deleteTerm(id) {
+  var t = TERMS.find(function(t){ return t.id === id; });
+  modalConfirm('Delete Term', 'Delete <strong>' + esc(t.canonical_term) + '</strong> and all its variations?', {
+    danger: true, confirmLabel: 'Delete', confirmCls: 'btn-admin-delete'
+  }).then(function(ok) {
+    if (!ok) return;
+    api('DELETE', '/api/admin/terms/' + id).then(function() {
+      TERMS = TERMS.filter(function(t){ return t.id !== id; });
+      expandedTerm = null;
+      renderTerms();
+      showToast('Term deleted');
+    }).catch(function(e) {
+      showToast('Error deleting term: ' + e.message, true);
+    });
+  });
+}
+
+function removeTermVar(tid, vid) {
+  api('DELETE', '/api/admin/terms/' + tid + '/variations/' + vid).then(function() {
+    var t = TERMS.find(function(t){ return t.id === tid; });
+    t.variations = t.variations.filter(function(v){ return v.id !== vid; });
+    renderTerms();
+  }).catch(function(e) {
+    showToast('Error removing variation: ' + e.message, true);
+  });
+}
+
+function promptAddTermVar(tid) {
+  modalPrompt('Add Term Variation', [
+    { key: 'text', label: 'Variation text', placeholder: 'e.g. K8s, kubernetes' }
+  ]).then(function(result) {
+    if (!result || !result.text.trim()) return;
+    api('POST', '/api/admin/terms/' + tid + '/variations', { text: result.text.trim() }).then(function(resp) {
+      var t = TERMS.find(function(t){ return t.id === tid; });
+      t.variations.push({ id: resp.id, text: result.text.trim() });
+      renderTerms();
+      showToast('Variation added: ' + result.text.trim());
+    }).catch(function(e) {
+      showToast('Error adding variation: ' + e.message, true);
+    });
+  });
+}
+
+function toggleAddTerm() {
+  document.getElementById('addTermForm').classList.toggle('visible');
+}
+
+function addTerm() {
+  var name = document.getElementById('newTName').value.trim();
+  if (!name) { modalAlert('Missing Fields', 'Term name is required.'); return; }
+  var data = {
+    canonical_term: name,
+    category: document.getElementById('newTCategory').value,
+    context: document.getElementById('newTContext').value.trim()
+  };
+  api('POST', '/api/admin/terms', data).then(function(resp) {
+    var newT = {
+      id: resp.id, canonical_term: name,
+      category: data.category, context: data.context,
+      status: 'active',
+      variations: [{ id: null, text: name }]
+    };
+    TERMS.push(newT);
+    toggleAddTerm();
+    document.getElementById('newTName').value = '';
+    document.getElementById('newTContext').value = '';
+    renderTerms();
+    showToast('Term added: ' + name);
+  }).catch(function(e) {
+    showToast('Error adding term: ' + e.message, true);
+  });
+}
+
+// ======================================================================
+//  MODAL SYSTEM
+// ======================================================================
+
+var modalResolveFn = null;
+
+function showModal(header, bodyHtml, buttons, opts) {
+  opts = opts || {};
+  document.getElementById('modalHeader').textContent = header;
+  document.getElementById('modalHeader').className = 'modal-header' + (opts.danger ? ' danger' : '');
+  document.getElementById('modalBody').innerHTML = bodyHtml;
+  var footerHtml = '';
+  for (var i = 0; i < buttons.length; i++) {
+    var b = buttons[i];
+    footerHtml += '<button class="btn-sm ' + (b.cls || 'btn-cancel') + '" onclick="resolveModal(' +
+      (typeof b.value === 'string' ? "'" + b.value + "'" : b.value) + ')">' + b.label + '</button>';
+  }
+  document.getElementById('modalFooter').innerHTML = footerHtml;
+  document.getElementById('modalOverlay').classList.add('visible');
+  var firstInput = document.querySelector('#modalBody input, #modalBody select');
+  if (firstInput) setTimeout(function() { firstInput.focus(); }, 50);
+}
+
+function resolveModal(value) {
+  document.getElementById('modalOverlay').classList.remove('visible');
+  if (modalResolveFn) { var fn = modalResolveFn; modalResolveFn = null; fn(value); }
+}
+
+function modalOverlayClick(e) {
+  if (e.target === document.getElementById('modalOverlay')) resolveModal(null);
+}
+
+document.addEventListener('keydown', function(e) {
+  if (!document.getElementById('modalOverlay').classList.contains('visible')) return;
+  if (e.key === 'Escape') resolveModal(null);
+  if (e.key === 'Enter') {
+    var btns = document.querySelectorAll('#modalFooter .btn-sm:not(.btn-cancel)');
+    if (btns.length) btns[btns.length - 1].click();
+  }
+});
+
+function modalConfirm(title, message, opts) {
+  opts = opts || {};
+  return new Promise(function(resolve) {
+    modalResolveFn = resolve;
+    showModal(title, '<p>' + message + '</p>', [
+      { label: 'Cancel', cls: 'btn-cancel', value: false },
+      { label: opts.confirmLabel || 'Confirm', cls: opts.confirmCls || 'btn-save', value: true }
+    ], opts);
+  });
+}
+
+function modalAlert(title, message) {
+  return new Promise(function(resolve) {
+    modalResolveFn = resolve;
+    showModal(title, '<p>' + message + '</p>', [
+      { label: 'OK', cls: 'btn-save', value: true }
+    ]);
+  });
+}
+
+function modalPrompt(title, fields) {
+  return new Promise(function(resolve) {
+    modalResolveFn = function(action) {
+      if (action === null) { resolve(null); return; }
+      var result = {};
+      for (var i = 0; i < fields.length; i++) {
+        var el = document.getElementById('modal-field-' + i);
+        result[fields[i].key] = el.value;
+      }
+      resolve(result);
+    };
+    var bodyHtml = '';
+    for (var i = 0; i < fields.length; i++) {
+      var f = fields[i];
+      bodyHtml += '<label>' + f.label;
+      if (f.options) {
+        bodyHtml += '<select id="modal-field-' + i + '">';
+        for (var j = 0; j < f.options.length; j++) {
+          var sel = f.options[j] === f.value ? ' selected' : '';
+          bodyHtml += '<option value="' + f.options[j] + '"' + sel + '>' + f.options[j] + '</option>';
+        }
+        bodyHtml += '</select>';
+      } else {
+        bodyHtml += '<input type="text" id="modal-field-' + i + '" value="' + esc(f.value || '') + '" placeholder="' + esc(f.placeholder || '') + '">';
+      }
+      bodyHtml += '</label>';
+    }
+    showModal(title, bodyHtml, [
+      { label: 'Cancel', cls: 'btn-cancel', value: null },
+      { label: 'Add', cls: 'btn-save', value: 'ok' }
+    ]);
+  });
+}
+
+// === INIT ===
+renderPersons();
+renderTerms();
+buildCategoryFilter();
+</script>
+{% endblock %}
