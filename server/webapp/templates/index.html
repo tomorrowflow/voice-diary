@@ -1,0 +1,586 @@
+{% extends "base.html" %}
+{% block title %}Diary Transcripts{% endblock %}
+{% block nav_overview %}active{% endblock %}
+{% block content %}
+
+<header>
+  <h1>Overview</h1>
+  <div class="header-meta"><strong id="totalCount">0</strong> transcripts</div>
+</header>
+
+<div class="container">
+  <div class="toolbar">
+    <h2>Transcripts</h2>
+    <div class="toolbar-right">
+      <button class="btn-batch-process" id="processBtn" onclick="processSelected()">
+        Process (<span id="processCount">0</span>)
+      </button>
+      <button class="btn-delete" id="deleteBtn" onclick="confirmDelete()">
+        Delete (<span id="selectedCount">0</span>)
+      </button>
+      <div class="search-box">
+        <span class="search-icon">&#128269;</span>
+        <input type="text" id="searchInput" placeholder="Search transcripts..." oninput="onSearchInput()">
+      </div>
+    </div>
+  </div>
+
+  <div class="filter-bar">
+    <button class="filter-btn active" data-filter="all" onclick="filterStatus('all', this)">
+      All<span class="filter-count" id="fc-all">0</span>
+    </button>
+    <button class="filter-btn filter-pending" data-filter="pending" onclick="filterStatus('pending', this)">
+      Pending<span class="filter-count" id="fc-pending">0</span>
+    </button>
+    <button class="filter-btn filter-saved" data-filter="saved" onclick="filterStatus('saved', this)">
+      Saved<span class="filter-count" id="fc-saved">0</span>
+    </button>
+    <button class="filter-btn filter-submitted" data-filter="submitted" onclick="filterStatus('submitted', this)">
+      Submitted<span class="filter-count" id="fc-submitted">0</span>
+    </button>
+    <button class="filter-btn filter-processed" data-filter="processed" onclick="filterStatus('processed', this)">
+      Processed<span class="filter-count" id="fc-processed">0</span>
+    </button>
+    <button class="filter-btn filter-failed" data-filter="failed" onclick="filterStatus('failed', this)">
+      Failed<span class="filter-count" id="fc-failed">0</span>
+    </button>
+  </div>
+
+  <table class="transcript-table">
+    <thead>
+      <tr>
+        <th><input type="checkbox" class="check-all" onchange="toggleAll(this)"></th>
+        <th class="sortable sorted-desc" data-sort-col="1" data-sort-type="string" onclick="sortTable(this)">Filename<span class="sort-arrow">&#9660;</span></th>
+        <th class="sortable" data-sort-col="2" data-sort-type="string" onclick="sortTable(this)">Status<span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort-col="3" data-sort-type="number" onclick="sortTable(this)">Words<span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort-col="4" data-sort-type="date" onclick="sortTable(this)">Diary Date<span class="sort-arrow">&#9650;</span></th>
+        <th class="sortable" data-sort-col="5" data-sort-type="date" onclick="sortTable(this)">Uploaded<span class="sort-arrow">&#9650;</span></th>
+        <th class="col-actions"></th>
+      </tr>
+    </thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+
+  <div class="no-results" id="noResults">No transcripts match your search.</div>
+
+  <div class="pagination" id="pagination">
+    <div class="pagination-info" id="paginationInfo"></div>
+    <div style="display:flex;align-items:center;gap:16px;">
+      <div class="per-page">
+        <span>Show</span>
+        <select id="perPageSelect" onchange="changePerPage(this.value)">
+          <option value="10" selected>10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="all">All</option>
+        </select>
+      </div>
+      <div class="pagination-controls" id="paginationControls"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)resolveModal(null)">
+  <div class="modal">
+    <div class="modal-header danger" id="modalHeader">Delete transcripts?</div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+var ROWS = {{ transcripts_json | safe }};
+var PER_PAGE = 10;
+var currentPage = 1;
+var activeFilter = 'all';
+var searchQuery = '';
+var currentSortCol = 1;
+var currentSortDir = 'desc';
+var checkedIds = {};
+
+function formatWords(n) {
+  return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function getFilteredRows() {
+  return ROWS.filter(function(r) {
+    if (activeFilter !== 'all' && r.status !== activeFilter) return false;
+    if (searchQuery) {
+      var q = searchQuery.toLowerCase();
+      var haystack = (r.fn + ' ' + r.author + ' ' + r.status + ' ' + r.dateDisplay).toLowerCase();
+      if (haystack.indexOf(q) === -1) return false;
+    }
+    return true;
+  });
+}
+
+function sortRows(rows) {
+  var col = currentSortCol;
+  var dir = currentSortDir;
+  var keys = { 1: 'fn', 2: 'status', 3: 'words', 4: 'date', 5: 'uploaded' };
+  var key = keys[col];
+  var isNum = (col === 3);
+  rows.sort(function(a, b) {
+    var av = a[key], bv = b[key];
+    if (isNum) return dir === 'asc' ? av - bv : bv - av;
+    if (av < bv) return dir === 'asc' ? -1 : 1;
+    if (av > bv) return dir === 'asc' ? 1 : -1;
+    return 0;
+  });
+  return rows;
+}
+
+function formatDuration(seconds) {
+  if (seconds == null) return '';
+  var m = Math.floor(seconds / 60);
+  var s = seconds % 60;
+  if (m > 0) return m + 'm ' + s + 's';
+  return s + 's';
+}
+
+function buildRow(r) {
+  var checked = checkedIds[r.id] ? ' checked' : '';
+  var url = '/review/' + r.id;
+  var statusExtra = '';
+  if (r.status === 'submitted') {
+    statusExtra = '<span class="submitted-spinner"></span>';
+  } else if (r.status === 'processed' && r.processing_seconds != null) {
+    statusExtra = '<span class="processing-duration">' + formatDuration(r.processing_seconds) + '</span>';
+  } else if (r.status === 'failed') {
+    statusExtra = '<button class="btn-retry" onclick="retryTranscript(' + r.id + ');event.stopPropagation();">Retry</button>';
+  }
+  var errorLine = '';
+  if (r.status === 'failed' && r.processing_error) {
+    var escaped = r.processing_error.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    errorLine = '<span class="processing-error" title="' + escaped + '">' + escaped + '</span>';
+  }
+
+  // Build actions dropdown
+  var canProcess = (r.status === 'saved' || r.status === 'submitted' || r.status === 'processed' || r.status === 'failed');
+  var hasDoc = !!r.doc_id;
+  var actions = '';
+  actions += '<div class="row-actions" onclick="event.stopPropagation()">';
+  actions += '<button class="row-actions-btn" onclick="toggleActions(this)" title="Actions">&#8943;</button>';
+  actions += '<div class="row-actions-menu">';
+  actions += '<a href="' + url + '" onclick="setCtx(' + r.id + ')">Transcript</a>';
+  if (canProcess) {
+    actions += '<a href="/process/' + r.id + '" onclick="setCtx(' + r.id + ')">Process</a>';
+  }
+  if (hasDoc) {
+    actions += '<a href="#" onclick="ingestFromOverview(' + r.doc_id + ',this);return false;">Send to LightRAG</a>';
+  }
+  if (r.status !== 'pending') {
+    actions += '<div class="row-actions-divider"></div>';
+    actions += '<a href="#" onclick="resetOne(' + r.id + ');return false;">Reset</a>';
+  }
+  actions += '<a href="#" class="row-actions-danger" onclick="deleteOne(' + r.id + ');return false;">Delete</a>';
+  actions += '</div></div>';
+
+  return '<tr data-status="' + r.status + '" data-review-url="' + url + '" data-id="' + r.id + '">' +
+    '<td class="row-check"><input type="checkbox" onchange="onRowCheck(this)"' + checked + '></td>' +
+    '<td class="filename-cell" data-sort="' + r.fn + '">' +
+      '<a href="' + url + '" onclick="setCtx(' + r.id + ')">' + r.fn + '</a>' +
+      '<div class="filename-author">' + r.author + '</div>' +
+    '</td>' +
+    '<td data-sort="' + r.status + '"><span class="status-badge status-' + r.status + '">' + r.status + '</span>' + statusExtra + errorLine + '</td>' +
+    '<td class="cell-words" data-sort="' + r.words + '">' + formatWords(r.words) + '</td>' +
+    '<td class="cell-date" data-sort="' + r.date + '">' +
+      r.dateDisplay +
+      '<span class="cell-date-secondary">' + r.day + '</span>' +
+      (r.date ? '<a href="/harvest?date=' + r.date + '" class="cell-harvest-link" onclick="event.stopPropagation()">Harvest</a>' : '') +
+    '</td>' +
+    '<td class="cell-uploaded" data-sort="' + r.uploaded + '">' + r.uploadedDisplay + '</td>' +
+    '<td class="cell-actions">' + actions + '</td>' +
+  '</tr>';
+}
+
+function setCtx(id) { sessionStorage.setItem('currentTranscriptId', id); }
+
+function applyView() {
+  var filtered = getFilteredRows();
+  filtered = sortRows(filtered);
+  var showAll = PER_PAGE === Infinity;
+  var totalPages = showAll ? 1 : Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+  if (currentPage > totalPages) currentPage = totalPages;
+  var start = showAll ? 0 : (currentPage - 1) * PER_PAGE;
+  var pageRows = showAll ? filtered : filtered.slice(start, start + PER_PAGE);
+
+  var tbody = document.getElementById('tableBody');
+  if (pageRows.length === 0) {
+    tbody.innerHTML = '';
+    document.getElementById('noResults').classList.add('visible');
+    document.getElementById('pagination').style.display = 'none';
+  } else {
+    document.getElementById('noResults').classList.remove('visible');
+    document.getElementById('pagination').style.display = '';
+    var html = '';
+    for (var i = 0; i < pageRows.length; i++) html += buildRow(pageRows[i]);
+    tbody.innerHTML = html;
+    var trs = tbody.querySelectorAll('tr');
+    for (var i = 0; i < trs.length; i++) {
+      if (checkedIds[trs[i].getAttribute('data-id')]) trs[i].classList.add('checked');
+    }
+  }
+
+  var end = showAll ? filtered.length : Math.min(start + PER_PAGE, filtered.length);
+  document.getElementById('paginationInfo').textContent =
+    filtered.length === 0 ? '' :
+    showAll ? 'Showing all ' + filtered.length :
+    'Showing ' + (start + 1) + '-' + end + ' of ' + filtered.length;
+
+  renderPagination(totalPages);
+  updateFilterCounts();
+  updateSelection();
+}
+
+function renderPagination(totalPages) {
+  var html = '';
+  html += '<button class="page-btn nav" onclick="goPage(' + (currentPage - 1) + ')"' +
+    (currentPage <= 1 ? ' disabled' : '') + '>&lsaquo;</button>';
+  var pages = [];
+  for (var p = 1; p <= totalPages; p++) {
+    if (p === 1 || p === totalPages || (p >= currentPage - 1 && p <= currentPage + 1)) {
+      pages.push(p);
+    } else if (pages[pages.length - 1] !== '...') {
+      pages.push('...');
+    }
+  }
+  for (var i = 0; i < pages.length; i++) {
+    if (pages[i] === '...') {
+      html += '<span style="color:#484f58;padding:0 4px;">...</span>';
+    } else {
+      html += '<button class="page-btn' + (pages[i] === currentPage ? ' active' : '') +
+        '" onclick="goPage(' + pages[i] + ')">' + pages[i] + '</button>';
+    }
+  }
+  html += '<button class="page-btn nav" onclick="goPage(' + (currentPage + 1) + ')"' +
+    (currentPage >= totalPages ? ' disabled' : '') + '>&rsaquo;</button>';
+  document.getElementById('paginationControls').innerHTML = html;
+}
+
+function goPage(p) {
+  var filtered = getFilteredRows();
+  var totalPages = Math.max(1, Math.ceil(filtered.length / PER_PAGE));
+  if (p < 1 || p > totalPages) return;
+  currentPage = p;
+  applyView();
+}
+
+function changePerPage(val) {
+  PER_PAGE = val === 'all' ? Infinity : parseInt(val);
+  currentPage = 1;
+  applyView();
+}
+
+function filterStatus(status, btn) {
+  activeFilter = status;
+  currentPage = 1;
+  var buttons = document.querySelectorAll('.filter-btn');
+  for (var i = 0; i < buttons.length; i++) buttons[i].classList.remove('active');
+  btn.classList.add('active');
+  applyView();
+}
+
+function updateFilterCounts() {
+  var counts = { all: 0, pending: 0, saved: 0, submitted: 0, processed: 0, failed: 0 };
+  var q = searchQuery.toLowerCase();
+  for (var i = 0; i < ROWS.length; i++) {
+    var r = ROWS[i];
+    if (q) {
+      var haystack = (r.fn + ' ' + r.author + ' ' + r.status + ' ' + r.dateDisplay).toLowerCase();
+      if (haystack.indexOf(q) === -1) continue;
+    }
+    counts.all++;
+    if (counts[r.status] !== undefined) counts[r.status]++;
+  }
+  document.getElementById('fc-all').textContent = counts.all;
+  document.getElementById('fc-pending').textContent = counts.pending;
+  document.getElementById('fc-saved').textContent = counts.saved;
+  document.getElementById('fc-submitted').textContent = counts.submitted;
+  document.getElementById('fc-processed').textContent = counts.processed;
+  document.getElementById('fc-failed').textContent = counts.failed;
+  document.getElementById('totalCount').textContent = ROWS.length;
+}
+
+var searchTimer = null;
+function onSearchInput() {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(function() {
+    searchQuery = document.getElementById('searchInput').value.trim();
+    currentPage = 1;
+    applyView();
+  }, 200);
+}
+
+function sortTable(th) {
+  var col = parseInt(th.getAttribute('data-sort-col'));
+  if (col === currentSortCol) {
+    currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    currentSortCol = col;
+    currentSortDir = 'asc';
+  }
+  var allTh = document.querySelectorAll('.transcript-table th.sortable');
+  for (var i = 0; i < allTh.length; i++) {
+    allTh[i].classList.remove('sorted-asc', 'sorted-desc');
+    var arrow = allTh[i].querySelector('.sort-arrow');
+    if (arrow) arrow.innerHTML = '&#9650;';
+  }
+  th.classList.add(currentSortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+  var arrow = th.querySelector('.sort-arrow');
+  if (arrow) arrow.innerHTML = currentSortDir === 'asc' ? '&#9650;' : '&#9660;';
+  currentPage = 1;
+  applyView();
+}
+
+function onRowCheck(cb) {
+  var id = cb.closest('tr').getAttribute('data-id');
+  if (cb.checked) { checkedIds[id] = true; } else { delete checkedIds[id]; }
+  cb.closest('tr').classList.toggle('checked', cb.checked);
+  updateSelection();
+}
+
+function updateSelection() {
+  var count = Object.keys(checkedIds).length;
+  document.getElementById('selectedCount').textContent = count;
+  document.getElementById('deleteBtn').classList.toggle('visible', count > 0);
+  // Count how many selected items are eligible for processing
+  var processable = 0;
+  var ids = Object.keys(checkedIds);
+  for (var i = 0; i < ids.length; i++) {
+    for (var j = 0; j < ROWS.length; j++) {
+      if (ROWS[j].id == ids[i]) {
+        var s = ROWS[j].status;
+        if (s === 'saved' || s === 'submitted' || s === 'processed' || s === 'failed') processable++;
+        break;
+      }
+    }
+  }
+  document.getElementById('processCount').textContent = processable;
+  document.getElementById('processBtn').classList.toggle('visible', processable > 0);
+  var visible = document.querySelectorAll('#tableBody tr');
+  var allChecked = visible.length > 0;
+  for (var i = 0; i < visible.length; i++) {
+    var cb = visible[i].querySelector('.row-check input');
+    if (cb && !cb.checked) { allChecked = false; break; }
+  }
+  document.querySelector('.check-all').checked = allChecked && visible.length > 0;
+}
+
+function toggleAll(el) {
+  var rows = document.querySelectorAll('#tableBody tr');
+  for (var i = 0; i < rows.length; i++) {
+    var id = rows[i].getAttribute('data-id');
+    var cb = rows[i].querySelector('.row-check input');
+    if (cb) {
+      cb.checked = el.checked;
+      rows[i].classList.toggle('checked', el.checked);
+      if (el.checked) { checkedIds[id] = true; } else { delete checkedIds[id]; }
+    }
+  }
+  updateSelection();
+}
+
+var modalResolveFn = null;
+function resolveModal(value) {
+  document.getElementById('modalOverlay').classList.remove('visible');
+  if (modalResolveFn) { var fn = modalResolveFn; modalResolveFn = null; fn(value); }
+}
+function showToast(msg, isError) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast visible' + (isError ? ' error' : '');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.classList.remove('visible'); }, 2500);
+}
+document.addEventListener('keydown', function(e) {
+  if (!document.getElementById('modalOverlay').classList.contains('visible')) return;
+  if (e.key === 'Escape') resolveModal(null);
+});
+
+function confirmDelete() {
+  var count = Object.keys(checkedIds).length;
+  document.getElementById('modalHeader').textContent = 'Delete transcripts?';
+  document.getElementById('modalBody').innerHTML = '<p>Are you sure you want to delete ' + count + ' selected transcript(s)? This cannot be undone.</p>';
+  document.getElementById('modalFooter').innerHTML =
+    '<button class="btn-cancel" onclick="resolveModal(null)">Cancel</button>' +
+    '<button class="btn-admin-delete" onclick="resolveModal(true)">Delete</button>';
+  document.getElementById('modalOverlay').classList.add('visible');
+  modalResolveFn = function(ok) {
+    if (!ok) return;
+    var ids = Object.keys(checkedIds).map(Number);
+    fetch('/api/transcripts/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ids })
+    }).then(function() {
+      ROWS = ROWS.filter(function(r) { return !checkedIds[r.id]; });
+      checkedIds = {};
+      applyView();
+      showToast('Deleted ' + ids.length + ' transcript(s)');
+    });
+  };
+}
+
+// Double-click row to open review
+document.getElementById('tableBody').addEventListener('dblclick', function(e) {
+  var row = e.target.closest('tr[data-review-url]');
+  if (!row) return;
+  if (e.target.type === 'checkbox' || e.target.closest('.row-actions')) return;
+  setCtx(row.getAttribute('data-id'));
+  window.location.href = row.getAttribute('data-review-url');
+});
+
+// --- Status polling for submitted transcripts ---
+var pollTimer = null;
+function hasSubmitted() {
+  for (var i = 0; i < ROWS.length; i++) {
+    if (ROWS[i].status === 'submitted') return true;
+  }
+  return false;
+}
+
+function pollStatus() {
+  if (!hasSubmitted()) { pollTimer = null; return; }
+  fetch('/api/transcripts/status')
+    .then(function(r) { return r.json(); })
+    .then(function(statuses) {
+      var changed = false;
+      var statusMap = {};
+      for (var i = 0; i < statuses.length; i++) statusMap[statuses[i].id] = statuses[i];
+      for (var i = 0; i < ROWS.length; i++) {
+        var upd = statusMap[ROWS[i].id];
+        if (upd && upd.status !== ROWS[i].status) {
+          ROWS[i].status = upd.status;
+          ROWS[i].processing_seconds = upd.processing_seconds;
+          ROWS[i].processing_error = upd.processing_error;
+          changed = true;
+        }
+      }
+      if (changed) applyView();
+      if (hasSubmitted()) {
+        pollTimer = setTimeout(pollStatus, 5000);
+      } else {
+        pollTimer = null;
+      }
+    })
+    .catch(function() {
+      // Retry after delay on error
+      pollTimer = setTimeout(pollStatus, 10000);
+    });
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  if (hasSubmitted()) pollTimer = setTimeout(pollStatus, 5000);
+}
+
+function retryTranscript(id) {
+  fetch('/api/transcripts/' + id + '/retry', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.status === 'submitted') {
+        for (var i = 0; i < ROWS.length; i++) {
+          if (ROWS[i].id === id) {
+            ROWS[i].status = 'submitted';
+            ROWS[i].processing_error = null;
+            ROWS[i].processing_seconds = null;
+            break;
+          }
+        }
+        applyView();
+        startPolling();
+        showToast('Retrying transcript...');
+      }
+    })
+    .catch(function() { showToast('Retry failed', true); });
+}
+
+function toggleActions(btn) {
+  // Close any open menus first
+  document.querySelectorAll('.row-actions.open').forEach(function(el) {
+    if (el !== btn.parentElement) el.classList.remove('open');
+  });
+  btn.parentElement.classList.toggle('open');
+}
+
+// Close actions menus when clicking outside
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.row-actions')) {
+    document.querySelectorAll('.row-actions.open').forEach(function(el) {
+      el.classList.remove('open');
+    });
+  }
+});
+
+function ingestFromOverview(docId, el) {
+  el.textContent = 'Sending...';
+  fetch('/api/documents/' + docId + '/ingest', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.status === 'ok') {
+        showToast('Sent to LightRAG');
+      } else {
+        showToast('Failed: ' + (d.message || 'Unknown error'), true);
+      }
+    })
+    .catch(function(err) { showToast('Error: ' + err.message, true); })
+    .finally(function() {
+      document.querySelectorAll('.row-actions.open').forEach(function(el) { el.classList.remove('open'); });
+    });
+}
+
+function resetOne(id) {
+  fetch('/api/transcripts/' + id + '/reset', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      for (var i = 0; i < ROWS.length; i++) {
+        if (ROWS[i].id === id) {
+          ROWS[i].status = 'pending';
+          ROWS[i].processing_error = null;
+          ROWS[i].processing_seconds = null;
+          break;
+        }
+      }
+      applyView();
+      showToast('Transcript reset');
+    })
+    .catch(function(err) { showToast('Error: ' + err.message, true); });
+}
+
+function deleteOne(id) {
+  if (!confirm('Delete this transcript?')) return;
+  fetch('/api/transcripts/delete', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids: [id] })
+  }).then(function() {
+    ROWS = ROWS.filter(function(r) { return r.id !== id; });
+    delete checkedIds[id];
+    applyView();
+    showToast('Transcript deleted');
+  });
+}
+
+function processSelected() {
+  // Find the first processable selected transcript and open its process page
+  var ids = Object.keys(checkedIds);
+  var processableStatuses = { saved: true, submitted: true, processed: true, failed: true };
+  for (var i = 0; i < ids.length; i++) {
+    for (var j = 0; j < ROWS.length; j++) {
+      if (ROWS[j].id == ids[i] && processableStatuses[ROWS[j].status]) {
+        window.location.href = '/process/' + ROWS[j].id;
+        return;
+      }
+    }
+  }
+}
+
+applyView();
+startPolling();
+</script>
+{% endblock %}

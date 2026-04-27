@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Harvest — {{ date }}{% endblock %}
+{% block nav_harvest %}active{% endblock %}
+{% block context_bar %}
+<div class="context-bar">
+  <span class="context-bar-label">Harvest:</span>
+  <span class="context-bar-value">{{ date }}</span>
+</div>
+{% endblock %}
+{% block content %}
+
+<header>
+  <h1>Harvest Time Tracking</h1>
+  <div class="header-meta">
+    <div class="harvest-date-nav">
+      <button class="btn-nav-day" onclick="navigateDay(-1)" title="Previous day">&#8249;</button>
+      <input type="date" id="harvestDate" value="{{ date }}" onchange="navigateToDate(this.value)">
+      <button class="btn-nav-day" onclick="navigateDay(1)" title="Next day">&#8250;</button>
+      <button class="btn-nav-today" onclick="navigateToDate(new Date().toISOString().split('T')[0])">Today</button>
+    </div>
+  </div>
+</header>
+
+<div class="harvest-main">
+  <div class="harvest-left">
+    <div class="harvest-section">
+      <div class="harvest-section-header" onclick="toggleSection('calendar')">
+        <span class="harvest-section-title">
+          <span class="harvest-section-icon">&#128197;</span>
+          Calendar
+        </span>
+        <span class="harvest-section-count" id="calendar-count"></span>
+        <span class="harvest-section-toggle" id="calendar-toggle">&#9660;</span>
+      </div>
+      <div class="harvest-section-body" id="calendar-body">
+        <div class="harvest-loading" id="calendar-loading">Loading calendar...</div>
+        <div id="calendar-events"></div>
+      </div>
+    </div>
+
+    <div class="harvest-section">
+      <div class="harvest-section-header" onclick="toggleSection('diary')">
+        <span class="harvest-section-title">
+          <span class="harvest-section-icon">&#128221;</span>
+          Diary Transcript
+        </span>
+        <span class="harvest-section-count" id="diary-count"></span>
+        <span class="harvest-section-toggle" id="diary-toggle">&#9660;</span>
+      </div>
+      <div class="harvest-section-body" id="diary-body">
+        <div class="harvest-loading" id="diary-loading">Looking for transcript...</div>
+        <div class="harvest-diary-text" id="diary-text"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="harvest-right">
+    <div class="harvest-suggestions-header">
+      <h2>Suggested Entries</h2>
+      <div class="harvest-totals">
+        <span id="entry-count">0 entries</span>
+        <span class="harvest-total-sep">&middot;</span>
+        <span id="total-hours">0h</span>
+      </div>
+    </div>
+
+    <div class="harvest-loading" id="suggestions-loading">Generating suggestions...</div>
+    <div class="harvest-suggestions" id="suggestions-list"></div>
+
+    <div class="harvest-errors" id="harvest-errors"></div>
+    <div class="harvest-pattern-info" id="pattern-info"></div>
+  </div>
+</div>
+
+
+<div class="harvest-overlay" id="harvest-overlay">
+  <div class="llm-overlay-content">
+    <div class="llm-overlay-spinner"></div>
+    <div class="llm-overlay-text">Loading Harvest data...</div>
+    <div class="llm-overlay-sub" id="harvest-overlay-sub">Fetching calendar &amp; time entries</div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const HARVEST_DATE = '{{ date }}';
+</script>
+<script src="/static/harvest.js"></script>
+{% endblock %}
