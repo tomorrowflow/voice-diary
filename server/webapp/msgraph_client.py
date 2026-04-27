@@ -164,28 +164,41 @@ class MSGraphClient:
         *,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """GET a Graph endpoint and return JSON. Raises MSGraphError on failure."""
+        """GET a Graph endpoint and return JSON. Honours Retry-After on 429
+        with up to two retries (1 s + 2 s default), then surfaces 503.
+        """
         url = path if path.startswith("http") else f"{GRAPH_BASE_URL}{path}"
-        try:
-            resp = await self._request("GET", url, params=params)
-        except (httpx.NetworkError, httpx.TimeoutException) as exc:
-            raise MSGraphError(f"network_error: {exc}") from exc
-        if resp.status_code == 429:
-            retry_after = resp.headers.get("Retry-After", "?")
-            raise MSGraphError(f"rate_limited: retry_after={retry_after}")
-        if resp.status_code >= 500:
-            raise MSGraphError(f"upstream_5xx: status={resp.status_code}")
-        if resp.status_code >= 400:
-            # Surface the Graph error payload but not any auth headers.
+        backoff = [1.0, 2.0]
+        for attempt in range(len(backoff) + 1):
             try:
-                err = resp.json().get("error", {})
-            except Exception:
-                err = {"message": resp.text[:200]}
-            raise MSGraphError(
-                f"graph_error: status={resp.status_code} code={err.get('code', '?')} "
-                f"message={err.get('message', '')[:200]}"
-            )
-        return resp.json()
+                resp = await self._request("GET", url, params=params)
+            except (httpx.NetworkError, httpx.TimeoutException) as exc:
+                raise MSGraphError(f"network_error: {exc}") from exc
+            if resp.status_code == 429 and attempt < len(backoff):
+                try:
+                    retry_after = float(resp.headers.get("Retry-After", "0"))
+                except ValueError:
+                    retry_after = 0.0
+                wait = max(retry_after, backoff[attempt])
+                logger.warning("Graph 429; sleeping %.1fs before retry", wait)
+                await asyncio.sleep(wait)
+                continue
+            if resp.status_code == 429:
+                raise MSGraphError("rate_limited: backoff_exhausted")
+            if resp.status_code >= 500:
+                raise MSGraphError(f"upstream_5xx: status={resp.status_code}")
+            if resp.status_code >= 400:
+                try:
+                    err = resp.json().get("error", {})
+                except Exception:
+                    err = {"message": resp.text[:200]}
+                raise MSGraphError(
+                    f"graph_error: status={resp.status_code} "
+                    f"code={err.get('code', '?')} "
+                    f"message={err.get('message', '')[:200]}"
+                )
+            return resp.json()
+        raise MSGraphError("rate_limited: backoff_exhausted")  # pragma: no cover
 
 
 # --- module-level lazy singleton ------------------------------------------

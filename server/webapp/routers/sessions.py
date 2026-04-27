@@ -45,6 +45,7 @@ import db
 import document_processor
 import transcript_corrector
 from entity_detector import detect_entities
+from logging_setup import bind_session_id
 from paths import sessions_dir
 from models import (
     CalendarEventSegment,
@@ -177,6 +178,17 @@ async def post_session(
             segments=pending_results,
         )
 
+    # Cheap pre-flight: Whisper is the one upstream we cannot work around.
+    # If it's down we surface 503 early rather than persisting a useless bundle.
+    if not await _whisper_reachable():
+        shutil.rmtree(session_dir, ignore_errors=True)
+        async with _status_lock:
+            _session_status.pop(session_id, None)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="whisper_unavailable",
+        )
+
     if len(parsed.segments) <= SYNC_SEGMENT_THRESHOLD:
         results = await _process_session(parsed, session_dir)
     else:
@@ -232,6 +244,7 @@ async def _process_session_bg(parsed: Manifest, session_dir: Path) -> None:
 
 async def _process_session(parsed: Manifest, session_dir: Path) -> list[SegmentResult]:
     """Walk all segments, returning a per-segment status list."""
+    bind_session_id(parsed.session_id)
     todos_by_segment = _todos_grouped_by_segment(parsed)
     results: list[SegmentResult] = []
     for seg in parsed.segments:
@@ -504,6 +517,16 @@ async def _ffmpeg_to_wav(src_bytes: bytes, suffix: str) -> bytes:
         return wav_path.read_bytes()
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+async def _whisper_reachable() -> bool:
+    base = _whisper_url().rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            resp = await client.get(f"{base}/")
+            return resp.status_code < 500
+    except Exception:
+        return False
 
 
 async def _whisper(wav_bytes: bytes, *, language: str) -> str:
