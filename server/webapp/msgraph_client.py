@@ -42,12 +42,12 @@ class MSGraphError(RuntimeError):
 
 
 def _cache_path() -> Path:
-    """Resolve the MSAL cache file path. Default: server/data/msal_cache.bin."""
+    """Resolve the MSAL cache file path. Default: $DATA_DIR/msal_cache.bin."""
     explicit = os.getenv("MSGRAPH_CACHE_PATH")
     if explicit:
         return Path(explicit)
-    # webapp/ → server/data/msal_cache.bin
-    return Path(__file__).resolve().parent.parent / "data" / "msal_cache.bin"
+    from paths import msal_cache_path
+    return msal_cache_path()
 
 
 def _load_cache(path: Path) -> msal.SerializableTokenCache:
