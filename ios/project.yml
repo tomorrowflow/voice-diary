@@ -1,0 +1,85 @@
+# XcodeGen spec for Voice Diary.
+#
+# Run `xcodegen generate` from this directory after each schema change to
+# regenerate `VoiceDiary.xcodeproj`. The generated project is gitignored
+# (see ../.gitignore) — `project.yml` is the source of truth.
+#
+# Install xcodegen:
+#     brew install xcodegen
+
+name: VoiceDiary
+options:
+  bundleIdPrefix: com.tomorrowflow
+  deploymentTarget:
+    iOS: "26.0"
+  developmentLanguage: de
+  defaultConfig: Debug
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+
+packages:
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    from: 0.5.0
+
+targets:
+  VoiceDiary:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+    resources:
+      - path: Resources
+    dependencies:
+      - package: FluidAudio
+    info:
+      path: Config/Info.plist
+      properties:
+        CFBundleDisplayName: Voice Diary
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - audio
+        NSMicrophoneUsageDescription: "Voice Diary nimmt deine Sprache auf, um den Tag chronologisch zu reflektieren. (Voice Diary records your speech to walk through your day chronologically.)"
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tomorrowflow.voice-diary
+        TARGETED_DEVICE_FAMILY: "1"  # iPhone only
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Config/VoiceDiary.entitlements
+
+  VoiceDiaryTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: VoiceDiary
+
+schemes:
+  VoiceDiary:
+    build:
+      targets:
+        VoiceDiary: all
+        VoiceDiaryTests: [test]
+    test:
+      targets:
+        - VoiceDiaryTests
+    run:
+      config: Debug
+    profile:
+      config: Release
+    archive:
+      config: Release
