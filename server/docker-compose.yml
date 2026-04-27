@@ -8,6 +8,11 @@ services:
     environment:
       - DATABASE_URL=postgresql://diary:diary@postgres:5432/diary_processor
       - WHISPER_URL=${WHISPER_URL:-http://whisper:9000}
+      - DATA_DIR=/data
+    volumes:
+      # Persists iOS session bundles + MSAL refresh-token cache across
+      # rebuilds. Gitignored on the host.
+      - ./data:/data
     depends_on:
       postgres:
         condition: service_healthy

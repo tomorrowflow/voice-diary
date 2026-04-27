@@ -65,6 +65,12 @@ async def lifespan(app: FastAPI):
     logger.info("OLLAMA_ANALYSIS_MODEL = %s", document_processor.OLLAMA_ANALYSIS_MODEL)
     logger.info("VECTOR_SEARCH_ENABLED = %s", vector_store.VECTOR_SEARCH_ENABLED)
 
+    # Ensure the runtime data directories exist (gitignored, mounted as a
+    # volume in production). data/sessions/ holds iOS session bundles;
+    # data/msal_cache.bin is created by the bootstrap script.
+    from paths import sessions_dir as _sessions_dir
+    _sessions_dir().mkdir(parents=True, exist_ok=True)
+
     pool = await db.get_pool()
     # Auto-apply schema on startup (idempotent, uses IF NOT EXISTS)
     schema_file = BASE_DIR / "schema.sql"
@@ -88,10 +94,19 @@ app = FastAPI(title="Diary Transcript Review", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
-# iOS-facing routers (bearer-token auth applied per-router via Depends)
+# iOS-facing routers (bearer-token auth applied per-router via Depends,
+# except `/health` which is reachable pre-onboarding for the Tailscale probe).
 from routers.calendar import router as calendar_router  # noqa: E402
+from routers.email import router as email_router  # noqa: E402
+from routers.lightrag import router as lightrag_router  # noqa: E402
+from routers.sessions import router as sessions_router  # noqa: E402
+from routers.health import router as health_router  # noqa: E402
 
 app.include_router(calendar_router)
+app.include_router(email_router)
+app.include_router(lightrag_router)
+app.include_router(sessions_router)
+app.include_router(health_router)
 
 
 # ─── Text correction pre-processing ──────────────────────────────────
