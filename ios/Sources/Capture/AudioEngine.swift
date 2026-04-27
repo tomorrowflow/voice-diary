@@ -3,15 +3,16 @@ import Foundation
 import os
 
 // AVAudioEngine wrapper with two sinks:
-//   1. Parakeet streaming  (PCM Float32 buffers, downsampled to 16 kHz mono)
-//   2. M4A file writer     (AAC-LC at 16 kHz, mono, 64 kbps)
+//   1. M4A file writer     (AAC at the input's native sample rate, mono)
+//   2. Parakeet streaming  (PCM Float32 buffers downsampled to 16 kHz mono — optional)
 //
-// One engine instance is shared. The murmur reference uses the same
-// pattern. Don't open two engines.
+// We deliberately do not downsample on-device for the file write. iOS's
+// AAC-LC encoder reliably initialises at 44.1 / 48 kHz but reportedly
+// fails (`AudioCodecInitialize`) at 16 kHz. The server's ffmpeg pulls
+// audio down to 16 kHz mono before Whisper, so the wire format from the
+// pipeline's perspective is unchanged.
 //
-// Parakeet wiring is deferred to M2's full integration; for now the
-// streaming sink is a no-op closure. The M4A writer is real and
-// produces files compatible with QuickTime Player and Whisper.
+// One engine instance is shared. Don't open two engines.
 
 public actor AudioEngine {
     public enum EngineError: Error {
@@ -20,6 +21,8 @@ public actor AudioEngine {
         case sessionConfigFailed(String)
     }
 
+    public static let parakeetTargetSampleRate: Double = 16_000
+
     private let engine = AVAudioEngine()
     private let writer = M4AWriter()
     private var isRunning = false
@@ -27,9 +30,13 @@ public actor AudioEngine {
 
     public init() {}
 
-    /// Start capturing into `outputURL` (M4A AAC-LC 16 kHz mono).
-    /// `streaming` is invoked on the audio thread for each PCM buffer if
-    /// supplied — wire up Parakeet here once the SDK is bundled.
+    /// Sample rate of the most recently written file (0 before any capture).
+    public var lastSampleRate: Double { writer.sampleRate }
+
+    /// Start capturing into `outputURL`.
+    ///
+    /// `streaming` is invoked on the audio thread for each 16 kHz mono buffer
+    /// when supplied — wire up Parakeet here once the SDK is bundled.
     public func start(
         outputURL: URL,
         streaming: (@Sendable (AVAudioPCMBuffer) -> Void)? = nil
@@ -40,18 +47,19 @@ public actor AudioEngine {
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
-        guard let targetFormat = AVAudioFormat(
+        try writer.open(at: outputURL, inputSampleRate: inputFormat.sampleRate)
+        streamingSink = streaming
+
+        // Optional 16 kHz downsampler for the streaming sink only.
+        let parakeetFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
-            sampleRate: M4AWriter.sampleRate,
+            sampleRate: AudioEngine.parakeetTargetSampleRate,
             channels: M4AWriter.channels,
             interleaved: false
-        ) else {
-            throw EngineError.sessionConfigFailed("could not build target format")
-        }
-        let converter = AVAudioConverter(from: inputFormat, to: targetFormat)
-
-        try writer.open(at: outputURL)
-        streamingSink = streaming
+        )
+        let downsampler: AVAudioConverter? = (streaming != nil && parakeetFormat != nil)
+            ? AVAudioConverter(from: inputFormat, to: parakeetFormat!)
+            : nil
 
         input.removeTap(onBus: 0)
         input.installTap(
@@ -59,28 +67,31 @@ public actor AudioEngine {
             bufferSize: 4096,
             format: inputFormat
         ) { [writer, streamingSink] buffer, _ in
-            // Convert input → 16 kHz mono float32 once, fan out to both sinks.
+            // 1. File: write the buffer at native rate.
+            do {
+                try writer.write(buffer: buffer)
+            } catch {
+                Log.audio.error("writer error: \(String(describing: error), privacy: .public)")
+            }
+
+            // 2. Streaming sink (optional): downsample to 16 kHz mono.
+            guard let sink = streamingSink,
+                  let downsampler,
+                  let parakeetFormat else { return }
             let frameCapacity = AVAudioFrameCount(
-                Double(buffer.frameLength) * targetFormat.sampleRate / inputFormat.sampleRate
+                Double(buffer.frameLength) * parakeetFormat.sampleRate / inputFormat.sampleRate
             ) + 1024
             guard let outBuf = AVAudioPCMBuffer(
-                pcmFormat: targetFormat,
+                pcmFormat: parakeetFormat,
                 frameCapacity: frameCapacity
             ) else { return }
-
             var error: NSError?
-            let status = converter?.convert(to: outBuf, error: &error) { _, outStatus in
+            let status = downsampler.convert(to: outBuf, error: &error) { _, outStatus in
                 outStatus.pointee = .haveData
                 return buffer
             }
             guard status == .haveData || status == .inputRanDry else { return }
-
-            do {
-                try writer.write(buffer: outBuf)
-            } catch {
-                Log.audio.error("writer error: \(String(describing: error), privacy: .public)")
-            }
-            streamingSink?(outBuf)
+            sink(outBuf)
         }
 
         engine.prepare()
@@ -104,6 +115,10 @@ public actor AudioEngine {
         // EQ off the input, important for downstream ASR. We deliberately
         // don't request `.duckOthers` here — Voice Diary speaks via Piper
         // in a separate playback path that handles ducking itself.
+        //
+        // Note: we do NOT call setPreferredSampleRate here. Forcing 16 kHz
+        // breaks the AAC encoder; instead we accept the device's native
+        // rate (typically 44.1 / 48 kHz) and let the server downsample.
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(
@@ -111,7 +126,6 @@ public actor AudioEngine {
                 mode: .measurement,
                 options: [.defaultToSpeaker, .allowBluetooth]
             )
-            try session.setPreferredSampleRate(M4AWriter.sampleRate)
             try session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true, options: [])
         } catch {
