@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // Persistent FIFO upload queue with exponential backoff. Survives app
 // restart by serialising itself to `upload_queue.json` in Application
@@ -24,11 +25,10 @@ public actor SessionUploader {
     }
 
     private var queue: [QueueEntry] = []
+    private var didLoad = false
     private var isFlushing = false
 
-    public init() {
-        Task { await loadFromDisk() }
-    }
+    public init() {}
 
     // --- public API ----------------------------------------------------
 
@@ -36,6 +36,7 @@ public actor SessionUploader {
         manifest: Manifest,
         audioFiles: [String: URL]
     ) async {
+        await ensureLoaded()
         let pathStrings = audioFiles.mapValues { $0.path }
         let entry = QueueEntry(
             id: manifest.session_id,
@@ -50,9 +51,13 @@ public actor SessionUploader {
         Task { await flush() }
     }
 
-    public func pending() -> [QueueEntry] { queue }
+    public func pending() async -> [QueueEntry] {
+        await ensureLoaded()
+        return queue
+    }
 
     public func flush() async {
+        await ensureLoaded()
         if isFlushing { return }
         isFlushing = true
         defer { isFlushing = false }
@@ -89,8 +94,9 @@ public actor SessionUploader {
         updated.next_attempt_at = Date().addingTimeInterval(updated.nextBackoff)
         queue[idx] = updated
         persist()
-        print("upload_queue: reschedule \(entry.id) attempt=\(updated.attempts) " +
-              "wait=\(Int(updated.nextBackoff))s err=\(error)")
+        Log.upload.warning(
+            "reschedule \(entry.id, privacy: .public) attempt=\(updated.attempts) wait=\(Int(updated.nextBackoff))s err=\(String(describing: error), privacy: .public)"
+        )
     }
 
     // --- persistence --------------------------------------------------
@@ -101,18 +107,20 @@ public actor SessionUploader {
             let data = try JSONEncoder().encode(queue)
             try data.write(to: url, options: [.atomic])
         } catch {
-            print("upload_queue: persist failed: \(error)")
+            Log.upload.error("persist failed: \(String(describing: error), privacy: .public)")
         }
     }
 
-    private func loadFromDisk() async {
+    private func ensureLoaded() async {
+        if didLoad { return }
+        defer { didLoad = true }
         do {
             let url = try LocalStore.uploadQueueFile()
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             let data = try Data(contentsOf: url)
             queue = try JSONDecoder().decode([QueueEntry].self, from: data)
         } catch {
-            print("upload_queue: load failed: \(error)")
+            Log.upload.error("load failed: \(String(describing: error), privacy: .public)")
             queue = []
         }
     }
