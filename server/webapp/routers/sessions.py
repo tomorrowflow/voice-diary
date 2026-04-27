@@ -36,9 +36,12 @@ from fastapi import (
     Depends,
     HTTPException,
     Request,
-    UploadFile,
     status,
 )
+# IMPORTANT: import from starlette, not fastapi. `fastapi.UploadFile` is a
+# subclass; instances coming back from `request.form()` are Starlette's
+# parent class, so `isinstance(part, fastapi.UploadFile)` is always False.
+from starlette.datastructures import UploadFile
 
 import db
 import document_processor
