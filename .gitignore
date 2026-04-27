@@ -1,0 +1,43 @@
+# macOS
+.DS_Store
+
+# Editors / tooling
+.claude/
+.automaker/
+.planning/
+.worktrees/
+.idea/
+.vscode/
+*.swp
+
+# Python
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Server runtime + secrets
+server/.env
+server/data/
+server/**/data/sessions/
+server/**/data/msal_cache.bin
+
+# Node (in case any tooling lands)
+node_modules/
+
+# Xcode / iOS
+ios/build/
+ios/DerivedData/
+ios/**/xcuserdata/
+ios/**/*.xcworkspace/xcuserdata/
+ios/**/*.xcodeproj/xcuserdata/
+ios/**/*.xcodeproj/project.xcworkspace/xcuserdata/
+*.ipa
+*.dSYM.zip
+*.dSYM
