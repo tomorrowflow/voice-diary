@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import date as date_module, datetime, timedelta
@@ -35,13 +36,7 @@ import vector_store
 from entity_detector import detect_entities
 from llm_validator import validate_entities_stream
 
-N8N_WEBHOOK_URL = os.getenv(
-    "N8N_WEBHOOK_URL", "http://192.168.2.16:5678/webhook/diary-reviewed"
-)
-CALENDAR_WEBHOOK_URL = os.getenv(
-    "CALENDAR_WEBHOOK_URL",
-    "https://192.168.2.16:8443/webhook/3f23c0fb-11f4-4cd5-b8d2-01251d1a5717",
-)
+WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
 HARVEST_ACCESS_TOKEN = os.getenv("HARVEST_ACCESS_TOKEN", "")
 HARVEST_ACCOUNT_ID = os.getenv("HARVEST_ACCOUNT_ID", "")
 HARVEST_USER_ID = os.getenv("HARVEST_USER_ID", "")
@@ -59,8 +54,7 @@ async def lifespan(app: FastAPI):
     logger.info("LLM_VALIDATION_ENABLED = %s", os.getenv("LLM_VALIDATION_ENABLED", "(not set)"))
     logger.info("LLM_CORRECTION_ENABLED = %s", os.getenv("LLM_CORRECTION_ENABLED", "(not set, falls back to LLM_VALIDATION_ENABLED)"))
     logger.info("FLUENCY_CHECK_ENABLED = %s", os.getenv("FLUENCY_CHECK_ENABLED", "(not set, defaults to true)"))
-    logger.info("N8N_WEBHOOK_URL    = %s", N8N_WEBHOOK_URL)
-    logger.info("CALENDAR_WEBHOOK_URL = %s", CALENDAR_WEBHOOK_URL)
+    logger.info("WHISPER_URL        = %s", WHISPER_URL)
     logger.info("DATABASE_URL       = %s", os.getenv("DATABASE_URL", "(not set)"))
     logger.info("TZ                 = %s", os.getenv("TZ", "(not set)"))
     logger.info("HARVEST_ACCOUNT_ID = %s", HARVEST_ACCOUNT_ID or "(not set)")
@@ -630,51 +624,19 @@ def _to_local_iso(iso_str: str) -> str:
         return iso_str
 
 
+async def _fetch_calendar_events(date_str: str) -> list[dict]:
+    """Stub: returns no events. Replaced by direct MS Graph proxy in Server S2."""
+    return []
+
+
 @app.get("/api/calendar/{date_str}")
 async def get_calendar_events(date_str: str):
-    """Fetch calendar events for a specific date from n8n."""
-    try:
-        async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
-            resp = await client.post(CALENDAR_WEBHOOK_URL, json={"date": date_str})
-            resp.raise_for_status()
-            # n8n may return: a JSON array, a single object, an {items:[...]}
-            # wrapper, or NDJSON (multiple JSON objects separated by newlines)
-            text = resp.text.strip()
-            raw_events = []
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                parsed = json.loads(line)
-                if isinstance(parsed, list):
-                    raw_events.extend(parsed)
-                elif isinstance(parsed, dict) and "items" in parsed:
-                    raw_events.extend(parsed["items"])
-                elif isinstance(parsed, dict):
-                    raw_events.append(parsed)
-    except Exception as e:
-        return JSONResponse({"error": str(e), "events": []}, 502)
+    """Calendar events for a specific date.
 
-    events = []
-    for ev in raw_events:
-        start = _to_local_iso(ev.get("start", {}).get("dateTime", ""))
-        end = _to_local_iso(ev.get("end", {}).get("dateTime", ""))
-        attendees = [
-            a["emailAddress"]["name"]
-            for a in ev.get("attendees", [])
-            if a.get("emailAddress", {}).get("name")
-        ]
-        events.append({
-            "subject": ev.get("subject", ""),
-            "start": start,
-            "end": end,
-            "showAs": ev.get("showAs", ""),
-            "organizer": ev.get("organizer", {}).get("emailAddress", {}).get("name", ""),
-            "attendees": attendees,
-            "bodyPreview": (ev.get("bodyPreview", "") or "")[:200],
-        })
-
-    events.sort(key=lambda e: e["start"])
+    Stub for Server S1 — returns an empty list. Server S2 wires this to
+    `webapp/msgraph_client.py` for direct MS Graph access.
+    """
+    events = await _fetch_calendar_events(date_str)
     return {"date": date_str, "events": events}
 
 
@@ -739,14 +701,17 @@ async def transcripts_status():
 
 @app.post("/api/transcripts/{transcript_id}/retry")
 async def retry_transcript(transcript_id: int):
-    """Retry a failed transcript by re-submitting to n8n."""
+    """Reset a failed transcript so it can be re-processed.
+
+    Local pipeline replaces the old n8n forward: the user re-runs the
+    SSE pipeline at /process/{id} after this call resets state.
+    """
     transcript = await db.get_transcript(transcript_id)
     if not transcript:
         return JSONResponse({"error": "not found"}, 404)
     if transcript["status"] != "failed":
         return JSONResponse({"error": "transcript is not in failed state"}, 400)
 
-    # Reset status to submitted
     pool = await db.get_pool()
     await pool.execute(
         """
@@ -754,68 +719,10 @@ async def retry_transcript(transcript_id: int):
         SET status = 'submitted', processing_error = NULL,
             processed_at = NULL, submitted_at = NOW()
         WHERE id = $1
-    """,
+        """,
         transcript_id,
     )
-
-    # Build person/term dictionary data for mentioned entities
-    raw_entities = transcript.get("entities_json") or []
-    if not isinstance(raw_entities, list):
-        raw_entities = []
-    persons_dict = await db.load_person_dictionary()
-    terms_dict = await db.load_term_dictionary()
-
-    mentioned_person_names = {
-        ent["text"] for ent in raw_entities if ent.get("type") == "PERSON"
-    }
-    mentioned_term_names = {
-        ent["text"] for ent in raw_entities if ent.get("type") != "PERSON"
-    }
-
-    persons_payload = []
-    for p in persons_dict:
-        if p["canonical_name"] in mentioned_person_names:
-            persons_payload.append({
-                "name": p["canonical_name"],
-                "role": p.get("role") or "",
-                "department": p.get("department") or "",
-                "company": p.get("company") or "",
-                "context": p.get("context") or "",
-            })
-
-    terms_payload = []
-    for t in terms_dict:
-        if t["canonical_term"] in mentioned_term_names:
-            terms_payload.append({
-                "term": t["canonical_term"],
-                "category": t.get("category") or "",
-                "context": t.get("context") or "",
-            })
-
-    pipeline_payload = {
-        "transcript_id": transcript_id,
-        "corrected_transcript": transcript["corrected_text"] or transcript["raw_text"],
-        "date": transcript["date"].isoformat() if transcript["date"] else str(date_module.today()),
-        "author": transcript["author"] or "Florian Wolf",
-        "entities": raw_entities,
-        "persons": persons_payload,
-        "terms": terms_payload,
-    }
-
-    async def _forward_to_n8n():
-        try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                resp = await client.post(N8N_WEBHOOK_URL, json=pipeline_payload)
-                resp.raise_for_status()
-                await db.mark_transcript_processed(transcript_id)
-        except Exception as e:
-            logger.warning(
-                "n8n webhook retry failed for transcript %s: %s", transcript_id, e
-            )
-            await db.mark_transcript_failed(transcript_id, str(e))
-
-    asyncio.create_task(_forward_to_n8n())
-    return {"status": "submitted"}
+    return {"status": "submitted", "process_url": f"/process/{transcript_id}"}
 
 
 @app.post("/api/transcripts/{transcript_id}/reset")
@@ -830,7 +737,7 @@ async def reset_transcript(transcript_id: int):
 
 @app.post("/api/transcripts/{transcript_id}/save")
 async def save_draft(transcript_id: int, request: Request):
-    """Save corrected transcript and entity changes without forwarding to n8n."""
+    """Save corrected transcript and entity changes (draft save, no processing)."""
     body = await request.json()
     entities_json = json.dumps(body["entities"]) if "entities" in body else None
     await db.save_draft(
@@ -885,23 +792,20 @@ async def save_draft(transcript_id: int, request: Request):
 @app.post("/api/transcripts/{transcript_id}/submit")
 async def submit_review(transcript_id: int, request: Request):
     """
-    Submit reviewed transcript. Saves corrections to dictionary,
-    then forwards to n8n.
+    Submit reviewed transcript. Saves corrections to the dictionary
+    and stores the corrected text + entities so the SSE pipeline at
+    /process/{id} can run the local document processor.
     """
     body = await request.json()
 
-    # 1. Save corrected transcript
-    if body.get("skip_n8n"):
-        # In-app processing: save as 'saved' (not 'submitted' to n8n)
-        # Preserve entities so the review page doesn't re-trigger LLM processing
-        entities = body.get("entities", [])
-        await db.save_draft(
-            transcript_id,
-            body["corrected_transcript"],
-            entities_json=json.dumps(entities) if entities else None,
-        )
-    else:
-        await db.submit_transcript(transcript_id, body["corrected_transcript"])
+    # 1. Save corrected transcript and entities (local pipeline picks
+    # this up at /api/transcripts/{id}/process-document).
+    entities = body.get("entities", [])
+    await db.save_draft(
+        transcript_id,
+        body["corrected_transcript"],
+        entities_json=json.dumps(entities) if entities else None,
+    )
 
     # 2. Save new variations (dictionary growth)
     for var in body.get("new_variations", []):
@@ -1037,108 +941,6 @@ async def submit_review(transcript_id: int, request: Request):
 
         asyncio.create_task(_store_vectors())
 
-    # 8. Forward to n8n pipeline (fire-and-forget so the UI can redirect immediately)
-    # Re-read transcript to get the definitive corrected_text from DB
-    updated = await db.get_transcript(transcript_id)
-
-    # Build person/term dictionary data for mentioned entities
-    persons_dict = await db.load_person_dictionary()
-    terms_dict = await db.load_term_dictionary()
-    person_by_id = {p["id"]: p for p in persons_dict}
-    term_by_id = {t["id"]: t for t in terms_dict}
-
-    # Collect mentioned person/term names from entities
-    mentioned_person_names = {
-        ent["text"] for ent in body.get("entities", [])
-        if ent.get("type") == "PERSON"
-    }
-    mentioned_term_names = {
-        ent["text"] for ent in body.get("entities", [])
-        if ent.get("type") != "PERSON"
-    }
-
-    # Build person entries: match by dictionary_id or by canonical name
-    person_ids_seen = set()
-    persons_payload = []
-    for ent in body.get("entities", []):
-        if ent.get("type") != "PERSON":
-            continue
-        did = ent.get("dictionary_id") or ent.get("dictionaryId")
-        if did and did in person_by_id and did not in person_ids_seen:
-            person_ids_seen.add(did)
-            p = person_by_id[did]
-            persons_payload.append({
-                "name": p["canonical_name"],
-                "role": p.get("role") or "",
-                "department": p.get("department") or "",
-                "company": p.get("company") or "",
-                "context": p.get("context") or "",
-            })
-    # Also match by name for entities without dictionary_id
-    for p in persons_dict:
-        if p["id"] in person_ids_seen:
-            continue
-        if p["canonical_name"] in mentioned_person_names:
-            person_ids_seen.add(p["id"])
-            persons_payload.append({
-                "name": p["canonical_name"],
-                "role": p.get("role") or "",
-                "department": p.get("department") or "",
-                "company": p.get("company") or "",
-                "context": p.get("context") or "",
-            })
-
-    # Build term entries similarly
-    term_ids_seen = set()
-    terms_payload = []
-    for ent in body.get("entities", []):
-        if ent.get("type") == "PERSON":
-            continue
-        did = ent.get("dictionary_id") or ent.get("dictionaryId")
-        if did and did in term_by_id and did not in term_ids_seen:
-            term_ids_seen.add(did)
-            t = term_by_id[did]
-            terms_payload.append({
-                "term": t["canonical_term"],
-                "category": t.get("category") or "",
-                "context": t.get("context") or "",
-            })
-    for t in terms_dict:
-        if t["id"] in term_ids_seen:
-            continue
-        if t["canonical_term"] in mentioned_term_names:
-            term_ids_seen.add(t["id"])
-            terms_payload.append({
-                "term": t["canonical_term"],
-                "category": t.get("category") or "",
-                "context": t.get("context") or "",
-            })
-
-    pipeline_payload = {
-        "transcript_id": transcript_id,
-        "corrected_transcript": updated["corrected_text"] or body["corrected_transcript"],
-        "date": body.get("date", str(date_module.today())),
-        "author": body.get("author", "Florian Wolf"),
-        "entities": body.get("entities", []),
-        "persons": persons_payload,
-        "terms": terms_payload,
-    }
-
-    async def _forward_to_n8n():
-        try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                resp = await client.post(N8N_WEBHOOK_URL, json=pipeline_payload)
-                resp.raise_for_status()
-                await db.mark_transcript_processed(transcript_id)
-        except Exception as e:
-            logger.warning(
-                "n8n webhook failed for transcript %s: %s", transcript_id, e
-            )
-            await db.mark_transcript_failed(transcript_id, str(e))
-
-    # Only forward to n8n if not skipped (in-app processing replaces n8n analysis)
-    if not body.get("skip_n8n"):
-        asyncio.create_task(_forward_to_n8n())
     return {"status": "submitted"}
 
 
@@ -1594,45 +1396,24 @@ async def harvest_suggest(date: str):
     suggestions = []
     errors = []
 
-    # 1. Fetch calendar events
-    calendar_data = {}
-    try:
-        async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
-            resp = await client.post(CALENDAR_WEBHOOK_URL, json={"date": date})
-            resp.raise_for_status()
-            text = resp.text.strip()
-            raw_events = []
-            for line in text.split("\n"):
-                line = line.strip()
-                if not line:
-                    continue
-                parsed = json.loads(line)
-                if isinstance(parsed, list):
-                    raw_events.extend(parsed)
-                elif isinstance(parsed, dict) and "items" in parsed:
-                    raw_events.extend(parsed["items"])
-                elif isinstance(parsed, dict):
-                    raw_events.append(parsed)
-
-            calendar_events = []
-            for ev in raw_events:
-                start = _to_local_iso(ev.get("start", {}).get("dateTime", ""))
-                end = _to_local_iso(ev.get("end", {}).get("dateTime", ""))
-                if not start or "T" not in start:
-                    continue  # skip all-day events
-                if ev.get("showAs") in ("free", "tentative"):
-                    continue
-                calendar_events.append({
-                    "subject": ev.get("subject", ""),
-                    "start": start,
-                    "end": end,
-                    "showAs": ev.get("showAs", ""),
-                })
-            calendar_events.sort(key=lambda e: e["start"])
-            calendar_data = {"events": calendar_events}
-    except Exception as e:
-        errors.append(f"Calendar: {e}")
-        calendar_data = {"events": []}
+    # 1. Fetch calendar events. Stubbed in S1 — Server S2 will wire this
+    # to MS Graph via the same _fetch_calendar_events helper.
+    calendar_events = []
+    for ev in await _fetch_calendar_events(date):
+        start = _to_local_iso(ev.get("start", {}).get("dateTime", ""))
+        end = _to_local_iso(ev.get("end", {}).get("dateTime", ""))
+        if not start or "T" not in start:
+            continue
+        if ev.get("showAs") in ("free", "tentative"):
+            continue
+        calendar_events.append({
+            "subject": ev.get("subject", ""),
+            "start": start,
+            "end": end,
+            "showAs": ev.get("showAs", ""),
+        })
+    calendar_events.sort(key=lambda e: e["start"])
+    calendar_data = {"events": calendar_events}
 
     # 2. Build or reuse pattern DB from stored Harvest entries
     if not _harvest_pattern_db:
@@ -1741,7 +1522,6 @@ async def harvest_suggest(date: str):
 
 
 SETTING_DEFAULTS = {
-    "n8n_ingest_webhook_url": "https://192.168.2.16:8443/webhook/audio-diary",
     "lightrag_url": "http://192.168.2.16:9621",
     "lightrag_api_key": "",
 }
@@ -1770,14 +1550,10 @@ async def update_settings(request: Request):
 @app.get("/ingest", response_class=HTMLResponse)
 async def ingest_page(request: Request):
     """Audio file ingestion page."""
-    ingest_url = await db.get_setting(
-        "n8n_ingest_webhook_url",
-        SETTING_DEFAULTS["n8n_ingest_webhook_url"],
-    )
     return templates.TemplateResponse(
         request,
         "ingest.html",
-        {"ingest_url": ingest_url},
+        {"ingest_url": WHISPER_URL},
     )
 
 
@@ -1808,68 +1584,114 @@ async def ingest_clear_history():
     return {"status": "ok"}
 
 
+async def _ffmpeg_to_wav_16k_mono(src_bytes: bytes, src_suffix: str) -> bytes:
+    """Run ffmpeg to convert arbitrary input audio to 16 kHz mono PCM WAV.
+
+    Whisper's ASR webservice handles many formats directly, but normalising
+    here keeps the contract narrow and matches the audio constants in
+    `.planning/codebase/CONVENTIONS.md`.
+    """
+    tmpdir = Path(tempfile.mkdtemp(prefix="ingest-"))
+    src_path = tmpdir / f"in{src_suffix or '.bin'}"
+    wav_path = tmpdir / "out.wav"
+    try:
+        src_path.write_bytes(src_bytes)
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-y", "-i", str(src_path),
+            "-ar", "16000", "-ac", "1", "-f", "wav", str(wav_path),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            tail = stderr.decode("utf-8", errors="replace")[-500:]
+            raise RuntimeError(f"ffmpeg failed (exit {proc.returncode}): {tail}")
+        return wav_path.read_bytes()
+    finally:
+        for p in (src_path, wav_path):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+        try:
+            tmpdir.rmdir()
+        except OSError:
+            pass
+
+
+async def _whisper_transcribe(wav_bytes: bytes, language: str = "de") -> str:
+    """POST WAV bytes to the Whisper sidecar and return the transcript text."""
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        resp = await client.post(
+            f"{WHISPER_URL.rstrip('/')}/asr",
+            params={"task": "transcribe", "language": language, "output": "json"},
+            files={"audio_file": ("audio.wav", wav_bytes, "audio/wav")},
+        )
+        resp.raise_for_status()
+        try:
+            data = resp.json()
+        except json.JSONDecodeError:
+            return resp.text.strip()
+        return (data.get("text") or "").strip()
+
+
+async def _ingest_audio_to_transcript(
+    content: bytes, filename: str
+) -> tuple[int, str, str]:
+    """Pipeline: ffmpeg → Whisper → persist. Returns (transcript_id, review_url, text)."""
+    src_suffix = Path(filename).suffix.lower() or ".mp3"
+    wav_bytes = await _ffmpeg_to_wav_16k_mono(content, src_suffix)
+    text = await _whisper_transcribe(wav_bytes)
+    if not text:
+        raise RuntimeError("Whisper returned an empty transcript")
+    transcript_id = await db.create_transcript(
+        filename=filename,
+        date=filename,
+        author="Florian Wolf",
+        raw_text=text,
+    )
+    review_url = f"/review/{transcript_id}"
+    return transcript_id, review_url, text
+
+
 @app.post("/api/ingest/upload")
 async def ingest_upload(file: UploadFile = File(...)):
-    """Proxy audio file upload to the n8n audio-diary webhook.
-
-    Reads the configured webhook URL from settings and forwards
-    the file as multipart/form-data, matching process-diaries.sh behavior.
-    Records the upload in the database for history persistence.
-    """
-    ingest_url = await db.get_setting(
-        "n8n_ingest_webhook_url",
-        SETTING_DEFAULTS["n8n_ingest_webhook_url"],
-    )
-    if not ingest_url:
-        return JSONResponse(
-            {"status": "error", "message": "n8n ingest webhook URL not configured"},
-            500,
-        )
-
+    """Accept an audio upload, run ffmpeg + Whisper locally, persist transcript."""
     content = await file.read()
     filename = file.filename or "upload.mp3"
     file_size = len(content)
 
-    # Record upload in database
     upload_id = await db.create_ingest_upload(filename, file_size)
-
     try:
-        async with httpx.AsyncClient(timeout=600.0, verify=False) as client:
-            resp = await client.post(
-                ingest_url,
-                files={"data": (filename, content, file.content_type or "audio/mpeg")},
-            )
-            resp.raise_for_status()
-            try:
-                result = resp.json()
-            except Exception:
-                result = {"raw": resp.text}
-
-            # Extract transcript info from n8n response
-            transcript_id = result.get("id")
-            review_url = result.get("review_url")
-            await db.mark_ingest_success(upload_id, transcript_id, review_url)
-
-            return {
-                "status": "ok",
-                "upload_id": upload_id,
-                "filename": filename,
-                "result": result,
-            }
+        transcript_id, review_url, text = await _ingest_audio_to_transcript(
+            content, filename
+        )
+        await db.mark_ingest_success(upload_id, transcript_id, review_url)
+        return {
+            "status": "ok",
+            "upload_id": upload_id,
+            "filename": filename,
+            "result": {
+                "id": transcript_id,
+                "review_url": review_url,
+                "preview": text[:500],
+            },
+        }
     except httpx.TimeoutException:
-        await db.mark_ingest_failed(upload_id, "Upload timed out (10 min limit)")
+        await db.mark_ingest_failed(upload_id, "Whisper request timed out")
         return JSONResponse(
-            {"status": "error", "message": "Upload timed out (10 min limit)", "upload_id": upload_id, "filename": filename},
+            {"status": "error", "message": "Whisper request timed out", "upload_id": upload_id, "filename": filename},
             504,
         )
     except httpx.HTTPStatusError as e:
-        msg = f"Webhook returned {e.response.status_code}"
+        msg = f"Whisper returned {e.response.status_code}"
         await db.mark_ingest_failed(upload_id, msg)
         return JSONResponse(
             {"status": "error", "message": msg, "upload_id": upload_id, "filename": filename},
             502,
         )
     except Exception as e:
+        logger.exception("ingest upload failed for %s", filename)
         await db.mark_ingest_failed(upload_id, str(e))
         return JSONResponse(
             {"status": "error", "message": str(e), "upload_id": upload_id, "filename": filename},
@@ -1879,22 +1701,10 @@ async def ingest_upload(file: UploadFile = File(...)):
 
 @app.post("/api/ingest/{upload_id}/retry")
 async def ingest_retry(upload_id: int, file: UploadFile = File(...)):
-    """Retry a failed upload by re-sending the file."""
-    # Reuse the main upload endpoint logic but update existing record
-    ingest_url = await db.get_setting(
-        "n8n_ingest_webhook_url",
-        SETTING_DEFAULTS["n8n_ingest_webhook_url"],
-    )
-    if not ingest_url:
-        return JSONResponse(
-            {"status": "error", "message": "n8n ingest webhook URL not configured"},
-            500,
-        )
-
+    """Retry a failed upload by re-running the local ASR pipeline."""
     content = await file.read()
     filename = file.filename or "upload.mp3"
 
-    # Reset status to uploading
     pool = await db.get_pool()
     await pool.execute(
         "UPDATE ingest_uploads SET status = 'uploading', error_message = NULL, completed_at = NULL WHERE id = $1",
@@ -1902,22 +1712,22 @@ async def ingest_retry(upload_id: int, file: UploadFile = File(...)):
     )
 
     try:
-        async with httpx.AsyncClient(timeout=600.0, verify=False) as client:
-            resp = await client.post(
-                ingest_url,
-                files={"data": (filename, content, file.content_type or "audio/mpeg")},
-            )
-            resp.raise_for_status()
-            try:
-                result = resp.json()
-            except Exception:
-                result = {"raw": resp.text}
-
-            transcript_id = result.get("id")
-            review_url = result.get("review_url")
-            await db.mark_ingest_success(upload_id, transcript_id, review_url)
-            return {"status": "ok", "upload_id": upload_id, "filename": filename, "result": result}
+        transcript_id, review_url, text = await _ingest_audio_to_transcript(
+            content, filename
+        )
+        await db.mark_ingest_success(upload_id, transcript_id, review_url)
+        return {
+            "status": "ok",
+            "upload_id": upload_id,
+            "filename": filename,
+            "result": {
+                "id": transcript_id,
+                "review_url": review_url,
+                "preview": text[:500],
+            },
+        }
     except Exception as e:
+        logger.exception("ingest retry failed for %s", filename)
         await db.mark_ingest_failed(upload_id, str(e))
         return JSONResponse(
             {"status": "error", "message": str(e), "upload_id": upload_id, "filename": filename},
@@ -2150,37 +1960,3 @@ async def admin_delete_initiative(init_id: int):
     return {"status": "ok"}
 
 
-# ─── Webhook receiver (n8n sends transcripts here after ASR) ────────
-
-
-@app.post("/webhook/transcript-ready")
-async def receive_transcript(request: Request):
-    """
-    n8n POSTs here after ASR:
-    { "filename": "diary-14.05.2025", "date": "2025-05-14",
-      "author": "Florian Wolf", "text": "..." }
-    """
-    try:
-        body = await request.json()
-    except Exception as e:
-        logger.error("transcript-ready: invalid JSON body: %s", e)
-        return JSONResponse({"error": f"Invalid JSON: {e}"}, 400)
-
-    text = body.get("text", "")
-    if not text:
-        logger.error("transcript-ready: missing 'text' field")
-        return JSONResponse({"error": "Missing 'text' field"}, 400)
-
-    try:
-        tid = await db.create_transcript(
-            filename=body.get("filename", "unknown"),
-            date=body.get("date", ""),
-            author=body.get("author", "Florian Wolf"),
-            raw_text=text,
-        )
-    except Exception as e:
-        logger.error("transcript-ready: failed to create transcript: %s", e)
-        return JSONResponse({"error": f"Database error: {e}"}, 500)
-
-    logger.info("transcript-ready: created transcript %s from '%s'", tid, body.get("filename"))
-    return {"id": tid, "status": "pending", "review_url": f"/review/{tid}"}
