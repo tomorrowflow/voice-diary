@@ -1,0 +1,497 @@
+{% extends "base.html" %}
+{% block title %}Audio Ingestion{% endblock %}
+{% block nav_ingest %}active{% endblock %}
+
+{% block content %}
+<header>
+  <h1>Audio Ingestion</h1>
+  <div class="header-meta">
+    <div>Upload diary audio files for transcription via the n8n pipeline</div>
+  </div>
+</header>
+
+<div class="ingest-container">
+
+  <!-- Drop zone (own class, not reusing data page .drop-zone) -->
+  <div class="ingest-dropzone" id="dropzone">
+    <div class="ingest-dropzone-icon">&#127908;</div>
+    <div class="ingest-dropzone-text">Drop audio files here or click to browse</div>
+    <div class="ingest-dropzone-hint">Accepts .mp3 and .m4a files &middot; Multiple files supported</div>
+    <input type="file" id="fileInput" multiple accept=".mp3,.m4a,audio/mpeg,audio/mp4">
+  </div>
+
+  <!-- Controls (own class, not reusing data page .action-bar) -->
+  <div class="ingest-controls" id="controls" style="display:none">
+    <div class="ingest-controls-left">
+      <button class="btn btn-primary" id="startBtn" onclick="startUpload()">Upload All</button>
+      <button class="btn btn-secondary" id="cancelBtn" onclick="cancelUpload()" style="display:none">Cancel</button>
+      <button class="btn btn-secondary" id="clearBtn" onclick="clearQueue()">Clear Queue</button>
+    </div>
+    <div class="ingest-controls-right">
+      <div class="ingest-parallel">
+        <label for="parallelInput">Parallel uploads:</label>
+        <input type="number" id="parallelInput" value="3" min="1" max="10">
+      </div>
+    </div>
+  </div>
+
+  <!-- Overall progress (own class, not reusing data page .progress-bar) -->
+  <div class="ingest-progress" id="overallProgress">
+    <div class="ingest-progress-header">
+      <span id="progressLabel">Uploading...</span>
+      <div class="ingest-progress-stats">
+        <span class="ingest-stat-success"><strong id="statSuccess">0</strong> done</span>
+        <span class="ingest-stat-error"><strong id="statError">0</strong> failed</span>
+        <span class="ingest-stat-pending"><strong id="statPending">0</strong> queued</span>
+      </div>
+    </div>
+    <div class="ingest-progress-track">
+      <div class="ingest-bar-success" id="barSuccess"></div>
+      <div class="ingest-bar-error" id="barError"></div>
+      <div class="ingest-bar-active" id="barActive"></div>
+    </div>
+  </div>
+
+  <!-- File queue -->
+  <div id="queueSection" style="display:none">
+    <div class="ingest-queue-header">
+      Upload Queue <span class="ingest-queue-count" id="queueCount">0</span>
+    </div>
+    <div class="ingest-file-list" id="fileList"></div>
+  </div>
+
+  <!-- Summary panel -->
+  <div class="ingest-summary" id="summaryPanel">
+    <h3>Upload Complete</h3>
+    <div class="ingest-summary-grid">
+      <div class="ingest-summary-card ingest-summary-total">
+        <div class="ingest-summary-num" id="sumTotal">0</div>
+        <div class="ingest-summary-label">Total Files</div>
+      </div>
+      <div class="ingest-summary-card ingest-summary-success">
+        <div class="ingest-summary-num" id="sumSuccess">0</div>
+        <div class="ingest-summary-label">Transcribed</div>
+      </div>
+      <div class="ingest-summary-card ingest-summary-error">
+        <div class="ingest-summary-num" id="sumError">0</div>
+        <div class="ingest-summary-label">Failed</div>
+      </div>
+    </div>
+    <div class="ingest-summary-actions">
+      <a href="/" class="btn btn-primary" style="text-decoration:none;">Go to Overview</a>
+      <button class="btn btn-secondary" id="retryFailedBtn" onclick="retryFailed()">Retry Failed</button>
+      <button class="btn btn-secondary" onclick="resetAll()">Upload More</button>
+    </div>
+  </div>
+
+  <!-- Upload history (persisted) -->
+  <div class="ingest-history" id="historySection">
+    <div class="ingest-history-header">
+      <span>Upload History</span>
+      <button class="btn btn-sm btn-secondary" id="clearHistoryBtn" onclick="clearHistory()" style="display:none;">Clear History</button>
+    </div>
+    <div class="ingest-file-list" id="historyList">
+      <div class="ingest-history-loading">Loading...</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="modalOverlayClick(event)">
+  <div class="modal" style="width:480px;">
+    <div class="modal-header" id="modalHeader"></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// === STATE ===
+var files = [];  // { id, file, status, error, result, uploadId }
+var uploading = false;
+var cancelled = false;
+var nextId = 0;
+
+// === DROP ZONE ===
+var dropzoneEl = document.getElementById('dropzone');
+var fileInput = document.getElementById('fileInput');
+
+dropzoneEl.addEventListener('click', function() { if (!uploading) fileInput.click(); });
+dropzoneEl.addEventListener('dragover', function(e) { e.preventDefault(); dropzoneEl.classList.add('dragover'); });
+dropzoneEl.addEventListener('dragleave', function() { dropzoneEl.classList.remove('dragover'); });
+dropzoneEl.addEventListener('drop', function(e) {
+  e.preventDefault(); dropzoneEl.classList.remove('dragover');
+  if (!uploading) addFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', function() { addFiles(fileInput.files); fileInput.value = ''; });
+
+// === FILE HANDLING ===
+function addFiles(fileList) {
+  var validExts = ['.mp3', '.m4a'];
+  var added = 0, skipped = 0;
+  for (var i = 0; i < fileList.length; i++) {
+    var f = fileList[i];
+    var ext = f.name.substring(f.name.lastIndexOf('.')).toLowerCase();
+    if (validExts.indexOf(ext) === -1) { skipped++; continue; }
+    var isDup = false;
+    for (var j = 0; j < files.length; j++) {
+      if (files[j].file.name === f.name && files[j].file.size === f.size) { isDup = true; break; }
+    }
+    if (isDup) { skipped++; continue; }
+    files.push({ id: nextId++, file: f, status: 'queued', error: null, result: null, uploadId: null });
+    added++;
+  }
+  if (skipped > 0) showToast(skipped + ' file(s) skipped (duplicate or unsupported)', 'error');
+  if (added > 0) showToast(added + ' file(s) added to queue', 'success');
+  renderQueue();
+}
+
+function removeFile(id) {
+  files = files.filter(function(f) { return f.id !== id; });
+  renderQueue();
+}
+
+// === RENDER ===
+function renderQueue() {
+  var controls = document.getElementById('controls');
+  var queueSection = document.getElementById('queueSection');
+  var list = document.getElementById('fileList');
+  var progress = document.getElementById('overallProgress');
+  var count = document.getElementById('queueCount');
+
+  if (files.length === 0) {
+    controls.style.display = 'none';
+    queueSection.style.display = 'none';
+    progress.classList.remove('visible');
+    dropzoneEl.classList.remove('disabled');
+    return;
+  }
+
+  controls.style.display = 'flex';
+  queueSection.style.display = 'block';
+  count.textContent = files.length;
+
+  // Button states
+  var hasQueued = files.some(function(f) { return f.status === 'queued'; });
+  document.getElementById('startBtn').disabled = uploading || !hasQueued;
+  document.getElementById('startBtn').style.display = uploading ? 'none' : '';
+  document.getElementById('cancelBtn').style.display = uploading ? '' : 'none';
+  document.getElementById('clearBtn').style.display = uploading ? 'none' : '';
+  if (uploading) dropzoneEl.classList.add('disabled');
+  else dropzoneEl.classList.remove('disabled');
+
+  // Counts
+  var queued = 0, active = 0, success = 0, error = 0;
+  files.forEach(function(f) {
+    if (f.status === 'queued') queued++;
+    else if (f.status === 'uploading') active++;
+    else if (f.status === 'success') success++;
+    else if (f.status === 'error') error++;
+  });
+
+  // Progress
+  var total = files.length;
+  if (uploading || success > 0 || error > 0) progress.classList.add('visible');
+
+  document.getElementById('statSuccess').textContent = success;
+  document.getElementById('statError').textContent = error;
+  document.getElementById('statPending').textContent = queued;
+
+  document.getElementById('barSuccess').style.width = (success / total * 100).toFixed(1) + '%';
+  document.getElementById('barError').style.width = (error / total * 100).toFixed(1) + '%';
+  document.getElementById('barActive').style.width = (active / total * 100).toFixed(1) + '%';
+
+  if (uploading) {
+    document.getElementById('progressLabel').textContent = 'Uploading ' + (success + error + active) + ' of ' + total + '...';
+  } else if (success + error === total && total > 0) {
+    document.getElementById('progressLabel').textContent = 'All uploads finished';
+  } else {
+    document.getElementById('progressLabel').textContent = 'Ready';
+  }
+
+  // File list
+  var html = '';
+  for (var i = 0; i < files.length; i++) {
+    var f = files[i];
+    var sizeStr = formatSize(f.file.size);
+    var icon = '', statusText = '', extra = '', actions = '';
+
+    if (f.status === 'queued') {
+      icon = '<span style="color:#8b949e;">&#9679;</span>';
+      statusText = 'Queued';
+      if (!uploading) actions = '<div class="ingest-file-actions"><button onclick="removeFile(' + f.id + ')">Remove</button></div>';
+    } else if (f.status === 'uploading') {
+      icon = '<span class="ingest-spinner"></span>';
+      statusText = 'Uploading...';
+    } else if (f.status === 'success') {
+      icon = '<span style="color:#3fb950;">&#10003;</span>';
+      statusText = 'Done';
+      if (f.result && f.result.result && f.result.result.review_url) {
+        extra = '<a href="' + f.result.result.review_url + '" class="ingest-review-link">Open Review</a>';
+      }
+    } else if (f.status === 'error') {
+      icon = '<span style="color:#f85149;">&#10007;</span>';
+      statusText = f.error || 'Failed';
+      actions = '<div class="ingest-file-actions"><button class="retry-btn" onclick="retryOne(' + f.id + ')">Retry</button></div>';
+    }
+
+    html += '<div class="ingest-file-item ' + f.status + '">' +
+      '<div class="ingest-file-icon">' + icon + '</div>' +
+      '<div class="ingest-file-name" title="' + escHtml(f.file.name) + '">' + escHtml(f.file.name) + '</div>' +
+      '<div class="ingest-file-size">' + sizeStr + '</div>' +
+      '<div class="ingest-file-status ' + f.status + '">' + escHtml(statusText) + '</div>' +
+      extra + actions +
+      '</div>';
+  }
+  list.innerHTML = html;
+}
+
+// === UPLOAD LOGIC ===
+async function startUpload() {
+  uploading = true;
+  cancelled = false;
+  document.getElementById('summaryPanel').classList.remove('visible');
+  renderQueue();
+
+  var maxParallel = parseInt(document.getElementById('parallelInput').value) || 3;
+  var queued = files.filter(function(f) { return f.status === 'queued'; });
+
+  var idx = 0;
+  async function next() {
+    while (idx < queued.length && !cancelled) {
+      var f = queued[idx++];
+      if (f.status !== 'queued') continue;
+      await uploadOne(f);
+    }
+  }
+
+  var workers = [];
+  for (var i = 0; i < Math.min(maxParallel, queued.length); i++) {
+    workers.push(next());
+  }
+  await Promise.all(workers);
+
+  uploading = false;
+  renderQueue();
+  showSummary();
+  loadHistory(); // refresh history after batch
+}
+
+async function uploadOne(f) {
+  f.status = 'uploading';
+  renderQueue();
+
+  try {
+    var formData = new FormData();
+    formData.append('file', f.file);
+
+    var resp = await fetch('/api/ingest/upload', { method: 'POST', body: formData });
+    var data = await resp.json();
+
+    if (resp.ok && data.status === 'ok') {
+      f.status = 'success';
+      f.result = data;
+      f.uploadId = data.upload_id;
+    } else {
+      f.status = 'error';
+      f.error = data.message || 'Upload failed (HTTP ' + resp.status + ')';
+      f.uploadId = data.upload_id;
+    }
+  } catch (err) {
+    f.status = 'error';
+    f.error = err.message || 'Network error';
+  }
+  renderQueue();
+}
+
+function cancelUpload() {
+  cancelled = true;
+  showToast('Cancelling after current uploads finish...', 'error');
+}
+
+function retryOne(id) {
+  var f = files.find(function(f) { return f.id === id; });
+  if (f) { f.status = 'queued'; f.error = null; f.result = null; }
+  if (!uploading) startUpload();
+  else renderQueue();
+}
+
+function retryFailed() {
+  files.forEach(function(f) {
+    if (f.status === 'error') { f.status = 'queued'; f.error = null; }
+  });
+  document.getElementById('summaryPanel').classList.remove('visible');
+  startUpload();
+}
+
+function clearQueue() {
+  files = files.filter(function(f) { return f.status === 'success'; });
+  document.getElementById('summaryPanel').classList.remove('visible');
+  document.getElementById('overallProgress').classList.remove('visible');
+  renderQueue();
+}
+
+function resetAll() {
+  files = [];
+  document.getElementById('summaryPanel').classList.remove('visible');
+  document.getElementById('overallProgress').classList.remove('visible');
+  renderQueue();
+}
+
+function showSummary() {
+  var total = files.length;
+  var success = files.filter(function(f) { return f.status === 'success'; }).length;
+  var error = files.filter(function(f) { return f.status === 'error'; }).length;
+
+  document.getElementById('sumTotal').textContent = total;
+  document.getElementById('sumSuccess').textContent = success;
+  document.getElementById('sumError').textContent = error;
+  document.getElementById('retryFailedBtn').style.display = error > 0 ? '' : 'none';
+  document.getElementById('summaryPanel').classList.add('visible');
+}
+
+// === HISTORY ===
+function loadHistory() {
+  fetch('/api/ingest/history?limit=50')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var list = document.getElementById('historyList');
+      var clearBtn = document.getElementById('clearHistoryBtn');
+      var uploads = data.uploads || [];
+
+      if (uploads.length === 0) {
+        list.innerHTML = '<div class="ingest-history-empty">No upload history yet.</div>';
+        clearBtn.style.display = 'none';
+        return;
+      }
+
+      clearBtn.style.display = '';
+      var html = '';
+      for (var i = 0; i < uploads.length; i++) {
+        var u = uploads[i];
+        var sizeStr = u.file_size ? formatSize(u.file_size) : '';
+        var icon = '', statusText = '', extra = '';
+
+        if (u.status === 'uploading') {
+          icon = '<span class="ingest-spinner"></span>';
+          statusText = 'Uploading...';
+        } else if (u.status === 'success') {
+          icon = '<span style="color:#3fb950;">&#10003;</span>';
+          statusText = 'Done';
+          if (u.review_url) {
+            extra = '<a href="' + u.review_url + '" class="ingest-review-link">Review</a>';
+          }
+        } else if (u.status === 'error') {
+          icon = '<span style="color:#f85149;">&#10007;</span>';
+          statusText = u.error || 'Failed';
+        } else {
+          icon = '<span style="color:#8b949e;">&#9679;</span>';
+          statusText = u.status;
+        }
+
+        var timeStr = '';
+        if (u.created_at) {
+          var d = new Date(u.created_at);
+          timeStr = d.toLocaleDateString('de-DE', { day: '2-digit', month: 'short' }) + ' ' +
+                    d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+        }
+
+        html += '<div class="ingest-file-item ' + u.status + '">' +
+          '<div class="ingest-file-icon">' + icon + '</div>' +
+          '<div class="ingest-file-name" title="' + escHtml(u.filename) + '">' + escHtml(u.filename) + '</div>' +
+          '<div class="ingest-file-size">' + sizeStr + '</div>' +
+          '<div class="ingest-file-time">' + timeStr + '</div>' +
+          '<div class="ingest-file-status ' + u.status + '">' + escHtml(statusText) + '</div>' +
+          extra +
+          '</div>';
+      }
+      list.innerHTML = html;
+    })
+    .catch(function() {
+      document.getElementById('historyList').innerHTML =
+        '<div class="ingest-history-empty">Could not load history.</div>';
+    });
+}
+
+function clearHistory() {
+  modalConfirm('Clear Upload History',
+    'Delete all upload history records? This does not affect the transcripts themselves.',
+    { confirmLabel: 'Clear', confirmCls: 'btn btn-danger' }
+  ).then(function(ok) {
+    if (!ok) return;
+    fetch('/api/ingest/clear-history', { method: 'POST' })
+      .then(function() { loadHistory(); showToast('History cleared', 'success'); })
+      .catch(function(err) { showToast('Error: ' + err.message, 'error'); });
+  });
+}
+
+// Load history on page load
+loadHistory();
+
+// === HELPERS ===
+function formatSize(bytes) {
+  if (bytes > 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return Math.round(bytes / 1024) + ' KB';
+}
+
+function escHtml(s) {
+  var d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function showToast(msg, type) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast visible ' + (type || '');
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.classList.remove('visible'); }, 3000);
+}
+
+// === MODAL ===
+var modalResolveFn = null;
+function showModal(header, bodyHtml, buttons, opts) {
+  opts = opts || {};
+  document.getElementById('modalHeader').textContent = header;
+  document.getElementById('modalHeader').className = 'modal-header' + (opts.danger ? ' danger' : '');
+  document.getElementById('modalBody').innerHTML = bodyHtml;
+  var footerHtml = '';
+  for (var i = 0; i < buttons.length; i++) {
+    var b = buttons[i];
+    footerHtml += '<button class="' + (b.cls || 'btn btn-secondary') + '" onclick="resolveModal(' +
+      (typeof b.value === 'string' ? "'" + b.value + "'" : b.value) + ')" style="padding:8px 18px;font-size:13px;font-weight:600;border-radius:6px;cursor:pointer;min-width:80px;text-align:center;">' + b.label + '</button>';
+  }
+  document.getElementById('modalFooter').innerHTML = footerHtml;
+  document.getElementById('modalOverlay').classList.add('visible');
+}
+function resolveModal(value) {
+  document.getElementById('modalOverlay').classList.remove('visible');
+  if (modalResolveFn) { var fn = modalResolveFn; modalResolveFn = null; fn(value); }
+}
+function modalOverlayClick(e) {
+  if (e.target === document.getElementById('modalOverlay')) resolveModal(null);
+}
+function modalConfirm(title, message, opts) {
+  opts = opts || {};
+  return new Promise(function(resolve) {
+    modalResolveFn = resolve;
+    showModal(title, '<p>' + message + '</p>', [
+      { label: 'Cancel', cls: 'btn btn-secondary', value: false },
+      { label: opts.confirmLabel || 'Confirm', cls: opts.confirmCls || 'btn btn-primary', value: true }
+    ], opts);
+  });
+}
+document.addEventListener('keydown', function(e) {
+  if (!document.getElementById('modalOverlay').classList.contains('visible')) return;
+  if (e.key === 'Escape') resolveModal(null);
+  if (e.key === 'Enter') {
+    var btns = document.querySelectorAll('#modalFooter button:not(.btn-secondary)');
+    if (btns.length) btns[btns.length - 1].click();
+  }
+});
+</script>
+{% endblock %}

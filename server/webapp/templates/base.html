@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="de" data-theme="light">
+<head>
+  <title>{% block title %}Diary Review{% endblock %}</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-brand">DP</div>
+      <nav class="sidebar-nav">
+        <a href="/" class="sidebar-item {% block nav_overview %}{% endblock %}">
+          <div class="sidebar-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg></div>
+          <span class="sidebar-label">Overview</span>
+        </a>
+        <a href="#" id="nav-transcript" class="sidebar-item nav-contextual {% block nav_transcript %}{% endblock %}">
+          <div class="sidebar-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg></div>
+          <span class="sidebar-label">Transcript</span>
+        </a>
+        <a href="#" id="nav-process" class="sidebar-item nav-contextual {% block nav_process %}{% endblock %}">
+          <div class="sidebar-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.912 5.813a2 2 0 001.275 1.275L21 12l-5.813 1.912a2 2 0 00-1.275 1.275L12 21l-1.912-5.813a2 2 0 00-1.275-1.275L3 12l5.813-1.912a2 2 0 001.275-1.275L12 3z"/></svg></div>
+          <span class="sidebar-label">Process</span>
+        </a>
+        <div class="sidebar-sep"></div>
+        <a href="/harvest" id="nav-harvest" class="sidebar-item {% block nav_harvest %}{% endblock %}">
+          <div class="sidebar-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></div>
+          <span class="sidebar-label">Harvest</span>
+        </a>
+        <a href="/ingest" class="sidebar-item {% block nav_ingest %}{% endblock %}">
+          <div class="sidebar-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg></div>
+          <span class="sidebar-label">Ingest</span>
+        </a>
+        <a href="/admin" class="sidebar-item {% block nav_dictionary %}{% endblock %}">
+          <div class="sidebar-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 014 4v14a3 3 0 00-3-3H2z"/><path d="M22 3h-6a4 4 0 00-4 4v14a3 3 0 013-3h7z"/></svg></div>
+          <span class="sidebar-label">Dictionary</span>
+        </a>
+        <a href="/settings" class="sidebar-item {% block nav_settings %}{% endblock %}">
+          <div class="sidebar-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09a1.65 1.65 0 00-1-1.51 1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09a1.65 1.65 0 001.51-1 1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg></div>
+          <span class="sidebar-label">Settings</span>
+        </a>
+      </nav>
+    </aside>
+    <div class="main-content">
+      {% block context_bar %}{% endblock %}
+      {% block content %}{% endblock %}
+    </div>
+  </div>
+  {% block scripts %}{% endblock %}
+  <script>
+    (function() {
+      var d = sessionStorage.getItem('lastTranscriptDate');
+      if (d) {
+        var el = document.getElementById('nav-harvest');
+        if (el) el.href = '/harvest?date=' + d;
+      }
+      // Wire up contextual Transcript / Process nav links
+      var tid = sessionStorage.getItem('currentTranscriptId');
+      var navT = document.getElementById('nav-transcript');
+      var navP = document.getElementById('nav-process');
+      if (tid) {
+        navT.href = '/review/' + tid;
+        navP.href = '/process/' + tid;
+        navT.classList.add('nav-has-context');
+        navP.classList.add('nav-has-context');
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,1286 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block nav_settings %}active{% endblock %}
+
+{% block content %}
+<header>
+  <h1>Settings</h1>
+  <div class="header-meta">
+    <div><strong id="totalPersons">0</strong> persons</div>
+    <div><strong id="totalTerms">0</strong> terms</div>
+    <div><strong id="totalVariations">0</strong> variations</div>
+    <div><strong id="totalTranscripts">0</strong> transcripts</div>
+  </div>
+</header>
+
+<div class="content">
+
+  <!-- CSV IMPORT -->
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon icon-import">&#8593;</div>
+        <h2>Import from NocoDB CSV</h2>
+      </div>
+      <span class="section-badge badge-import">CSV Import</span>
+    </div>
+    <div class="section-body">
+      <p class="section-desc">
+        Upload NocoDB CSV exports to import persons, terms, and their variations.
+        The import uses upsert logic &mdash; existing entries are updated, new ones are created.
+        Expects the standard NocoDB export format with 4 files.
+      </p>
+
+      <div class="drop-zone" id="csvDropZone">
+        <input type="file" id="csvFileInput" multiple accept=".csv" onchange="handleCsvFiles(this.files)">
+        <div class="drop-zone-icon">&#128196;</div>
+        <div class="drop-zone-text">Drop CSV files here or <strong>browse</strong></div>
+        <div class="drop-zone-hint">Expected: team_roster, person_variations, terms_roster, term_variations</div>
+      </div>
+
+      <div class="import-checklist" id="csvChecklist">
+        <div class="check-item" id="check-team_roster">
+          <span class="check-icon">&#9675;</span>
+          <span class="check-name">team_roster</span>
+          <span class="check-count">&mdash;</span>
+        </div>
+        <div class="check-item" id="check-person_variations">
+          <span class="check-icon">&#9675;</span>
+          <span class="check-name">person_variations</span>
+          <span class="check-count">&mdash;</span>
+        </div>
+        <div class="check-item" id="check-terms_roster">
+          <span class="check-icon">&#9675;</span>
+          <span class="check-name">terms_roster</span>
+          <span class="check-count">&mdash;</span>
+        </div>
+        <div class="check-item" id="check-term_variations">
+          <span class="check-icon">&#9675;</span>
+          <span class="check-name">term_variations</span>
+          <span class="check-count">&mdash;</span>
+        </div>
+      </div>
+
+      <div class="import-options" id="csvImportOptions" style="display:none;">
+        <label class="import-option">
+          <input type="radio" name="csvMode" value="upsert" checked>
+          <span>Upsert<span class="option-desc">Update existing, add new</span></span>
+        </label>
+        <label class="import-option">
+          <input type="radio" name="csvMode" value="replace">
+          <span>Replace all<span class="option-desc">Clear dictionary first, then import</span></span>
+        </label>
+      </div>
+
+      <div class="progress-bar" id="csvProgress">
+        <div class="progress-track"><div class="progress-fill" id="csvProgressFill" style="width:0%"></div></div>
+        <div class="progress-text"><span id="csvProgressText">Importing...</span><span id="csvProgressPct">0%</span></div>
+      </div>
+      <div class="log-output" id="csvLog"></div>
+
+      <div class="action-bar" id="csvActionBar" style="display:none;">
+        <div class="action-bar-info" id="csvSummary"></div>
+        <div class="action-bar-buttons">
+          <button class="btn btn-secondary" onclick="clearCsvFiles()">Clear</button>
+          <button class="btn btn-primary" id="csvImportBtn" onclick="runCsvImport()">Import CSV Data</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BACKUP & RESTORE -->
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon icon-backup">&#128190;</div>
+        <h2>Backup &amp; Restore</h2>
+      </div>
+      <span class="section-badge badge-backup">JSON</span>
+    </div>
+    <div class="section-body">
+      <p class="section-desc">
+        Export or import a full snapshot of the dictionary and transcripts.
+        Backups use the app's native JSON format with proper IDs and relationships &mdash;
+        different from the NocoDB CSV format above.
+      </p>
+
+      <div class="backup-grid">
+        <div class="backup-panel">
+          <h3>&#11015; Create Backup</h3>
+          <p>Download a JSON file with all persons, terms, variations, and transcripts.</p>
+          <div style="margin-bottom:10px;">
+            <label class="import-option" style="margin-bottom:6px;">
+              <input type="checkbox" id="backupIncludeTranscripts" checked>
+              <span>Include transcripts</span>
+            </label>
+            <label class="import-option">
+              <input type="checkbox" id="backupIncludeReviewLog" checked>
+              <span>Include review log</span>
+            </label>
+          </div>
+          <button class="btn btn-primary" onclick="createBackup()">&#11015; Download Backup</button>
+        </div>
+
+        <div class="backup-panel">
+          <h3>&#11014; Restore from Backup</h3>
+          <p>Upload a previously created JSON backup to restore all data.</p>
+          <div class="drop-zone" id="restoreDropZone" style="padding:16px;">
+            <input type="file" id="restoreFileInput" accept=".json" onchange="handleRestoreFile(this.files[0])">
+            <div class="drop-zone-text" style="font-size:12px;">Drop JSON backup or <strong>browse</strong></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="restore-preview" id="restorePreview">
+        <div class="restore-summary" id="restoreSummary"></div>
+        <div class="action-bar" style="border-top:none;padding-top:0;">
+          <div class="action-bar-info">
+            <span class="warn">&#9888; This will replace all existing data.</span>
+          </div>
+          <div class="action-bar-buttons">
+            <button class="btn btn-secondary" onclick="clearRestore()">Cancel</button>
+            <button class="btn btn-danger" id="restoreBtn" onclick="confirmRestore()">Restore Backup</button>
+          </div>
+        </div>
+        <div class="progress-bar" id="restoreProgress">
+          <div class="progress-track"><div class="progress-fill" id="restoreProgressFill" style="width:0%"></div></div>
+          <div class="progress-text"><span id="restoreProgressText">Restoring...</span><span id="restoreProgressPct">0%</span></div>
+        </div>
+      </div>
+
+      <div class="backup-info">
+        <h4>Backup format preview</h4>
+        <div class="format-preview"><span class="comment">// diary-processor-backup-2026-02-10.json</span>
+{
+  <span class="key">"format"</span>: <span class="str">"diary-processor-backup"</span>,
+  <span class="key">"version"</span>: <span class="num">1</span>,
+  <span class="key">"created_at"</span>: <span class="str">"2026-02-10T14:30:00Z"</span>,
+  <span class="key">"persons"</span>: [
+    {
+      <span class="key">"canonical_name"</span>: <span class="str">"Thomas Koller"</span>,
+      <span class="key">"first_name"</span>: <span class="str">"Thomas"</span>,
+      <span class="key">"last_name"</span>: <span class="str">"Koller"</span>,
+      <span class="key">"role"</span>: <span class="str">"CEO, Head of Sales"</span>,
+      <span class="key">"department"</span>: <span class="str">"Management"</span>,
+      <span class="key">"company"</span>: <span class="str">"Enersis"</span>,
+      <span class="key">"status"</span>: <span class="str">"active"</span>,
+      <span class="key">"variations"</span>: [
+        { <span class="key">"variation"</span>: <span class="str">"Thomas"</span>, <span class="key">"type"</span>: <span class="str">"nickname"</span> },
+        { <span class="key">"variation"</span>: <span class="str">"Koller"</span>, <span class="key">"type"</span>: <span class="str">"nickname"</span> }
+      ]
+    }, <span class="comment">// ...</span>
+  ],
+  <span class="key">"terms"</span>: [
+    {
+      <span class="key">"canonical_term"</span>: <span class="str">"Kubernetes"</span>,
+      <span class="key">"category"</span>: <span class="str">"technology"</span>,
+      <span class="key">"context"</span>: <span class="str">"Container orchestration"</span>,
+      <span class="key">"status"</span>: <span class="str">"active"</span>,
+      <span class="key">"variations"</span>: [
+        { <span class="key">"variation"</span>: <span class="str">"K8s"</span> },
+        { <span class="key">"variation"</span>: <span class="str">"k8s"</span> }
+      ]
+    }, <span class="comment">// ...</span>
+  ],
+  <span class="key">"transcripts"</span>: [ <span class="comment">// optional</span>
+    {
+      <span class="key">"filename"</span>: <span class="str">"diary-14.05.2025"</span>,
+      <span class="key">"date"</span>: <span class="str">"2025-05-14"</span>,
+      <span class="key">"author"</span>: <span class="str">"Florian Wolf"</span>,
+      <span class="key">"raw_text"</span>: <span class="str">"..."</span>,
+      <span class="key">"corrected_text"</span>: <span class="str">"..."</span>,
+      <span class="key">"status"</span>: <span class="str">"processed"</span>
+    }, <span class="comment">// ...</span>
+  ]
+}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- HARVEST TIME ENTRIES -->
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon icon-harvest">&#9202;</div>
+        <h2>Harvest Time Entries</h2>
+      </div>
+      <span class="section-badge badge-harvest">Pattern DB</span>
+    </div>
+    <div class="section-body">
+      <p class="section-desc">
+        Load recent Harvest time entries to build a pattern database.
+        The system learns which projects and tasks map to which calendar events
+        based on your past bookings (last 3 months).
+      </p>
+
+      <div class="harvest-status" id="harvestStatus">
+        <div class="harvest-status-loading">Checking status...</div>
+      </div>
+
+      <div class="action-bar" id="harvestActionBar">
+        <div class="action-bar-info" id="harvestInfo"></div>
+        <div class="action-bar-buttons">
+          <button class="btn btn-danger" id="harvestClearBtn" onclick="clearHarvestEntries()" style="display:none;">Clear Entries</button>
+          <button class="btn btn-primary" id="harvestLoadBtn" onclick="loadHarvestEntries()">Load Last 3 Months</button>
+        </div>
+      </div>
+
+      <div class="progress-bar" id="harvestProgress">
+        <div class="progress-track"><div class="progress-fill" id="harvestProgressFill" style="width:0%"></div></div>
+        <div class="progress-text"><span id="harvestProgressText">Loading...</span><span id="harvestProgressPct">0%</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SKELETON SYNC -->
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon" style="background:#6366f1;color:#fff;">&#9851;</div>
+        <h2>Skeleton Sync (LightRAG)</h2>
+      </div>
+      <span class="section-badge" style="background:#eef2ff;color:#4f46e5;">Bones</span>
+    </div>
+    <div class="section-body">
+      <p class="section-desc">
+        Sync structural knowledge (persons, terms, org units, initiatives) to LightRAG as individual bone documents.
+        Bones are synced automatically before diary ingestion, or manually here.
+      </p>
+
+      <!-- Sync Status -->
+      <div id="skeletonStatus" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;">
+        <div style="flex:1;min-width:120px;padding:12px;border-radius:8px;background:#f0fdf4;text-align:center;">
+          <div style="font-size:24px;font-weight:700;color:#16a34a;" id="bonesSynced">-</div>
+          <div style="font-size:12px;color:#666;">Synced</div>
+        </div>
+        <div style="flex:1;min-width:120px;padding:12px;border-radius:8px;background:#fefce8;text-align:center;">
+          <div style="font-size:24px;font-weight:700;color:#ca8a04;" id="bonesPending">-</div>
+          <div style="font-size:12px;color:#666;">Pending</div>
+        </div>
+        <div style="flex:1;min-width:120px;padding:12px;border-radius:8px;background:#fef2f2;text-align:center;">
+          <div style="font-size:24px;font-weight:700;color:#dc2626;" id="bonesFailed">-</div>
+          <div style="font-size:12px;color:#666;">Failed</div>
+        </div>
+        <div style="flex:1;min-width:120px;padding:12px;border-radius:8px;background:#f8fafc;text-align:center;">
+          <div style="font-size:24px;font-weight:700;color:#475569;" id="bonesTotal">-</div>
+          <div style="font-size:12px;color:#666;">Total</div>
+        </div>
+      </div>
+
+      <div id="lastSyncInfo" style="font-size:12px;color:#888;margin-bottom:12px;"></div>
+
+      <!-- Actions -->
+      <div class="action-bar">
+        <div class="action-bar-info" id="skeletonInfo"></div>
+        <div class="action-bar-buttons">
+          <button class="btn btn-secondary" onclick="skeletonPreviewDiff()">Preview Changes</button>
+          <button class="btn btn-primary" id="skeletonSyncBtn" onclick="skeletonSync('incremental')">Sync Now</button>
+          <button class="btn btn-danger" onclick="skeletonSync('full', true)">Full Sync (Force)</button>
+        </div>
+      </div>
+
+      <!-- Diff Preview -->
+      <div id="skeletonDiff" style="display:none;margin-top:12px;">
+        <div style="font-weight:600;margin-bottom:8px;">Preview:</div>
+        <div id="skeletonDiffContent" style="max-height:300px;overflow-y:auto;font-size:13px;background:#f8fafc;border-radius:6px;padding:12px;"></div>
+      </div>
+
+      <!-- Sync Log -->
+      <div id="skeletonLog" style="margin-top:16px;">
+        <div style="font-weight:600;margin-bottom:8px;cursor:pointer;" onclick="toggleSkeletonLog()">
+          Recent Sync History <span id="skeletonLogToggle" style="font-size:11px;">&#9660;</span>
+        </div>
+        <div id="skeletonLogContent" style="display:none;max-height:250px;overflow-y:auto;"></div>
+      </div>
+
+      <!-- Bone List -->
+      <div style="margin-top:16px;">
+        <div style="font-weight:600;margin-bottom:8px;cursor:pointer;" onclick="toggleBoneList()">
+          Bone Documents <span id="boneListToggle" style="font-size:11px;">&#9660;</span>
+        </div>
+        <div id="boneListContent" style="display:none;max-height:400px;overflow-y:auto;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ORG UNITS -->
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon" style="background:#8b5cf6;color:#fff;">&#127970;</div>
+        <h2>Org Units</h2>
+      </div>
+      <span class="section-badge" style="background:#f5f3ff;color:#7c3aed;">Structure</span>
+    </div>
+    <div class="section-body">
+      <p class="section-desc">Companies, teams, products, domains, and capabilities. These generate bone documents in LightRAG.</p>
+      <div class="action-bar">
+        <div class="action-bar-info"><span id="orgUnitCount">0</span> org units</div>
+        <div class="action-bar-buttons">
+          <button class="btn btn-primary" onclick="showOrgUnitForm()">Add Org Unit</button>
+        </div>
+      </div>
+      <div id="orgUnitForm" style="display:none;margin:12px 0;padding:12px;background:#f8fafc;border-radius:8px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <input type="text" id="orgName" placeholder="Name" style="padding:8px;border:1px solid #ddd;border-radius:4px;">
+          <select id="orgType" style="padding:8px;border:1px solid #ddd;border-radius:4px;">
+            <option value="Organization">Organization</option>
+            <option value="Team">Team</option>
+            <option value="StakeholderGroup">StakeholderGroup</option>
+            <option value="Product">Product</option>
+            <option value="Domain">Domain</option>
+            <option value="Capability">Capability</option>
+          </select>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <select id="orgParent" style="padding:8px;border:1px solid #ddd;border-radius:4px;">
+            <option value="">No parent</option>
+          </select>
+          <input type="text" id="orgDesc" placeholder="Description" style="padding:8px;border:1px solid #ddd;border-radius:4px;">
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn btn-secondary" onclick="hideOrgUnitForm()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveOrgUnit()">Save</button>
+        </div>
+      </div>
+      <table class="admin-table" id="orgUnitsTable" style="width:100%;font-size:13px;">
+        <thead><tr><th>Name</th><th>Type</th><th>Parent</th><th>Description</th><th style="width:80px;"></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- INITIATIVES -->
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon" style="background:#f59e0b;color:#fff;">&#127919;</div>
+        <h2>Initiatives</h2>
+      </div>
+      <span class="section-badge" style="background:#fffbeb;color:#b45309;">Strategic</span>
+    </div>
+    <div class="section-body">
+      <p class="section-desc">Strategic initiatives, objectives, concepts, and methods.</p>
+      <div class="action-bar">
+        <div class="action-bar-info"><span id="initiativeCount">0</span> initiatives</div>
+        <div class="action-bar-buttons">
+          <button class="btn btn-primary" onclick="showInitiativeForm()">Add Initiative</button>
+        </div>
+      </div>
+      <div id="initiativeForm" style="display:none;margin:12px 0;padding:12px;background:#f8fafc;border-radius:8px;">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px;">
+          <input type="text" id="initName" placeholder="Name" style="padding:8px;border:1px solid #ddd;border-radius:4px;">
+          <select id="initType" style="padding:8px;border:1px solid #ddd;border-radius:4px;">
+            <option value="Initiative">Initiative</option>
+            <option value="Objective">Objective</option>
+            <option value="Concept">Concept</option>
+            <option value="Method">Method</option>
+          </select>
+        </div>
+        <input type="text" id="initDesc" placeholder="Description" style="width:100%;padding:8px;border:1px solid #ddd;border-radius:4px;margin-bottom:8px;box-sizing:border-box;">
+        <div style="display:flex;gap:8px;justify-content:flex-end;">
+          <button class="btn btn-secondary" onclick="hideInitiativeForm()">Cancel</button>
+          <button class="btn btn-primary" onclick="saveInitiative()">Save</button>
+        </div>
+      </div>
+      <table class="admin-table" id="initiativesTable" style="width:100%;font-size:13px;">
+        <thead><tr><th>Name</th><th>Type</th><th>Owner</th><th>Status</th><th style="width:80px;"></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="section-card">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon icon-settings">&#9881;</div>
+        <h2>Settings</h2>
+      </div>
+      <span class="section-badge badge-settings">Config</span>
+    </div>
+    <div class="section-body">
+      <p class="section-desc">
+        Configure external service URLs and integrations. Changes are saved immediately.
+      </p>
+
+      <div class="settings-form">
+        <div class="settings-field">
+          <label for="setting-ingest-url">n8n Audio Ingest Webhook URL</label>
+          <div class="settings-input-row">
+            <input type="url" id="setting-ingest-url" class="settings-input"
+                   placeholder="https://192.168.2.16:8443/webhook/audio-diary">
+          </div>
+          <div class="settings-hint">Full URL for the n8n webhook that receives audio files for transcription (used by the Ingest page).</div>
+        </div>
+        <div class="settings-field">
+          <label for="setting-lightrag-url">LightRAG Service URL</label>
+          <div class="settings-input-row">
+            <input type="url" id="setting-lightrag-url" class="settings-input"
+                   placeholder="http://192.168.2.16:9621">
+          </div>
+          <div class="settings-hint">URL of the LightRAG service for context queries and document ingestion (used by the Processing page).</div>
+        </div>
+        <div class="settings-field">
+          <label for="setting-lightrag-api-key">LightRAG API Key</label>
+          <div class="settings-input-row">
+            <input type="password" id="setting-lightrag-api-key" class="settings-input"
+                   placeholder="Leave empty if no auth required">
+          </div>
+          <div class="settings-hint">API key for LightRAG authentication (sent as X-API-Key header). Set via LIGHTRAG_API_KEY env var on the LightRAG server.</div>
+        </div>
+        <div style="margin-top:10px;">
+          <button class="btn btn-primary btn-sm" id="saveSettingsBtn" onclick="saveSettings()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- DANGER ZONE -->
+  <div class="danger-zone">
+    <div class="section-header">
+      <div class="section-title">
+        <div class="section-icon danger-zone-icon">&#9888;</div>
+        <h2>Danger Zone</h2>
+      </div>
+    </div>
+    <div class="section-body">
+      <div class="backup-grid">
+        <div class="backup-panel" style="border-color:#f8514930;">
+          <h3>Clear Dictionary</h3>
+          <p>Delete all persons, terms, and variations. Transcripts are kept.</p>
+          <button class="btn btn-danger" onclick="confirmClearDictionary()" style="width:100%;justify-content:center;">Clear Dictionary</button>
+        </div>
+        <div class="backup-panel" style="border-color:#f8514930;">
+          <h3>Reset Everything</h3>
+          <p>Delete all data: dictionary, transcripts, and review log.</p>
+          <button class="btn btn-danger" onclick="confirmResetAll()" style="width:100%;justify-content:center;">Reset All Data</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="modal-overlay" id="modalOverlay" onclick="modalOverlayClick(event)">
+  <div class="modal" style="width:480px;">
+    <div class="modal-header" id="modalHeader"></div>
+    <div class="modal-body" id="modalBody"></div>
+    <div class="modal-footer" id="modalFooter"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// === STATE ===
+var csvFiles = {};
+var restoreData = null;
+var restoreFile = null;
+
+var CSV_PATTERNS = {
+  'team_roster': /team_roster/i,
+  'person_variations': /person_variations/i,
+  'terms_roster': /terms_roster/i,
+  'term_variations': /term_variations/i
+};
+
+// === INIT ===
+(function() {
+  var counts = {{ counts_json | safe }};
+  document.getElementById('totalPersons').textContent = counts.persons || 0;
+  document.getElementById('totalTerms').textContent = counts.terms || 0;
+  document.getElementById('totalVariations').textContent = counts.variations || 0;
+  document.getElementById('totalTranscripts').textContent = counts.transcripts || 0;
+})();
+
+function refreshCounts() {
+  fetch('/api/data/backup?transcripts=false&review_log=false').then(function() {
+    window.location.reload();
+  });
+}
+
+// === SKELETON SYNC ===
+
+function loadSkeletonStatus() {
+  fetch('/api/skeleton/status').then(function(r) { return r.json(); }).then(function(data) {
+    document.getElementById('bonesSynced').textContent = data.synced || 0;
+    document.getElementById('bonesPending').textContent = data.pending || 0;
+    document.getElementById('bonesFailed').textContent = data.failed || 0;
+    document.getElementById('bonesTotal').textContent = data.total_bones || 0;
+    if (data.last_sync) {
+      var d = new Date(data.last_sync.created_at);
+      var info = 'Last sync: ' + d.toLocaleString() + ' (' + data.last_sync.sync_mode + ', ' + data.last_sync.triggered_by + ')';
+      if (data.last_sync.status !== 'success') info += ' — ' + data.last_sync.status;
+      document.getElementById('lastSyncInfo').textContent = info;
+    } else {
+      document.getElementById('lastSyncInfo').textContent = 'No sync runs yet.';
+    }
+  }).catch(function() {
+    document.getElementById('lastSyncInfo').textContent = 'Could not load sync status.';
+  });
+}
+
+function skeletonSync(mode, force) {
+  var btn = document.getElementById('skeletonSyncBtn');
+  btn.disabled = true;
+  btn.textContent = 'Syncing...';
+  fetch('/api/skeleton/sync', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode: mode, force: !!force })
+  }).then(function(r) { return r.json(); }).then(function(data) {
+    var s = data.stats;
+    showToast('Sync complete: ' + s.created + ' created, ' + s.updated + ' updated, ' + s.deleted + ' deleted, ' + s.unchanged + ' unchanged' + (s.failed ? ', ' + s.failed + ' failed' : ''));
+    loadSkeletonStatus();
+  }).catch(function(e) {
+    showToast('Sync failed: ' + e.message, 'error');
+  }).finally(function() {
+    btn.disabled = false;
+    btn.textContent = 'Sync Now';
+  });
+}
+
+function skeletonPreviewDiff() {
+  var el = document.getElementById('skeletonDiff');
+  var content = document.getElementById('skeletonDiffContent');
+  el.style.display = 'block';
+  content.innerHTML = '<div style="color:#888;">Loading...</div>';
+  fetch('/api/skeleton/diff').then(function(r) { return r.json(); }).then(function(data) {
+    var html = '';
+    if (data.new.length) {
+      html += '<div style="color:#16a34a;font-weight:600;">New (' + data.new.length + '):</div>';
+      data.new.forEach(function(b) { html += '<div style="padding-left:12px;">' + b.bone_id + '</div>'; });
+    }
+    if (data.changed.length) {
+      html += '<div style="color:#ca8a04;font-weight:600;margin-top:8px;">Changed (' + data.changed.length + '):</div>';
+      data.changed.forEach(function(b) { html += '<div style="padding-left:12px;">' + b.bone_id + '</div>'; });
+    }
+    if (data.deleted.length) {
+      html += '<div style="color:#dc2626;font-weight:600;margin-top:8px;">Deleted (' + data.deleted.length + '):</div>';
+      data.deleted.forEach(function(b) { html += '<div style="padding-left:12px;">' + b.bone_id + '</div>'; });
+    }
+    html += '<div style="color:#888;margin-top:8px;">' + data.unchanged + ' unchanged</div>';
+    if (!data.new.length && !data.changed.length && !data.deleted.length) {
+      html = '<div style="color:#16a34a;">Everything is in sync.</div>';
+    }
+    content.innerHTML = html;
+  });
+}
+
+function toggleSkeletonLog() {
+  var el = document.getElementById('skeletonLogContent');
+  var toggle = document.getElementById('skeletonLogToggle');
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    toggle.innerHTML = '&#9650;';
+    loadSkeletonLog();
+  } else {
+    el.style.display = 'none';
+    toggle.innerHTML = '&#9660;';
+  }
+}
+
+function loadSkeletonLog() {
+  fetch('/api/skeleton/log?limit=10').then(function(r) { return r.json(); }).then(function(rows) {
+    var el = document.getElementById('skeletonLogContent');
+    if (!rows.length) { el.innerHTML = '<div style="color:#888;padding:8px;">No sync history.</div>'; return; }
+    var html = '<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+    html += '<tr style="border-bottom:1px solid #eee;"><th style="text-align:left;padding:4px;">Time</th><th>Mode</th><th>Status</th><th>+</th><th>~</th><th>-</th><th>=</th><th>ms</th></tr>';
+    rows.forEach(function(r) {
+      var d = new Date(r.created_at);
+      var statusColor = r.status === 'success' ? '#16a34a' : (r.status === 'partial' ? '#ca8a04' : '#dc2626');
+      html += '<tr style="border-bottom:1px solid #f0f0f0;">';
+      html += '<td style="padding:4px;">' + d.toLocaleString() + '</td>';
+      html += '<td style="text-align:center;">' + r.sync_mode + '</td>';
+      html += '<td style="text-align:center;color:' + statusColor + ';">' + r.status + '</td>';
+      html += '<td style="text-align:center;">' + (r.bones_created || 0) + '</td>';
+      html += '<td style="text-align:center;">' + (r.bones_updated || 0) + '</td>';
+      html += '<td style="text-align:center;">' + (r.bones_deleted || 0) + '</td>';
+      html += '<td style="text-align:center;">' + (r.bones_unchanged || 0) + '</td>';
+      html += '<td style="text-align:center;">' + (r.duration_ms || 0) + '</td>';
+      html += '</tr>';
+    });
+    html += '</table>';
+    el.innerHTML = html;
+  });
+}
+
+function toggleBoneList() {
+  var el = document.getElementById('boneListContent');
+  var toggle = document.getElementById('boneListToggle');
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    toggle.innerHTML = '&#9650;';
+    loadBoneList();
+  } else {
+    el.style.display = 'none';
+    toggle.innerHTML = '&#9660;';
+  }
+}
+
+function loadBoneList() {
+  fetch('/api/skeleton/bones').then(function(r) { return r.json(); }).then(function(bones) {
+    var el = document.getElementById('boneListContent');
+    if (!bones.length) { el.innerHTML = '<div style="color:#888;padding:8px;">No bones synced yet. Run a sync first.</div>'; return; }
+    var html = '<table style="width:100%;font-size:12px;border-collapse:collapse;">';
+    html += '<tr style="border-bottom:1px solid #eee;"><th style="text-align:left;padding:4px;">Bone ID</th><th>Source</th><th>Status</th><th>Last Synced</th></tr>';
+    bones.forEach(function(b) {
+      var statusColor = b.sync_status === 'synced' ? '#16a34a' : (b.sync_status === 'failed' ? '#dc2626' : '#ca8a04');
+      var d = b.last_synced_at ? new Date(b.last_synced_at).toLocaleString() : '-';
+      html += '<tr style="border-bottom:1px solid #f0f0f0;">';
+      html += '<td style="padding:4px;font-family:monospace;font-size:11px;">' + b.bone_id + '</td>';
+      html += '<td style="text-align:center;">' + b.source_table + '</td>';
+      html += '<td style="text-align:center;color:' + statusColor + ';">' + b.sync_status + '</td>';
+      html += '<td style="text-align:center;">' + d + '</td>';
+      html += '</tr>';
+    });
+    html += '</table>';
+    el.innerHTML = html;
+  });
+}
+
+// === ORG UNITS ===
+
+var orgUnitsData = [];
+
+function loadOrgUnits() {
+  fetch('/api/admin/org-units').then(function(r) { return r.json(); }).then(function(data) {
+    orgUnitsData = data;
+    document.getElementById('orgUnitCount').textContent = data.length;
+    renderOrgUnits();
+    updateOrgParentSelect();
+  });
+}
+
+function renderOrgUnits() {
+  var tbody = document.querySelector('#orgUnitsTable tbody');
+  if (!orgUnitsData.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">No org units yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = orgUnitsData.map(function(o) {
+    return '<tr>' +
+      '<td style="padding:6px;">' + o.name + '</td>' +
+      '<td style="padding:6px;">' + o.entity_type + '</td>' +
+      '<td style="padding:6px;">' + (o.parent_name || '-') + '</td>' +
+      '<td style="padding:6px;max-width:200px;overflow:hidden;text-overflow:ellipsis;">' + (o.description || '') + '</td>' +
+      '<td style="padding:6px;text-align:right;"><button class="btn btn-danger btn-sm" onclick="deleteOrgUnit(' + o.id + ')" style="font-size:11px;padding:2px 8px;">Delete</button></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function updateOrgParentSelect() {
+  var sel = document.getElementById('orgParent');
+  sel.innerHTML = '<option value="">No parent</option>';
+  orgUnitsData.forEach(function(o) {
+    sel.innerHTML += '<option value="' + o.id + '">' + o.name + ' (' + o.entity_type + ')</option>';
+  });
+}
+
+function showOrgUnitForm() { document.getElementById('orgUnitForm').style.display = 'block'; }
+function hideOrgUnitForm() { document.getElementById('orgUnitForm').style.display = 'none'; }
+
+function saveOrgUnit() {
+  var name = document.getElementById('orgName').value.trim();
+  if (!name) return;
+  fetch('/api/admin/org-units', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: name,
+      entity_type: document.getElementById('orgType').value,
+      parent_id: document.getElementById('orgParent').value ? parseInt(document.getElementById('orgParent').value) : null,
+      description: document.getElementById('orgDesc').value.trim()
+    })
+  }).then(function(r) { return r.json(); }).then(function() {
+    hideOrgUnitForm();
+    document.getElementById('orgName').value = '';
+    document.getElementById('orgDesc').value = '';
+    loadOrgUnits();
+    showToast('Org unit created');
+  });
+}
+
+function deleteOrgUnit(id) {
+  modalConfirm('Delete Org Unit', 'Delete this org unit?', { confirmCls: 'btn btn-danger' }).then(function(ok) {
+    if (!ok) return;
+    fetch('/api/admin/org-units/' + id, { method: 'DELETE' }).then(function() { loadOrgUnits(); showToast('Deleted'); });
+  });
+}
+
+// === INITIATIVES ===
+
+var initiativesData = [];
+
+function loadInitiatives() {
+  fetch('/api/admin/initiatives').then(function(r) { return r.json(); }).then(function(data) {
+    initiativesData = data;
+    document.getElementById('initiativeCount').textContent = data.length;
+    renderInitiatives();
+  });
+}
+
+function renderInitiatives() {
+  var tbody = document.querySelector('#initiativesTable tbody');
+  if (!initiativesData.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#888;padding:16px;">No initiatives yet.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = initiativesData.map(function(i) {
+    var statusColor = i.status === 'active' ? '#16a34a' : (i.status === 'paused' ? '#ca8a04' : '#888');
+    return '<tr>' +
+      '<td style="padding:6px;">' + i.name + '</td>' +
+      '<td style="padding:6px;">' + i.initiative_type + '</td>' +
+      '<td style="padding:6px;">' + (i.owner_name || '-') + '</td>' +
+      '<td style="padding:6px;color:' + statusColor + ';">' + i.status + '</td>' +
+      '<td style="padding:6px;text-align:right;"><button class="btn btn-danger btn-sm" onclick="deleteInitiative(' + i.id + ')" style="font-size:11px;padding:2px 8px;">Delete</button></td>' +
+      '</tr>';
+  }).join('');
+}
+
+function showInitiativeForm() { document.getElementById('initiativeForm').style.display = 'block'; }
+function hideInitiativeForm() { document.getElementById('initiativeForm').style.display = 'none'; }
+
+function saveInitiative() {
+  var name = document.getElementById('initName').value.trim();
+  if (!name) return;
+  fetch('/api/admin/initiatives', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: name,
+      initiative_type: document.getElementById('initType').value,
+      description: document.getElementById('initDesc').value.trim()
+    })
+  }).then(function(r) { return r.json(); }).then(function() {
+    hideInitiativeForm();
+    document.getElementById('initName').value = '';
+    document.getElementById('initDesc').value = '';
+    loadInitiatives();
+    showToast('Initiative created');
+  });
+}
+
+function deleteInitiative(id) {
+  modalConfirm('Delete Initiative', 'Delete this initiative?', { confirmCls: 'btn btn-danger' }).then(function(ok) {
+    if (!ok) return;
+    fetch('/api/admin/initiatives/' + id, { method: 'DELETE' }).then(function() { loadInitiatives(); showToast('Deleted'); });
+  });
+}
+
+// Init skeleton + entities on page load
+loadSkeletonStatus();
+loadOrgUnits();
+loadInitiatives();
+
+// === CSV IMPORT ===
+function handleCsvFiles(fileList) {
+  for (var i = 0; i < fileList.length; i++) {
+    var file = fileList[i];
+    if (!file.name.endsWith('.csv')) continue;
+    for (var key in CSV_PATTERNS) {
+      if (CSV_PATTERNS[key].test(file.name)) {
+        csvFiles[key] = { file: file, rows: 0, parsed: false };
+        parseCsvPreview(key, file);
+        break;
+      }
+    }
+  }
+  updateCsvChecklist();
+}
+
+function parseCsvPreview(key, file) {
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    var text = e.target.result;
+    var lines = text.trim().split('\n');
+    csvFiles[key].rows = Math.max(0, lines.length - 1);
+    csvFiles[key].parsed = true;
+    updateCsvChecklist();
+  };
+  reader.readAsText(file);
+}
+
+function updateCsvChecklist() {
+  var allFound = true;
+  var totalRows = 0;
+  for (var key in CSV_PATTERNS) {
+    var el = document.getElementById('check-' + key);
+    var f = csvFiles[key];
+    if (f && f.parsed) {
+      el.className = 'check-item found';
+      el.querySelector('.check-icon').innerHTML = '&#10003;';
+      el.querySelector('.check-count').textContent = f.rows + ' rows';
+      totalRows += f.rows;
+    } else {
+      el.className = 'check-item';
+      el.querySelector('.check-icon').innerHTML = '&#9675;';
+      el.querySelector('.check-count').innerHTML = '&mdash;';
+      allFound = false;
+    }
+  }
+
+  var hasAny = Object.keys(csvFiles).length > 0;
+  document.getElementById('csvImportOptions').style.display = hasAny ? '' : 'none';
+  document.getElementById('csvActionBar').style.display = hasAny ? '' : 'none';
+
+  if (hasAny) {
+    var found = Object.keys(csvFiles).length;
+    var summary = found + '/4 files loaded, ' + totalRows + ' total rows';
+    if (!allFound) summary = '<span class="warn">&#9888; ' + (4 - found) + ' file(s) missing.</span> ' + summary;
+    document.getElementById('csvSummary').innerHTML = summary;
+    document.getElementById('csvImportBtn').disabled = false;
+  }
+}
+
+function clearCsvFiles() {
+  csvFiles = {};
+  document.getElementById('csvFileInput').value = '';
+  document.getElementById('csvImportOptions').style.display = 'none';
+  document.getElementById('csvActionBar').style.display = 'none';
+  document.getElementById('csvProgress').classList.remove('visible');
+  document.getElementById('csvLog').classList.remove('visible');
+  for (var key in CSV_PATTERNS) {
+    var el = document.getElementById('check-' + key);
+    el.className = 'check-item';
+    el.querySelector('.check-icon').innerHTML = '&#9675;';
+    el.querySelector('.check-count').innerHTML = '&mdash;';
+  }
+}
+
+function runCsvImport() {
+  var mode = document.querySelector('input[name="csvMode"]:checked').value;
+  var modeLabel = mode === 'replace' ? 'REPLACE (clear + import)' : 'UPSERT (merge)';
+
+  modalConfirm('Import CSV Data',
+    'Import ' + Object.keys(csvFiles).length + ' CSV file(s) using <strong>' + modeLabel + '</strong> mode?' +
+    (mode === 'replace' ? '<br><br><span style="color:#d29922">&#9888; This will delete all existing dictionary data first.</span>' : ''),
+    { confirmLabel: 'Import', confirmCls: mode === 'replace' ? 'btn btn-danger' : 'btn btn-primary' }
+  ).then(function(ok) {
+    if (!ok) return;
+    executeCsvImport(mode);
+  });
+}
+
+function executeCsvImport(mode) {
+  var progress = document.getElementById('csvProgress');
+  var fill = document.getElementById('csvProgressFill');
+  var text = document.getElementById('csvProgressText');
+  var pct = document.getElementById('csvProgressPct');
+  var log = document.getElementById('csvLog');
+
+  progress.classList.add('visible');
+  log.classList.add('visible');
+  log.innerHTML = '';
+  fill.className = 'progress-fill';
+  fill.style.width = '10%';
+  pct.textContent = '10%';
+  text.textContent = 'Uploading files...';
+  log.innerHTML += '<div class="log-line">Uploading CSV files to server...</div>';
+
+  document.getElementById('csvImportBtn').disabled = true;
+
+  var formData = new FormData();
+  formData.append('mode', mode);
+  if (csvFiles.team_roster) formData.append('team_roster', csvFiles.team_roster.file);
+  if (csvFiles.person_variations) formData.append('person_variations', csvFiles.person_variations.file);
+  if (csvFiles.terms_roster) formData.append('terms_roster', csvFiles.terms_roster.file);
+  if (csvFiles.term_variations) formData.append('term_variations', csvFiles.term_variations.file);
+
+  fill.style.width = '50%';
+  pct.textContent = '50%';
+  text.textContent = 'Server processing...';
+
+  fetch('/api/data/import-csv', { method: 'POST', body: formData })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.status === 'ok') {
+        fill.style.width = '100%';
+        pct.textContent = '100%';
+        fill.classList.add('success');
+        text.textContent = 'Import complete.';
+        log.innerHTML += '<div class="log-line ok">  ' + data.persons + ' persons upserted.</div>';
+        log.innerHTML += '<div class="log-line ok">  ' + data.person_variations + ' person variations imported.</div>';
+        log.innerHTML += '<div class="log-line ok">  ' + data.terms + ' terms upserted.</div>';
+        log.innerHTML += '<div class="log-line ok">  ' + data.term_variations + ' term variations imported.</div>';
+        log.innerHTML += '<div class="log-line ok">Import complete.</div>';
+        showToast('CSV import complete', false, 'success');
+        setTimeout(function() { window.location.reload(); }, 1500);
+      } else {
+        throw new Error(data.message || 'Import failed');
+      }
+    })
+    .catch(function(err) {
+      fill.style.width = '100%';
+      fill.classList.add('error');
+      text.textContent = 'Import failed.';
+      pct.textContent = '';
+      log.innerHTML += '<div class="log-line err">Error: ' + err.message + '</div>';
+      showToast('Import failed: ' + err.message, true);
+      document.getElementById('csvImportBtn').disabled = false;
+    });
+}
+
+// === BACKUP ===
+function createBackup() {
+  var t = document.getElementById('backupIncludeTranscripts').checked;
+  var r = document.getElementById('backupIncludeReviewLog').checked;
+  window.location = '/api/data/backup?transcripts=' + t + '&review_log=' + r;
+}
+
+// === RESTORE ===
+function handleRestoreFile(file) {
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      var data = JSON.parse(e.target.result);
+      if (data.format !== 'diary-processor-backup') {
+        showToast('Invalid backup: not a diary-processor backup file', true);
+        return;
+      }
+      restoreData = data;
+      restoreFile = file;
+      showRestorePreview(data);
+    } catch (err) {
+      showToast('Invalid JSON file: ' + err.message, true);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function showRestorePreview(data) {
+  var preview = document.getElementById('restorePreview');
+  var summary = document.getElementById('restoreSummary');
+
+  var persons = (data.persons || []).length;
+  var terms = (data.terms || []).length;
+  var pVars = 0; for (var i = 0; i < (data.persons || []).length; i++) pVars += (data.persons[i].variations || []).length;
+  var tVars = 0; for (var i = 0; i < (data.terms || []).length; i++) tVars += (data.terms[i].variations || []).length;
+  var transcripts = (data.transcripts || []).length;
+
+  var cards = [
+    { count: persons, label: 'Persons' },
+    { count: terms, label: 'Terms' },
+    { count: pVars + tVars, label: 'Variations' },
+    { count: transcripts, label: 'Transcripts' }
+  ];
+
+  var html = '';
+  for (var i = 0; i < cards.length; i++) {
+    html += '<div class="summary-card"><div class="count">' + cards[i].count + '</div><div class="label">' + cards[i].label + '</div></div>';
+  }
+  summary.innerHTML = html;
+  preview.classList.add('visible');
+}
+
+function clearRestore() {
+  restoreData = null;
+  restoreFile = null;
+  document.getElementById('restorePreview').classList.remove('visible');
+  document.getElementById('restoreFileInput').value = '';
+  document.getElementById('restoreProgress').classList.remove('visible');
+}
+
+function confirmRestore() {
+  modalConfirm('Restore Backup',
+    'This will <strong>replace all existing data</strong> with the backup contents.' +
+    '<br><br>Created: ' + (restoreData.created_at || 'unknown') +
+    '<br>Version: ' + (restoreData.version || '?'),
+    { danger: true, confirmLabel: 'Restore', confirmCls: 'btn btn-danger' }
+  ).then(function(ok) {
+    if (!ok) return;
+    executeRestore();
+  });
+}
+
+function executeRestore() {
+  var fill = document.getElementById('restoreProgressFill');
+  var text = document.getElementById('restoreProgressText');
+  var pct = document.getElementById('restoreProgressPct');
+  document.getElementById('restoreProgress').classList.add('visible');
+  document.getElementById('restoreBtn').disabled = true;
+  fill.className = 'progress-fill';
+  fill.style.width = '30%';
+  pct.textContent = '30%';
+  text.textContent = 'Uploading backup...';
+
+  var formData = new FormData();
+  formData.append('file', restoreFile);
+
+  fetch('/api/data/restore', { method: 'POST', body: formData })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.status === 'ok') {
+        fill.style.width = '100%';
+        pct.textContent = '100%';
+        fill.classList.add('success');
+        text.textContent = 'Restore complete.';
+        showToast('Backup restored successfully', false, 'success');
+        setTimeout(function() { window.location.reload(); }, 1500);
+      } else {
+        throw new Error(data.message || 'Restore failed');
+      }
+    })
+    .catch(function(err) {
+      fill.style.width = '100%';
+      fill.classList.add('error');
+      text.textContent = 'Restore failed.';
+      pct.textContent = '';
+      showToast('Restore failed: ' + err.message, true);
+      document.getElementById('restoreBtn').disabled = false;
+    });
+}
+
+// === DANGER ZONE ===
+function confirmClearDictionary() {
+  modalConfirm('Clear Dictionary',
+    'This will permanently delete <strong>all persons, terms, and variations</strong>.<br><br>Transcripts and review logs will be kept.',
+    { danger: true, confirmLabel: 'Clear Dictionary', confirmCls: 'btn btn-danger' }
+  ).then(function(ok) {
+    if (!ok) return;
+    fetch('/api/data/clear-dictionary', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.status === 'ok') {
+          showToast('Dictionary cleared', false, 'success');
+          setTimeout(function() { window.location.reload(); }, 1000);
+        }
+      })
+      .catch(function(err) { showToast('Error: ' + err.message, true); });
+  });
+}
+
+function confirmResetAll() {
+  modalConfirm('Reset All Data',
+    'This will permanently delete <strong>everything</strong>: all persons, terms, variations, transcripts, and review logs.<br><br>This cannot be undone.',
+    { danger: true, confirmLabel: 'Reset Everything', confirmCls: 'btn btn-danger' }
+  ).then(function(ok) {
+    if (!ok) return;
+    fetch('/api/data/reset', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.status === 'ok') {
+          showToast('All data reset', false, 'success');
+          setTimeout(function() { window.location.reload(); }, 1000);
+        }
+      })
+      .catch(function(err) { showToast('Error: ' + err.message, true); });
+  });
+}
+
+// === HARVEST ENTRIES ===
+(function loadHarvestStatus() {
+  fetch('/api/harvest/pattern-status')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var statusEl = document.getElementById('harvestStatus');
+      var infoEl = document.getElementById('harvestInfo');
+      var clearBtn = document.getElementById('harvestClearBtn');
+      var loadBtn = document.getElementById('harvestLoadBtn');
+
+      if (!data.has_token) {
+        statusEl.innerHTML = '<div class="harvest-status-empty">No Harvest API token configured. Set HARVEST_ACCESS_TOKEN in .env</div>';
+        loadBtn.disabled = true;
+        return;
+      }
+
+      var stats = data.entries || {};
+      if (stats.count > 0) {
+        statusEl.innerHTML =
+          '<div class="harvest-status-info">' +
+          '<div class="harvest-stat"><span class="harvest-stat-value">' + stats.count + '</span><span class="harvest-stat-label">entries</span></div>' +
+          '<div class="harvest-stat"><span class="harvest-stat-value">' + (stats.from_date || '?') + '</span><span class="harvest-stat-label">from</span></div>' +
+          '<div class="harvest-stat"><span class="harvest-stat-value">' + (stats.to_date || '?') + '</span><span class="harvest-stat-label">to</span></div>' +
+          '<div class="harvest-stat"><span class="harvest-stat-value">' + (data.pattern_keywords || 0) + '</span><span class="harvest-stat-label">patterns</span></div>' +
+          '</div>';
+        clearBtn.style.display = '';
+        loadBtn.textContent = 'Reload Last 3 Months';
+      } else {
+        statusEl.innerHTML = '<div class="harvest-status-empty">No Harvest entries loaded yet. Load entries to enable pattern-based suggestions.</div>';
+        clearBtn.style.display = 'none';
+        loadBtn.textContent = 'Load Last 3 Months';
+      }
+    })
+    .catch(function() {
+      document.getElementById('harvestStatus').innerHTML =
+        '<div class="harvest-status-empty">Could not check Harvest status</div>';
+    });
+})();
+
+function loadHarvestEntries() {
+  var loadBtn = document.getElementById('harvestLoadBtn');
+  var clearBtn = document.getElementById('harvestClearBtn');
+  var progress = document.getElementById('harvestProgress');
+  var fill = document.getElementById('harvestProgressFill');
+  var text = document.getElementById('harvestProgressText');
+  var pct = document.getElementById('harvestProgressPct');
+
+  loadBtn.disabled = true;
+  clearBtn.disabled = true;
+  progress.classList.add('visible');
+  fill.className = 'progress-fill';
+  fill.style.width = '20%';
+  pct.textContent = '20%';
+  text.textContent = 'Fetching time entries from Harvest...';
+
+  fetch('/api/harvest/load-patterns?days=90', { method: 'POST' })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.error) throw new Error(data.error);
+      fill.style.width = '100%';
+      pct.textContent = '100%';
+      fill.classList.add('success');
+      text.textContent = data.entries_fetched + ' entries loaded, ' + data.pattern_keywords + ' patterns extracted.';
+      showToast('Harvest entries loaded (' + data.entries_fetched + ' entries)', false, 'success');
+      loadBtn.disabled = false;
+      clearBtn.disabled = false;
+      setTimeout(function() {
+        progress.classList.remove('visible');
+        // Refresh status display
+        window.location.reload();
+      }, 2000);
+    })
+    .catch(function(err) {
+      fill.style.width = '100%';
+      fill.classList.add('error');
+      text.textContent = 'Failed to load entries.';
+      pct.textContent = '';
+      showToast('Harvest load failed: ' + err.message, true);
+      loadBtn.disabled = false;
+      clearBtn.disabled = false;
+    });
+}
+
+function clearHarvestEntries() {
+  modalConfirm('Clear Harvest Entries',
+    'This will delete all stored Harvest time entries and the pattern database.<br><br>You can reload them at any time.',
+    { danger: true, confirmLabel: 'Clear Entries', confirmCls: 'btn btn-danger' }
+  ).then(function(ok) {
+    if (!ok) return;
+    fetch('/api/harvest/clear-patterns', { method: 'POST' })
+      .then(function(r) { return r.json(); })
+      .then(function(data) {
+        if (data.status === 'ok') {
+          showToast('Harvest entries cleared', false, 'success');
+          setTimeout(function() { window.location.reload(); }, 1000);
+        }
+      })
+      .catch(function(err) { showToast('Error: ' + err.message, true); });
+  });
+}
+
+// === SETTINGS ===
+(function loadSettings() {
+  fetch('/api/settings')
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var el = document.getElementById('setting-ingest-url');
+      if (el && data.n8n_ingest_webhook_url) el.value = data.n8n_ingest_webhook_url;
+      var lr = document.getElementById('setting-lightrag-url');
+      if (lr && data.lightrag_url) lr.value = data.lightrag_url;
+      var lk = document.getElementById('setting-lightrag-api-key');
+      if (lk && data.lightrag_api_key) lk.value = data.lightrag_api_key;
+    })
+    .catch(function() {});
+})();
+
+function saveSettings() {
+  var btn = document.getElementById('saveSettingsBtn');
+  var url = document.getElementById('setting-ingest-url').value.trim();
+  var lightragUrl = document.getElementById('setting-lightrag-url').value.trim();
+  btn.disabled = true;
+  btn.textContent = 'Saving...';
+  var lightragKey = document.getElementById('setting-lightrag-api-key').value.trim();
+  var payload = { n8n_ingest_webhook_url: url };
+  if (lightragUrl) payload.lightrag_url = lightragUrl;
+  payload.lightrag_api_key = lightragKey;
+  fetch('/api/settings', {
+    method: 'PUT',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload)
+  })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      if (data.status === 'ok') {
+        showToast('Settings saved', false, 'success');
+      } else {
+        showToast('Failed to save settings', true);
+      }
+    })
+    .catch(function(err) { showToast('Error: ' + err.message, true); })
+    .finally(function() { btn.disabled = false; btn.textContent = 'Save'; });
+}
+
+// === DRAG & DROP ===
+['csvDropZone', 'restoreDropZone'].forEach(function(id) {
+  var zone = document.getElementById(id);
+  zone.addEventListener('dragover', function(e) { e.preventDefault(); zone.classList.add('dragover'); });
+  zone.addEventListener('dragleave', function() { zone.classList.remove('dragover'); });
+  zone.addEventListener('drop', function(e) {
+    e.preventDefault(); zone.classList.remove('dragover');
+    if (id === 'csvDropZone') handleCsvFiles(e.dataTransfer.files);
+    else if (e.dataTransfer.files[0]) handleRestoreFile(e.dataTransfer.files[0]);
+  });
+});
+
+// === HELPERS ===
+function showToast(msg, isError, cls) {
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast visible' + (isError ? ' error' : (cls ? ' ' + cls : ''));
+  clearTimeout(t._timer);
+  t._timer = setTimeout(function() { t.classList.remove('visible'); }, 2500);
+}
+
+// === MODAL SYSTEM ===
+var modalResolveFn = null;
+
+function showModal(header, bodyHtml, buttons, opts) {
+  opts = opts || {};
+  document.getElementById('modalHeader').textContent = header;
+  document.getElementById('modalHeader').className = 'modal-header' + (opts.danger ? ' danger' : '');
+  document.getElementById('modalBody').innerHTML = bodyHtml;
+  var footerHtml = '';
+  for (var i = 0; i < buttons.length; i++) {
+    var b = buttons[i];
+    footerHtml += '<button class="' + (b.cls || 'btn btn-secondary') + '" onclick="resolveModal(' +
+      (typeof b.value === 'string' ? "'" + b.value + "'" : b.value) + ')" style="padding:8px 18px;font-size:13px;font-weight:600;border-radius:6px;cursor:pointer;min-width:80px;text-align:center;">' + b.label + '</button>';
+  }
+  document.getElementById('modalFooter').innerHTML = footerHtml;
+  document.getElementById('modalOverlay').classList.add('visible');
+}
+
+function resolveModal(value) {
+  document.getElementById('modalOverlay').classList.remove('visible');
+  if (modalResolveFn) { var fn = modalResolveFn; modalResolveFn = null; fn(value); }
+}
+
+function modalOverlayClick(e) {
+  if (e.target === document.getElementById('modalOverlay')) resolveModal(null);
+}
+
+document.addEventListener('keydown', function(e) {
+  if (!document.getElementById('modalOverlay').classList.contains('visible')) return;
+  if (e.key === 'Escape') resolveModal(null);
+  if (e.key === 'Enter') {
+    var btns = document.querySelectorAll('#modalFooter button:not(.btn-secondary)');
+    if (btns.length) btns[btns.length - 1].click();
+  }
+});
+
+function modalConfirm(title, message, opts) {
+  opts = opts || {};
+  return new Promise(function(resolve) {
+    modalResolveFn = resolve;
+    showModal(title, '<p>' + message + '</p>', [
+      { label: 'Cancel', cls: 'btn btn-secondary', value: false },
+      { label: opts.confirmLabel || 'Confirm', cls: opts.confirmCls || 'btn btn-primary', value: true }
+    ], opts);
+  });
+}
+</script>
+{% endblock %}
