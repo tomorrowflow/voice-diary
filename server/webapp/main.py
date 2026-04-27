@@ -88,6 +88,11 @@ app = FastAPI(title="Diary Transcript Review", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+# iOS-facing routers (bearer-token auth applied per-router via Depends)
+from routers.calendar import router as calendar_router  # noqa: E402
+
+app.include_router(calendar_router)
+
 
 # ─── Text correction pre-processing ──────────────────────────────────
 
@@ -625,8 +630,50 @@ def _to_local_iso(iso_str: str) -> str:
 
 
 async def _fetch_calendar_events(date_str: str) -> list[dict]:
-    """Stub: returns no events. Replaced by direct MS Graph proxy in Server S2."""
-    return []
+    """Fetch raw Graph-shaped calendar events for the given local date.
+
+    Used by `/api/calendar/{date}` (HTMX review widget) and
+    `/api/harvest/suggest`. Returns events in Graph's native shape
+    (`start.dateTime`, `attendees[i].emailAddress.name`, …) so the
+    existing UI layers don't need to change.
+    """
+    from datetime import time as _time
+    from msgraph_client import (
+        MSGraphError,
+        MSGraphNotBootstrapped,
+        get_client,
+    )
+
+    try:
+        d = date_module.fromisoformat(date_str)
+    except ValueError:
+        return []
+
+    start_local = datetime.combine(d, _time.min, tzinfo=LOCAL_TZ)
+    end_local = start_local + timedelta(days=1)
+    start_utc = start_local.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.0000000")
+    end_utc = end_local.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.0000000")
+
+    try:
+        client = await get_client()
+        data = await client.get_json(
+            "/me/calendarView",
+            params={
+                "startDateTime": start_utc,
+                "endDateTime": end_utc,
+                "$top": 100,
+                "$orderby": "start/dateTime",
+                "$select": (
+                    "id,subject,start,end,isAllDay,showAs,bodyPreview,"
+                    "responseStatus,organizer,attendees,recurrence,webLink"
+                ),
+            },
+        )
+    except (MSGraphNotBootstrapped, MSGraphError) as exc:
+        logger.warning("calendar fetch failed for %s: %s", date_str, exc)
+        return []
+
+    return data.get("value", []) or []
 
 
 @app.get("/api/calendar/{date_str}")

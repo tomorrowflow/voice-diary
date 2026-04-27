@@ -124,13 +124,13 @@ S1 removes n8n and pulls audio processing in-process. The full task list with ex
 
 ## What gets added
 
-- `webapp/routers/` — new module with iOS-specific routers (sessions, calendar, email, lightrag, health). Mounted into the existing FastAPI app alongside existing routes.
-- `webapp/msgraph_client.py` — MSAL wrapper with token cache.
-- `scripts/msgraph_bootstrap.py` — one-time device-code OAuth flow.
-- `scripts/issue_ios_token.py` — bearer-token generator.
-- Bearer-token middleware applied only to iOS routes (existing routes stay open to internal Docker network).
-- ffmpeg installed in `webapp/Dockerfile`.
-- Whisper service in `docker-compose.yml`.
+- `webapp/routers/` — iOS-specific routers (calendar in S2; email, sessions, lightrag, health land in S3). Mounted into the existing FastAPI app. Bearer-token `Depends` is per-router, not global.
+- `webapp/routers/auth.py` — bearer-token `Depends` (S2).
+- `webapp/msgraph_client.py` — MSAL public client + persistent token cache, async Graph wrapper (S2).
+- `scripts/msgraph_bootstrap.py` — one-time device-code OAuth flow (S2).
+- `scripts/issue_ios_token.py` — bearer-token generator (S2).
+- ffmpeg installed in `webapp/Dockerfile` (S1).
+- Whisper service in `docker-compose.yml` (S1, with CPU/GPU image variants via `WHISPER_IMAGE_TAG`).
 
 ## On-device stack (iOS)
 
