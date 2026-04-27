@@ -17,13 +17,31 @@ import os
 import sys
 from pathlib import Path
 
-# Make webapp/ importable when invoked from the scripts/ directory.
-WEBAPP_DIR = Path(__file__).resolve().parent.parent / "webapp"
-sys.path.insert(0, str(WEBAPP_DIR))
+# Make the webapp module importable. Host layout has it under
+# `server/webapp/`; the docker-compose volume mounts this script at
+# `/app/scripts/` with the webapp code already on `/app/`.
+SCRIPT_DIR = Path(__file__).resolve().parent
+for candidate in (SCRIPT_DIR.parent / "webapp", SCRIPT_DIR.parent):
+    if (candidate / "msgraph_client.py").exists():
+        sys.path.insert(0, str(candidate))
+        break
+else:
+    print(
+        "ERROR: could not locate msgraph_client.py near this script.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 from dotenv import load_dotenv  # noqa: E402
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# .env may live in `server/.env` (host) or be sourced from compose env_file.
+for env_candidate in (
+    SCRIPT_DIR.parent / ".env",
+    Path("/app/.env"),
+):
+    if env_candidate.exists():
+        load_dotenv(env_candidate)
+        break
 
 import msal  # noqa: E402
 

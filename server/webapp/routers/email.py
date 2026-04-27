@@ -16,6 +16,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+import fixtures
 from enrichment import (
     EnrichmentSummariserUnavailable,
     summarise_for_speech,
@@ -84,29 +85,31 @@ async def email_search(
     response_language: ResponseLanguage = Query(default="de"),
     top: int = Query(default=10, ge=1, le=25),
 ) -> EmailSearchResponse:
-    params: dict[str, str] = {
-        "$search": f'"{q}"',
-        "$top": str(top),
-        "$select": "id,subject,from,receivedDateTime,bodyPreview,webLink",
-        "$orderby": "receivedDateTime desc",
-    }
-    # Graph $search is incompatible with $filter on receivedDateTime, so
-    # we apply the date window client-side after retrieval.
-    try:
-        client = await get_client()
-        data = await client.get_json("/me/messages", params=params)
-    except MSGraphNotBootstrapped as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="msgraph_not_bootstrapped",
-        ) from exc
-    except MSGraphError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
-
-    raw_messages = data.get("value", []) or []
+    if fixtures.fixture_mode():
+        raw_messages = fixtures.load_email_search(q)[:top]
+    else:
+        params: dict[str, str] = {
+            "$search": f'"{q}"',
+            "$top": str(top),
+            "$select": "id,subject,from,receivedDateTime,bodyPreview,webLink",
+            "$orderby": "receivedDateTime desc",
+        }
+        # Graph $search is incompatible with $filter on receivedDateTime,
+        # so we apply the date window client-side after retrieval.
+        try:
+            client = await get_client()
+            data = await client.get_json("/me/messages", params=params)
+        except MSGraphNotBootstrapped as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="msgraph_not_bootstrapped",
+            ) from exc
+        except MSGraphError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=str(exc),
+            ) from exc
+        raw_messages = data.get("value", []) or []
     raw_messages = _filter_by_date(raw_messages, from_, to)
 
     sources_text = _format_sources(raw_messages)

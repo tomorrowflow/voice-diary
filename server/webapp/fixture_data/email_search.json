@@ -1,0 +1,29 @@
+{
+  "comment": "Bundled MS Graph email fixtures. `receivedDaysAgo` re-bases the timestamp at read time so emails always look recent.",
+  "value": [
+    {
+      "id": "FIXTURE-msg-byod-blocker",
+      "subject": "BYOD policy — open question on MDM enrolment",
+      "bodyPreview": "Hi Florian, ich blocke noch beim MDM-Enrolment für externe Geräte. Können wir das Donnerstag im BYOD-Sync klären? — Christian",
+      "from": { "emailAddress": { "name": "Christian Bauer", "address": "christian.bauer@enersis.com" } },
+      "receivedDaysAgo": 1,
+      "webLink": "https://outlook.office365.com/owa/?itemid=FIXTURE-msg-byod-blocker"
+    },
+    {
+      "id": "FIXTURE-msg-board-deck",
+      "subject": "Board-Deck draft — Q2 update",
+      "bodyPreview": "Anbei der erste Entwurf des Board-Decks fürs Q2-Update. Bitte bis Donnerstag durchsehen. — Monica",
+      "from": { "emailAddress": { "name": "Monica Breitkreutz", "address": "monica.breitkreutz@enersis.com" } },
+      "receivedDaysAgo": 2,
+      "webLink": "https://outlook.office365.com/owa/?itemid=FIXTURE-msg-board-deck"
+    },
+    {
+      "id": "FIXTURE-msg-azure-cert",
+      "subject": "Azure-Zertifikat läuft in 14 Tagen ab",
+      "bodyPreview": "Erinnerung: Das Service-Principal-Zertifikat im Tenant prod-eu läuft in 14 Tagen aus. Bitte rotieren.",
+      "from": { "emailAddress": { "name": "Azure Notifications", "address": "noreply@microsoft.com" } },
+      "receivedDaysAgo": 3,
+      "webLink": "https://outlook.office365.com/owa/?itemid=FIXTURE-msg-azure-cert"
+    }
+  ]
+}
