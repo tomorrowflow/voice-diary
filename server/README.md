@@ -1,13 +1,35 @@
 # Voice Diary — server
 
-FastAPI backend, **seeded from `diary-processor/webapp/` on 2026-04-24**. Working app with entity detection, LightRAG ingest, review UI, admin UI, and Harvest integration. Audio ingest is now local (ffmpeg + Whisper sidecar); n8n has been removed. Remaining work is the iOS-specific routes (S2/S3).
+FastAPI backend, **seeded from `diary-processor/webapp/` on 2026-04-24**. Working app with entity detection, LightRAG ingest, review UI, admin UI, and Harvest integration. Audio ingest is local (ffmpeg + Whisper sidecar); Microsoft Graph access goes through MSAL device-code on the server. Remaining work is the iOS session ingest + enrichment routes (S3).
 
 ## Status
 
-- `webapp/` — n8n removed (S1 ✅). Audio uploads run ffmpeg + Whisper in-process. Calendar route stubbed pending S2.
-- `docker-compose.yml` — Whisper sidecar added (S1 ✅). CPU + GPU image variants selected via `WHISPER_IMAGE_TAG`.
-- `.env.example` — n8n vars removed (S1 ✅). MSAL + bearer-token vars land in S2.
+- `webapp/` — n8n removed (S1 ✅). Audio uploads run ffmpeg + Whisper in-process. Calendar served via Microsoft Graph (S2 ✅).
+- `docker-compose.yml` — Whisper sidecar (S1 ✅). CPU + GPU image variants selected via `WHISPER_IMAGE_TAG`.
+- `.env.example` — n8n vars removed (S1 ✅). MSAL + bearer-token vars added (S2 ✅).
+- `webapp/routers/calendar.py` — `/today/calendar` + `/calendar/event/{id}` for iOS, bearer-token gated (S2 ✅).
 - `docs-archive/` — 8 historical design docs from diary-processor. Reference only.
+
+## Microsoft Graph bootstrap (S2)
+
+One-time setup:
+
+1. **Entra app registration** in the user's tenant. Type: *Public client*. Delegated scopes: `Calendars.Read`, `Mail.Read`, `offline_access`. *Allow public client flows* = yes. No redirect URI, no client secret. Note the application (client) ID and tenant ID.
+2. **Set env vars** in `server/.env`: `MSGRAPH_CLIENT_ID`, `MSGRAPH_TENANT_ID`.
+3. **Run the bootstrap** (interactive — you sign in once):
+
+   ```bash
+   docker compose run --rm webapp python scripts/msgraph_bootstrap.py
+   ```
+
+   The script prints a code + URL. Sign in with the Entra account, grant the requested scopes, return to the terminal. The refresh token persists in `data/msal_cache.bin` (mode 0600). The token auto-refreshes silently afterwards.
+4. **Issue the iOS bearer token**:
+
+   ```bash
+   docker compose run --rm webapp python scripts/issue_ios_token.py
+   ```
+
+   Paste into `IOS_BEARER_TOKEN=` in `.env`, restart the webapp, and paste the same value into the iOS app during onboarding.
 
 ## What lives here
 
@@ -19,8 +41,12 @@ server/
 ├── docs-archive/                historical design docs (reference)
 └── webapp/                      FastAPI app
     ├── Dockerfile               python:3.11-slim + ffmpeg
-    ├── requirements.txt         needs msal added (S2)
+    ├── requirements.txt         includes msal
     ├── main.py                  ~60 routes; see CLAUDE.md for what to modify
+    ├── msgraph_client.py        MSAL public client + token cache (S2)
+    ├── routers/                 iOS-facing routers (bearer-token gated)
+    │   ├── auth.py              bearer-token Depends
+    │   └── calendar.py          /today/calendar, /calendar/event/{id}
     ├── db.py
     ├── document_processor.py    LightRAG context + Ollama analysis + narrative + ingest
     ├── entity_detector.py       4-pass entity normalization
