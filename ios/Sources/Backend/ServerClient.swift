@@ -1,11 +1,12 @@
 import Foundation
+import UniformTypeIdentifiers
 
 // Multipart upload to POST /api/sessions plus thin GET helpers for /health,
 // /today/calendar, etc. Intentionally URLSession-only — no Alamofire.
 
 public enum ServerClientError: Error, CustomStringConvertible, Sendable {
     case notConfigured
-    case http(status: Int, body: String)
+    case http(status: Int, detail: String)
     case decodingFailed(String)
     case missingFile(URL)
 
@@ -13,8 +14,8 @@ public enum ServerClientError: Error, CustomStringConvertible, Sendable {
         switch self {
         case .notConfigured:
             return "server URL or bearer token not set"
-        case .http(let status, let body):
-            return "HTTP \(status): \(body.prefix(200))"
+        case .http(let status, let detail):
+            return "HTTP \(status): \(detail.prefix(200))"
         case .decodingFailed(let msg):
             return "decode error: \(msg)"
         case .missingFile(let url):
@@ -32,8 +33,15 @@ public actor ServerClient {
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 600
+        // The SessionUploader queue handles retry, so we don't need
+        // URLSession to spin waiting for connectivity itself — fail fast
+        // and let the queue reschedule with backoff.
         config.waitsForConnectivity = false
         self.session = URLSession(configuration: config)
+    }
+
+    deinit {
+        session.invalidateAndCancel()
     }
 
     private func config() throws -> (URL, String) {
@@ -114,8 +122,17 @@ public actor ServerClient {
     private static func assertOK(response: URLResponse, body: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
-            let bodyText = String(data: body, encoding: .utf8) ?? "<binary>"
-            throw ServerClientError.http(status: http.statusCode, body: bodyText)
+            // FastAPI's default error shape is `{"detail": "..."}`; pull
+            // that out when present so logs and UI show the precise code
+            // instead of a JSON blob.
+            let detail: String
+            if let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+               let d = obj["detail"] as? String {
+                detail = d
+            } else {
+                detail = String(data: body, encoding: .utf8) ?? "<binary>"
+            }
+            throw ServerClientError.http(status: http.statusCode, detail: detail)
         }
     }
 
@@ -146,18 +163,27 @@ public actor ServerClient {
             guard FileManager.default.fileExists(atPath: fileURL.path) else {
                 throw ServerClientError.missingFile(fileURL)
             }
-            let fileData = try Data(contentsOf: fileURL)
+            let fileData = try Data(contentsOf: fileURL, options: .mappedIfSafe)
             let baseName = fileURL.lastPathComponent
+            let mime = mimeType(for: fileURL)
             data.append(boundaryLine)
             data.append(
                 "Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(baseName)\"\r\n".data(using: .utf8)!
             )
-            data.append("Content-Type: audio/mp4\r\n\r\n".data(using: .utf8)!)
+            data.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
             data.append(fileData)
             data.append("\r\n".data(using: .utf8)!)
         }
 
         data.append(endBoundary)
         return data
+    }
+
+    private static func mimeType(for url: URL) -> String {
+        if let type = UTType(filenameExtension: url.pathExtension),
+           let mime = type.preferredMIMEType {
+            return mime
+        }
+        return "application/octet-stream"
     }
 }

@@ -3,7 +3,7 @@ import SwiftUI
 @main
 struct VoiceDiaryApp: App {
     init() {
-        print("Voice Diary ready")
+        Log.app.info("Voice Diary ready")
     }
 
     var body: some Scene {

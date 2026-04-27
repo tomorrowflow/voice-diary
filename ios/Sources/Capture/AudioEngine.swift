@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 
 // AVAudioEngine wrapper with two sinks:
 //   1. Parakeet streaming  (PCM Float32 buffers, downsampled to 16 kHz mono)
@@ -77,7 +78,7 @@ public actor AudioEngine {
             do {
                 try writer.write(buffer: outBuf)
             } catch {
-                print("AudioEngine: writer error: \(error)")
+                Log.audio.error("writer error: \(String(describing: error), privacy: .public)")
             }
             streamingSink?(outBuf)
         }
@@ -98,14 +99,20 @@ public actor AudioEngine {
     }
 
     private func configureSession() async throws {
+        // playAndRecord (not record) so we can play TTS back without
+        // re-configuring the session each time. Mode `.measurement` keeps
+        // EQ off the input, important for downstream ASR. We deliberately
+        // don't request `.duckOthers` here — Voice Diary speaks via Piper
+        // in a separate playback path that handles ducking itself.
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(
                 .playAndRecord,
                 mode: .measurement,
-                options: [.defaultToSpeaker, .allowBluetooth, .duckOthers]
+                options: [.defaultToSpeaker, .allowBluetooth]
             )
             try session.setPreferredSampleRate(M4AWriter.sampleRate)
+            try session.setPreferredIOBufferDuration(0.02)
             try session.setActive(true, options: [])
         } catch {
             throw EngineError.sessionConfigFailed("\(error)")
