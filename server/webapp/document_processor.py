@@ -1,5 +1,5 @@
 """
-Document processing pipeline — ports the n8n Analysis → LightRAG workflow to Python.
+Document processing pipeline — runs the Analysis → LightRAG flow in-process.
 
 Steps:
 1. Query LightRAG for recent context + entity history (parallel)

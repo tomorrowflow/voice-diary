@@ -1,12 +1,12 @@
 # Voice Diary — server
 
-FastAPI backend, **seeded from `diary-processor/webapp/` on 2026-04-24**. Already a working app with entity detection, LightRAG ingest, review UI, admin UI, and Harvest integration. The remaining work is removing n8n wiring and adding iOS-specific routes.
+FastAPI backend, **seeded from `diary-processor/webapp/` on 2026-04-24**. Working app with entity detection, LightRAG ingest, review UI, admin UI, and Harvest integration. Audio ingest is now local (ffmpeg + Whisper sidecar); n8n has been removed. Remaining work is the iOS-specific routes (S2/S3).
 
 ## Status
 
-- `webapp/` — copied wholesale from diary-processor, still has n8n references. Being cleaned up in milestone S1.
-- `docker-compose.yml` — copied, needs a Whisper service added in S1.
-- `.env.example` — copied, still has `N8N_WEBHOOK_URL` and `CALENDAR_WEBHOOK_URL` (to be removed in S1).
+- `webapp/` — n8n removed (S1 ✅). Audio uploads run ffmpeg + Whisper in-process. Calendar route stubbed pending S2.
+- `docker-compose.yml` — Whisper sidecar added (S1 ✅). CPU + GPU image variants selected via `WHISPER_IMAGE_TAG`.
+- `.env.example` — n8n vars removed (S1 ✅). MSAL + bearer-token vars land in S2.
 - `docs-archive/` — 8 historical design docs from diary-processor. Reference only.
 
 ## What lives here
@@ -14,11 +14,11 @@ FastAPI backend, **seeded from `diary-processor/webapp/` on 2026-04-24**. Alread
 ```
 server/
 ├── README.md                    (this file)
-├── .env.example                 needs n8n vars removed (S1)
-├── docker-compose.yml           needs Whisper service added (S1)
+├── .env.example
+├── docker-compose.yml           webapp + postgres + qdrant + whisper
 ├── docs-archive/                historical design docs (reference)
 └── webapp/                      FastAPI app
-    ├── Dockerfile               needs ffmpeg apt-get install (S1)
+    ├── Dockerfile               python:3.11-slim + ffmpeg
     ├── requirements.txt         needs msal added (S2)
     ├── main.py                  ~60 routes; see CLAUDE.md for what to modify
     ├── db.py

@@ -406,14 +406,6 @@
 
       <div class="settings-form">
         <div class="settings-field">
-          <label for="setting-ingest-url">n8n Audio Ingest Webhook URL</label>
-          <div class="settings-input-row">
-            <input type="url" id="setting-ingest-url" class="settings-input"
-                   placeholder="https://192.168.2.16:8443/webhook/audio-diary">
-          </div>
-          <div class="settings-hint">Full URL for the n8n webhook that receives audio files for transcription (used by the Ingest page).</div>
-        </div>
-        <div class="settings-field">
           <label for="setting-lightrag-url">LightRAG Service URL</label>
           <div class="settings-input-row">
             <input type="url" id="setting-lightrag-url" class="settings-input"
@@ -1178,8 +1170,6 @@ function clearHarvestEntries() {
   fetch('/api/settings')
     .then(function(r) { return r.json(); })
     .then(function(data) {
-      var el = document.getElementById('setting-ingest-url');
-      if (el && data.n8n_ingest_webhook_url) el.value = data.n8n_ingest_webhook_url;
       var lr = document.getElementById('setting-lightrag-url');
       if (lr && data.lightrag_url) lr.value = data.lightrag_url;
       var lk = document.getElementById('setting-lightrag-api-key');
@@ -1190,12 +1180,11 @@ function clearHarvestEntries() {
 
 function saveSettings() {
   var btn = document.getElementById('saveSettingsBtn');
-  var url = document.getElementById('setting-ingest-url').value.trim();
   var lightragUrl = document.getElementById('setting-lightrag-url').value.trim();
   btn.disabled = true;
   btn.textContent = 'Saving...';
   var lightragKey = document.getElementById('setting-lightrag-api-key').value.trim();
-  var payload = { n8n_ingest_webhook_url: url };
+  var payload = {};
   if (lightragUrl) payload.lightrag_url = lightragUrl;
   payload.lightrag_api_key = lightragKey;
   fetch('/api/settings', {

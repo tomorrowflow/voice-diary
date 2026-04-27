@@ -733,9 +733,6 @@ async function submitReview() {
   var btn = document.getElementById('submit-btn');
   btnWorking(btn, 'Saving...');
 
-  // Add skip_n8n flag — processing is now done in-app
-  payload.skip_n8n = true;
-
   try {
     var resp = await fetch('/api/transcripts/' + TRANSCRIPT_ID + '/submit', {
       method: 'POST',

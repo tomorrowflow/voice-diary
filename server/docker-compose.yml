@@ -7,12 +7,36 @@ services:
       - .env
     environment:
       - DATABASE_URL=postgresql://diary:diary@postgres:5432/diary_processor
+      - WHISPER_URL=${WHISPER_URL:-http://whisper:9000}
     depends_on:
       postgres:
         condition: service_healthy
       qdrant:
         condition: service_started
+      whisper:
+        condition: service_started
     restart: unless-stopped
+
+  whisper:
+    # CPU build:  onerahmet/openai-whisper-asr-webservice:latest
+    # GPU build:  onerahmet/openai-whisper-asr-webservice:latest-gpu
+    # Pick via WHISPER_IMAGE_TAG in .env (defaults to CPU).
+    image: onerahmet/openai-whisper-asr-webservice:${WHISPER_IMAGE_TAG:-latest}
+    environment:
+      ASR_MODEL: ${WHISPER_MODEL:-medium}
+      ASR_ENGINE: ${WHISPER_ENGINE:-faster_whisper}
+    volumes:
+      - whisper_models:/root/.cache/whisper
+    restart: unless-stopped
+    # Uncomment the following block when WHISPER_IMAGE_TAG=latest-gpu and
+    # nvidia-container-toolkit is installed on the host.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
 
   qdrant:
     image: qdrant/qdrant:v1.17.0
@@ -45,3 +69,4 @@ services:
 volumes:
   pgdata:
   qdrant_data:
+  whisper_models:
