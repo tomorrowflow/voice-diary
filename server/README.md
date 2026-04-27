@@ -66,6 +66,29 @@ auto-refreshes silently afterwards.
 
 If the cache is ever wiped or the grant revoked, simply re-run the script.
 
+#### Fixture mode (waiting for admin consent)
+
+If your tenant requires admin consent and you can't sign in yet, flip
+`MSGRAPH_FIXTURE_MODE=true` in `.env` and restart:
+
+```bash
+docker compose up -d --force-recreate webapp
+```
+
+The `/today/calendar`, `/calendar/event/{id}`, `/email/search` endpoints,
+the HTMX review UI's calendar widget, and `/api/harvest/suggest` will
+return canned data from `webapp/fixture_data/*.json`. `/health` reports
+`"msgraph":"fixture"` to make the dev mode obvious. Sessions ingest,
+LightRAG enrichment, and the rest of the pipeline are unaffected.
+
+To override the bundled fixtures with your own scenarios, drop
+`calendar_today.json` and/or `email_search.json` into
+`server/data/fixtures/` (mounted at `/data/fixtures/` in the container).
+Files there take precedence over the bundled defaults.
+
+Flip the flag back to `false` (or remove it) and restart the webapp once
+the bootstrap script has succeeded.
+
 ### 5. Issue the iOS bearer token
 
 ```bash

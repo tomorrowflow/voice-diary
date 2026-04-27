@@ -656,6 +656,7 @@ async def _fetch_calendar_events(date_str: str) -> list[dict]:
     existing UI layers don't need to change.
     """
     from datetime import time as _time
+    import fixtures
     from msgraph_client import (
         MSGraphError,
         MSGraphNotBootstrapped,
@@ -666,6 +667,9 @@ async def _fetch_calendar_events(date_str: str) -> list[dict]:
         d = date_module.fromisoformat(date_str)
     except ValueError:
         return []
+
+    if fixtures.fixture_mode():
+        return fixtures.load_calendar_events(date_str)
 
     start_local = datetime.combine(d, _time.min, tzinfo=LOCAL_TZ)
     end_local = start_local + timedelta(days=1)

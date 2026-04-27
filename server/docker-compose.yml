@@ -13,6 +13,9 @@ services:
       # Persists iOS session bundles + MSAL refresh-token cache across
       # rebuilds. Gitignored on the host.
       - ./data:/data
+      # Bootstrap + token-issue helpers live alongside the compose file
+      # rather than in the image (build context is ./webapp/).
+      - ./scripts:/app/scripts:ro
     depends_on:
       postgres:
         condition: service_healthy
