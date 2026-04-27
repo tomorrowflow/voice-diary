@@ -69,6 +69,7 @@ public struct DebugUploadView: View {
             try await engine.start(outputURL: segmentURL)
             try await Task.sleep(nanoseconds: 5_000_000_000)
             _ = try await engine.stop()
+            let actualSampleRate = await engine.lastSampleRate
 
             // Reuse the single segment as the "raw session audio" too —
             // the server accepts a path string here, and a real session
@@ -80,6 +81,12 @@ public struct DebugUploadView: View {
             let manifest = Manifest(
                 session_id: sessionID,
                 date: todayString(),
+                audio_codec: AudioCodec(
+                    codec: "aac-lc",
+                    sample_rate: Int(actualSampleRate.rounded()),
+                    channels: 1,
+                    bitrate: 64_000
+                ),
                 segments: [
                     .freeReflection(.init(
                         segment_id: "s01",
