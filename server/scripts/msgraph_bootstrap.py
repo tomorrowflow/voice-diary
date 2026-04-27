@@ -55,11 +55,26 @@ from msgraph_client import (  # noqa: E402
 
 
 def main() -> int:
+    fixture_flag = os.getenv("MSGRAPH_FIXTURE_MODE", "").strip().lower()
+    if fixture_flag in ("1", "true", "yes", "on"):
+        print(
+            "MSGRAPH_FIXTURE_MODE=true — skipping the device-code flow.\n"
+            "Calendar + email endpoints are served from "
+            "webapp/fixture_data/ until you flip the flag back to false.\n"
+            "\n"
+            "If you still need an iOS bearer token, run:\n"
+            "  docker compose run --rm webapp python scripts/issue_ios_token.py\n"
+            "and paste the output into IOS_BEARER_TOKEN= in .env."
+        )
+        return 0
+
     client_id = os.getenv("MSGRAPH_CLIENT_ID", "").strip()
     tenant_id = os.getenv("MSGRAPH_TENANT_ID", "").strip()
     if not client_id or not tenant_id:
         print(
-            "ERROR: MSGRAPH_CLIENT_ID and MSGRAPH_TENANT_ID must be set in .env.",
+            "ERROR: MSGRAPH_CLIENT_ID and MSGRAPH_TENANT_ID must be set in .env.\n"
+            "Tip: while waiting for Entra admin consent you can set\n"
+            "MSGRAPH_FIXTURE_MODE=true in .env and skip this step entirely.",
             file=sys.stderr,
         )
         return 2
