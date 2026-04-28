@@ -88,14 +88,18 @@ async def email_search(
     if fixtures.fixture_mode():
         raw_messages = fixtures.load_email_search(q)[:top]
     else:
+        # Graph caveats on `/me/messages`:
+        #   * `$search` and `$orderby` are mutually exclusive — Graph
+        #     returns a 4xx if both are set. Search results come back in
+        #     relevance order which is what we want anyway.
+        #   * `$search` and `$filter` on `receivedDateTime` are also
+        #     incompatible, so the date window is applied client-side
+        #     after retrieval.
         params: dict[str, str] = {
             "$search": f'"{q}"',
             "$top": str(top),
             "$select": "id,subject,from,receivedDateTime,bodyPreview,webLink",
-            "$orderby": "receivedDateTime desc",
         }
-        # Graph $search is incompatible with $filter on receivedDateTime,
-        # so we apply the date window client-side after retrieval.
         try:
             client = await get_client()
             data = await client.get_json("/me/messages", params=params)
