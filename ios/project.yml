@@ -37,7 +37,17 @@ targets:
     sources:
       - path: Sources
     resources:
-      - path: Resources
+      # Fonts must land at the .app bundle ROOT (not under a Fonts/
+      # subdirectory) for `UIAppFonts: ["Geist-Variable.ttf"]` to resolve.
+      # We list each TTF explicitly so XcodeGen adds it to the
+      # "Copy Bundle Resources" phase as a flat file rather than as part
+      # of a folder reference that would preserve the directory.
+      - path: Resources/Fonts/Geist-Variable.ttf
+      - path: Resources/Fonts/GeistMono-Variable.ttf
+      # Voice models live under Models/ inside the .app — that's fine,
+      # they're loaded by full path through Bundle.main.url(forResource:).
+      - path: Resources/Models
+        optional: true
     dependencies:
       - package: FluidAudio
     info:
