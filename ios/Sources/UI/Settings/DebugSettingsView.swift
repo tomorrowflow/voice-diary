@@ -45,6 +45,15 @@ public struct DebugSettingsView: View {
                         Spacer()
                         StatusBadge(status: reachability.status)
                     }
+                    HStack {
+                        Text("Bearer")
+                            .font(Theme.font.body)
+                            .foregroundStyle(Theme.color.text.primary)
+                        Spacer()
+                        Text(bearerSummary)
+                            .font(Theme.font.monoCaption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                    }
                     Button {
                         Task { await refresh() }
                     } label: {
@@ -102,10 +111,23 @@ public struct DebugSettingsView: View {
                                 .map { "\($0.key)=\($0.value)" }
                                 .joined(separator: ", ")
             return "degraded: \(down)"
+        case .authInvalid:
+            lastError = "401 vom Server. Bearer in der App stimmt nicht mit IOS_BEARER_TOKEN in server/.env überein. Wert neu einfügen und Speichern tippen."
+            return "Bearer ungültig"
         case .down(let reason):
             lastError = reason
             return "down"
         }
+    }
+
+    /// Human-readable summary of the bearer in Keychain so the user can
+    /// sanity-check it against `server/.env` without ever seeing the
+    /// full secret.
+    private var bearerSummary: String {
+        let stored = KeychainStore.read(.bearerToken) ?? ""
+        if stored.isEmpty { return "(leer)" }
+        let suffix = String(stored.suffix(4))
+        return "len=\(stored.count) · …\(suffix)"
     }
 }
 
@@ -133,31 +155,32 @@ private struct StatusBadge: View {
         case .unknown:           return "—"
         case .ok:                return "OK"
         case .degraded:          return "degraded"
+        case .authInvalid:       return "Bearer ungültig"
         case .down:              return "down"
         }
     }
 
     private var dotColor: Color {
         switch status {
-        case .ok:                return Theme.color.status.success
-        case .degraded:          return Theme.color.status.warning
-        case .down, .unknown:    return Theme.color.status.destructive
+        case .ok:                            return Theme.color.status.success
+        case .degraded:                      return Theme.color.status.warning
+        case .authInvalid, .down, .unknown:  return Theme.color.status.destructive
         }
     }
 
     private var textColor: Color {
         switch status {
-        case .ok:                return Theme.color.status.success
-        case .degraded:          return Theme.color.status.warning
-        case .down, .unknown:    return Theme.color.status.destructive
+        case .ok:                            return Theme.color.status.success
+        case .degraded:                      return Theme.color.status.warning
+        case .authInvalid, .down, .unknown:  return Theme.color.status.destructive
         }
     }
 
     private var bgColor: Color {
         switch status {
-        case .ok:                return Theme.color.status.success.opacity(0.10)
-        case .degraded:          return Theme.color.status.warning.opacity(0.10)
-        case .down, .unknown:    return Theme.color.status.destructive.opacity(0.10)
+        case .ok:                            return Theme.color.status.success.opacity(0.10)
+        case .degraded:                      return Theme.color.status.warning.opacity(0.10)
+        case .authInvalid, .down, .unknown:  return Theme.color.status.destructive.opacity(0.10)
         }
     }
 }
