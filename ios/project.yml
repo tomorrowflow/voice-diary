@@ -112,6 +112,8 @@ targets:
         CODE_SIGN_STYLE: Automatic
         SKIP_INSTALL: YES
         CODE_SIGN_ENTITLEMENTS: WidgetExtension/VoiceDiaryWidget.entitlements
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.0"
 
   VoiceDiaryTests:
     type: bundle.unit-test

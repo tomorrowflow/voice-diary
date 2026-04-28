@@ -60,8 +60,8 @@ public actor ParakeetManager {
         Log.audio.info("Parakeet v3: starting download/load…")
         do {
             let models = try await AsrModels.downloadAndLoad(version: .v3)
-            let mgr = AsrManager(config: .default)
-            try await mgr.initialize(models: models)
+            let mgr = AsrManager()
+            try await mgr.loadModels(models)
             self.manager = mgr
             loadState = .ready
             Log.audio.info("Parakeet v3: ready")
@@ -91,7 +91,9 @@ public actor ParakeetManager {
             throw ManagerError.notReady(state: "\(loadState)")
         }
         do {
-            let result = try await manager.transcribe(audioURL, source: .system)
+            let layers = await manager.decoderLayerCount
+            var decoderState = try TdtDecoderState(decoderLayers: layers)
+            let result = try await manager.transcribe(audioURL, decoderState: &decoderState)
             return Transcript(
                 text: result.text,
                 language: detectedLanguage(from: result),
@@ -111,7 +113,14 @@ public actor ParakeetManager {
             throw ManagerError.notReady(state: "\(loadState)")
         }
         do {
-            let result = try await manager.transcribe(buffer, source: .system)
+            guard let channelData = buffer.floatChannelData else {
+                throw ManagerError.notReady(state: "empty_buffer")
+            }
+            let frameCount = Int(buffer.frameLength)
+            let samples = Array(UnsafeBufferPointer(start: channelData[0], count: frameCount))
+            let layers = await manager.decoderLayerCount
+            var decoderState = try TdtDecoderState(decoderLayers: layers)
+            let result = try await manager.transcribe(samples, decoderState: &decoderState)
             return Transcript(
                 text: result.text,
                 language: detectedLanguage(from: result),
