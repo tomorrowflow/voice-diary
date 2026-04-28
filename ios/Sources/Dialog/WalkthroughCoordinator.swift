@@ -28,13 +28,22 @@ public final class WalkthroughCoordinator {
     public private(set) var error: String?
     /// Set when the manifest has been queued. Useful for the UI summary.
     public private(set) var sessionID: String?
+    /// Surfaced in the UI for the 15s lull cue ("soll ich weitermachen?").
+    /// SPEC §6.2 makes this a spoken prompt; M6 keeps it visual.
+    public private(set) var statusHint: String = ""
 
     private let engine = AudioEngine()
     private let tts: any TTSEngine = VoiceRegistry.engine(for: "de")
+    private let lullDetector = LullDetector()
     private var sessionDir: URL?
     private var segmentURLs: [String: URL] = [:]    // multipart name → on-disk URL
     private var segments: [Segment] = []
+    private var aiPrompts: [AiPrompt] = []
     private var timer: Timer?
+    /// Per-event follow-up flag. SPEC §6.2 hard rule: at most one.
+    private var followUpUsed: [Int: Bool] = [:]
+    /// Rotation index for the deterministic follow-up template fallback.
+    private var followUpRotation: Int = 0
 
     private init() {}
 
@@ -47,6 +56,10 @@ public final class WalkthroughCoordinator {
         events = []
         segments = []
         segmentURLs = [:]
+        aiPrompts = []
+        followUpUsed = [:]
+        followUpRotation = 0
+        statusHint = ""
         do {
             try makeSessionDir()
             try await fetchCalendar(date: today)
@@ -121,6 +134,7 @@ public final class WalkthroughCoordinator {
     private func runEvent(at index: Int, language: OpenerLanguage) async {
         guard index < events.count else { return }
         state = .eventOpener(index: index)
+        statusHint = ""
         let line = OpenerTemplates.line(
             for: events[index],
             index: index,
@@ -128,12 +142,16 @@ public final class WalkthroughCoordinator {
             language: language
         )
         lastSpoken = line
+        recordAiPrompt(role: "opener",
+                       segmentID: "s\(String(format: "%02d", index + 1))",
+                       text: line)
         await tts.speak(line, language: language.rawValue)
         // Move to listening — start capturing this event's segment.
         do {
             try await startSegmentCapture(forEventAt: index)
             state = .eventListening(index: index)
             startTimer()
+            startLullDetection(forEventAt: index, language: language)
         } catch {
             self.error = "\(error)"
             state = .failed("\(error)")
@@ -202,7 +220,10 @@ public final class WalkthroughCoordinator {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try await engine.start(outputURL: url)
+        let detector = lullDetector
+        try await engine.start(outputURL: url) { @Sendable buffer in
+            detector.feed(buffer)
+        }
         segmentURLs[path] = url
 
         // Build the manifest segment now; transcript stays empty (server
@@ -233,7 +254,10 @@ public final class WalkthroughCoordinator {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try await engine.start(outputURL: url)
+        let detector = lullDetector
+        try await engine.start(outputURL: url) { @Sendable buffer in
+            detector.feed(buffer)
+        }
         segmentURLs[path] = url
         let seg = FreeReflectionSegment(
             segment_id: segmentID,
@@ -246,6 +270,7 @@ public final class WalkthroughCoordinator {
     private func stopSegmentCapture() async {
         timer?.invalidate(); timer = nil
         elapsedSeconds = 0
+        lullDetector.stop()
         do { _ = try await engine.stop() } catch {
             Log.audio.warning("walkthrough engine stop: \(String(describing: error), privacy: .public)")
         }
@@ -254,7 +279,82 @@ public final class WalkthroughCoordinator {
     private func stopSegmentCaptureNoTranscribe() async throws {
         timer?.invalidate(); timer = nil
         elapsedSeconds = 0
+        lullDetector.stop()
         _ = try? await engine.stop()
+    }
+
+    // MARK: - Follow-up logic ------------------------------------------
+
+    private func startLullDetection(forEventAt index: Int, language: OpenerLanguage) {
+        lullDetector.start { [weak self] threshold in
+            guard let self else { return }
+            Task { @MainActor in
+                guard case .eventListening(let current) = self.state, current == index else {
+                    return
+                }
+                await self.handleLull(threshold: threshold, eventIndex: index, language: language)
+            }
+        }
+    }
+
+    private func handleLull(threshold: Int, eventIndex: Int, language: OpenerLanguage) async {
+        switch threshold {
+        case 6:
+            guard followUpUsed[eventIndex] != true else { return }
+            followUpUsed[eventIndex] = true
+            await speakFollowUp(forEventAt: eventIndex, language: language)
+        case 15:
+            statusHint = language == .de
+                ? "Tippe Weiter, wenn du fertig bist."
+                : "Tap Continue when you're done."
+        default:
+            break
+        }
+    }
+
+    private func speakFollowUp(forEventAt index: Int, language: OpenerLanguage) async {
+        let event = events[index]
+        let attendeeNames = event.attendees.map(\.name).filter { !$0.isEmpty }
+
+        var line: String?
+        let llm = AppleFoundationLLM.shared
+        if await llm.isAvailable {
+            do {
+                line = try await llm.generateFollowUp(
+                    eventTitle: event.subject,
+                    attendees: attendeeNames,
+                    userTranscript: "",   // M7 wires live partials in
+                    language: language.rawValue
+                )
+                Log.app.info("follow-up via FoundationModels for event \(index, privacy: .public)")
+            } catch {
+                Log.app.warning(
+                    "FoundationModels follow-up failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+        if line == nil || line?.isEmpty == true {
+            line = OpenerTemplates.followUp(language: language, rotation: followUpRotation)
+            followUpRotation += 1
+        }
+        guard let spoken = line, !spoken.isEmpty else { return }
+
+        lastSpoken = spoken
+        recordAiPrompt(
+            role: "follow_up",
+            segmentID: "s\(String(format: "%02d", index + 1))",
+            text: spoken
+        )
+        await tts.speak(spoken, language: language.rawValue)
+    }
+
+    private func recordAiPrompt(role: String, segmentID: String?, text: String) {
+        aiPrompts.append(AiPrompt(
+            at: ISO8601DateFormatter().string(from: Date()),
+            role: role,
+            segment_id: segmentID,
+            text: text
+        ))
     }
 
     // MARK: - Helpers --------------------------------------------------
@@ -304,13 +404,7 @@ public final class WalkthroughCoordinator {
                 bitrate: 64_000
             ),
             segments: segments,
-            ai_prompts: [
-                AiPrompt(
-                    at: ISO8601DateFormatter().string(from: Date()),
-                    role: "walkthrough_skeleton",
-                    text: "M5 deterministic openers, no follow-ups, no enrichment."
-                )
-            ],
+            ai_prompts: aiPrompts,
             response_language_setting: "match_input"
         )
     }
