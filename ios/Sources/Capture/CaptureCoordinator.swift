@@ -1,4 +1,4 @@
-import ActivityKit
+@preconcurrency import ActivityKit
 import AVFoundation
 import Foundation
 import SwiftUI
