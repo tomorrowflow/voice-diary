@@ -89,6 +89,60 @@ public actor ServerClient {
         return data
     }
 
+    public func calendarEvent(id: String) async throws -> Data {
+        let (url, token) = try endpoint("/calendar/event/\(id)")
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response: response, body: data)
+        return data
+    }
+
+    // --- enrichment ---------------------------------------------------
+
+    public func emailSearch(query: String, responseLanguage: String = "de") async throws -> EnrichmentSummary {
+        let (url, token) = try endpoint("/email/search")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        components.queryItems = [
+            URLQueryItem(name: "q", value: query),
+            URLQueryItem(name: "response_language", value: responseLanguage),
+        ]
+        var req = URLRequest(url: components.url!)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response: response, body: data)
+        return try Self.decode(EnrichmentSummary.self, from: data)
+    }
+
+    public func lightragQuery(
+        query: String,
+        responseLanguage: String = "de",
+        mode: String = "hybrid"
+    ) async throws -> EnrichmentSummary {
+        let (url, token) = try endpoint("/lightrag/query")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body: [String: Any] = [
+            "query": query,
+            "mode": mode,
+            "response_language": responseLanguage,
+        ]
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response: response, body: data)
+        return try Self.decode(EnrichmentSummary.self, from: data)
+    }
+
+    private static func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+        do {
+            return try JSONDecoder().decode(type, from: data)
+        } catch {
+            throw ServerClientError.decodingFailed("\(error)")
+        }
+    }
+
     // --- /api/sessions multipart upload --------------------------------
 
     public func uploadSession(
@@ -122,6 +176,14 @@ public actor ServerClient {
     }
 
     // --- helpers -------------------------------------------------------
+
+    /// Common shape returned by `/email/search` and `/lightrag/query`.
+    public struct EnrichmentSummary: Codable, Sendable {
+        public let summary: String
+        public let response_language: String
+        public let source_count: Int?
+        public let raw_response: String?
+    }
 
     private static func assertOK(response: URLResponse, body: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }

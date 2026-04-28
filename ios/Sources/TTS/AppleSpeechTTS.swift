@@ -117,9 +117,7 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
         let candidates = exact + prefixed.filter { !exact.contains($0) }
         if let best = candidates.max(by: { score($0) < score($1) }) {
             Log.app.debug(
-                "TTS voice selected: \(best.identifier, privacy: .public) " +
-                "lang=\(best.language, privacy: .public) " +
-                "quality=\(best.quality.rawValue, privacy: .public)"
+                "TTS voice selected: \(best.identifier, privacy: .public) lang=\(best.language, privacy: .public) quality=\(best.quality.rawValue, privacy: .public)"
             )
             return best
         }

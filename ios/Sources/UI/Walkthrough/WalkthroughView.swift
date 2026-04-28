@@ -3,6 +3,7 @@ import SwiftUI
 @MainActor
 public struct WalkthroughView: View {
     @State private var coordinator = WalkthroughCoordinator.shared
+    @State private var showEnrichment: Bool = false
 
     public init() {}
 
@@ -35,6 +36,10 @@ public struct WalkthroughView: View {
                                     .padding(.horizontal, Theme.spacing.sm)
                             }
                             ListeningControls(coordinator: coordinator)
+                            EnrichmentTrigger(
+                                isEnriching: coordinator.isEnriching,
+                                action: { showEnrichment = true }
+                            )
                         }
 
                         switch coordinator.state {
@@ -50,6 +55,9 @@ public struct WalkthroughView: View {
                 }
             }
             .navigationTitle("Abend")
+            .sheet(isPresented: $showEnrichment) {
+                EnrichmentSheet(coordinator: coordinator, isPresented: $showEnrichment)
+            }
         }
     }
 
@@ -292,5 +300,91 @@ private struct ErrorCard: View {
             RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
                 .fill(Theme.color.bg.container)
         )
+    }
+}
+
+// MARK: - Enrichment
+
+private struct EnrichmentTrigger: View {
+    let isEnriching: Bool
+    let action: () -> Void
+
+    var body: some View {
+        if isEnriching {
+            HStack(spacing: Theme.spacing.sm) {
+                ProgressView()
+                Text("Frage wird beantwortet …")
+                    .font(Theme.font.callout)
+                    .foregroundStyle(Theme.color.text.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Theme.spacing.sm)
+        } else {
+            Button(action: action) {
+                Label("Frage stellen", systemImage: "magnifyingglass")
+            }
+            .buttonStyle(.dsGhost(fullWidth: true))
+        }
+    }
+}
+
+@MainActor
+private struct EnrichmentSheet: View {
+    let coordinator: WalkthroughCoordinator
+    @Binding var isPresented: Bool
+    @State private var query: String = ""
+    @FocusState private var fieldFocused: Bool
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.color.bg.surface.ignoresSafeArea()
+                VStack(alignment: .leading, spacing: Theme.spacing.md) {
+                    Text("Was möchtest du wissen?")
+                        .font(Theme.font.headline)
+                        .foregroundStyle(Theme.color.text.primary)
+                    Text("Beispiele: „Was hat Christian gestern geschrieben?“ · „Was haben wir letzte Woche zur Migration gemacht?“")
+                        .font(Theme.font.callout)
+                        .foregroundStyle(Theme.color.text.secondary)
+                    TextField(
+                        "Frage eingeben",
+                        text: $query,
+                        axis: .vertical
+                    )
+                    .lineLimit(2...5)
+                    .textFieldStyle(.plain)
+                    .padding(Theme.spacing.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                            .fill(Theme.color.bg.container)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                            .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
+                    )
+                    .focused($fieldFocused)
+                    Spacer()
+                    Button {
+                        let q = query
+                        query = ""
+                        isPresented = false
+                        Task { await coordinator.askEnrichment(query: q) }
+                    } label: {
+                        Label("Senden", systemImage: "paperplane.fill")
+                    }
+                    .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
+                    .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .padding(Theme.spacing.md)
+            }
+            .navigationTitle("Frage stellen")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Abbrechen") { isPresented = false }
+                }
+            }
+            .onAppear { fieldFocused = true }
+        }
     }
 }
