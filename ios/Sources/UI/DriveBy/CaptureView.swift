@@ -1,22 +1,14 @@
 import AVFoundation
 import SwiftUI
 
-// In-app record button for dogfooding M2. Records → AAC M4A under
-// Application Support/VoiceDiary/driveby_seeds/{ISO timestamp}/audio.m4a.
-// On stop, the audio is transcribed locally via Parakeet v3 and the
-// transcript + metadata are written to metadata.json next to the M4A.
+// In-app record button. Delegates all state to `CaptureCoordinator` so the
+// App Intent (Action Button) and lock-screen widget stay in sync.
 
 @MainActor
 public struct CaptureView: View {
-    @State private var engine = AudioEngine()
-    @State private var isRecording = false
-    @State private var startedAt: Date?
-    @State private var lastSeed: DriveBySeed?
-    @State private var errorMessage: String?
-    @State private var elapsedSeconds: Int = 0
-    @State private var timer: Timer?
-    @State private var statusLine: String = ""
+    @State private var coordinator = CaptureCoordinator.shared
     @State private var modelState: ParakeetManager.LoadState = .idle
+    @State private var modelStatusLine: String = ""
 
     public init() {}
 
@@ -29,41 +21,49 @@ public struct CaptureView: View {
                     Spacer()
 
                     Button {
-                        Task { await toggle() }
+                        Task { await coordinator.toggle() }
                     } label: {
                         ZStack {
                             Circle()
-                                .fill(isRecording
+                                .fill(coordinator.isRecording
                                       ? Theme.color.status.destructive
                                       : Theme.color.fg.primary)
                                 .frame(width: 160, height: 160)
                                 .shadow(color: Theme.color.bg.overlay, radius: 20, y: 8)
-                            Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                            Image(systemName: coordinator.isRecording ? "stop.fill" : "mic.fill")
                                 .font(.system(size: 56))
                                 .foregroundStyle(Theme.color.text.inverse)
                         }
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel(isRecording ? "Aufnahme beenden" : "Aufnahme starten")
+                    .accessibilityLabel(coordinator.isRecording ? "Aufnahme beenden" : "Aufnahme starten")
 
-                    Text(timeString(elapsedSeconds))
+                    Text(timeString(coordinator.elapsedSeconds))
                         .font(.system(size: 32, weight: .semibold, design: .monospaced))
                         .foregroundStyle(Theme.color.text.secondary)
 
-                    if !statusLine.isEmpty {
-                        Text(statusLine)
+                    if !modelStatusLine.isEmpty {
+                        Text(modelStatusLine)
                             .font(Theme.font.callout)
                             .foregroundStyle(Theme.color.text.secondary)
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, Theme.spacing.md)
                     }
 
-                    if let seed = lastSeed {
+                    if !coordinator.statusLine.isEmpty {
+                        Text(coordinator.statusLine)
+                            .font(Theme.font.callout)
+                            .foregroundStyle(Theme.color.text.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, Theme.spacing.md)
+                    }
+
+                    if let seed = coordinator.lastSeed {
                         SeedSummaryCard(seed: seed)
                     }
 
-                    if let errorMessage {
-                        Text(errorMessage)
+                    if let lastError = coordinator.lastError {
+                        Text(lastError)
                             .font(Theme.font.footnote)
                             .foregroundStyle(Theme.color.status.destructive)
                             .padding(.horizontal, Theme.spacing.md)
@@ -75,98 +75,17 @@ public struct CaptureView: View {
             }
             .navigationTitle("Drive-by")
             .task {
-                // Trigger Parakeet model load lazily as soon as the user
-                // opens this tab — first launch downloads ~1.2 GB.
                 await ParakeetManager.shared.warmUp()
                 modelState = await ParakeetManager.shared.loadState
                 if case .loading = modelState {
-                    statusLine = "Lade Sprachmodell — beim ersten Start ~1,2 GB."
+                    modelStatusLine = "Lade Sprachmodell — beim ersten Start ~1,2 GB."
                 } else if case .failed(let msg) = modelState {
-                    statusLine = "Sprachmodell konnte nicht geladen werden."
-                    errorMessage = msg
+                    modelStatusLine = "Sprachmodell konnte nicht geladen werden: \(msg.prefix(120))"
+                } else {
+                    modelStatusLine = ""
                 }
             }
         }
-        .onDisappear { timer?.invalidate() }
-    }
-
-    private func toggle() async {
-        if isRecording { await stop() } else { await start() }
-    }
-
-    private func start() async {
-        errorMessage = nil
-        statusLine = ""
-        do {
-            let dir = try LocalStore.driveBySeedsDir()
-                .appending(path: ISO8601DateFormatter().string(from: Date()), directoryHint: .isDirectory)
-            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            let audio = dir.appending(path: "audio.m4a")
-            try await engine.start(outputURL: audio)
-            startedAt = Date()
-            isRecording = true
-            elapsedSeconds = 0
-            timer?.invalidate()
-            timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                Task { @MainActor in elapsedSeconds += 1 }
-            }
-        } catch {
-            errorMessage = "\(error)"
-        }
-    }
-
-    private func stop() async {
-        timer?.invalidate()
-        timer = nil
-        statusLine = "Transkribiere …"
-        do {
-            guard let url = try await engine.stop(), let started = startedAt else {
-                isRecording = false
-                statusLine = ""
-                return
-            }
-            let duration = Date().timeIntervalSince(started)
-            isRecording = false
-            startedAt = nil
-
-            // Transcribe locally. If Parakeet isn't ready yet (still
-            // downloading on first launch) we persist the seed without a
-            // transcript — the server's Whisper sidecar will produce one
-            // on ingest.
-            var transcript: ParakeetManager.Transcript?
-            do {
-                transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
-            } catch {
-                Log.audio.warning("Parakeet transcript skipped: \(String(describing: error), privacy: .public)")
-            }
-
-            let seed = DriveBySeed(
-                seed_id: "seed-" + ISO8601DateFormatter().string(from: started),
-                captured_at: started,
-                duration_seconds: duration,
-                language: transcript?.language ?? "de",
-                transcript: transcript?.text ?? "",
-                audio_file_url: url
-            )
-            try writeMetadata(seed: seed, alongside: url)
-            lastSeed = seed
-            statusLine = transcript == nil
-                ? "Aufnahme gespeichert. Transkript folgt beim Server-Upload."
-                : "Aufnahme + Transkript gespeichert."
-        } catch {
-            errorMessage = "\(error)"
-            statusLine = ""
-            isRecording = false
-        }
-    }
-
-    private func writeMetadata(seed: DriveBySeed, alongside audio: URL) throws {
-        let json = audio.deletingLastPathComponent().appending(path: "metadata.json")
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(seed)
-        try data.write(to: json, options: [.atomic, .completeFileProtection])
     }
 
     private func timeString(_ s: Int) -> String {

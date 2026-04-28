@@ -45,8 +45,6 @@ targets:
       - path: Resources/Models
         buildPhase: resources
         optional: true
-    dependencies:
-      - package: FluidAudio
     info:
       # IMPORTANT: this block is the source of truth for Config/Info.plist.
       # XcodeGen regenerates the plist from `properties` on every run —
@@ -72,6 +70,14 @@ targets:
             ts.net:
               NSIncludesSubdomains: true
               NSExceptionAllowsInsecureHTTPLoads: true
+        # Custom URL scheme used by the lock-screen widget Link to deep-link
+        # back into the app (`voicediary://capture/start`).
+        CFBundleURLTypes:
+          - CFBundleURLSchemes:
+              - voicediary
+            CFBundleURLName: com.tomorrowflow.voice-diary
+        # NSSupportsLiveActivities is required for ActivityKit Live Activities.
+        NSSupportsLiveActivities: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tomorrowflow.voice-diary
@@ -79,6 +85,33 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: Config/VoiceDiary.entitlements
+    dependencies:
+      - package: FluidAudio
+      - target: VoiceDiaryWidget
+        embed: true
+        codeSign: true
+
+  VoiceDiaryWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: WidgetExtension
+      - path: Sources/Shared
+    info:
+      path: WidgetExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Voice Diary
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tomorrowflow.voice-diary.widget
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        CODE_SIGN_ENTITLEMENTS: WidgetExtension/VoiceDiaryWidget.entitlements
 
   VoiceDiaryTests:
     type: bundle.unit-test
@@ -93,6 +126,7 @@ schemes:
     build:
       targets:
         VoiceDiary: all
+        VoiceDiaryWidget: all
         VoiceDiaryTests: [test]
     test:
       targets:
