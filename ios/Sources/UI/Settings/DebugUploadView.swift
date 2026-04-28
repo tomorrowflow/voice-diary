@@ -18,39 +18,50 @@ public struct DebugUploadView: View {
             Form {
                 Section {
                     Text("Nimmt 5 Sekunden Audio auf, baut ein Manifest und schickt es an POST /api/sessions.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                        .font(Theme.font.callout)
+                        .foregroundStyle(Theme.color.text.secondary)
                 }
 
                 Section {
                     Button {
                         Task { await runSyntheticUpload() }
                     } label: {
-                        Label("Synthetik-Upload starten", systemImage: "arrow.up.circle.fill")
+                        HStack {
+                            Image(systemName: "arrow.up.circle.fill")
+                            Text("Synthetik-Upload starten")
+                        }
                     }
                     .disabled(isBusy)
+                    .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
                 }
 
-                Section("Status") {
+                Section {
                     Text(statusText)
-                        .font(.callout.monospaced())
+                        .font(Theme.font.monoCallout)
+                        .foregroundStyle(Theme.color.text.primary)
                     if let lastResponse {
                         Text(lastResponse)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
+                            .font(Theme.font.monoCaption)
+                            .foregroundStyle(Theme.color.text.secondary)
                     }
+                } header: {
+                    Text("Status")
+                        .font(Theme.font.subheadline)
+                        .foregroundStyle(Theme.color.text.secondary)
                 }
 
                 Section {
                     Button("Queue erneut versuchen") {
                         Task { await SessionUploader.shared.flush() }
                     }
+                    .buttonStyle(.dsSecondary(fullWidth: true))
                     Button("Verwaiste Einträge entfernen") {
                         Task {
                             let n = await SessionUploader.shared.purgeOrphans()
                             statusText = n > 0 ? "Entfernt: \(n)" : "Keine verwaisten Einträge."
                         }
                     }
+                    .buttonStyle(.dsGhost(fullWidth: true))
                     Button(role: .destructive) {
                         Task {
                             await SessionUploader.shared.clear()
@@ -60,8 +71,15 @@ public struct DebugUploadView: View {
                     } label: {
                         Text("Queue komplett löschen")
                     }
+                    .buttonStyle(.dsDestructive(fullWidth: true))
+                } header: {
+                    Text("Queue")
+                        .font(Theme.font.subheadline)
+                        .foregroundStyle(Theme.color.text.secondary)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.color.bg.surface.ignoresSafeArea())
             .navigationTitle("Test-Upload")
         }
     }
@@ -86,9 +104,6 @@ public struct DebugUploadView: View {
             _ = try await engine.stop()
             let actualSampleRate = await engine.lastSampleRate
 
-            // Reuse the single segment as the "raw session audio" too —
-            // the server accepts a path string here, and a real session
-            // would be the full unedited capture.
             let rawURL = sessionDir.appending(path: "raw/session.m4a")
             try? FileManager.default.removeItem(at: rawURL)
             try FileManager.default.copyItem(at: segmentURL, to: rawURL)
@@ -135,7 +150,6 @@ public struct DebugUploadView: View {
                     ($0.transcript_id.map { " (transcript \($0))" } ?? "")
                 }.joined(separator: "\n")
             } catch {
-                // Direct upload failed — fall back to the persistent queue.
                 await SessionUploader.shared.enqueue(manifest: manifest, audioFiles: audioFiles)
                 statusText = "Direkter Upload fehlgeschlagen — in der Queue."
                 lastResponse = "\(error)"

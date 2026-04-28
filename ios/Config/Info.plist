@@ -37,6 +37,11 @@
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voice Diary nimmt deine Sprache auf, um den Tag chronologisch zu reflektieren. (Voice Diary records your speech to walk through your day chronologically.)</string>
+	<key>UIAppFonts</key>
+	<array>
+		<string>Geist-Variable.ttf</string>
+		<string>GeistMono-Variable.ttf</string>
+	</array>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
