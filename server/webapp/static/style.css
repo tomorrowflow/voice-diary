@@ -1,186 +1,165 @@
 /* ============================================================
-   DESIGN TOKENS
+   DESIGN TOKENS — alias layer
+   ============================================================
+   Primitives (`--color-*`, `--spacing-*`, `--font-size-*`, …) live in
+   tokens.css. Light/dark semantic vars (`--bg-container`, `--text-primary`,
+   `--border-primary`, `--text-link`, `--text-subdued`, …) live in
+   tokens-semantic.css with a prefers-color-scheme override.
+
+   This file owns the *application-specific* aliases that the rest of the
+   stylesheet references. It maps legacy names (kept stable for the HTMX
+   templates we haven't refactored yet) to DS values.
    ============================================================ */
 :root {
-  /* Gray Scale */
-  --gray-25: #FAFAFA;
-  --gray-50: #F5F5F5;
-  --gray-100: #E5E5E5;
-  --gray-200: #D4D4D4;
-  --gray-300: #A3A3A3;
-  --gray-400: #737373;
-  --gray-500: #525252;
-  --gray-600: #404040;
-  --gray-700: #333333;
-  --gray-800: #262626;
-  --gray-900: #171717;
+  /* --- typography ---------------------------------------------------- */
+  --font-family: "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono:   "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --text-xs:   var(--font-size-xs);
+  --text-sm:   var(--font-size-sm);
+  --text-base: var(--font-size-base);
+  --text-lg:   var(--font-size-lg);
+  --text-xl:   var(--font-size-xl);
 
-  /* Semantic Colors */
-  --color-red: #EF4444;
-  --color-red-light: #FEE2E2;
-  --color-red-dark: #991B1B;
-  --color-green: #22C55E;
-  --color-green-light: #DCFCE7;
-  --color-green-dark: #166534;
-  --color-yellow: #EAB308;
-  --color-yellow-light: #FEF9C3;
-  --color-yellow-dark: #854D0E;
-  --color-blue: #3B82F6;
-  --color-blue-light: #DBEAFE;
-  --color-blue-dark: #1E40AF;
-  --color-purple: #8B5CF6;
-  --color-purple-light: #EDE9FE;
-  --color-purple-dark: #5B21B6;
-  --color-cyan: #06B6D4;
-  --color-cyan-light: #CFFAFE;
-  --color-cyan-dark: #0E7490;
-  --color-pink: #EC4899;
-  --color-pink-light: #FCE7F3;
-  --color-pink-dark: #9D174D;
-  --color-orange: #F97316;
-  --color-orange-light: #FED7AA;
-  --color-orange-dark: #9A3412;
+  /* --- legacy aliases that map directly to the DS semantic palette --- */
+  --text-tertiary:  var(--text-subdued);
+  --text-on-primary: var(--text-inverse);
 
-  /* Surfaces */
-  --bg-surface: #F5F5F5;
-  --bg-surface-hover: #E5E5E5;
-  --bg-container: #FFFFFF;
-  --bg-container-inset: #F5F5F5;
-  --bg-container-hover: #FAFAFA;
-  --bg-overlay: rgba(0, 0, 0, 0.5);
+  /* --- shadows (Maybe shadow-border system) -------------------------- */
+  --shadow-xs:        0 1px 2px rgba(11,11,11,0.04);
+  --shadow-border-xs: 0 0 0 1px rgba(11,11,11,0.06), 0 1px 2px rgba(11,11,11,0.04);
+  --shadow-border-sm: 0 0 0 1px rgba(11,11,11,0.06), 0 2px 4px rgba(11,11,11,0.06);
+  --shadow-border-md: 0 0 0 1px rgba(11,11,11,0.06), 0 4px 12px rgba(11,11,11,0.08);
+  --shadow-border-lg: 0 0 0 1px rgba(11,11,11,0.06), 0 8px 24px rgba(11,11,11,0.12);
+  --shadow-focus:     0 0 0 3px rgba(46, 144, 250, 0.25);
 
-  /* Text */
-  --text-primary: #171717;
-  --text-secondary: #737373;
-  --text-tertiary: #A3A3A3;
-  --text-on-primary: #FFFFFF;
-  --text-link: #3B82F6;
+  /* --- radius (alias to DS) ----------------------------------------- */
+  --radius-sm:  var(--radius-md);
+  --radius-md:  var(--radius-md);
+  --radius-lg:  var(--radius-lg);
+  --radius-xl:  var(--radius-xl);
+  --border-focus: var(--text-link);
 
-  /* Borders */
-  --border-primary: rgba(0, 0, 0, 0.12);
-  --border-secondary: rgba(0, 0, 0, 0.06);
-  --border-focus: #3B82F6;
+  /* --- gray ramp (alias to DS color ramp) --------------------------- */
+  --gray-25:  var(--color-gray-25);
+  --gray-50:  var(--color-gray-50);
+  --gray-100: var(--color-gray-100);
+  --gray-200: var(--color-gray-200);
+  --gray-300: var(--color-gray-300);
+  --gray-400: var(--color-gray-400);
+  --gray-500: var(--color-gray-500);
+  --gray-600: var(--color-gray-600);
+  --gray-700: var(--color-gray-700);
+  --gray-800: var(--color-gray-800);
+  --gray-900: var(--color-gray-900);
 
-  /* Shadows (Maybe shadow-border system) */
-  --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-border-xs: 0 0 0 1px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
-  --shadow-border-sm: 0 0 0 1px rgba(0,0,0,0.06), 0 2px 4px rgba(0,0,0,0.06);
-  --shadow-border-md: 0 0 0 1px rgba(0,0,0,0.06), 0 4px 12px rgba(0,0,0,0.08);
-  --shadow-border-lg: 0 0 0 1px rgba(0,0,0,0.06), 0 8px 24px rgba(0,0,0,0.12);
-  --shadow-focus: 0 0 0 3px rgba(59, 130, 246, 0.25);
+  /* --- coloured accents -------------------------------------------- */
+  --color-red:    var(--color-red-500);
+  --color-red-light: var(--color-red-100);
+  --color-red-dark:  var(--color-red-700);
+  --color-green:    var(--color-green-500);
+  --color-green-light: var(--color-green-100);
+  --color-green-dark:  var(--color-green-700);
+  --color-yellow:    var(--color-yellow-400);
+  --color-yellow-light: var(--color-yellow-100);
+  --color-yellow-dark:  var(--color-yellow-700);
+  --color-blue:    var(--color-blue-500);
+  --color-blue-light: var(--color-blue-100);
+  --color-blue-dark:  var(--color-blue-700);
+  --color-purple:    var(--color-violet-500);
+  --color-purple-light: var(--color-violet-100);
+  --color-purple-dark:  var(--color-violet-700);
+  --color-cyan:    var(--color-cyan-500);
+  --color-cyan-light: var(--color-cyan-100);
+  --color-cyan-dark:  var(--color-cyan-700);
+  --color-pink:    var(--color-pink-500);
+  --color-pink-light: var(--color-pink-100);
+  --color-pink-dark:  var(--color-pink-700);
+  --color-orange:    var(--color-orange-500);
+  --color-orange-light: var(--color-orange-100);
+  --color-orange-dark:  var(--color-orange-700);
 
-  /* Radius */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* --- status badges ----------------------------------------------- */
+  --status-pending-bg:    var(--color-yellow-100);
+  --status-pending-text:  var(--color-yellow-700);
+  --status-pending-border: var(--color-yellow-400);
+  --status-saved-bg:      var(--color-cyan-100);
+  --status-saved-text:    var(--color-cyan-700);
+  --status-saved-border:  var(--color-cyan-500);
+  --status-submitted-bg:    var(--color-blue-100);
+  --status-submitted-text:  var(--color-blue-700);
+  --status-submitted-border: var(--color-blue-500);
+  --status-processed-bg:    var(--color-green-100);
+  --status-processed-text:  var(--color-green-700);
+  --status-processed-border: var(--color-green-500);
+  --status-failed-bg:    var(--color-red-100);
+  --status-failed-text:  var(--color-red-700);
+  --status-failed-border: var(--color-red-500);
 
-  /* Typography */
-  --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-mono: "SF Mono", "Fira Code", "Cascadia Code", monospace;
-  --text-xs: 11px;
-  --text-sm: 13px;
-  --text-base: 14px;
-  --text-lg: 16px;
-  --text-xl: 20px;
-
-  /* Status Colors */
-  --status-pending-bg: #FEF9C3;
-  --status-pending-text: #854D0E;
-  --status-pending-border: #EAB308;
-  --status-saved-bg: #CFFAFE;
-  --status-saved-text: #0E7490;
-  --status-saved-border: #06B6D4;
-  --status-submitted-bg: #DBEAFE;
-  --status-submitted-text: #1E40AF;
-  --status-submitted-border: #3B82F6;
-  --status-processed-bg: #DCFCE7;
-  --status-processed-text: #166534;
-  --status-processed-border: #22C55E;
-  --status-failed-bg: #FEE2E2;
-  --status-failed-text: #991B1B;
-  --status-failed-border: #EF4444;
-
-  /* Entity Type Colors */
-  --entity-person-bg: #DCFCE7;
-  --entity-person-text: #166534;
-  --entity-org-bg: #DBEAFE;
-  --entity-org-text: #1E40AF;
-  --entity-term-bg: #FEF9C3;
-  --entity-term-text: #854D0E;
-  --entity-concept-bg: #CFFAFE;
-  --entity-concept-text: #0E7490;
-  --entity-role-bg: #EDE9FE;
-  --entity-role-text: #5B21B6;
-  --entity-tech-bg: #CCFBF1;
-  --entity-tech-text: #115E59;
-  --entity-location-bg: #D1FAE5;
-  --entity-location-text: #065F46;
-  --entity-project-bg: #FCE7F3;
-  --entity-project-text: #9D174D;
-  --entity-event-bg: #FED7AA;
-  --entity-event-text: #9A3412;
+  /* --- entity types ------------------------------------------------ */
+  --entity-person-bg:    var(--color-green-100);
+  --entity-person-text:  var(--color-green-700);
+  --entity-org-bg:       var(--color-blue-100);
+  --entity-org-text:     var(--color-blue-700);
+  --entity-term-bg:      var(--color-yellow-100);
+  --entity-term-text:    var(--color-yellow-700);
+  --entity-concept-bg:   var(--color-cyan-100);
+  --entity-concept-text: var(--color-cyan-700);
+  --entity-role-bg:      var(--color-violet-100);
+  --entity-role-text:    var(--color-violet-700);
+  --entity-tech-bg:      var(--color-cyan-100);
+  --entity-tech-text:    var(--color-cyan-800);
+  --entity-location-bg:  var(--color-green-100);
+  --entity-location-text: var(--color-green-800);
+  --entity-project-bg:   var(--color-pink-100);
+  --entity-project-text: var(--color-pink-700);
+  --entity-event-bg:     var(--color-orange-100);
+  --entity-event-text:   var(--color-orange-700);
 }
 
-/* Dark Mode */
-[data-theme="dark"] {
-  --bg-surface: #0B0B0B;
-  --bg-surface-hover: #171717;
-  --bg-container: #171717;
-  --bg-container-inset: #262626;
-  --bg-container-hover: #1f1f1f;
-  --bg-overlay: rgba(0, 0, 0, 0.7);
+/* Dark-mode overrides for the application-specific aliases.
+   The DS semantic vars (--bg-*, --text-*, --border-*) auto-flip via
+   prefers-color-scheme in tokens-semantic.css. Anything below is the
+   manual override for legacy aliases that aren't in the semantic set. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --shadow-xs:        0 1px 2px rgba(0,0,0,0.40);
+    --shadow-border-xs: 0 0 0 1px rgba(255,255,255,0.06), 0 1px 2px rgba(0,0,0,0.40);
+    --shadow-border-sm: 0 0 0 1px rgba(255,255,255,0.06), 0 2px 4px rgba(0,0,0,0.50);
+    --shadow-border-md: 0 0 0 1px rgba(255,255,255,0.06), 0 4px 12px rgba(0,0,0,0.60);
+    --shadow-border-lg: 0 0 0 1px rgba(255,255,255,0.06), 0 8px 24px rgba(0,0,0,0.70);
 
-  --text-primary: #FAFAFA;
-  --text-secondary: #A3A3A3;
-  --text-tertiary: #737373;
-  --text-on-primary: #171717;
-  --text-link: #60A5FA;
+    --status-pending-bg:   var(--color-yellow-900);
+    --status-pending-text: var(--color-yellow-200);
+    --status-saved-bg:     var(--color-cyan-900);
+    --status-saved-text:   var(--color-cyan-200);
+    --status-submitted-bg:   var(--color-blue-900);
+    --status-submitted-text: var(--color-blue-200);
+    --status-processed-bg:   var(--color-green-900);
+    --status-processed-text: var(--color-green-200);
+    --status-failed-bg:    var(--color-red-900);
+    --status-failed-text:  var(--color-red-200);
 
-  --border-primary: rgba(255, 255, 255, 0.12);
-  --border-secondary: rgba(255, 255, 255, 0.06);
-
-  --shadow-xs: 0 1px 2px rgba(0,0,0,0.2);
-  --shadow-border-xs: 0 0 0 1px rgba(255,255,255,0.06), 0 1px 2px rgba(0,0,0,0.2);
-  --shadow-border-sm: 0 0 0 1px rgba(255,255,255,0.06), 0 2px 4px rgba(0,0,0,0.3);
-  --shadow-border-md: 0 0 0 1px rgba(255,255,255,0.06), 0 4px 12px rgba(0,0,0,0.4);
-  --shadow-border-lg: 0 0 0 1px rgba(255,255,255,0.06), 0 8px 24px rgba(0,0,0,0.5);
-
-  --status-pending-bg: #422006;
-  --status-pending-text: #FACC15;
-  --status-pending-border: #CA8A04;
-  --status-saved-bg: #164E63;
-  --status-saved-text: #22D3EE;
-  --status-saved-border: #0891B2;
-  --status-submitted-bg: #1E3A5F;
-  --status-submitted-text: #60A5FA;
-  --status-submitted-border: #2563EB;
-  --status-processed-bg: #14532D;
-  --status-processed-text: #4ADE80;
-  --status-processed-border: #16A34A;
-  --status-failed-bg: #450A0A;
-  --status-failed-text: #F87171;
-  --status-failed-border: #DC2626;
-
-  --entity-person-bg: #14532D;
-  --entity-person-text: #4ADE80;
-  --entity-org-bg: #1E3A5F;
-  --entity-org-text: #60A5FA;
-  --entity-term-bg: #422006;
-  --entity-term-text: #FACC15;
-  --entity-concept-bg: #164E63;
-  --entity-concept-text: #22D3EE;
-  --entity-role-bg: #3B0764;
-  --entity-role-text: #A78BFA;
-  --entity-tech-bg: #134E4A;
-  --entity-tech-text: #2DD4BF;
-  --entity-location-bg: #064E3B;
-  --entity-location-text: #34D399;
-  --entity-project-bg: #500724;
-  --entity-project-text: #F472B6;
-  --entity-event-bg: #431407;
-  --entity-event-text: #FB923C;
+    --entity-person-bg:   var(--color-green-900);
+    --entity-person-text: var(--color-green-200);
+    --entity-org-bg:      var(--color-blue-900);
+    --entity-org-text:    var(--color-blue-200);
+    --entity-term-bg:     var(--color-yellow-900);
+    --entity-term-text:   var(--color-yellow-200);
+    --entity-concept-bg:  var(--color-cyan-900);
+    --entity-concept-text: var(--color-cyan-200);
+    --entity-role-bg:     var(--color-violet-900);
+    --entity-role-text:   var(--color-violet-200);
+    --entity-tech-bg:     var(--color-cyan-800);
+    --entity-tech-text:   var(--color-cyan-100);
+    --entity-location-bg: var(--color-green-800);
+    --entity-location-text: var(--color-green-100);
+    --entity-project-bg:  var(--color-pink-900);
+    --entity-project-text: var(--color-pink-200);
+    --entity-event-bg:    var(--color-orange-900);
+    --entity-event-text:  var(--color-orange-200);
+  }
 }
+
 
 /* ============================================================
    RESET & BASE
