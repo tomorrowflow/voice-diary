@@ -1,0 +1,20 @@
+{
+  "name": "@maybe/design-system",
+  "version": "0.1.0",
+  "description": "Stack-agnostic design tokens and component specs extracted from the Maybe app. Generates outputs for CSS, JS/TS, SwiftUI (iOS), and Android.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "style-dictionary build --config ./config.js",
+    "build:clean": "rm -rf build && npm run build",
+    "watch": "style-dictionary build --config ./config.js --watch"
+  },
+  "devDependencies": {
+    "style-dictionary": "^4.0.0"
+  },
+  "files": [
+    "tokens",
+    "build",
+    "config.js"
+  ]
+}
