@@ -1,0 +1,49 @@
+{
+  "semantic": {
+    "light": {
+      "text": {
+        "primary":   { "value": "{color.gray.900}", "type": "color" },
+        "secondary": { "value": "{color.gray.500}", "type": "color" },
+        "subdued":   { "value": "{color.gray.400}", "type": "color" },
+        "inverse":   { "value": "{color.white}",    "type": "color" },
+        "link":      { "value": "{color.blue.600}", "type": "color" }
+      },
+      "fg": {
+        "primary":           { "value": "{color.gray.900}", "type": "color" },
+        "primary-variant":   { "value": "{color.gray.800}", "type": "color" },
+        "secondary":         { "value": "{color.gray.50}",  "type": "color" },
+        "secondary-variant": { "value": "{color.gray.100}", "type": "color" },
+        "subdued":           { "value": "{color.gray.400}", "type": "color" },
+        "gray":              { "value": "{color.gray.500}", "type": "color" },
+        "contrast":          { "value": "{color.gray.400}", "type": "color" },
+        "inverse":           { "value": "{color.white}",    "type": "color" }
+      },
+      "bg": {
+        "surface":              { "value": "{color.gray.50}",  "type": "color" },
+        "surface-hover":        { "value": "{color.gray.100}", "type": "color" },
+        "surface-inset":        { "value": "{color.gray.100}", "type": "color" },
+        "surface-inset-hover":  { "value": "{color.gray.200}", "type": "color" },
+        "container":            { "value": "{color.white}",    "type": "color" },
+        "container-hover":      { "value": "{color.gray.50}",  "type": "color" },
+        "container-inset":      { "value": "{color.gray.50}",  "type": "color" },
+        "container-inset-hover":{ "value": "{color.gray.100}", "type": "color" },
+        "inverse":              { "value": "{color.gray.800}", "type": "color" },
+        "inverse-hover":        { "value": "{color.gray.700}", "type": "color" },
+        "overlay":              { "value": "rgba(240,240,240,0.50)", "type": "color" }
+      },
+      "border": {
+        "primary":     { "value": "{color.alpha-black.300}", "type": "color" },
+        "secondary":   { "value": "{color.alpha-black.200}", "type": "color" },
+        "tertiary":    { "value": "{color.alpha-black.100}", "type": "color" },
+        "subdued":     { "value": "{color.alpha-black.50}",  "type": "color" },
+        "destructive": { "value": "{color.red.500}",         "type": "color" },
+        "solid":       { "value": "{color.black}",           "type": "color" }
+      },
+      "status": {
+        "success":     { "value": "{color.green.600}",  "type": "color" },
+        "warning":     { "value": "{color.yellow.600}", "type": "color" },
+        "destructive": { "value": "{color.red.600}",    "type": "color" }
+      }
+    }
+  }
+}
