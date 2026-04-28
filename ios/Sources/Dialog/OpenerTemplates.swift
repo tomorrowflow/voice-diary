@@ -159,4 +159,29 @@ public enum OpenerTemplates {
         let s = slot(for: event, positionInDay: position(of: index, count: total))
         return render(slot: s, event: event, language: language)
     }
+
+    // MARK: - Follow-up rotation (SPEC §11.4)
+
+    /// Rotation pool used when the on-device LLM isn't available or
+    /// returns nothing usable. Keep these wordings deliberately broad so
+    /// they fit any event.
+    public static let germanFollowUps: [String] = [
+        "Etwas Konkretes, das du mitnehmen willst?",
+        "Irgendwas, das dich noch beschäftigt?",
+        "Willst du noch einen Aspekt vertiefen?",
+    ]
+
+    public static let englishFollowUps: [String] = [
+        "Anything concrete you want to keep?",
+        "Anything still on your mind?",
+        "Any angle you want to dig into?",
+    ]
+
+    /// Pick a follow-up template by simple rotation on a counter the
+    /// caller maintains. Prevents two consecutive identical prompts.
+    public static func followUp(language: OpenerLanguage, rotation: Int) -> String {
+        let pool = language == .de ? germanFollowUps : englishFollowUps
+        let i = ((rotation % pool.count) + pool.count) % pool.count
+        return pool[i]
+    }
 }
