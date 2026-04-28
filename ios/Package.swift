@@ -17,7 +17,7 @@ let package = Package(
         .library(name: "VoiceDiaryCore", targets: ["VoiceDiaryCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.5.0"),
+        .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.12.4"),
     ],
     targets: [
         .target(

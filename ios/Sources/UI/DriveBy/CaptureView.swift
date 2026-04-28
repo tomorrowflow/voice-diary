@@ -3,7 +3,8 @@ import SwiftUI
 
 // In-app record button for dogfooding M2. Records → AAC M4A under
 // Application Support/VoiceDiary/driveby_seeds/{ISO timestamp}/audio.m4a.
-// On stop, writes a metadata.json next to it.
+// On stop, the audio is transcribed locally via Parakeet v3 and the
+// transcript + metadata are written to metadata.json next to the M4A.
 
 @MainActor
 public struct CaptureView: View {
@@ -14,6 +15,8 @@ public struct CaptureView: View {
     @State private var errorMessage: String?
     @State private var elapsedSeconds: Int = 0
     @State private var timer: Timer?
+    @State private var statusLine: String = ""
+    @State private var modelState: ParakeetManager.LoadState = .idle
 
     public init() {}
 
@@ -44,9 +47,16 @@ public struct CaptureView: View {
                     .accessibilityLabel(isRecording ? "Aufnahme beenden" : "Aufnahme starten")
 
                     Text(timeString(elapsedSeconds))
-                        .font(Theme.font.monoCaption.weight(.semibold))
-                        .foregroundStyle(Theme.color.text.secondary)
                         .font(.system(size: 32, weight: .semibold, design: .monospaced))
+                        .foregroundStyle(Theme.color.text.secondary)
+
+                    if !statusLine.isEmpty {
+                        Text(statusLine)
+                            .font(Theme.font.callout)
+                            .foregroundStyle(Theme.color.text.secondary)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, Theme.spacing.md)
+                    }
 
                     if let seed = lastSeed {
                         SeedSummaryCard(seed: seed)
@@ -64,6 +74,18 @@ public struct CaptureView: View {
                 .padding(.horizontal, Theme.spacing.md)
             }
             .navigationTitle("Drive-by")
+            .task {
+                // Trigger Parakeet model load lazily as soon as the user
+                // opens this tab — first launch downloads ~1.2 GB.
+                await ParakeetManager.shared.warmUp()
+                modelState = await ParakeetManager.shared.loadState
+                if case .loading = modelState {
+                    statusLine = "Lade Sprachmodell — beim ersten Start ~1,2 GB."
+                } else if case .failed(let msg) = modelState {
+                    statusLine = "Sprachmodell konnte nicht geladen werden."
+                    errorMessage = msg
+                }
+            }
         }
         .onDisappear { timer?.invalidate() }
     }
@@ -74,6 +96,7 @@ public struct CaptureView: View {
 
     private func start() async {
         errorMessage = nil
+        statusLine = ""
         do {
             let dir = try LocalStore.driveBySeedsDir()
                 .appending(path: ISO8601DateFormatter().string(from: Date()), directoryHint: .isDirectory)
@@ -95,26 +118,44 @@ public struct CaptureView: View {
     private func stop() async {
         timer?.invalidate()
         timer = nil
+        statusLine = "Transkribiere …"
         do {
             guard let url = try await engine.stop(), let started = startedAt else {
                 isRecording = false
+                statusLine = ""
                 return
             }
             let duration = Date().timeIntervalSince(started)
+            isRecording = false
+            startedAt = nil
+
+            // Transcribe locally. If Parakeet isn't ready yet (still
+            // downloading on first launch) we persist the seed without a
+            // transcript — the server's Whisper sidecar will produce one
+            // on ingest.
+            var transcript: ParakeetManager.Transcript?
+            do {
+                transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
+            } catch {
+                Log.audio.warning("Parakeet transcript skipped: \(String(describing: error), privacy: .public)")
+            }
+
             let seed = DriveBySeed(
                 seed_id: "seed-" + ISO8601DateFormatter().string(from: started),
                 captured_at: started,
                 duration_seconds: duration,
-                language: "de",
-                transcript: "",
+                language: transcript?.language ?? "de",
+                transcript: transcript?.text ?? "",
                 audio_file_url: url
             )
             try writeMetadata(seed: seed, alongside: url)
             lastSeed = seed
-            isRecording = false
-            startedAt = nil
+            statusLine = transcript == nil
+                ? "Aufnahme gespeichert. Transkript folgt beim Server-Upload."
+                : "Aufnahme + Transkript gespeichert."
         } catch {
             errorMessage = "\(error)"
+            statusLine = ""
             isRecording = false
         }
     }
@@ -137,16 +178,22 @@ private struct SeedSummaryCard: View {
     let seed: DriveBySeed
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
+        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
             Text("Letzter Seed")
                 .font(Theme.font.headline)
                 .foregroundStyle(Theme.color.text.primary)
             Text(seed.audio_file_url.lastPathComponent)
                 .font(Theme.font.monoCaption)
                 .foregroundStyle(Theme.color.text.secondary)
-            Text(String(format: "%.1f s", seed.duration_seconds))
+            Text("\(String(format: "%.1f", seed.duration_seconds)) s · \(seed.language)")
                 .font(Theme.font.caption)
                 .foregroundStyle(Theme.color.text.subdued)
+            if !seed.transcript.isEmpty {
+                Text(seed.transcript)
+                    .font(Theme.font.callout)
+                    .foregroundStyle(Theme.color.text.primary)
+                    .padding(.top, Theme.spacing.xs)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(Theme.spacing.md)
