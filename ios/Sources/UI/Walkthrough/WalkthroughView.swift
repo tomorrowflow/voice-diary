@@ -27,6 +27,13 @@ public struct WalkthroughView: View {
 
                         if coordinator.state.isListening {
                             ListeningTimer(seconds: coordinator.elapsedSeconds)
+                            if !coordinator.statusHint.isEmpty {
+                                Text(coordinator.statusHint)
+                                    .font(Theme.font.callout)
+                                    .foregroundStyle(Theme.color.status.warning)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, Theme.spacing.sm)
+                            }
                             ListeningControls(coordinator: coordinator)
                         }
 
