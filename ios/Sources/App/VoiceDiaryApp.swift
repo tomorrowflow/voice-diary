@@ -77,6 +77,9 @@ struct RootView: View {
             CaptureView()
                 .tabItem { Label("Aufnahme", systemImage: "mic.circle") }
 
+            WalkthroughView()
+                .tabItem { Label("Abend", systemImage: "moon.stars") }
+
             DebugUploadView()
                 .tabItem { Label("Test-Upload", systemImage: "arrow.up.circle") }
 
