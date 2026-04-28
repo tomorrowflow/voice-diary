@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import Synchronization
 
 // `AVSpeechSynthesizer`-backed TTS. Built into iOS, no model bundling
 // required. German + English voices are present out of the box.
@@ -17,8 +18,7 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
     public static let shared = AppleSpeechTTS()
 
     private let synth = AVSpeechSynthesizer()
-    private var pending: [ObjectIdentifier: CheckedContinuation<Void, Never>] = [:]
-    private let lock = NSLock()
+    private let pending = Mutex<[ObjectIdentifier: CheckedContinuation<Void, Never>]>([:])
 
     public override init() {
         super.init()
@@ -38,9 +38,7 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
 
         let key = ObjectIdentifier(utterance)
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            lock.lock()
-            pending[key] = cont
-            lock.unlock()
+            pending.withLock { $0[key] = cont }
             synth.speak(utterance)
         }
     }
@@ -50,10 +48,11 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
         // stopping the synth. The delegate's `didCancel` will still fire
         // for the live utterance, but its key is already gone from the
         // map so it's a no-op (no race with a queued next utterance).
-        lock.lock()
-        let toResume = Array(pending.values)
-        pending.removeAll()
-        lock.unlock()
+        let toResume = pending.withLock { state -> [CheckedContinuation<Void, Never>] in
+            let vals = Array(state.values)
+            state.removeAll()
+            return vals
+        }
 
         if synth.isSpeaking {
             synth.stopSpeaking(at: .immediate)
@@ -63,9 +62,7 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
 
     private func resume(_ utterance: AVSpeechUtterance) {
         let key = ObjectIdentifier(utterance)
-        lock.lock()
-        let cont = pending.removeValue(forKey: key)
-        lock.unlock()
+        let cont = pending.withLock { $0.removeValue(forKey: key) }
         cont?.resume()
     }
 
@@ -87,13 +84,45 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
 
     // MARK: - Voice selection
 
+    /// Prefer Premium > Enhanced > default. iOS's
+    /// `AVSpeechSynthesisVoice(language:)` returns *some* voice for the
+    /// locale but doesn't guarantee the highest-quality tier the user
+    /// has installed — we have to enumerate `speechVoices()` and pick
+    /// the best one ourselves. The user has to download Premium voices
+    /// once via Settings → Accessibility → Spoken Content → Voices;
+    /// this code makes them actually get used.
     private static func voice(for language: String) -> AVSpeechSynthesisVoice? {
-        let primary = language.contains("-") ? language : (language == "de" ? "de-DE" : "en-US")
-        if let v = AVSpeechSynthesisVoice(language: primary) {
-            return v
-        }
+        let target = language.contains("-")
+            ? language
+            : (language == "de" ? "de-DE" : "en-US")
         let prefix = String(language.prefix(2))
-        return AVSpeechSynthesisVoice.speechVoices()
-            .first { $0.language.hasPrefix(prefix) }
+
+        let all = AVSpeechSynthesisVoice.speechVoices()
+        let exact = all.filter { $0.language == target }
+        let prefixed = all.filter { $0.language.hasPrefix(prefix) }
+
+        // Quality buckets: 3 = premium, 2 = enhanced, 1 = default.
+        // Newer iOS adds `.premium` directly; on older OSes we treat
+        // the highest enum value as best.
+        func score(_ v: AVSpeechSynthesisVoice) -> Int {
+            switch v.quality {
+            case .premium:  return 3
+            case .enhanced: return 2
+            default:        return 1
+            }
+        }
+
+        // Best match: exact-locale Premium first; then any prefix Premium;
+        // then exact Enhanced; then prefix Enhanced; then anything.
+        let candidates = exact + prefixed.filter { !exact.contains($0) }
+        if let best = candidates.max(by: { score($0) < score($1) }) {
+            Log.app.debug(
+                "TTS voice selected: \(best.identifier, privacy: .public) " +
+                "lang=\(best.language, privacy: .public) " +
+                "quality=\(best.quality.rawValue, privacy: .public)"
+            )
+            return best
+        }
+        return AVSpeechSynthesisVoice(language: target)
     }
 }
