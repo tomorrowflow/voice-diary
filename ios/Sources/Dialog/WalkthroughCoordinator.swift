@@ -274,6 +274,12 @@ public final class WalkthroughCoordinator {
         do { _ = try await engine.stop() } catch {
             Log.audio.warning("walkthrough engine stop: \(String(describing: error), privacy: .public)")
         }
+        // AVAudioEngine deactivation isn't synchronous — give CoreAudio a
+        // moment to fully release the audio unit before the next start().
+        // Without this, back-to-back stop() / start() across segments
+        // produces empty / partially-written M4A files (one in three
+        // recordings made it through during M6 dogfood).
+        try? await Task.sleep(nanoseconds: 300_000_000)
     }
 
     private func stopSegmentCaptureNoTranscribe() async throws {
@@ -281,6 +287,7 @@ public final class WalkthroughCoordinator {
         elapsedSeconds = 0
         lullDetector.stop()
         _ = try? await engine.stop()
+        try? await Task.sleep(nanoseconds: 300_000_000)
     }
 
     // MARK: - Follow-up logic ------------------------------------------

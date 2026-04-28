@@ -67,6 +67,12 @@ public actor AudioEngine {
             bufferSize: 4096,
             format: inputFormat
         ) { [writer, streamingSink] buffer, _ in
+            // CoreAudio occasionally emits zero-frame buffers around tap
+            // install / engine state transitions. Skipping them silences
+            // the `mBuffers[0].mDataByteSize (0) should be non-zero`
+            // warnings without losing real audio.
+            guard buffer.frameLength > 0 else { return }
+
             // 1. File: write the buffer at native rate.
             do {
                 try writer.write(buffer: buffer)
@@ -91,6 +97,7 @@ public actor AudioEngine {
                 return buffer
             }
             guard status == .haveData || status == .inputRanDry else { return }
+            guard outBuf.frameLength > 0 else { return }
             sink(outBuf)
         }
 
