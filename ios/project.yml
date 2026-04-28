@@ -39,18 +39,19 @@ targets:
     resources:
       # Fonts must land at the .app bundle ROOT (not under a Fonts/
       # subdirectory) for `UIAppFonts: ["Geist-Variable.ttf"]` to resolve.
-      # We list each TTF explicitly so XcodeGen adds it to the
-      # "Copy Bundle Resources" phase as a flat file rather than as part
-      # of a folder reference that would preserve the directory.
-      - path: Resources/Fonts/Geist-Variable.ttf
-      - path: Resources/Fonts/GeistMono-Variable.ttf
+      # The TTFs live directly under Resources/ for that reason.
+      - path: Resources/Geist-Variable.ttf
+      - path: Resources/GeistMono-Variable.ttf
       # Voice models live under Models/ inside the .app — that's fine,
-      # they're loaded by full path through Bundle.main.url(forResource:).
+      # they're loaded by full path via Bundle.main.url(forResource:).
       - path: Resources/Models
         optional: true
     dependencies:
       - package: FluidAudio
     info:
+      # IMPORTANT: this block is the source of truth for Config/Info.plist.
+      # XcodeGen regenerates the plist from `properties` on every run —
+      # any hand-added keys will be silently dropped. Add new keys HERE.
       path: Config/Info.plist
       properties:
         CFBundleDisplayName: Voice Diary
@@ -65,6 +66,13 @@ targets:
         UIAppFonts:
           - "Geist-Variable.ttf"
           - "GeistMono-Variable.ttf"
+        # Tailscale traffic (`*.ts.net`) is encrypted at the transport layer;
+        # we relax ATS only for that hostname, not arbitrary HTTP.
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tomorrowflow.voice-diary
