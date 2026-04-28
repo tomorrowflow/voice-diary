@@ -28,7 +28,7 @@ settings:
 packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
-    from: 0.5.0
+    from: 0.12.4
 
 targets:
   VoiceDiary:
