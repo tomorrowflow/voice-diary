@@ -1,0 +1,45 @@
+{
+  "font": {
+    "family": {
+      "sans": { "value": "Geist, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif", "type": "fontFamily" },
+      "mono": { "value": "'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace", "type": "fontFamily" }
+    },
+    "weight": {
+      "regular":  { "value": "400", "type": "fontWeight" },
+      "medium":   { "value": "500", "type": "fontWeight" },
+      "semibold": { "value": "600", "type": "fontWeight" },
+      "bold":     { "value": "700", "type": "fontWeight" }
+    },
+    "size": {
+      "xs":   { "value": "12", "type": "fontSize", "comment": "px" },
+      "sm":   { "value": "14", "type": "fontSize" },
+      "base": { "value": "16", "type": "fontSize" },
+      "lg":   { "value": "18", "type": "fontSize" },
+      "xl":   { "value": "20", "type": "fontSize" },
+      "2xl":  { "value": "24", "type": "fontSize" },
+      "3xl":  { "value": "30", "type": "fontSize" },
+      "4xl":  { "value": "36", "type": "fontSize" },
+      "5xl":  { "value": "48", "type": "fontSize" }
+    },
+    "lineHeight": {
+      "tight":   { "value": "1.25",  "type": "lineHeight" },
+      "snug":    { "value": "1.375", "type": "lineHeight" },
+      "normal":  { "value": "1.5",   "type": "lineHeight" },
+      "relaxed": { "value": "1.625", "type": "lineHeight" }
+    },
+    "ios": {
+      "comment": "Apple HIG text styles mapped to platform-neutral roles. iOS consumers should use Dynamic Type, but these provide a starting ramp.",
+      "largeTitle":   { "value": "34", "type": "fontSize" },
+      "title1":       { "value": "28", "type": "fontSize" },
+      "title2":       { "value": "22", "type": "fontSize" },
+      "title3":       { "value": "20", "type": "fontSize" },
+      "headline":     { "value": "17", "type": "fontSize" },
+      "body":         { "value": "17", "type": "fontSize" },
+      "callout":      { "value": "16", "type": "fontSize" },
+      "subheadline":  { "value": "15", "type": "fontSize" },
+      "footnote":     { "value": "13", "type": "fontSize" },
+      "caption1":     { "value": "12", "type": "fontSize" },
+      "caption2":     { "value": "11", "type": "fontSize" }
+    }
+  }
+}

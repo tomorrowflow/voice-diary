@@ -1,0 +1,29 @@
+{
+  "name": "Button",
+  "description": "Primary interactive element. Platform-neutral spec — implement per target stack against these contracts.",
+  "variants": {
+    "primary":     { "bg": "semantic.text.primary",   "fg": "semantic.text.inverse",   "hoverBg": "color.gray.700" },
+    "secondary":   { "bg": "semantic.bg.container",   "fg": "semantic.text.primary",   "border": "semantic.border.secondary", "hoverBg": "semantic.bg.container-hover" },
+    "outline":     { "bg": "transparent",             "fg": "semantic.text.primary",   "border": "semantic.border.primary",   "hoverBg": "semantic.bg.surface-hover" },
+    "ghost":       { "bg": "transparent",             "fg": "semantic.text.primary",                                          "hoverBg": "semantic.bg.surface-hover" },
+    "destructive": { "bg": "semantic.status.destructive", "fg": "semantic.text.inverse",                                       "hoverBg": "color.red.700" }
+  },
+  "sizes": {
+    "sm": { "height": 32, "paddingX": "spacing.3", "fontSize": "font.size.sm",   "radius": "radius.md" },
+    "md": { "height": 40, "paddingX": "spacing.4", "fontSize": "font.size.sm",   "radius": "radius.md" },
+    "lg": { "height": 48, "paddingX": "spacing.5", "fontSize": "font.size.base", "radius": "radius.lg" }
+  },
+  "states": ["default", "hover", "active", "focus", "disabled", "loading"],
+  "slots": ["leadingIcon", "label", "trailingIcon"],
+  "a11y": {
+    "role": "button",
+    "keyboard": ["Enter", "Space"],
+    "disabledAttribute": "aria-disabled",
+    "loadingAttribute": "aria-busy"
+  },
+  "platformNotes": {
+    "web":     "Implement as headless component (React/Vue/Svelte). See app/components/DS/button.rb for original Rails ViewComponent.",
+    "swiftui": "Implement as ButtonStyle. Map height to .frame(height:), use DSColor + DSMetrics. Apply .sensoryFeedback(.selection, trigger:) for haptics on iOS 17+.",
+    "uikit":   "Subclass UIButton.Configuration; map sizes via .contentInsets and .preferredFont."
+  }
+}

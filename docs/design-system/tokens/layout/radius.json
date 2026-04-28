@@ -1,0 +1,12 @@
+{
+  "radius": {
+    "none": { "value": "0",   "type": "borderRadius" },
+    "sm":   { "value": "4",   "type": "borderRadius" },
+    "md":   { "value": "8",   "type": "borderRadius" },
+    "lg":   { "value": "10",  "type": "borderRadius" },
+    "xl":   { "value": "12",  "type": "borderRadius" },
+    "2xl":  { "value": "16",  "type": "borderRadius" },
+    "3xl":  { "value": "24",  "type": "borderRadius" },
+    "full": { "value": "9999","type": "borderRadius" }
+  }
+}
