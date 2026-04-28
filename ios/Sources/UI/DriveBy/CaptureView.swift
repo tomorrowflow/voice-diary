@@ -1,7 +1,7 @@
 import AVFoundation
 import SwiftUI
 
-// In-app record button for dogfooding M2. Records → AAC-LC M4A under
+// In-app record button for dogfooding M2. Records → AAC M4A under
 // Application Support/VoiceDiary/driveby_seeds/{ISO timestamp}/audio.m4a.
 // On stop, writes a metadata.json next to it.
 
@@ -19,51 +19,49 @@ public struct CaptureView: View {
 
     public var body: some View {
         NavigationStack {
-            VStack(spacing: 32) {
-                Spacer()
+            ZStack {
+                Theme.color.bg.surface.ignoresSafeArea()
 
-                Button {
-                    Task { await toggle() }
-                } label: {
-                    ZStack {
-                        Circle()
-                            .fill(isRecording ? Color.red : Color.accentColor)
-                            .frame(width: 160, height: 160)
-                        Image(systemName: isRecording ? "stop.fill" : "mic.fill")
-                            .font(.system(size: 56))
-                            .foregroundStyle(.white)
+                VStack(spacing: Theme.spacing.xxl) {
+                    Spacer()
+
+                    Button {
+                        Task { await toggle() }
+                    } label: {
+                        ZStack {
+                            Circle()
+                                .fill(isRecording
+                                      ? Theme.color.status.destructive
+                                      : Theme.color.fg.primary)
+                                .frame(width: 160, height: 160)
+                                .shadow(color: Theme.color.bg.overlay, radius: 20, y: 8)
+                            Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                                .font(.system(size: 56))
+                                .foregroundStyle(Theme.color.text.inverse)
+                        }
                     }
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isRecording ? "Aufnahme beenden" : "Aufnahme starten")
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isRecording ? "Aufnahme beenden" : "Aufnahme starten")
 
-                Text(timeString(elapsedSeconds))
-                    .font(.system(size: 32, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                    Text(timeString(elapsedSeconds))
+                        .font(Theme.font.monoCaption.weight(.semibold))
+                        .foregroundStyle(Theme.color.text.secondary)
+                        .font(.system(size: 32, weight: .semibold, design: .monospaced))
 
-                if let seed = lastSeed {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Letzter Seed")
-                            .font(.headline)
-                        Text(seed.audio_file_url.lastPathComponent)
-                            .font(.caption.monospaced())
-                            .foregroundStyle(.secondary)
-                        Text(String(format: "%.1f s", seed.duration_seconds))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    if let seed = lastSeed {
+                        SeedSummaryCard(seed: seed)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal)
-                }
 
-                if let errorMessage {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                        .font(.caption)
-                        .padding(.horizontal)
-                }
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(Theme.font.footnote)
+                            .foregroundStyle(Theme.color.status.destructive)
+                            .padding(.horizontal, Theme.spacing.md)
+                    }
 
-                Spacer()
+                    Spacer()
+                }
+                .padding(.horizontal, Theme.spacing.md)
             }
             .navigationTitle("Drive-by")
         }
@@ -132,5 +130,34 @@ public struct CaptureView: View {
 
     private func timeString(_ s: Int) -> String {
         String(format: "%02d:%02d", s / 60, s % 60)
+    }
+}
+
+private struct SeedSummaryCard: View {
+    let seed: DriveBySeed
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
+            Text("Letzter Seed")
+                .font(Theme.font.headline)
+                .foregroundStyle(Theme.color.text.primary)
+            Text(seed.audio_file_url.lastPathComponent)
+                .font(Theme.font.monoCaption)
+                .foregroundStyle(Theme.color.text.secondary)
+            Text(String(format: "%.1f s", seed.duration_seconds))
+                .font(Theme.font.caption)
+                .foregroundStyle(Theme.color.text.subdued)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Theme.spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .fill(Theme.color.bg.container)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
+        )
+        .padding(.horizontal, Theme.spacing.md)
     }
 }

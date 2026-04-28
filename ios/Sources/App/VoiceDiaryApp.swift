@@ -9,6 +9,8 @@ struct VoiceDiaryApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .tint(Theme.color.text.link)
+                .background(Theme.color.bg.surface.ignoresSafeArea())
         }
     }
 }
@@ -25,6 +27,7 @@ struct RootView: View {
             DebugSettingsView()
                 .tabItem { Label("Server", systemImage: "gear") }
         }
+        .font(Theme.font.body)
     }
 }
 

@@ -52,6 +52,9 @@ targets:
           - audio
         NSMicrophoneUsageDescription: "Voice Diary nimmt deine Sprache auf, um den Tag chronologisch zu reflektieren. (Voice Diary records your speech to walk through your day chronologically.)"
         ITSAppUsesNonExemptEncryption: false
+        UIAppFonts:
+          - "Geist-Variable.ttf"
+          - "GeistMono-Variable.ttf"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.tomorrowflow.voice-diary
