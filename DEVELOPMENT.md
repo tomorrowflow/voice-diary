@@ -240,12 +240,21 @@ Swift 6 / SwiftUI / iOS 26.
 ```
 ios/
 ├── README.md
-├── VoiceDiary.xcodeproj
+├── VoiceDiary.xcodeproj            (gitignored — regenerated from project.yml via XcodeGen)
+├── project.yml                     (XcodeGen spec — source of truth)
 ├── Package.swift
+├── Config/
+│   ├── Info.plist                  (UIAppFonts declares Geist + Geist Mono)
+│   └── VoiceDiary.entitlements
 ├── Sources/
 │   ├── App/
-│   │   ├── VoiceDiaryApp.swift
-│   │   └── AppDelegate.swift
+│   │   └── VoiceDiaryApp.swift
+│   ├── DesignSystem/               (auto-generated outputs + hand-written seam)
+│   │   ├── DSColor.swift           (auto-generated)
+│   │   ├── DSMetrics.swift         (auto-generated)
+│   │   ├── DSSemantic.swift        (auto-generated; light/dark dynamic colors)
+│   │   ├── Theme.swift             (Theme.color/spacing/radius/font/motion)
+│   │   └── DSButtonStyle.swift     (5 variants × 3 sizes per specs/components/button.json)
 │   ├── Capture/
 │   │   ├── AudioEngine.swift
 │   │   ├── M4AWriter.swift
@@ -259,27 +268,25 @@ ios/
 │   │   ├── OpenerTemplates.swift
 │   │   └── WakeWordDetector.swift
 │   ├── Backend/
-│   │   ├── VoiceDiaryServerClient.swift
+│   │   ├── ServerClient.swift
 │   │   ├── SessionUploader.swift
-│   │   └── Reachability.swift
+│   │   ├── Reachability.swift
+│   │   ├── KeychainStore.swift
+│   │   └── Logging.swift           (os.Logger subsystems)
 │   ├── Models/
-│   │   ├── Session.swift
-│   │   ├── Segment.swift
-│   │   ├── DriveBySeed.swift
-│   │   ├── Todo.swift
-│   │   ├── CalendarEvent.swift
-│   │   └── Manifest.swift
+│   │   ├── Manifest.swift
+│   │   └── DriveBySeed.swift
 │   ├── UI/
 │   │   ├── Onboarding/
 │   │   ├── Walkthrough/
 │   │   ├── DriveBy/
 │   │   └── Settings/
 │   ├── Storage/
-│   │   ├── LocalStore.swift
-│   │   └── UploadQueue.swift
+│   │   └── LocalStore.swift
 │   └── Widget/
 │       └── LockScreenWidget.swift
 ├── Resources/
+│   ├── Fonts/                      (Geist + Geist Mono variable TTFs, OFL.txt)
 │   └── Models/
 │       ├── parakeet-v3.*
 │       ├── de_DE-thorsten-high.onnx
@@ -292,11 +299,13 @@ ios/
 
 #### M1 — Xcode foundation
 
-- Create Xcode project. Bundle ID `com.tomorrowflow.voice-diary` (or user's preferred).
+- `project.yml` (XcodeGen) is the source of truth; `VoiceDiary.xcodeproj` is generated and gitignored.
+- Bundle ID `com.tomorrowflow.voice-diary` (or user's preferred).
 - Entitlements: Microphone, Background Audio, App Groups (for widget later). `com.apple.developer.kernel.increased-memory-limit` only if switching to Gemma 4 E4B fallback.
 - SwiftPM: add `FluidInference/FluidAudio` for Parakeet.
 - Add `k2-fsa/sherpa-onnx` iOS xcframework as a binary framework.
 - Bundle Piper voice models and espeak-ng data in `Resources/Models/`.
+- Bundle Geist + Geist Mono variable TTFs in `Resources/Fonts/`; declare them in `UIAppFonts`. The DS Swift outputs (`DSColor.swift`, `DSMetrics.swift`, `DSSemantic.swift`, `Theme.swift`, `DSButtonStyle.swift`) live under `Sources/DesignSystem/` and are produced by `bash scripts/build_design_system.sh`.
 - Smoke test: app launches on iPhone 17 Pro, prints "Voice Diary ready".
 
 Exit: build + launch on device, all deps resolve.
@@ -392,6 +401,7 @@ Exit: skip a day, catch up next evening. Drive-bys from morning surface in match
 - Full settings UI (all sections in SPEC §12).
 - Onboarding: Tailscale reachability check, bearer token paste, voice preview, Action Button deep link, first drive-by tutorial.
 - Reset-app action.
+- Every screen built with `Theme.*` and `DSButtonStyle`; status indicators use the colour-coded `StatusBadge` pattern from `DebugSettingsView`.
 
 Exit: clean install → onboarding → ready to capture without editing any file manually.
 
@@ -403,7 +413,8 @@ Exit: clean install → onboarding → ready to capture without editing any file
 - Diagnostics log viewer.
 - Battery + thermal profiling on a 20-minute session.
 - TestFlight build.
-- Accessibility pass.
+- Accessibility pass — verify Dynamic Type continues to work with Geist (`.custom(_, size:, relativeTo:)` already opted in via `Theme.font.*`).
+- Design-system audit: `grep -RE "Color\\(red:|Color\\.(red|gray|blue)|CGFloat = [0-9]" ios/Sources/` should return zero hits in feature code.
 
 Exit: 2 weeks of daily use without reverting to voice memos.
 
