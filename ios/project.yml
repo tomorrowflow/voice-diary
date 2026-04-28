@@ -36,15 +36,14 @@ targets:
     platform: iOS
     sources:
       - path: Sources
-    resources:
-      # Fonts must land at the .app bundle ROOT (not under a Fonts/
-      # subdirectory) for `UIAppFonts: ["Geist-Variable.ttf"]` to resolve.
-      # The TTFs live directly under Resources/ for that reason.
       - path: Resources/Geist-Variable.ttf
+        buildPhase: resources
       - path: Resources/GeistMono-Variable.ttf
-      # Voice models live under Models/ inside the .app — that's fine,
-      # they're loaded by full path via Bundle.main.url(forResource:).
+        buildPhase: resources
+      - path: Resources/Geist-OFL.txt
+        buildPhase: resources
       - path: Resources/Models
+        buildPhase: resources
         optional: true
     dependencies:
       - package: FluidAudio

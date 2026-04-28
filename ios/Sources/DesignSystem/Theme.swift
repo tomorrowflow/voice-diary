@@ -21,7 +21,7 @@ public enum Theme {
 
     // ---------- Colour --------------------------------------------------
 
-    public struct ColorTokens {
+    public struct ColorTokens: Sendable {
         public let text   = TextColors()
         public let fg     = FgColors()
         public let bg     = BgColors()
@@ -30,7 +30,7 @@ public enum Theme {
         public let raw    = RawColors()
     }
 
-    public struct TextColors {
+    public struct TextColors: Sendable {
         public let primary   = DSSemantic.Text.primary
         public let secondary = DSSemantic.Text.secondary
         public let subdued   = DSSemantic.Text.subdued
@@ -38,7 +38,7 @@ public enum Theme {
         public let link      = DSSemantic.Text.link
     }
 
-    public struct FgColors {
+    public struct FgColors: Sendable {
         public let primary         = DSSemantic.Fg.primary
         public let primaryVariant  = DSSemantic.Fg.primary_variant
         public let secondary       = DSSemantic.Fg.secondary
@@ -49,7 +49,7 @@ public enum Theme {
         public let inverse         = DSSemantic.Fg.inverse
     }
 
-    public struct BgColors {
+    public struct BgColors: Sendable {
         public let surface             = DSSemantic.Bg.surface
         public let surfaceHover        = DSSemantic.Bg.surface_hover
         public let surfaceInset        = DSSemantic.Bg.surface_inset
@@ -63,7 +63,7 @@ public enum Theme {
         public let overlay             = DSSemantic.Bg.overlay
     }
 
-    public struct BorderColors {
+    public struct BorderColors: Sendable {
         public let primary     = DSSemantic.Border.primary
         public let secondary   = DSSemantic.Border.secondary
         public let tertiary    = DSSemantic.Border.tertiary
@@ -72,21 +72,21 @@ public enum Theme {
         public let solid       = DSSemantic.Border.solid
     }
 
-    public struct StatusColors {
+    public struct StatusColors: Sendable {
         public let success     = DSSemantic.Status.success
         public let warning     = DSSemantic.Status.warning
         public let destructive = DSSemantic.Status.destructive
     }
 
     /// Raw colour ramps — escape hatch when you need an exact shade.
-    public struct RawColors {
+    public struct RawColors: Sendable {
         public let white = DSColor.color_white
         public let black = DSColor.color_black
     }
 
     // ---------- Spacing -------------------------------------------------
 
-    public struct SpacingTokens {
+    public struct SpacingTokens: Sendable {
         public let xxs:  CGFloat = DSSpacing.spacing_r1   // 4
         public let xs:   CGFloat = DSSpacing.spacing_r2   // 8
         public let sm:   CGFloat = DSSpacing.spacing_r3   // 12
@@ -97,7 +97,7 @@ public enum Theme {
         public let xxxl: CGFloat = DSSpacing.spacing_r10  // 40
     }
 
-    public struct RadiusTokens {
+    public struct RadiusTokens: Sendable {
         public let none: CGFloat = DSRadius.none
         public let sm:   CGFloat = DSRadius.sm
         public let md:   CGFloat = DSRadius.md
@@ -110,7 +110,7 @@ public enum Theme {
 
     // ---------- Typography ---------------------------------------------
 
-    public struct FontTokens {
+    public struct FontTokens: Sendable {
         // The bundled variable Geist family. Falls back to system rounded
         // if Geist isn't registered (in tests, previews, etc.).
         public static let sansFamily = "Geist"
@@ -135,7 +135,7 @@ public enum Theme {
 
     // ---------- Motion -------------------------------------------------
 
-    public struct MotionTokens {
+    public struct MotionTokens: @unchecked Sendable {
         public let fast:    Animation = .easeInOut(duration: 0.15)
         public let `default`: Animation = .easeInOut(duration: 0.30)
         public let slow:    Animation = .easeInOut(duration: 0.50)
