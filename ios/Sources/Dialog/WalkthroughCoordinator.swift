@@ -31,6 +31,10 @@ public final class WalkthroughCoordinator {
     /// Surfaced in the UI for the 15s lull cue ("soll ich weitermachen?").
     /// SPEC §6.2 makes this a spoken prompt; M6 keeps it visual.
     public private(set) var statusHint: String = ""
+    /// True while an enrichment request is in flight (server round-trip
+    /// + summary playback). The UI uses this to disable advance / skip
+    /// so the user doesn't move past while the AI is still answering.
+    public private(set) var isEnriching: Bool = false
 
     private let engine = AudioEngine()
     private let tts: any TTSEngine = VoiceRegistry.engine(for: "de")
@@ -127,6 +131,66 @@ public final class WalkthroughCoordinator {
         try? await engine.stop()
         await tts.cancel()
         state = .idle
+    }
+
+    // MARK: - Enrichment (M7) -------------------------------------------
+
+    /// Run a single mid-walkthrough enrichment query. The caller (the
+    /// modal in `WalkthroughView` for now; a wake-word path in M7
+    /// phase B) supplies the typed/spoken question text.
+    ///
+    ///   1. Speak a short "einen Moment, ich schaue nach …" cue.
+    ///   2. Classify intent + call the right server endpoint.
+    ///   3. Speak the returned summary.
+    ///   4. Append the full Q&A to `manifest.ai_prompts[]` so the server
+    ///      side can reference what was asked when ingesting the segment.
+    /// The current segment recording stays running underneath so we
+    /// don't lose the user's reflection in progress.
+    public func askEnrichment(
+        query: String,
+        language: OpenerLanguage = .de
+    ) async {
+        guard !isEnriching else { return }
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        isEnriching = true
+        defer { isEnriching = false }
+
+        let segmentID: String? = {
+            if case .eventListening(let i) = state {
+                return "s\(String(format: "%02d", i + 1))"
+            }
+            if case .closingListening = state { return "sClose" }
+            return nil
+        }()
+        recordAiPrompt(role: "enrichment_query", segmentID: segmentID, text: trimmed)
+
+        let cue = language == .de
+            ? "Einen Moment, ich schaue nach."
+            : "One moment, let me check."
+        await tts.speak(cue, language: language.rawValue)
+
+        do {
+            let result = try await EnrichmentService.shared.enrich(
+                query: trimmed,
+                responseLanguage: language.rawValue
+            )
+            recordAiPrompt(
+                role: "enrichment_answer",
+                segmentID: segmentID,
+                text: result.summary
+            )
+            await tts.speak(result.summary, language: language.rawValue)
+        } catch {
+            Log.app.warning(
+                "enrichment failed: \(String(describing: error), privacy: .public)"
+            )
+            let fallback = language == .de
+                ? "Ich konnte die Frage gerade nicht beantworten."
+                : "I couldn't answer that just now."
+            recordAiPrompt(role: "enrichment_failed", segmentID: segmentID, text: "\(error)")
+            await tts.speak(fallback, language: language.rawValue)
+        }
     }
 
     // MARK: - Phases ---------------------------------------------------
