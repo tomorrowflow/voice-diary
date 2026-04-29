@@ -118,10 +118,17 @@ public actor AudioEngine {
 
     private func configureSession() async throws {
         // playAndRecord (not record) so we can play TTS back without
-        // re-configuring the session each time. Mode `.measurement` keeps
-        // EQ off the input, important for downstream ASR. We deliberately
-        // don't request `.duckOthers` here — Voice Diary speaks via Piper
-        // in a separate playback path that handles ducking itself.
+        // re-configuring the session each time.
+        //
+        // Mode `.voiceChat` is the right fit for "mic open + speaker
+        // active simultaneously":
+        //   * Output stays at normal volume (`.measurement` deliberately
+        //     dampens output for ASR-purity-of-input — caused the
+        //     repeated volume drops the user had to manually raise).
+        //   * Hardware AEC (acoustic echo cancellation) prevents the AI's
+        //     spoken response from bleeding into the segment recording.
+        //   * Slight noise suppression — fine because the server's
+        //     Whisper sidecar does the high-fidelity re-transcription.
         //
         // Note: we do NOT call setPreferredSampleRate here. Forcing 16 kHz
         // breaks the AAC encoder; instead we accept the device's native
@@ -130,7 +137,7 @@ public actor AudioEngine {
         do {
             try session.setCategory(
                 .playAndRecord,
-                mode: .measurement,
+                mode: .voiceChat,
                 options: [.defaultToSpeaker, .allowBluetooth]
             )
             try session.setPreferredIOBufferDuration(0.02)
