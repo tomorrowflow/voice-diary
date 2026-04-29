@@ -12,6 +12,7 @@ public enum WalkthroughState: Sendable, Equatable {
     case eventListening(index: Int)     // mic open, recording the user's reflection
     case closingPrompt                  // AI: "Willst du noch etwas zum ganzen Tag sagen?"
     case closingListening               // recording the free-reflection segment
+    case confirmingTodos(index: Int)    // post-CLOSING per-candidate ja/nein/anders pass
     case ingesting                      // building manifest + handing to SessionUploader
     case done
     case failed(String)
@@ -40,6 +41,7 @@ public extension WalkthroughState {
         case .eventListening(let i): return "Termin \(i + 1) — Hören"
         case .closingPrompt:        return "Abschluss"
         case .closingListening:     return "Freie Reflexion"
+        case .confirmingTodos:      return "Aufgaben prüfen"
         case .ingesting:            return "Lade hoch"
         case .done:                 return "Fertig"
         case .failed(let msg):      return "Fehler: \(msg)"
