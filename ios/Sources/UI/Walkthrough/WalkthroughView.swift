@@ -44,6 +44,7 @@ public struct WalkthroughView: View {
 
                         switch coordinator.state {
                         case .idle:                StartCard(coordinator: coordinator)
+                        case .confirmingTodos:     TodoConfirmationCard(coordinator: coordinator)
                         case .ingesting:           UploadingCard()
                         case .done:                DoneCard(coordinator: coordinator)
                         case .failed(let msg):     ErrorCard(message: msg, coordinator: coordinator)
@@ -453,6 +454,126 @@ private struct UploadingCard: View {
             RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
                 .fill(Theme.color.bg.containerInset)
         )
+    }
+}
+
+/// CLOSING confirmation pass for an implicit-todo candidate.
+/// "Ja" / "Nein" / "Anders" — the latter reveals an inline text field
+/// where the user can rephrase the action before confirming. Voice-driven
+/// answers are phase B-2; this card is the button-driven fallback that
+/// always works.
+@MainActor
+private struct TodoConfirmationCard: View {
+    let coordinator: WalkthroughCoordinator
+    @State private var refining: Bool = false
+    @State private var refinedText: String = ""
+    @FocusState private var refineFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.md) {
+            if let progress = coordinator.todoCandidateProgress {
+                Text("Aufgabe \(progress.index + 1) / \(progress.total)")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+            }
+
+            Text(coordinator.currentTodoCandidate?.text ?? "")
+                .font(Theme.font.title3)
+                .foregroundStyle(Theme.color.text.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if refining {
+                refineEditor
+            } else {
+                buttonRow
+            }
+        }
+        .padding(Theme.spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .fill(Theme.color.bg.container)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
+        )
+        .onChange(of: coordinator.todoCandidateProgress?.index) { _, _ in
+            // Reset refine state every time we move to the next candidate.
+            refining = false
+            refinedText = ""
+            refineFocused = false
+        }
+    }
+
+    private var buttonRow: some View {
+        VStack(spacing: Theme.spacing.sm) {
+            Button {
+                Task { await coordinator.confirmCurrentTodo() }
+            } label: {
+                Label("Ja, übernehmen", systemImage: "checkmark.circle.fill")
+            }
+            .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
+
+            HStack(spacing: Theme.spacing.sm) {
+                Button {
+                    Task { await coordinator.rejectCurrentTodo() }
+                } label: {
+                    Text("Nein")
+                }
+                .buttonStyle(.dsSecondary(fullWidth: true))
+
+                Button {
+                    refinedText = coordinator.currentTodoCandidate?.text ?? ""
+                    refining = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                        refineFocused = true
+                    }
+                } label: {
+                    Text("Anders")
+                }
+                .buttonStyle(.dsGhost(fullWidth: true))
+            }
+        }
+    }
+
+    private var refineEditor: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            TextField("Aufgabe umformulieren", text: $refinedText, axis: .vertical)
+                .lineLimit(2...4)
+                .focused($refineFocused)
+                .padding(Theme.spacing.sm)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                        .fill(Theme.color.bg.containerInset)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                        .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
+                )
+
+            HStack(spacing: Theme.spacing.sm) {
+                Button {
+                    refining = false
+                    refinedText = ""
+                    refineFocused = false
+                } label: {
+                    Text("Abbrechen")
+                }
+                .buttonStyle(.dsGhost(fullWidth: true))
+
+                Button {
+                    let snapshot = refinedText
+                    refining = false
+                    refineFocused = false
+                    Task { await coordinator.refineCurrentTodo(snapshot) }
+                } label: {
+                    Text("Übernehmen")
+                }
+                .buttonStyle(.dsPrimary(fullWidth: true))
+                .disabled(refinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
     }
 }
 
