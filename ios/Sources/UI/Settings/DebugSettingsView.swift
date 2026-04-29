@@ -66,6 +66,29 @@ public struct DebugSettingsView: View {
                         .foregroundStyle(Theme.color.text.secondary)
                 }
 
+                Section {
+                    NavigationLink {
+                        VoiceSettingsView()
+                    } label: {
+                        HStack(spacing: Theme.spacing.sm) {
+                            Image(systemName: "waveform")
+                                .foregroundStyle(Theme.color.text.link)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Stimmen")
+                                    .font(Theme.font.body)
+                                    .foregroundStyle(Theme.color.text.primary)
+                                Text("TTS-Stimme pro Sprache wählen")
+                                    .font(Theme.font.caption)
+                                    .foregroundStyle(Theme.color.text.subdued)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Sprache")
+                        .font(Theme.font.subheadline)
+                        .foregroundStyle(Theme.color.text.secondary)
+                }
+
                 if let lastError {
                     Section {
                         Text(lastError)
