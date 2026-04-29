@@ -91,6 +91,131 @@ public actor AppleFoundationLLM {
         #endif
     }
 
+    /// Scan a free-form segment transcript for *implicit* todos —
+    /// commitments / next-actions the user spoke without an explicit
+    /// trigger phrase ("ich rufe morgen Stephan an", "wir machen das
+    /// nochmal"). Explicit todos are already captured by
+    /// `TodoExtractor.extractExplicit`; this pass surfaces the rest.
+    ///
+    /// SPEC §8: returns at most 5 candidates, one short sentence each,
+    /// always in the user's language. The caller dedupes against
+    /// already-detected explicit todos and confirms each via the
+    /// CLOSING confirmation flow before they reach the manifest.
+    public func extractImplicit(
+        transcript: String,
+        language: String
+    ) async throws -> [String] {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 20 else { return [] }
+        #if canImport(FoundationModels)
+        guard SystemLanguageModel.default.isAvailable else {
+            throw LLMError.unavailable("system_model_not_ready")
+        }
+        let isGerman = language.hasPrefix("de")
+        let session = LanguageModelSession(
+            model: SystemLanguageModel.default,
+            instructions: Self.implicitInstructions(german: isGerman)
+        )
+        let prompt = Self.implicitPrompt(transcript: trimmed, german: isGerman)
+        do {
+            let response = try await session.respond(to: prompt)
+            let raw = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return Self.parseImplicitList(raw)
+        } catch {
+            throw LLMError.underlying(error)
+        }
+        #else
+        throw LLMError.unavailable("FoundationModels_not_compiled_in")
+        #endif
+    }
+
+    private static func implicitInstructions(german: Bool) -> String {
+        if german {
+            return """
+            Du analysierst die Reflexion einer Person zu einem Termin und
+            extrahierst NUR konkrete, in dieser Reflexion ausgesprochene
+            Vorhaben oder nächste Schritte (sogenannte implizite Aufgaben).
+            Beispiele: "Ich rufe morgen Stephan an", "Wir machen die
+            Nachbereitung am Dienstag", "Ich muss noch das Deck schicken".
+            Keine bereits erledigten Tätigkeiten. Keine Wünsche oder
+            Gefühle. Keine allgemeinen Beobachtungen.
+
+            Antworte AUSSCHLIESSLICH auf Deutsch. Gib eine Liste mit
+            maximal 5 Einträgen zurück, jede Zeile beginnt mit "- ", jede
+            Zeile ist EIN kurzer Satz im Imperativ ("Stephan anrufen",
+            "Deck an Carsten schicken"). Wenn nichts Konkretes drin ist,
+            antworte mit dem einzigen Wort "KEINE".
+            """
+        } else {
+            return """
+            You analyse a user's reflection on one calendar event and
+            extract ONLY concrete commitments or next actions the user
+            stated within this reflection (so-called implicit todos).
+            Examples: "I'll call Stephan tomorrow", "We need to do the
+            follow-up on Tuesday", "I still have to send the deck".
+            No already-completed actions. No feelings or wishes. No
+            generic observations.
+
+            Reply ONLY in English. Return a list of at most 5 items,
+            each line starting with "- ", each line ONE short imperative
+            sentence ("Call Stephan", "Send the deck to Carsten"). If
+            nothing concrete is present, reply with the single word
+            "NONE".
+            """
+        }
+    }
+
+    private static func implicitPrompt(transcript: String, german: Bool) -> String {
+        if german {
+            return """
+            Reflexion:
+            \(transcript)
+
+            Extrahiere die impliziten Aufgaben gemäss den Anweisungen.
+            """
+        } else {
+            return """
+            Reflection:
+            \(transcript)
+
+            Extract the implicit todos following the instructions.
+            """
+        }
+    }
+
+    /// Parse the model's bulleted list (or "KEINE" / "NONE") into an
+    /// array of plain task strings. Tolerates "* item", "- item",
+    /// "1. item", numbered lists, etc.
+    private static func parseImplicitList(_ raw: String) -> [String] {
+        let normalised = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalised.isEmpty { return [] }
+        let upper = normalised.uppercased()
+        if upper == "KEINE" || upper == "NONE" || upper == "—" { return [] }
+
+        var items: [String] = []
+        for rawLine in normalised.split(separator: "\n") {
+            var line = rawLine.trimmingCharacters(in: .whitespaces)
+            // Strip bullets and numbering.
+            while let first = line.first, "-•*0123456789.):".contains(first) {
+                line.removeFirst()
+                line = line.trimmingCharacters(in: .whitespaces)
+            }
+            // Drop trailing punctuation.
+            while let last = line.last, ".,;".contains(last) {
+                line.removeLast()
+            }
+            let cleaned = line.trimmingCharacters(in: .whitespaces)
+            guard cleaned.count >= 4 else { continue }
+            // Reject obvious non-todos.
+            if cleaned.uppercased() == "KEINE" || cleaned.uppercased() == "NONE" {
+                continue
+            }
+            items.append(cleaned)
+            if items.count >= 5 { break }
+        }
+        return items
+    }
+
     private static func systemInstructions(german: Bool) -> String {
         if german {
             return """

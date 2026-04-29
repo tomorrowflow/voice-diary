@@ -65,6 +65,18 @@ public final class WalkthroughCoordinator {
     /// In-flight transcription / todo-extraction tasks. `ingestAndUpload`
     /// awaits all of them so the manifest is built with full data.
     private var pendingFinalisation: [Task<Void, Never>] = []
+    /// Implicit-todo candidates surfaced by Apple FM during `finalise()`.
+    /// Confirmed at CLOSING via `.confirmingTodos`; never spoken
+    /// mid-flow (CLAUDE.md key constraint #4).
+    public private(set) var pendingImplicitTodos: [Todo] = []
+    /// Confirmed implicit todos for this session (manifest field).
+    private var confirmedImplicit: [Todo] = []
+    /// Rejected implicit todos for this session (manifest field).
+    private var rejectedImplicit: [TodoRejected] = []
+    /// Drives the confirmation language for the CLOSING pass — captured
+    /// when we enter `goClosing` so the same phrases keep speaking even
+    /// if Settings later flips between de/en.
+    private var confirmationLanguage: OpenerLanguage = .de
 
     private init() {}
 
@@ -84,6 +96,10 @@ public final class WalkthroughCoordinator {
         statusHint = ""
         segmentByID = [:]
         pendingFinalisation = []
+        pendingImplicitTodos = []
+        confirmedImplicit = []
+        rejectedImplicit = []
+        confirmationLanguage = language
         do {
             try makeSessionDir()
             try await fetchCalendar(date: targetDate)
@@ -277,6 +293,7 @@ public final class WalkthroughCoordinator {
 
     private func goClosing(language: OpenerLanguage) async {
         state = .closingPrompt
+        confirmationLanguage = language
         let line = language == .de
             ? "Willst du noch etwas zum ganzen Tag sagen?"
             : "Anything else you want to say about the day overall?"
@@ -294,25 +311,38 @@ public final class WalkthroughCoordinator {
 
     private func ingestAndUpload() async {
         timer?.invalidate(); timer = nil
-        state = .ingesting
         do {
             try await stopSegmentCaptureNoTranscribe()
             // Wait for any in-flight per-segment transcription + todo
-            // extraction to finish so the manifest gets the populated
-            // `todos_detected` arrays.
+            // extraction to finish so we know exactly which implicit
+            // candidates need confirming.
             for task in pendingFinalisation { await task.value }
             pendingFinalisation.removeAll()
-            let manifest = try buildManifest()
-            sessionID = manifest.session_id
-            await SessionUploader.shared.enqueue(
-                manifest: manifest,
-                audioFiles: segmentURLs
-            )
-            state = .done
+
+            // SPEC §8: walk through the implicit-todo candidates one by
+            // one at CLOSING. UI buttons drive the confirm / reject /
+            // refine state machine. Voice-driven confirmation is phase B-2.
+            if !pendingImplicitTodos.isEmpty {
+                await beginTodoConfirmation()
+                return
+            }
+
+            try await finishUpload()
         } catch {
             self.error = "\(error)"
             state = .failed("\(error)")
         }
+    }
+
+    private func finishUpload() async throws {
+        state = .ingesting
+        let manifest = try buildManifest()
+        sessionID = manifest.session_id
+        await SessionUploader.shared.enqueue(
+            manifest: manifest,
+            audioFiles: segmentURLs
+        )
+        state = .done
     }
 
     private func speakBriefing(language: OpenerLanguage) async {
@@ -456,6 +486,36 @@ public final class WalkthroughCoordinator {
             )
         }
 
+        // Implicit-todo pass via Apple Foundation Models. Failures are
+        // non-fatal — we just don't surface candidates from this segment.
+        // SPEC §8: candidates accumulate across segments and are confirmed
+        // one-by-one at CLOSING.
+        let llm = AppleFoundationLLM.shared
+        if await llm.isAvailable {
+            do {
+                let candidates = try await llm.extractImplicit(
+                    transcript: transcript.text,
+                    language: transcript.language
+                )
+                let novel = self.dedupeImplicit(
+                    candidates: candidates,
+                    againstExplicit: todos,
+                    forSegmentID: segmentID,
+                    transcriptLanguage: transcript.language
+                )
+                if !novel.isEmpty {
+                    Log.app.info(
+                        "segment \(segmentID, privacy: .public): \(novel.count, privacy: .public) implicit todo candidate(s)"
+                    )
+                    self.pendingImplicitTodos.append(contentsOf: novel)
+                }
+            } catch {
+                Log.app.warning(
+                    "implicit-todo extraction failed for \(segmentID, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+
         // Mutate the segment in place.
         guard let idx = segmentByID[segmentID] else { return }
         switch segments[idx] {
@@ -553,6 +613,175 @@ public final class WalkthroughCoordinator {
         await tts.speak(spoken, language: language.rawValue)
     }
 
+    // MARK: - Implicit-todo confirmation (M8 phase B) -----------------
+
+    /// True when the coordinator is currently in `.confirmingTodos` and
+    /// `pendingImplicitTodos[index]` is the one being asked about.
+    public var currentTodoCandidate: Todo? {
+        guard case .confirmingTodos(let i) = state,
+              i >= 0, i < pendingImplicitTodos.count else { return nil }
+        return pendingImplicitTodos[i]
+    }
+
+    public var todoCandidateProgress: (index: Int, total: Int)? {
+        guard case .confirmingTodos(let i) = state else { return nil }
+        return (i, pendingImplicitTodos.count)
+    }
+
+    /// Confirm the current candidate as-is. Moves to the next candidate
+    /// or finishes the session.
+    public func confirmCurrentTodo() async {
+        guard case .confirmingTodos(let i) = state,
+              i >= 0, i < pendingImplicitTodos.count else { return }
+        let candidate = pendingImplicitTodos[i]
+        confirmedImplicit.append(candidate)
+        recordAiPrompt(
+            role: "todo_confirmed",
+            segmentID: candidate.source_segment_id,
+            text: candidate.text
+        )
+        await advanceTodoConfirmation()
+    }
+
+    /// Reject the current candidate. Records it in `todos_implicit_rejected`
+    /// so the server can learn from past rejections (future work) and
+    /// doesn't re-suggest the same phrasing.
+    public func rejectCurrentTodo() async {
+        guard case .confirmingTodos(let i) = state,
+              i >= 0, i < pendingImplicitTodos.count else { return }
+        let candidate = pendingImplicitTodos[i]
+        rejectedImplicit.append(TodoRejected(
+            text: candidate.text,
+            source_segment_id: candidate.source_segment_id
+        ))
+        recordAiPrompt(
+            role: "todo_rejected",
+            segmentID: candidate.source_segment_id,
+            text: candidate.text
+        )
+        await advanceTodoConfirmation()
+    }
+
+    /// Replace the current candidate's text with the user's refined
+    /// version, then confirm it. Empty/whitespace input rejects instead.
+    public func refineCurrentTodo(_ refined: String) async {
+        guard case .confirmingTodos(let i) = state,
+              i >= 0, i < pendingImplicitTodos.count else { return }
+        let trimmed = refined.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            await rejectCurrentTodo()
+            return
+        }
+        let original = pendingImplicitTodos[i]
+        let due = TodoExtractor.parseDueDate(in: trimmed, language: confirmationLanguage.rawValue)
+        confirmedImplicit.append(Todo(
+            text: trimmed,
+            type: "implicit",
+            due: due,
+            status: "Offen",
+            source_segment_id: original.source_segment_id
+        ))
+        recordAiPrompt(
+            role: "todo_refined",
+            segmentID: original.source_segment_id,
+            text: trimmed
+        )
+        await advanceTodoConfirmation()
+    }
+
+    private func beginTodoConfirmation() async {
+        let lang = confirmationLanguage
+        let intro = lang == .de
+            ? "Mir sind ein paar mögliche Aufgaben aufgefallen. Lass uns kurz drüber gehen."
+            : "I noticed a few possible to-dos. Let's run through them quickly."
+        lastSpoken = intro
+        await tts.speak(intro, language: lang.rawValue)
+        await advanceTodoConfirmation(initial: true)
+    }
+
+    /// Move to the next pending candidate, or finish the session if
+    /// there are none left.
+    private func advanceTodoConfirmation(initial: Bool = false) async {
+        let nextIndex: Int = {
+            if initial { return 0 }
+            if case .confirmingTodos(let i) = state { return i + 1 }
+            return 0
+        }()
+
+        guard nextIndex < pendingImplicitTodos.count else {
+            do { try await finishUpload() }
+            catch {
+                self.error = "\(error)"
+                state = .failed("\(error)")
+            }
+            return
+        }
+
+        state = .confirmingTodos(index: nextIndex)
+        await speakCurrentTodoPrompt()
+    }
+
+    private func speakCurrentTodoPrompt() async {
+        guard case .confirmingTodos(let i) = state,
+              i >= 0, i < pendingImplicitTodos.count else { return }
+        let candidate = pendingImplicitTodos[i]
+        let lang = confirmationLanguage
+        let total = pendingImplicitTodos.count
+        let line: String
+        if lang == .de {
+            line = total > 1
+                ? "\(i + 1) von \(total): \(candidate.text). Ja, nein, oder anders?"
+                : "\(candidate.text). Ja, nein, oder anders?"
+        } else {
+            line = total > 1
+                ? "\(i + 1) of \(total): \(candidate.text). Yes, no, or rephrase?"
+                : "\(candidate.text). Yes, no, or rephrase?"
+        }
+        lastSpoken = line
+        recordAiPrompt(
+            role: "todo_prompt",
+            segmentID: candidate.source_segment_id,
+            text: line
+        )
+        await tts.speak(line, language: lang.rawValue)
+    }
+
+    private func dedupeImplicit(
+        candidates: [String],
+        againstExplicit explicit: [Todo],
+        forSegmentID segmentID: String,
+        transcriptLanguage language: String
+    ) -> [Todo] {
+        // Already-known keys (from explicit + previously-collected
+        // implicit). Comparison is lowercased + whitespace-stripped so
+        // "Stephan anrufen" and "stephan anrufen" collapse.
+        var seen: Set<String> = []
+        for t in explicit { seen.insert(normaliseTodoKey(t.text)) }
+        for t in pendingImplicitTodos { seen.insert(normaliseTodoKey(t.text)) }
+
+        var out: [Todo] = []
+        for raw in candidates {
+            let key = normaliseTodoKey(raw)
+            guard !key.isEmpty, !seen.contains(key) else { continue }
+            seen.insert(key)
+            let due = TodoExtractor.parseDueDate(in: raw, language: language)
+            out.append(Todo(
+                text: raw,
+                type: "implicit",
+                due: due,
+                status: "Offen",
+                source_segment_id: segmentID
+            ))
+        }
+        return out
+    }
+
+    private func normaliseTodoKey(_ s: String) -> String {
+        s.lowercased()
+         .trimmingCharacters(in: .whitespacesAndNewlines)
+         .replacingOccurrences(of: "  ", with: " ")
+    }
+
     private func recordAiPrompt(role: String, segmentID: String?, text: String) {
         aiPrompts.append(AiPrompt(
             at: ISO8601DateFormatter().string(from: Date()),
@@ -604,6 +833,8 @@ public final class WalkthroughCoordinator {
                 bitrate: 64_000
             ),
             segments: segments,
+            todos_implicit_confirmed: confirmedImplicit,
+            todos_implicit_rejected: rejectedImplicit,
             ai_prompts: aiPrompts,
             response_language_setting: "match_input"
         )
