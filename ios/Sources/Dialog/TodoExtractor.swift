@@ -17,7 +17,7 @@ public enum TodoExtractor {
     /// Case-insensitive regex matching German + English explicit-todo
     /// trigger phrases. The capture group is the rest of the sentence
     /// (up to the next sentence-ending punctuation or 200 chars).
-    public static let triggerRegex: Regex = {
+    public nonisolated(unsafe) static let triggerRegex: Regex = {
         // Order matters — longer phrases first so "ich muss noch" wins
         // over "ich muss".
         let phrases = [
