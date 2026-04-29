@@ -48,6 +48,13 @@ public final class WalkthroughCoordinator {
     private var followUpUsed: [Int: Bool] = [:]
     /// Rotation index for the deterministic follow-up template fallback.
     private var followUpRotation: Int = 0
+    /// segment_id → index into `segments` so we can mutate the entry
+    /// once todo extraction completes (which happens *after* startCapture
+    /// has already appended the empty placeholder).
+    private var segmentByID: [String: Int] = [:]
+    /// In-flight transcription / todo-extraction tasks. `ingestAndUpload`
+    /// awaits all of them so the manifest is built with full data.
+    private var pendingFinalisation: [Task<Void, Never>] = []
 
     private init() {}
 
@@ -64,6 +71,8 @@ public final class WalkthroughCoordinator {
         followUpUsed = [:]
         followUpRotation = 0
         statusHint = ""
+        segmentByID = [:]
+        pendingFinalisation = []
         do {
             try makeSessionDir()
             try await fetchCalendar(date: today)
@@ -244,6 +253,11 @@ public final class WalkthroughCoordinator {
         state = .ingesting
         do {
             try await stopSegmentCaptureNoTranscribe()
+            // Wait for any in-flight per-segment transcription + todo
+            // extraction to finish so the manifest gets the populated
+            // `todos_detected` arrays.
+            for task in pendingFinalisation { await task.value }
+            pendingFinalisation.removeAll()
             let manifest = try buildManifest()
             sessionID = manifest.session_id
             await SessionUploader.shared.enqueue(
@@ -307,6 +321,7 @@ public final class WalkthroughCoordinator {
             audio_file: path
         )
         segments.append(.calendarEvent(seg))
+        segmentByID[segmentID] = segments.count - 1
     }
 
     private func startSegmentCapture(closing: Bool) async throws {
@@ -329,21 +344,95 @@ public final class WalkthroughCoordinator {
             captured_at: ISO8601DateFormatter().string(from: Date())
         )
         segments.append(.freeReflection(seg))
+        segmentByID[segmentID] = segments.count - 1
     }
 
     private func stopSegmentCapture() async {
         timer?.invalidate(); timer = nil
         elapsedSeconds = 0
         lullDetector.stop()
+
+        // Capture which segment just finished + its file URL while we
+        // still know — the state may change before the post-stop task
+        // runs.
+        let finishingSegmentID: String? = {
+            switch state {
+            case .eventListening(let i): return "s\(String(format: "%02d", i + 1))"
+            case .closingListening:      return "sClose"
+            default:                     return nil
+            }
+        }()
+        let finishingURL = finishingSegmentID.flatMap { segmentURLs[mediaPath(for: $0)] }
+
         do { _ = try await engine.stop() } catch {
             Log.audio.warning("walkthrough engine stop: \(String(describing: error), privacy: .public)")
         }
+
+        // Kick off transcription + explicit-todo extraction in the
+        // background. We don't block the next opener on it — the result
+        // mutates `segments[]` in place and `ingestAndUpload` awaits all
+        // outstanding tasks before building the manifest.
+        if let segmentID = finishingSegmentID, let url = finishingURL {
+            let task = Task { [weak self] in
+                await self?.finalise(segmentID: segmentID, url: url)
+            }
+            pendingFinalisation.append(task)
+        }
+
         // AVAudioEngine deactivation isn't synchronous — give CoreAudio a
         // moment to fully release the audio unit before the next start().
-        // Without this, back-to-back stop() / start() across segments
-        // produces empty / partially-written M4A files (one in three
-        // recordings made it through during M6 dogfood).
         try? await Task.sleep(nanoseconds: 300_000_000)
+    }
+
+    /// Per-segment finaliser: runs Parakeet on the captured M4A, parses
+    /// explicit todo triggers (SPEC §8), and writes the results onto
+    /// the segment that's already in `segments[]`. Idempotent — if the
+    /// transcription fails we just leave the segment as-is and let the
+    /// server's Whisper produce the canonical transcript on ingest.
+    private func finalise(segmentID: String, url: URL) async {
+        let transcript: ParakeetManager.Transcript
+        do {
+            transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
+        } catch {
+            Log.audio.warning(
+                "segment \(segmentID, privacy: .public) finalise: transcribe failed — \(String(describing: error), privacy: .public)"
+            )
+            return
+        }
+
+        let todos = TodoExtractor.extractExplicit(
+            text: transcript.text,
+            language: transcript.language,
+            sourceSegmentID: segmentID
+        )
+        if !todos.isEmpty {
+            Log.app.info(
+                "segment \(segmentID, privacy: .public): \(todos.count, privacy: .public) explicit todo(s) detected"
+            )
+        }
+
+        // Mutate the segment in place.
+        guard let idx = segmentByID[segmentID] else { return }
+        switch segments[idx] {
+        case .calendarEvent(var ce):
+            ce.transcript = transcript.text
+            ce.todos_detected = todos
+            ce.language = transcript.language
+            segments[idx] = .calendarEvent(ce)
+        case .freeReflection(var fr):
+            fr.transcript = transcript.text
+            fr.language = transcript.language
+            segments[idx] = .freeReflection(fr)
+            // Free-reflection segments don't carry their own todos
+            // array, but anything detected goes into the session-level
+            // implicit-confirmed bucket since the server expects it
+            // there for narrative ingestion.
+            // (todos[i].source_segment_id stays = sClose so the diary
+            // attribution is correct.)
+            // — left for Phase B once implicit detection is wired.
+        default:
+            break
+        }
     }
 
     private func stopSegmentCaptureNoTranscribe() async throws {
