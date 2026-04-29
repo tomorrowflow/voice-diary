@@ -418,7 +418,8 @@ public final class WalkthroughCoordinator {
         // outstanding tasks before building the manifest.
         if let segmentID = finishingSegmentID, let url = finishingURL {
             let task = Task { [weak self] in
-                await self?.finalise(segmentID: segmentID, url: url)
+                guard let self else { return }
+                await self.finalise(segmentID: segmentID, url: url)
             }
             pendingFinalisation.append(task)
         }

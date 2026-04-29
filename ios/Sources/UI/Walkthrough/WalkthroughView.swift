@@ -271,22 +271,30 @@ private struct StartCard: View {
     }
 }
 
-/// Vertical-rail day timeline: 6 AM → 10 PM with each event placed on
-/// its real time slot. SPEC §6.1 mentions chronological walk; this card
-/// makes the order visible before the user commits.
+/// Day overview rendered as a clean chronological list.
+///
+/// All-day events live in a dedicated "Ganztägig" header so they don't
+/// distort the timed list. Timed events stack vertically — each row has
+/// a fixed-width time column on the left, a colour bar keyed to RSVP
+/// status, and an event card on the right. Overlapping events stay
+/// side-by-side in reading order without absolute-positioning collisions.
 @MainActor
 private struct DayOverview: View {
     let events: [ServerCalendarEvent]
     let isLoading: Bool
     let error: String?
 
-    private static let dayStartHour: Double = 6
-    private static let dayEndHour: Double = 22
-    private static let pixelsPerHour: Double = 28
+    private var timed: [ServerCalendarEvent] {
+        events.filter { !$0.is_all_day && $0.startDate != nil }
+              .sorted { ($0.startDate ?? .distantPast) < ($1.startDate ?? .distantPast) }
+    }
+    private var allDay: [ServerCalendarEvent] {
+        events.filter { $0.is_all_day }
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
-            HStack {
+        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            HStack(spacing: Theme.spacing.xs) {
                 Text("Tagesübersicht")
                     .font(Theme.font.subheadline)
                     .foregroundStyle(Theme.color.text.secondary)
@@ -305,98 +313,103 @@ private struct DayOverview: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, Theme.spacing.sm)
             } else {
-                timelineRail
-            }
-        }
-    }
-
-    private var timelineRail: some View {
-        ZStack(alignment: .topLeading) {
-            // Hour ticks
-            VStack(spacing: 0) {
-                ForEach(Array(stride(from: Int(Self.dayStartHour), through: Int(Self.dayEndHour), by: 2)), id: \.self) { hour in
-                    HStack(spacing: Theme.spacing.xs) {
-                        Text(String(format: "%02d:00", hour))
-                            .font(Theme.font.caption2.monospacedDigit())
-                            .foregroundStyle(Theme.color.text.subdued)
-                            .frame(width: 40, alignment: .leading)
-                        Rectangle()
-                            .fill(Theme.color.border.subdued)
-                            .frame(height: 1)
+                if !allDay.isEmpty {
+                    AllDaySection(events: allDay)
+                }
+                if !timed.isEmpty {
+                    VStack(spacing: Theme.spacing.xs) {
+                        ForEach(timed, id: \.graph_event_id) { event in
+                            EventRow(event: event)
+                        }
                     }
-                    .frame(height: Self.pixelsPerHour * 2)
-                }
-            }
-
-            // Event blocks
-            ForEach(Array(events.enumerated()), id: \.element.graph_event_id) { _, event in
-                if let block = blockFor(event: event) {
-                    EventBlock(event: event)
-                        .padding(.leading, 48)
-                        .frame(height: block.height)
-                        .offset(y: block.offset)
                 }
             }
         }
-        .frame(height: (Self.dayEndHour - Self.dayStartHour) * Self.pixelsPerHour)
-    }
-
-    private func blockFor(event: ServerCalendarEvent) -> (offset: Double, height: Double)? {
-        guard let start = event.startDate, let end = event.endDate else { return nil }
-        let cal = Calendar.current
-        let startHour = Double(cal.component(.hour, from: start)) +
-                        Double(cal.component(.minute, from: start)) / 60.0
-        let endHour = Double(cal.component(.hour, from: end)) +
-                      Double(cal.component(.minute, from: end)) / 60.0
-        let clampedStart = max(Self.dayStartHour, min(Self.dayEndHour, startHour))
-        let clampedEnd = max(clampedStart + 0.25, min(Self.dayEndHour, endHour))
-        let offset = (clampedStart - Self.dayStartHour) * Self.pixelsPerHour
-        let height = max(20, (clampedEnd - clampedStart) * Self.pixelsPerHour)
-        return (offset, height)
     }
 }
 
-private struct EventBlock: View {
+private struct AllDaySection: View {
+    let events: [ServerCalendarEvent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
+            Text("Ganztägig")
+                .font(Theme.font.caption)
+                .foregroundStyle(Theme.color.text.subdued)
+                .padding(.horizontal, Theme.spacing.xs)
+            ForEach(events, id: \.graph_event_id) { event in
+                HStack(spacing: Theme.spacing.xs) {
+                    Image(systemName: "sun.horizon.fill")
+                        .font(.caption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                    Text(event.subject.isEmpty ? "(ohne Titel)" : event.subject)
+                        .font(Theme.font.callout)
+                        .foregroundStyle(Theme.color.text.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, Theme.spacing.sm)
+                .padding(.vertical, Theme.spacing.xs)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                        .fill(Theme.color.bg.containerInset)
+                )
+            }
+        }
+    }
+}
+
+/// One row in the chronological list. Time on the left, colour bar in
+/// the middle keyed to RSVP, event details on the right.
+private struct EventRow: View {
     let event: ServerCalendarEvent
 
     var body: some View {
-        HStack(alignment: .top, spacing: Theme.spacing.xs) {
-            Rectangle()
-                .fill(blockColor)
+        HStack(alignment: .top, spacing: Theme.spacing.sm) {
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(timeStart)
+                    .font(Theme.font.caption.monospacedDigit())
+                    .foregroundStyle(Theme.color.text.primary)
+                Text(durationLabel)
+                    .font(Theme.font.caption2.monospacedDigit())
+                    .foregroundStyle(Theme.color.text.subdued)
+            }
+            .frame(width: 56, alignment: .trailing)
+
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(barColor)
                 .frame(width: 3)
+
             VStack(alignment: .leading, spacing: 2) {
                 Text(event.subject.isEmpty ? "(ohne Titel)" : event.subject)
-                    .font(Theme.font.caption.weight(.medium))
+                    .font(Theme.font.callout.weight(.medium))
                     .foregroundStyle(Theme.color.text.primary)
-                    .lineLimit(1)
-                Text(timeRange)
-                    .font(Theme.font.caption2.monospacedDigit())
-                    .foregroundStyle(Theme.color.text.secondary)
-            }
-            Spacer(minLength: 0)
-            if event.attendeeCount > 0 {
-                HStack(spacing: 2) {
-                    Image(systemName: "person.2.fill")
-                        .font(.caption2)
-                    Text("\(event.attendeeCount)")
-                        .font(Theme.font.caption2)
+                    .lineLimit(2)
+                if event.attendeeCount > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "person.2")
+                            .font(.caption2)
+                        Text("\(event.attendeeCount) Teilnehmende")
+                            .font(Theme.font.caption2)
+                    }
+                    .foregroundStyle(Theme.color.text.subdued)
                 }
-                .foregroundStyle(Theme.color.text.subdued)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, Theme.spacing.xs)
-        .padding(.vertical, 4)
+        .padding(.horizontal, Theme.spacing.sm)
+        .padding(.vertical, Theme.spacing.xs)
         .background(
             RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
-                .fill(blockColor.opacity(0.10))
+                .fill(barColor.opacity(0.06))
         )
         .overlay(
             RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
-                .strokeBorder(blockColor.opacity(0.30), lineWidth: 1)
+                .strokeBorder(barColor.opacity(0.20), lineWidth: 1)
         )
     }
 
-    private var blockColor: Color {
+    private var barColor: Color {
         switch event.rsvp_status {
         case "organizer": return Theme.color.text.link
         case "accepted":  return Theme.color.status.success
@@ -405,12 +418,24 @@ private struct EventBlock: View {
         }
     }
 
-    private var timeRange: String {
+    private static let hhmm: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "de_DE")
         f.dateFormat = "HH:mm"
-        guard let s = event.startDate, let e = event.endDate else { return "" }
-        return "\(f.string(from: s))–\(f.string(from: e))"
+        return f
+    }()
+
+    private var timeStart: String {
+        guard let s = event.startDate else { return "—" }
+        return Self.hhmm.string(from: s)
+    }
+
+    private var durationLabel: String {
+        let m = event.durationMinutes
+        if m <= 0 { return "" }
+        if m < 60 { return "\(m) min" }
+        if m % 60 == 0 { return "\(m / 60) h" }
+        return String(format: "%d h %02d", m / 60, m % 60)
     }
 }
 
