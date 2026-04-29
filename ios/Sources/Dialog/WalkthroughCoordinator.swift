@@ -28,6 +28,16 @@ public final class WalkthroughCoordinator {
     public private(set) var error: String?
     /// Set when the manifest has been queued. Useful for the UI summary.
     public private(set) var sessionID: String?
+    /// Day the upcoming session is FOR (calendar lookup + manifest.date).
+    /// Defaults to today. The user can pick a past date to catch up on
+    /// a missed day; recording itself still happens now.
+    public var selectedDate: Date = Date()
+    /// Pre-flight events for the selected day, fetched before `begin()`
+    /// so the UI can render the day overview. Filled by `previewDay()`.
+    public private(set) var previewEvents: [ServerCalendarEvent] = []
+    /// True while `previewDay()` is in flight.
+    public private(set) var isPreviewing: Bool = false
+    public private(set) var previewError: String?
     /// Surfaced in the UI for the 15s lull cue ("soll ich weitermachen?").
     /// SPEC §6.2 makes this a spoken prompt; M6 keeps it visual.
     public private(set) var statusHint: String = ""
@@ -60,8 +70,9 @@ public final class WalkthroughCoordinator {
 
     // MARK: - Public commands -----------------------------------------
 
-    public func begin(today: Date = Date(), language: OpenerLanguage = .de) async {
+    public func begin(today: Date? = nil, language: OpenerLanguage = .de) async {
         guard case .idle = state else { return }
+        let targetDate = today ?? selectedDate
         state = .briefing
         error = nil
         events = []
@@ -75,7 +86,9 @@ public final class WalkthroughCoordinator {
         pendingFinalisation = []
         do {
             try makeSessionDir()
-            try await fetchCalendar(date: today)
+            try await fetchCalendar(date: targetDate)
+            // If preview events were already loaded, the call above just
+            // confirms them; we use the live result either way.
             await speakBriefing(language: language)
             if events.isEmpty {
                 await goClosing(language: language)
@@ -87,6 +100,37 @@ public final class WalkthroughCoordinator {
             state = .failed("\(error)")
         }
     }
+
+    /// Fetch the day's events without starting a session. Drives the
+    /// day-overview card on the *Abend* tab. Safe to call repeatedly
+    /// (e.g. when the user changes the date picker).
+    public func previewDay(_ date: Date? = nil) async {
+        let target = date ?? selectedDate
+        if let date { selectedDate = date }
+        isPreviewing = true
+        previewError = nil
+        defer { isPreviewing = false }
+        do {
+            let dateString = Self.dateFormatter.string(from: target)
+            let raw = try await ServerClient.shared.todayCalendar(date: dateString)
+            let parsed = try JSONDecoder().decode(TodayCalendarResponse.self, from: raw)
+            previewEvents = parsed.events
+        } catch {
+            previewError = "\(error)"
+            previewEvents = []
+        }
+    }
+
+    public func setSelectedDate(_ date: Date) {
+        selectedDate = date
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
 
     /// Advance from the current `eventListening` state to the next event,
     /// or to closing if the current one is the last.
@@ -537,10 +581,7 @@ public final class WalkthroughCoordinator {
     }
 
     private func fetchCalendar(date: Date) async throws {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd"
-        let dateString = f.string(from: date)
+        let dateString = Self.dateFormatter.string(from: date)
         let raw = try await ServerClient.shared.todayCalendar(date: dateString)
         let response = try JSONDecoder().decode(TodayCalendarResponse.self, from: raw)
         events = response.events
@@ -548,15 +589,13 @@ public final class WalkthroughCoordinator {
 
     private func buildManifest() throws -> Manifest {
         guard let sessionID else { throw NSError(domain: "Walkthrough", code: 2) }
-        let dateString: String = {
-            let f = DateFormatter()
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.dateFormat = "yyyy-MM-dd"
-            return f.string(from: Date())
-        }()
+        // The session is *for* `selectedDate`, but the recording happened
+        // now (`sessionID` is the wall-clock timestamp). Server sees both:
+        // `manifest.date` drives diary attribution + LightRAG temporal
+        // anchoring; `session_id` keeps uploads ordered chronologically.
         return Manifest(
             session_id: sessionID,
-            date: dateString,
+            date: Self.dateFormatter.string(from: selectedDate),
             audio_codec: AudioCodec(
                 codec: "aac-lc",
                 sample_rate: 44_100,

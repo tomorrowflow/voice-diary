@@ -78,10 +78,23 @@ public actor ServerClient {
 
     // --- /today/calendar -----------------------------------------------
 
-    public func todayCalendar(date: String) async throws -> Data {
+    /// Fetches the calendar events for `date`. `rsvpFilter` is a comma-
+    /// separated list of `accepted` / `tentative` / `declined` /
+    /// `not_responded` / `organizer` / `none`. Default narrows to
+    /// **only the meetings you actively committed to** — events you
+    /// organised yourself plus invites you explicitly accepted. The
+    /// walkthrough therefore skips tentative invites you typically
+    /// don't attend.
+    public func todayCalendar(
+        date: String,
+        rsvpFilter: String = "accepted,organizer"
+    ) async throws -> Data {
         let (url, token) = try endpoint("/today/calendar")
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-        components.queryItems = [URLQueryItem(name: "date", value: date)]
+        components.queryItems = [
+            URLQueryItem(name: "date", value: date),
+            URLQueryItem(name: "rsvp_filter", value: rsvpFilter),
+        ]
         var req = URLRequest(url: components.url!)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: req)
