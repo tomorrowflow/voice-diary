@@ -117,7 +117,7 @@ public actor ServerClient {
     public func lightragQuery(
         query: String,
         responseLanguage: String = "de",
-        mode: String = "hybrid"
+        mode: String = "naive"
     ) async throws -> EnrichmentSummary {
         let (url, token) = try endpoint("/lightrag/query")
         var req = URLRequest(url: url)
