@@ -84,7 +84,8 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
 
     // MARK: - Voice selection
 
-    /// Prefer Premium > Enhanced > default. iOS's
+    /// Prefer the user-chosen voice from `VoicePreferences`. Falls back
+    /// to Premium > Enhanced > default. iOS's
     /// `AVSpeechSynthesisVoice(language:)` returns *some* voice for the
     /// locale but doesn't guarantee the highest-quality tier the user
     /// has installed — we have to enumerate `speechVoices()` and pick
@@ -96,6 +97,16 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
             ? language
             : (language == "de" ? "de-DE" : "en-US")
         let prefix = String(language.prefix(2))
+
+        // 1. Honour the user override if one is set and the voice is
+        //    still installed.
+        if let chosenID = VoicePreferences.selectedVoiceID(for: language),
+           let chosen = AVSpeechSynthesisVoice(identifier: chosenID) {
+            Log.app.debug(
+                "TTS voice override: \(chosen.identifier, privacy: .public) lang=\(chosen.language, privacy: .public) quality=\(chosen.quality.rawValue, privacy: .public)"
+            )
+            return chosen
+        }
 
         let all = AVSpeechSynthesisVoice.speechVoices()
         let exact = all.filter { $0.language == target }
