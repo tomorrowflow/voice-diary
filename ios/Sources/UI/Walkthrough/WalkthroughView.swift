@@ -482,6 +482,10 @@ private struct TodoConfirmationCard: View {
                 .foregroundStyle(Theme.color.text.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
+            if coordinator.isAwaitingTodoAnswer && !refining {
+                listeningHint
+            }
+
             if refining {
                 refineEditor
             } else {
@@ -503,6 +507,18 @@ private struct TodoConfirmationCard: View {
             refining = false
             refinedText = ""
             refineFocused = false
+        }
+    }
+
+    private var listeningHint: some View {
+        HStack(spacing: Theme.spacing.xs) {
+            Circle()
+                .fill(Theme.color.status.destructive)
+                .frame(width: 8, height: 8)
+            Text(#"Sag „Ja", „Nein" oder eine andere Formulierung – oder tippe."#)
+                .font(Theme.font.caption)
+                .foregroundStyle(Theme.color.text.subdued)
+            Spacer(minLength: 0)
         }
     }
 
