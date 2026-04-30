@@ -77,6 +77,19 @@ public final class WalkthroughCoordinator {
     /// when we enter `goClosing` so the same phrases keep speaking even
     /// if Settings later flips between de/en.
     private var confirmationLanguage: OpenerLanguage = .de
+    /// True while the mic is open waiting for the user's spoken
+    /// "ja / nein / anders" answer to the current candidate. The UI uses
+    /// this to render a "höre dich…" cue alongside the buttons.
+    public private(set) var isAwaitingTodoAnswer: Bool = false
+    /// In-flight answer-capture task — cancelled if the user taps a
+    /// button manually.
+    private var todoAnswerTask: Task<Void, Never>?
+    /// Lull detector dedicated to the answer window so it doesn't
+    /// collide with the per-event detector.
+    private let answerLullDetector = LullDetector()
+    /// Hard cap for an answer capture (seconds). After this we transcribe
+    /// whatever we have and let the parser fall back to .unknown.
+    private static let todoAnswerMaxSeconds: TimeInterval = 7.0
 
     private init() {}
 
@@ -197,6 +210,7 @@ public final class WalkthroughCoordinator {
 
     public func cancel() async {
         timer?.invalidate(); timer = nil
+        await cancelTodoAnswerCapture()
         try? await engine.stop()
         await tts.cancel()
         state = .idle
@@ -631,6 +645,7 @@ public final class WalkthroughCoordinator {
     /// Confirm the current candidate as-is. Moves to the next candidate
     /// or finishes the session.
     public func confirmCurrentTodo() async {
+        await cancelTodoAnswerCapture()
         guard case .confirmingTodos(let i) = state,
               i >= 0, i < pendingImplicitTodos.count else { return }
         let candidate = pendingImplicitTodos[i]
@@ -647,6 +662,7 @@ public final class WalkthroughCoordinator {
     /// so the server can learn from past rejections (future work) and
     /// doesn't re-suggest the same phrasing.
     public func rejectCurrentTodo() async {
+        await cancelTodoAnswerCapture()
         guard case .confirmingTodos(let i) = state,
               i >= 0, i < pendingImplicitTodos.count else { return }
         let candidate = pendingImplicitTodos[i]
@@ -665,6 +681,7 @@ public final class WalkthroughCoordinator {
     /// Replace the current candidate's text with the user's refined
     /// version, then confirm it. Empty/whitespace input rejects instead.
     public func refineCurrentTodo(_ refined: String) async {
+        await cancelTodoAnswerCapture()
         guard case .confirmingTodos(let i) = state,
               i >= 0, i < pendingImplicitTodos.count else { return }
         let trimmed = refined.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -744,6 +761,158 @@ public final class WalkthroughCoordinator {
             text: line
         )
         await tts.speak(line, language: lang.rawValue)
+        // Phase B-2: open the mic for a short window and listen for the
+        // spoken answer. Buttons in the UI cancel the task if the user
+        // taps before we finish.
+        await beginTodoAnswerCapture(forCandidateIndex: i)
+    }
+
+    // MARK: - Voice answer capture (M8 phase B-2) ----------------------
+
+    /// Open the mic for a short answer window, transcribe, and dispatch
+    /// to confirm/reject/refine based on `TodoAnswerParser`. Designed to
+    /// be cancelled via `cancelTodoAnswerCapture()` when the user opts
+    /// for a button instead.
+    private func beginTodoAnswerCapture(forCandidateIndex index: Int) async {
+        await cancelTodoAnswerCapture()
+        guard case .confirmingTodos(let i) = state, i == index else { return }
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            await self.runTodoAnswerCapture(forCandidateIndex: index)
+        }
+        todoAnswerTask = task
+    }
+
+    private func runTodoAnswerCapture(forCandidateIndex index: Int) async {
+        guard let sessionDir else { return }
+        let url = sessionDir.appending(
+            path: "segments/confirm_\(String(format: "%02d", index)).m4a"
+        )
+        do {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+        } catch {
+            Log.app.warning(
+                "todo answer dir create failed: \(String(describing: error), privacy: .public)"
+            )
+            return
+        }
+
+        let detector = answerLullDetector
+        // Tighter thresholds than the per-event detector — the user's
+        // ja/nein answer is short.
+        detector.thresholds = [2, 4, 7]
+        let lullStream = AsyncStream<Int> { continuation in
+            detector.start { threshold in
+                continuation.yield(threshold)
+            }
+            continuation.onTermination = { _ in detector.stop() }
+        }
+
+        do {
+            try await engine.start(outputURL: url) { @Sendable buffer in
+                detector.feed(buffer)
+            }
+        } catch {
+            Log.app.warning(
+                "todo answer engine start failed: \(String(describing: error), privacy: .public)"
+            )
+            detector.stop()
+            return
+        }
+
+        isAwaitingTodoAnswer = true
+        defer { isAwaitingTodoAnswer = false }
+
+        // Wait for the first lull ≥ 2s (treat as end-of-utterance) OR
+        // the hard timeout, whichever fires first. Buttons cancel the
+        // outer Task and we exit early via Task.isCancelled below.
+        let maxSeconds = Self.todoAnswerMaxSeconds
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask {
+                for await crossed in lullStream where crossed >= 2 { _ = crossed; break }
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: UInt64(maxSeconds * 1e9))
+            }
+            // First branch wins; cancel the rest so the AsyncStream
+            // terminates cleanly.
+            await group.next()
+            group.cancelAll()
+            await group.waitForAll()
+        }
+        detector.stop()
+
+        if Task.isCancelled {
+            try? await engine.stop()
+            detector.stop()
+            return
+        }
+
+        do { _ = try await engine.stop() }
+        catch {
+            Log.audio.warning(
+                "todo answer engine stop: \(String(describing: error), privacy: .public)"
+            )
+        }
+        detector.stop()
+        try? await Task.sleep(nanoseconds: 200_000_000)
+
+        // Re-check we're still on the same candidate (user may have
+        // tapped a button while we were closing the engine).
+        guard case .confirmingTodos(let nowIndex) = state, nowIndex == index else { return }
+
+        // Transcribe — short clip, fast.
+        let transcript: ParakeetManager.Transcript
+        do {
+            transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
+        } catch {
+            Log.app.warning(
+                "todo answer transcribe failed: \(String(describing: error), privacy: .public)"
+            )
+            return
+        }
+
+        recordAiPrompt(
+            role: "todo_answer_voice",
+            segmentID: pendingImplicitTodos[index].source_segment_id,
+            text: transcript.text
+        )
+
+        let outcome = TodoAnswerParser.parse(transcript.text)
+        Log.app.info(
+            "todo answer (\(index, privacy: .public)) → \(String(describing: outcome), privacy: .public) raw=\(transcript.text, privacy: .public)"
+        )
+
+        switch outcome {
+        case .confirm:
+            await confirmCurrentTodo()
+        case .reject:
+            await rejectCurrentTodo()
+        case .refine(let text):
+            await refineCurrentTodo(text)
+        case .unknown:
+            // Voice answer was ambiguous — leave the buttons + refine
+            // editor open so the user can tap. No advancement.
+            break
+        }
+    }
+
+    private func cancelTodoAnswerCapture() async {
+        if let task = todoAnswerTask {
+            task.cancel()
+            todoAnswerTask = nil
+        }
+        if isAwaitingTodoAnswer {
+            // Force-stop the engine so the next prompt's capture starts
+            // clean. Tolerant of a no-op stop.
+            _ = try? await engine.stop()
+            answerLullDetector.stop()
+            isAwaitingTodoAnswer = false
+        }
     }
 
     private func dedupeImplicit(
