@@ -73,22 +73,97 @@ enum IntentRouter {
 
 struct RootView: View {
     var body: some View {
+        // Four primary tabs in the bottom rail; secondary destinations
+        // (Stimmen, Debug helpers) live behind the "Mehr" tab so the front
+        // row stays focused on the capture/reflection flow.
         TabView {
-            CaptureView()
-                .tabItem { Label("Aufnahme", systemImage: "mic.circle") }
-
             WalkthroughView()
-                .tabItem { Label("Abend", systemImage: "moon.stars") }
+                .tabItem { Label("Abend", systemImage: "book.closed") }
 
-            DebugUploadView()
-                .tabItem { Label("Test-Upload", systemImage: "arrow.up.circle") }
+            CaptureView()
+                .tabItem { Label("Aufnahme", systemImage: "mic.fill") }
 
-            DebugSettingsView()
-                .tabItem { Label("Server", systemImage: "gear") }
+            NavigationStack { VerlaufView() }
+                .tabItem { Label("Verlauf", systemImage: "list.bullet") }
+
+            NavigationStack { MehrView() }
+                .tabItem { Label("Mehr", systemImage: "ellipsis.circle") }
         }
         .font(Theme.font.body)
+        .tint(Theme.color.text.primary)
     }
 }
+
+/// "Mehr" hub. Holds the secondary destinations (Stimmen, debug pages
+/// in DEBUG builds). Each row pushes a navigation destination that
+/// renders its own FlowHeader so the title alignment matches the
+/// front-rail screens.
+private struct MehrView: View {
+    var body: some View {
+        ZStack(alignment: .top) {
+            Theme.color.bg.surface.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                FlowHeader(title: "Mehr")
+
+                List {
+                    Section {
+                        NavigationLink {
+                            WalkthroughSectionsView()
+                        } label: {
+                            MehrRow(label: "Abschnitte", systemImage: "text.bubble")
+                        }
+                        NavigationLink {
+                            WalkthroughOrderView()
+                        } label: {
+                            MehrRow(label: "Reihenfolge", systemImage: "arrow.up.arrow.down")
+                        }
+                        NavigationLink {
+                            WalkthroughSettingsView()
+                        } label: {
+                            MehrRow(label: "Termin-Filter", systemImage: "calendar")
+                        }
+                        NavigationLink {
+                            VoiceSettingsView()
+                        } label: {
+                            MehrRow(label: "Stimmen", systemImage: "waveform")
+                        }
+                    }
+
+                    #if DEBUG
+                    Section("Debug") {
+                        NavigationLink {
+                            DebugUploadView()
+                        } label: {
+                            MehrRow(label: "Test-Upload", systemImage: "arrow.up.circle")
+                        }
+                        NavigationLink {
+                            DebugSettingsView()
+                        } label: {
+                            MehrRow(label: "Server", systemImage: "gear")
+                        }
+                    }
+                    #endif
+                }
+                .scrollContentBackground(.hidden)
+            }
+        }
+        .navigationBarHidden(true)
+    }
+}
+
+private struct MehrRow: View {
+    let label: String
+    let systemImage: String
+    var body: some View {
+        Label(label, systemImage: systemImage)
+            .font(Theme.font.body)
+            .foregroundStyle(Theme.color.text.primary)
+    }
+}
+
+// VerlaufPlaceholderView removed — replaced by the real
+// `VerlaufView` in `Sources/UI/Verlauf/`.
 
 #Preview {
     RootView()

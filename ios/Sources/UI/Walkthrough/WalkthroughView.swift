@@ -4,21 +4,40 @@ import SwiftUI
 public struct WalkthroughView: View {
     @State private var coordinator = WalkthroughCoordinator.shared
     @State private var showEnrichment: Bool = false
+    @State private var modelState: ParakeetManager.LoadState = .idle
 
     public init() {}
 
     public var body: some View {
-        NavigationStack {
-            ZStack {
-                Theme.color.bg.surface.ignoresSafeArea()
+        ZStack(alignment: .top) {
+            Theme.color.bg.surface.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                FlowHeader(
+                    title: headerTitle,
+                    total: headerTotal,
+                    current: headerCurrent,
+                    onClose: headerCloseAction
+                )
+
+                // The model-load banner used to live here; the floating
+                // bottom CTA carries that signal now (label + spinner +
+                // disabled state) so we don't double up.
+
+                // No in-app state pill: it crowded the layout. The
+                // canonical state indicator lives in the Dynamic Island
+                // via the Live Activity, which iOS surfaces the moment
+                // the user backgrounds the app. While the app is on
+                // screen, the EDITOR card + timer + bottom buttons
+                // already convey what's happening.
 
                 ScrollView {
                     VStack(spacing: Theme.spacing.lg) {
-                        StateHeader(coordinator: coordinator)
-
-                        if coordinator.state.isSpeaking || coordinator.state.isListening {
-                            SpokenLineCard(text: coordinator.lastSpoken)
-                        }
+                        // The EDITOR transcript card was removed: the TTS
+                        // engine already speaks the line, so showing it
+                        // visually was redundant noise. The user hears
+                        // the question; the screen carries event context
+                        // + the timer.
 
                         if let current = currentEvent {
                             EventCard(event: current,
@@ -26,21 +45,11 @@ public struct WalkthroughView: View {
                                       total: coordinator.events.count)
                         }
 
-                        if coordinator.state.isListening {
-                            ListeningTimer(seconds: coordinator.elapsedSeconds)
-                            if !coordinator.statusHint.isEmpty {
-                                Text(coordinator.statusHint)
-                                    .font(Theme.font.callout)
-                                    .foregroundStyle(Theme.color.status.warning)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, Theme.spacing.sm)
-                            }
-                            ListeningControls(coordinator: coordinator)
-                            EnrichmentTrigger(
-                                isEnriching: coordinator.isEnriching,
-                                action: { showEnrichment = true }
-                            )
-                        }
+                        // ListeningTimer is rendered in the bottom
+                        // overlay (just above the BottomActionStack) so
+                        // its distance from the bottom of the screen
+                        // stays constant — content above can grow/shrink
+                        // without shifting the counter.
 
                         switch coordinator.state {
                         case .idle:                StartCard(coordinator: coordinator)
@@ -52,65 +61,216 @@ public struct WalkthroughView: View {
                         }
                     }
                     .padding(.horizontal, Theme.spacing.md)
-                    .padding(.vertical, Theme.spacing.lg)
+                    .padding(.bottom, scrollBottomInset)
                 }
             }
-            .navigationTitle("Abend")
-            .sheet(isPresented: $showEnrichment) {
-                EnrichmentSheet(coordinator: coordinator, isPresented: $showEnrichment)
+
+            // State indicator lives in the Dynamic Island via the live
+            // activity (see WalkthroughCoordinator.startLiveActivityIfNeeded).
+            // Per Apple HIG we keep the in-app surface free of redundant
+            // status chrome.
+
+            VStack(spacing: 0) {
+                Spacer()
+                if coordinator.state.isInEventLoop {
+                    // Pinned counter — same Y from the bottom regardless
+                    // of what's in the scroll area above. Lives in the
+                    // overlay (not the scroll view) so EventCard growth
+                    // can't push it around.
+                    ListeningTimer(seconds: coordinator.elapsedSeconds)
+                        .padding(.bottom, Theme.spacing.sm)
+                }
+                if coordinator.state.isInEventLoop {
+                    BottomActionStack {
+                        Button {
+                            showEnrichment = true
+                        } label: {
+                            Label("Frage stellen", systemImage: "magnifyingglass")
+                                .foregroundStyle(Theme.color.text.link)
+                        }
+                        .buttonStyle(.dsGhost(fullWidth: true))
+                        .opacity(coordinator.isEnriching ? 0.4 : 1.0)
+                        .disabled(coordinator.isEnriching)
+
+                        HStack(spacing: Theme.spacing.sm) {
+                            Button {
+                                Task { await coordinator.skip() }
+                            } label: {
+                                Text("Überspringen")
+                            }
+                            .buttonStyle(.dsSecondary(fullWidth: true))
+
+                            Button {
+                                Task { await coordinator.finishEarly() }
+                            } label: {
+                                Text("Ich bin fertig")
+                            }
+                            .buttonStyle(.dsSecondary(fullWidth: true))
+                        }
+
+                        Button {
+                            Task { await coordinator.advance() }
+                        } label: {
+                            Label("Weiter", systemImage: "arrow.right.circle.fill")
+                        }
+                        .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
+                    }
+                } else if case .confirmingTodos = coordinator.state {
+                    TodoConfirmationActions(coordinator: coordinator)
+                } else if case .idle = coordinator.state {
+                    BottomActionStack {
+                        Button {
+                            Task { await coordinator.begin() }
+                        } label: {
+                            startCtaLabel
+                        }
+                        .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
+                        .disabled(!isModelReady || coordinator.isPreviewing)
+                    }
+                }
             }
+            .ignoresSafeArea(.keyboard)
+        }
+        .sheet(isPresented: $showEnrichment) {
+            EnrichmentSheet(coordinator: coordinator, isPresented: $showEnrichment)
+        }
+        .task {
+            // Surface Parakeet load state so the user sees the
+            // ~1.2 GB first-launch download instead of silently
+            // hitting "Sitzung starten" before the model is ready.
+            await ParakeetManager.shared.warmUp()
+            modelState = await ParakeetManager.shared.loadState
+        }
+    }
+
+    /// Bottom inset for the scroll view. Reserves space for the floating
+    /// CTA / action stack so long lists can scroll behind it without
+    /// the last item getting trapped underneath.
+    private var scrollBottomInset: CGFloat {
+        switch coordinator.state {
+        case .idle:
+            return 120
+        case .briefing, .eventOpener, .eventListening,
+             .generalOpener, .generalListening,
+             .driveByOpener, .driveByListening:
+            // Action stack (~190) + pinned timer (80 slot + 12 padding) +
+            // breathing room — keeps the EventCard above both.
+            return 320
+        case .confirmingTodos:
+            return 200
+        default:
+            return Theme.spacing.lg
+        }
+    }
+
+    private var isModelReady: Bool {
+        if case .ready = modelState { return true }
+        return false
+    }
+
+    /// Label inside the floating "Sitzung starten" button. While the
+    /// Parakeet model is still downloading the label switches to the
+    /// load state + a spinner — the user can read why the CTA is
+    /// disabled without an extra banner.
+    @ViewBuilder
+    private var startCtaLabel: some View {
+        switch modelState {
+        case .ready:
+            let count = coordinator.previewEvents.count
+            switch count {
+            case 0: Label("Sitzung starten", systemImage: "play.fill")
+            case 1: Label("Sitzung starten (1 Termin)", systemImage: "play.fill")
+            default: Label("Sitzung starten (\(count) Termine)", systemImage: "play.fill")
+            }
+        case .idle:
+            HStack(spacing: Theme.spacing.xs) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(Theme.color.text.inverse)
+                Text("Sprachmodell wird vorbereitet…")
+            }
+        case .loading:
+            HStack(spacing: Theme.spacing.xs) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(Theme.color.text.inverse)
+                Text("Lade Sprachmodell — ~1,2 GB")
+            }
+        case .failed(let msg):
+            Label("Sprachmodell-Fehler: \(msg.prefix(40))", systemImage: "exclamationmark.triangle.fill")
+        }
+    }
+
+    // MARK: - flow header config
+
+    /// During the per-event walkthrough we promote the event subject as the
+    /// page title — this matches the design's "the title IS the H1" rule
+    /// and lets the progress segments carry the step counter.
+    private var headerTitle: String {
+        switch coordinator.state {
+        case .idle:                            return "Abend"
+        case .confirmingTodos:                 return "Eine Sache noch"
+        case .ingesting:                       return "Lade hoch"
+        case .done:                            return "Sitzung abgeschlossen"
+        case .failed:                          return "Fehler"
+        case .briefing where currentEvent != nil,
+             .eventOpener, .eventListening:    return currentEvent?.subject ?? "Termin"
+        case .generalOpener, .generalListening,
+             .driveByOpener, .driveByListening:
+            return coordinator.currentSectionTitle ?? "Abend"
+        default:                               return "Abend"
+        }
+    }
+
+    private var headerTotal: Int {
+        switch coordinator.state {
+        case .eventOpener, .eventListening:
+            return coordinator.calendarProgress?.total ?? coordinator.events.count
+        case .confirmingTodos:
+            return coordinator.todoCandidateProgress?.total ?? 0
+        default:
+            return 0
+        }
+    }
+
+    private var headerCurrent: Int {
+        switch coordinator.state {
+        case .eventOpener, .eventListening:
+            return coordinator.calendarProgress?.current ?? 0
+        case .confirmingTodos:
+            return (coordinator.todoCandidateProgress?.index ?? 0) + 1
+        default:
+            return 0
+        }
+    }
+
+    private var headerCloseAction: (() -> Void)? {
+        switch coordinator.state {
+        case .idle, .done, .failed: return nil
+        default: return { Task { await coordinator.cancel() } }
         }
     }
 
     // MARK: - derived
 
+    /// Index of the calendar event currently being walked, or -1.
+    /// Used by the EventCard render below.
     private var currentIndex: Int {
-        switch coordinator.state {
-        case .eventOpener(let i), .eventListening(let i): return i
-        default: return -1
+        if let progress = coordinator.calendarProgress {
+            return progress.current - 1
         }
+        if case .briefing = coordinator.state, !coordinator.events.isEmpty {
+            return 0
+        }
+        return -1
     }
 
     private var currentEvent: ServerCalendarEvent? {
-        guard currentIndex >= 0,
-              currentIndex < coordinator.events.count else { return nil }
-        return coordinator.events[currentIndex]
+        coordinator.currentCalendarEvent
     }
 }
 
 // MARK: - subviews
-
-private struct StateHeader: View {
-    let coordinator: WalkthroughCoordinator
-    var body: some View {
-        HStack(spacing: Theme.spacing.sm) {
-            Circle()
-                .fill(coordinator.state.isListening
-                      ? Theme.color.status.destructive
-                      : (coordinator.state.isSpeaking ? Theme.color.status.warning : Theme.color.text.subdued))
-                .frame(width: 10, height: 10)
-            Text(coordinator.state.label)
-                .font(Theme.font.headline)
-                .foregroundStyle(Theme.color.text.primary)
-            Spacer()
-        }
-    }
-}
-
-private struct SpokenLineCard: View {
-    let text: String
-    var body: some View {
-        Text(text)
-            .font(Theme.font.callout)
-            .foregroundStyle(Theme.color.text.primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(Theme.spacing.md)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                    .fill(Theme.color.bg.containerInset)
-            )
-    }
-}
 
 private struct EventCard: View {
     let event: ServerCalendarEvent
@@ -118,27 +278,49 @@ private struct EventCard: View {
     let total: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
-            Text("Termin \(index + 1) / \(total)")
-                .font(Theme.font.caption)
+        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            // Row 1 — time range (mono, tabular). Has its own line so
+            // the wrap-fest from the old single-row layout is gone.
+            Text(timeRange(event))
+                .font(Theme.font.monoCaption)
                 .foregroundStyle(Theme.color.text.subdued)
-            Text(event.subject)
-                .font(Theme.font.title3)
-                .foregroundStyle(Theme.color.text.primary)
-            HStack(spacing: Theme.spacing.xs) {
-                Image(systemName: "clock")
-                Text(timeRange(event))
-            }
-            .font(Theme.font.subheadline)
-            .foregroundStyle(Theme.color.text.secondary)
-            if !event.attendees.isEmpty {
-                HStack(spacing: Theme.spacing.xs) {
+                .lineLimit(1)
+                .minimumScaleFactor(0.9)
+
+            // Row 2 — attendee count + RSVP chip on the same line.
+            // Both items use icons + short labels and never overflow,
+            // so they fit comfortably on one row.
+            HStack(spacing: Theme.spacing.sm) {
+                HStack(spacing: 4) {
                     Image(systemName: "person.2")
-                    Text(event.attendees.prefix(3).map(\.name).joined(separator: ", "))
-                        .lineLimit(1)
+                        .font(.system(size: 12))
+                    Text("\(event.attendeeCount) \(event.attendeeCount == 1 ? "Teilnehmer" : "Teilnehmende")")
+                        .font(Theme.font.caption)
                 }
-                .font(Theme.font.subheadline)
                 .foregroundStyle(Theme.color.text.secondary)
+
+                Spacer(minLength: Theme.spacing.xs)
+
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(rsvpColor)
+                        .frame(width: 7, height: 7)
+                    Text(rsvpLabel)
+                        .font(Theme.font.caption)
+                }
+                .foregroundStyle(Theme.color.text.secondary)
+                .lineLimit(1)
+            }
+
+            // Row 3 (optional) — attendee names as a single wrapped
+            // line. Capped at two lines and clipped with ellipsis so
+            // big DLs (12+ people) don't blow up the card.
+            if !event.attendees.isEmpty {
+                Text(event.attendees.prefix(4).map(\.name).joined(separator: ", "))
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -153,53 +335,45 @@ private struct EventCard: View {
         )
     }
 
+    private var rsvpColor: Color {
+        switch event.rsvp_status {
+        case "organizer": return Theme.color.text.link
+        case "accepted":  return Theme.color.status.success
+        case "tentative": return Theme.color.status.warning
+        default:          return Theme.color.text.subdued
+        }
+    }
+
+    private var rsvpLabel: String {
+        switch event.rsvp_status {
+        case "organizer": return "Organisator"
+        case "accepted":  return "zugesagt"
+        case "tentative": return "vorläufig"
+        default:          return "ohne Antwort"
+        }
+    }
+
     private func timeRange(_ ev: ServerCalendarEvent) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "de_DE")
         f.dateFormat = "HH:mm"
         guard let start = ev.startDate, let end = ev.endDate else { return "" }
-        return "\(f.string(from: start))–\(f.string(from: end))"
+        return "\(f.string(from: start)) – \(f.string(from: end))"
     }
 }
 
+/// Walkthrough listening counter. Matches the drive-by Aufnahme counter
+/// (`CaptureView.recordingBody`) on font size, weight, and slot height so
+/// both screens read as the same component at the same vertical position.
 private struct ListeningTimer: View {
     let seconds: Int
     var body: some View {
         Text(String(format: "%02d:%02d", seconds / 60, seconds % 60))
-            .font(.system(size: 36, weight: .semibold, design: .monospaced))
-            .foregroundStyle(Theme.color.text.secondary)
+            .font(.system(size: 64, weight: .regular, design: .monospaced))
+            .foregroundStyle(Theme.color.text.primary)
+            .monospacedDigit()
             .frame(maxWidth: .infinity)
-    }
-}
-
-private struct ListeningControls: View {
-    let coordinator: WalkthroughCoordinator
-
-    var body: some View {
-        VStack(spacing: Theme.spacing.sm) {
-            Button {
-                Task { await coordinator.advance() }
-            } label: {
-                Label("Weiter", systemImage: "arrow.right.circle.fill")
-            }
-            .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
-
-            HStack(spacing: Theme.spacing.sm) {
-                Button {
-                    Task { await coordinator.skip() }
-                } label: {
-                    Text("Überspringen")
-                }
-                .buttonStyle(.dsSecondary(fullWidth: true))
-
-                Button {
-                    Task { await coordinator.finishEarly() }
-                } label: {
-                    Text("Ich bin fertig")
-                }
-                .buttonStyle(.dsGhost(fullWidth: true))
-            }
-        }
+            .frame(height: 80)             // matches CaptureView's recording slot
     }
 }
 
@@ -207,48 +381,25 @@ private struct ListeningControls: View {
 private struct StartCard: View {
     let coordinator: WalkthroughCoordinator
     @State private var selectedDate: Date = Date()
+    @State private var showPicker: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.md) {
             Text("Bereit für die Abend-Reflexion?")
                 .font(Theme.font.headline)
                 .foregroundStyle(Theme.color.text.primary)
-            Text("Wir gehen die zugesagten Termine des Tages chronologisch durch. Tentative oder nicht zugesagte Termine werden übersprungen.")
+            Text("Wir gehen die zugesagten Termine des Tages chronologisch durch.")
                 .font(Theme.font.callout)
                 .foregroundStyle(Theme.color.text.secondary)
 
-            DatePicker(
-                "Tag",
-                selection: $selectedDate,
-                in: ...Date(),
-                displayedComponents: .date
-            )
-            .datePickerStyle(.compact)
-            .labelsHidden()
-            .onChange(of: selectedDate) { _, newValue in
-                coordinator.setSelectedDate(newValue)
-                Task { await coordinator.previewDay(newValue) }
-            }
-            .padding(.horizontal, Theme.spacing.sm)
-            .padding(.vertical, Theme.spacing.xs)
-            .background(
-                RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
-                    .fill(Theme.color.bg.containerInset)
-            )
+            dateNavigator
+            recordedBadge
 
             DayOverview(
                 events: coordinator.previewEvents,
                 isLoading: coordinator.isPreviewing,
                 error: coordinator.previewError
             )
-
-            Button {
-                Task { await coordinator.begin() }
-            } label: {
-                Label(startLabel, systemImage: "play.fill")
-            }
-            .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
-            .disabled(coordinator.isPreviewing)
         }
         .padding(Theme.spacing.md)
         .background(
@@ -259,17 +410,125 @@ private struct StartCard: View {
             // Initial load when the view first appears.
             selectedDate = coordinator.selectedDate
             await coordinator.previewDay()
+            await coordinator.loadRecordedDates(around: selectedDate)
         }
     }
 
-    private var startLabel: String {
-        let count = coordinator.previewEvents.count
-        switch count {
-        case 0: return "Sitzung starten"
-        case 1: return "Sitzung starten (1 Termin)"
-        default: return "Sitzung starten (\(count) Termine)"
+    /// Three-part date navigator: ←  date  →
+    /// Mirrors the Apple Calendar / Health pattern. The centred label
+    /// is tappable and opens the system date picker for free-form jumps.
+    /// The right chevron auto-disables on today (consistent with the
+    /// existing `in: ...Date()` upper bound).
+    private var dateNavigator: some View {
+        HStack(spacing: Theme.spacing.xs) {
+            chevronButton(systemName: "chevron.left", direction: -1, enabled: true)
+
+            Button { showPicker.toggle() } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "calendar")
+                        .font(.system(size: 14, weight: .medium))
+                    Text(Self.dateLabel(selectedDate))
+                        .font(Theme.font.callout.weight(.medium))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(Theme.color.text.primary)
+                .frame(maxWidth: .infinity)
+                .frame(height: 36)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                        .fill(Theme.color.bg.containerInset)
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Tag wählen")
+            .sheet(isPresented: $showPicker) {
+                RecordingDatePickerSheet(
+                    selectedDate: $selectedDate,
+                    recordedDates: coordinator.recordedDates,
+                    isPresented: $showPicker
+                )
+                .presentationDetents([.height(520)])
+                .presentationDragIndicator(.visible)
+                // Layer order: thick material first (the glass blur), then
+                // a translucent surface tint on top to dial down the
+                // bleed-through from the StartCard behind. Result reads as
+                // Liquid Glass but the calendar grid stays legible.
+                .presentationBackground {
+                    ZStack {
+                        Rectangle().fill(.thickMaterial)
+                        Rectangle().fill(Theme.color.bg.surface.opacity(0.55))
+                    }
+                    .ignoresSafeArea()
+                }
+            }
+
+            chevronButton(systemName: "chevron.right",
+                          direction: 1,
+                          enabled: !Calendar.current.isDateInToday(selectedDate))
+        }
+        .onChange(of: selectedDate) { _, newValue in
+            coordinator.setSelectedDate(newValue)
+            Task { await coordinator.previewDay(newValue) }
         }
     }
+
+    /// Marker shown next to the day overview header when the selected
+    /// date already has at least one recording on the server.
+    @ViewBuilder
+    fileprivate var recordedBadge: some View {
+        if coordinator.recordedDates.contains(Self.isoDay(selectedDate)) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(Theme.color.status.success)
+                    .frame(width: 8, height: 8)
+                Text("Aufnahme bereits vorhanden")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+            }
+            .padding(.horizontal, Theme.spacing.xs)
+        }
+    }
+
+    fileprivate static let isoDay: (Date) -> String = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return { f.string(from: $0) }
+    }()
+
+    /// One step ± a calendar day. Disabled state is stroked instead of
+    /// filled to communicate "no further" without colour-only signal.
+    private func chevronButton(systemName: String, direction: Int, enabled: Bool) -> some View {
+        Button {
+            guard enabled,
+                  let next = Calendar.current.date(byAdding: .day, value: direction, to: selectedDate)
+            else { return }
+            // Clamp at today for the forward step (matches `in: ...Date()`).
+            selectedDate = (direction > 0 && next > Date()) ? Date() : next
+        } label: {
+            Image(systemName: systemName)
+                .font(.system(size: 14, weight: .semibold))
+                .frame(width: 36, height: 36)
+                .foregroundStyle(enabled ? Theme.color.text.primary : Theme.color.text.subdued)
+                .background(
+                    RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                        .fill(Theme.color.bg.containerInset)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(direction < 0 ? "Vorheriger Tag" : "Nächster Tag")
+    }
+
+    private static let dateLabel: (Date) -> String = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "de_DE")
+        f.doesRelativeDateFormatting = true   // "Heute" / "Gestern" when applicable
+        f.dateStyle = .medium                  // e.g. "30. Apr. 2026"
+        f.timeStyle = .none
+        return { f.string(from: $0) }
+    }()
+
 }
 
 /// Day overview rendered as a clean chronological list.
@@ -458,138 +717,144 @@ private struct UploadingCard: View {
 }
 
 /// CLOSING confirmation pass for an implicit-todo candidate.
-/// "Ja" / "Nein" / "Anders" — the latter reveals an inline text field
-/// where the user can rephrase the action before confirming. Voice-driven
-/// answers are phase B-2; this card is the button-driven fallback that
-/// always works.
+/// Renders only the EDITOR prompt and the candidate text — actions live
+/// in the parent's bottom action stack (`TodoConfirmationActions`).
 @MainActor
 private struct TodoConfirmationCard: View {
+    let coordinator: WalkthroughCoordinator
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.lg) {
+            // EDITOR prompt removed: TTS speaks "Ja, nein, oder anders?"
+            // — visible duplicate was redundant.
+
+            VStack(alignment: .leading, spacing: Theme.spacing.md) {
+                Text("AUFGABE")
+                    .font(Theme.font.monoCaption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                    .tracking(0.5)
+                Text(coordinator.currentTodoCandidate?.text ?? "")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(Theme.color.text.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Divider().background(Theme.color.border.subdued)
+                if coordinator.isAwaitingTodoAnswer {
+                    HStack(spacing: Theme.spacing.xs) {
+                        Circle()
+                            .fill(Theme.color.status.destructive)
+                            .frame(width: 8, height: 8)
+                        Text("höre dich")
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Bottom action stack rendered for `.confirmingTodos`. Mirrors the
+/// design's three-button pattern: Anders + Nein on top (Nein styled with
+/// destructive border per DESIGN.md), Ja primary at the bottom. Tapping
+/// "Anders" reveals an inline rename field and swaps the actions to
+/// Abbrechen / Übernehmen.
+@MainActor
+private struct TodoConfirmationActions: View {
     let coordinator: WalkthroughCoordinator
     @State private var refining: Bool = false
     @State private var refinedText: String = ""
     @FocusState private var refineFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.md) {
-            if let progress = coordinator.todoCandidateProgress {
-                Text("Aufgabe \(progress.index + 1) / \(progress.total)")
-                    .font(Theme.font.caption)
-                    .foregroundStyle(Theme.color.text.subdued)
-            }
-
-            Text(coordinator.currentTodoCandidate?.text ?? "")
-                .font(Theme.font.title3)
-                .foregroundStyle(Theme.color.text.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if coordinator.isAwaitingTodoAnswer && !refining {
-                listeningHint
-            }
-
+        BottomActionStack {
             if refining {
-                refineEditor
+                TextField("Aufgabe umformulieren", text: $refinedText, axis: .vertical)
+                    .lineLimit(2...4)
+                    .focused($refineFocused)
+                    .padding(Theme.spacing.sm)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                            .fill(Theme.color.bg.container)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                            .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
+                    )
+
+                HStack(spacing: Theme.spacing.sm) {
+                    Button("Abbrechen") {
+                        refining = false
+                        refinedText = ""
+                        refineFocused = false
+                    }
+                    .buttonStyle(.dsGhost(fullWidth: true))
+
+                    Button("Übernehmen") {
+                        let snapshot = refinedText
+                        refining = false
+                        refineFocused = false
+                        Task { await coordinator.refineCurrentTodo(snapshot) }
+                    }
+                    .buttonStyle(.dsPrimary(fullWidth: true))
+                    .disabled(refinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
             } else {
-                buttonRow
+                HStack(spacing: Theme.spacing.sm) {
+                    Button {
+                        refinedText = coordinator.currentTodoCandidate?.text ?? ""
+                        refining = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                            refineFocused = true
+                        }
+                    } label: {
+                        Label("Anders", systemImage: "pencil")
+                    }
+                    .buttonStyle(.dsSecondary(fullWidth: true))
+
+                    Button("Nein") {
+                        Task { await coordinator.rejectCurrentTodo() }
+                    }
+                    .buttonStyle(NeinButtonStyle())
+                }
+
+                Button {
+                    Task { await coordinator.confirmCurrentTodo() }
+                } label: {
+                    Text("Ja, übernehmen")
+                }
+                .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
             }
         }
-        .padding(Theme.spacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
         .onChange(of: coordinator.todoCandidateProgress?.index) { _, _ in
-            // Reset refine state every time we move to the next candidate.
             refining = false
             refinedText = ""
             refineFocused = false
         }
     }
+}
 
-    private var listeningHint: some View {
-        HStack(spacing: Theme.spacing.xs) {
-            Circle()
-                .fill(Theme.color.status.destructive)
-                .frame(width: 8, height: 8)
-            Text(#"Sag „Ja", „Nein" oder eine andere Formulierung – oder tippe."#)
-                .font(Theme.font.caption)
-                .foregroundStyle(Theme.color.text.subdued)
-            Spacer(minLength: 0)
-        }
-    }
-
-    private var buttonRow: some View {
-        VStack(spacing: Theme.spacing.sm) {
-            Button {
-                Task { await coordinator.confirmCurrentTodo() }
-            } label: {
-                Label("Ja, übernehmen", systemImage: "checkmark.circle.fill")
-            }
-            .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
-
-            HStack(spacing: Theme.spacing.sm) {
-                Button {
-                    Task { await coordinator.rejectCurrentTodo() }
-                } label: {
-                    Text("Nein")
-                }
-                .buttonStyle(.dsSecondary(fullWidth: true))
-
-                Button {
-                    refinedText = coordinator.currentTodoCandidate?.text ?? ""
-                    refining = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                        refineFocused = true
-                    }
-                } label: {
-                    Text("Anders")
-                }
-                .buttonStyle(.dsGhost(fullWidth: true))
-            }
-        }
-    }
-
-    private var refineEditor: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
-            TextField("Aufgabe umformulieren", text: $refinedText, axis: .vertical)
-                .lineLimit(2...4)
-                .focused($refineFocused)
-                .padding(Theme.spacing.sm)
-                .background(
-                    RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
-                        .fill(Theme.color.bg.containerInset)
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
-                        .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-                )
-
-            HStack(spacing: Theme.spacing.sm) {
-                Button {
-                    refining = false
-                    refinedText = ""
-                    refineFocused = false
-                } label: {
-                    Text("Abbrechen")
-                }
-                .buttonStyle(.dsGhost(fullWidth: true))
-
-                Button {
-                    let snapshot = refinedText
-                    refining = false
-                    refineFocused = false
-                    Task { await coordinator.refineCurrentTodo(snapshot) }
-                } label: {
-                    Text("Übernehmen")
-                }
-                .buttonStyle(.dsPrimary(fullWidth: true))
-                .disabled(refinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-        }
+/// "Nein" gets a destructive-coloured border + label per DESIGN.md so it
+/// reads as the rejection action without filling the whole row in red.
+private struct NeinButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 16, weight: .medium))
+            .frame(height: 40)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, Theme.spacing.md)
+            .background(
+                configuration.isPressed
+                    ? Theme.color.tint.destructive10
+                    : Theme.color.bg.container
+            )
+            .foregroundStyle(Theme.color.status.destructive)
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                    .strokeBorder(Theme.color.status.destructive, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous))
+            .opacity(configuration.isPressed ? 0.92 : 1.0)
     }
 }
 
@@ -597,29 +862,42 @@ private struct DoneCard: View {
     let coordinator: WalkthroughCoordinator
 
     var body: some View {
-        VStack(spacing: Theme.spacing.sm) {
+        VStack(spacing: Theme.spacing.lg) {
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 48))
+                .font(.system(size: 44))
                 .foregroundStyle(Theme.color.status.success)
-            Text("Sitzung abgeschlossen")
-                .font(Theme.font.headline)
-                .foregroundStyle(Theme.color.text.primary)
-            if let id = coordinator.sessionID {
-                Text(id)
-                    .font(Theme.font.monoCaption)
-                    .foregroundStyle(Theme.color.text.subdued)
+
+            VStack(spacing: 6) {
+                Text(summaryText)
+                    .font(Theme.font.body)
+                    .foregroundStyle(Theme.color.text.secondary)
+                    .multilineTextAlignment(.center)
+                if let id = coordinator.sessionID {
+                    Text(id)
+                        .font(Theme.font.monoCaption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                        .opacity(0.7)
+                }
             }
+
             Button("Neue Sitzung") {
                 Task { await coordinator.cancel() }
             }
-            .buttonStyle(.dsSecondary(fullWidth: true))
+            .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
         }
         .frame(maxWidth: .infinity)
-        .padding(Theme.spacing.md)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
+        .padding(.horizontal, Theme.spacing.xl)
+        .padding(.vertical, Theme.spacing.xl)
+    }
+
+    private var summaryText: String {
+        let events = coordinator.events.count
+        let todos  = coordinator.confirmedImplicitCount
+        switch (events, todos) {
+        case (0, _):  return "Sitzung gespeichert."
+        case (_, 0):  return "\(events) Termine durchgegangen."
+        default:      return "\(events) Termine durchgegangen, \(todos) Aufgaben übernommen."
+        }
     }
 }
 
@@ -651,29 +929,6 @@ private struct ErrorCard: View {
 }
 
 // MARK: - Enrichment
-
-private struct EnrichmentTrigger: View {
-    let isEnriching: Bool
-    let action: () -> Void
-
-    var body: some View {
-        if isEnriching {
-            HStack(spacing: Theme.spacing.sm) {
-                ProgressView()
-                Text("Frage wird beantwortet …")
-                    .font(Theme.font.callout)
-                    .foregroundStyle(Theme.color.text.secondary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, Theme.spacing.sm)
-        } else {
-            Button(action: action) {
-                Label("Frage stellen", systemImage: "magnifyingglass")
-            }
-            .buttonStyle(.dsGhost(fullWidth: true))
-        }
-    }
-}
 
 @MainActor
 private struct EnrichmentSheet: View {
@@ -733,5 +988,208 @@ private struct EnrichmentSheet: View {
             }
             .onAppear { fieldFocused = true }
         }
+    }
+}
+
+/// Sheet-hosted month grid for picking a walkthrough date. Days that
+/// already have a recording are underlined with a small dot below the
+/// number; future days (after today) are disabled. Replaces the prior
+/// SwiftUI graphical-DatePicker popover, which mis-rendered inside the
+/// compact-popover adaptation on iOS 26 (only one weekday column).
+@MainActor
+private struct RecordingDatePickerSheet: View {
+    @Binding var selectedDate: Date
+    let recordedDates: Set<String>
+    @Binding var isPresented: Bool
+
+    @State private var visibleMonth: Date = Date()
+
+    private static let isoDay: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    private static let monthLabel: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "de_DE")
+        f.dateFormat = "LLLL yyyy"
+        return f
+    }()
+
+    private var calendar: Calendar {
+        var c = Calendar(identifier: .iso8601)
+        c.locale = Locale(identifier: "de_DE")
+        c.firstWeekday = 2 // Monday
+        return c
+    }
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: Theme.spacing.md) {
+                Text("Der gewählte Tag ist der Tag, für den der Tagebuch-Eintrag aufgenommen wird.")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                monthHeader
+                weekdayHeader
+                monthGrid
+                legend
+            }
+            .padding(.horizontal, Theme.spacing.md)
+            .padding(.top, Theme.spacing.xxs)
+            .padding(.bottom, Theme.spacing.md)
+            .navigationTitle("Tag wählen")
+            .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                visibleMonth = calendar.date(
+                    from: calendar.dateComponents([.year, .month], from: selectedDate)
+                ) ?? selectedDate
+            }
+        }
+    }
+
+    private var monthHeader: some View {
+        HStack {
+            Button { step(-1) } label: {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .foregroundStyle(Theme.color.text.primary)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                            .fill(Theme.color.bg.containerInset)
+                    )
+            }
+            .buttonStyle(.plain)
+            Spacer()
+            Text(Self.monthLabel.string(from: visibleMonth).capitalized)
+                .font(Theme.font.headline)
+                .foregroundStyle(Theme.color.text.primary)
+            Spacer()
+            Button { step(1) } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 14, weight: .semibold))
+                    .frame(width: 36, height: 36)
+                    .foregroundStyle(canStepForward ? Theme.color.text.primary : Theme.color.text.subdued)
+                    .background(
+                        RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                            .fill(Theme.color.bg.containerInset)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(!canStepForward)
+        }
+    }
+
+    private var weekdayHeader: some View {
+        let symbols = calendar.shortStandaloneWeekdaySymbols
+        let firstIdx = (calendar.firstWeekday - 1) % 7
+        let ordered = (0..<7).map { symbols[(firstIdx + $0) % 7] }
+        return HStack(spacing: 0) {
+            ForEach(ordered, id: \.self) { sym in
+                Text(sym)
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private var monthGrid: some View {
+        let cells = monthCells()
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
+        return LazyVGrid(columns: columns, spacing: 4) {
+            ForEach(cells.indices, id: \.self) { i in
+                if let day = cells[i] {
+                    dayCell(day)
+                } else {
+                    Color.clear.frame(height: 44)
+                }
+            }
+        }
+    }
+
+    private func dayCell(_ day: Date) -> some View {
+        let isSelected = calendar.isDate(day, inSameDayAs: selectedDate)
+        let isToday    = calendar.isDateInToday(day)
+        let isFuture   = day > calendar.startOfDay(for: Date())
+                         && !calendar.isDateInToday(day)
+        let hasRecord  = recordedDates.contains(Self.isoDay.string(from: day))
+
+        return Button {
+            guard !isFuture else { return }
+            selectedDate = day
+            isPresented = false
+        } label: {
+            VStack(spacing: 2) {
+                Text("\(calendar.component(.day, from: day))")
+                    .font(Theme.font.callout.weight(isSelected ? .semibold : .regular))
+                    .foregroundStyle(
+                        isFuture ? Theme.color.text.subdued
+                        : (isSelected ? Theme.color.text.inverse : Theme.color.text.primary)
+                    )
+                Circle()
+                    .fill(hasRecord ? Theme.color.status.success : Color.clear)
+                    .frame(width: 5, height: 5)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 44)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                    .fill(isSelected ? Theme.color.bg.inverse : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                    .strokeBorder(isToday && !isSelected ? Theme.color.border.subdued : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .disabled(isFuture)
+    }
+
+    private var legend: some View {
+        HStack(spacing: Theme.spacing.sm) {
+            HStack(spacing: 6) {
+                Circle().fill(Theme.color.status.success).frame(width: 6, height: 6)
+                Text("Aufnahme vorhanden")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+            }
+            Spacer()
+        }
+    }
+
+    private func step(_ delta: Int) {
+        guard let next = calendar.date(byAdding: .month, value: delta, to: visibleMonth) else { return }
+        visibleMonth = next
+    }
+
+    private var canStepForward: Bool {
+        guard let next = calendar.date(byAdding: .month, value: 1, to: visibleMonth) else { return false }
+        let startOfNext = calendar.date(from: calendar.dateComponents([.year, .month], from: next)) ?? next
+        return startOfNext <= Date()
+    }
+
+    /// Returns 7-aligned cells for the visible month: leading nils for
+    /// days before the 1st, then each day, padded with trailing nils so
+    /// the grid is rectangular.
+    private func monthCells() -> [Date?] {
+        guard
+            let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: visibleMonth)),
+            let range = calendar.range(of: .day, in: .month, for: monthStart)
+        else { return [] }
+        let weekdayOfFirst = calendar.component(.weekday, from: monthStart)
+        let leading = (weekdayOfFirst - calendar.firstWeekday + 7) % 7
+        var cells: [Date?] = Array(repeating: nil, count: leading)
+        for day in range {
+            if let d = calendar.date(byAdding: .day, value: day - 1, to: monthStart) {
+                cells.append(d)
+            }
+        }
+        while cells.count % 7 != 0 { cells.append(nil) }
+        return cells
     }
 }
