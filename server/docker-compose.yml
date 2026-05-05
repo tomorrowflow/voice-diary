@@ -48,9 +48,9 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.17.0
-    ports:
-      - "6333:6333"
-      - "6334:6334"
+    # No host port mapping — only webapp (same compose network) reaches Qdrant.
+    # To debug from the host, use `docker compose exec qdrant ...` or temporarily
+    # add `ports: ["127.0.0.1:6333:6333"]`.
     volumes:
       - qdrant_data:/qdrant/storage
     restart: unless-stopped
@@ -61,8 +61,8 @@ services:
       POSTGRES_USER: diary
       POSTGRES_PASSWORD: diary
       POSTGRES_DB: diary_processor
-    ports:
-      - "5432:5432"
+    # No host port mapping — webapp connects via the internal `postgres` hostname.
+    # For ad-hoc psql, use `docker compose exec postgres psql -U diary diary_processor`.
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./webapp/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
