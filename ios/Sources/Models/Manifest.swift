@@ -109,6 +109,7 @@ public enum Segment: Codable, Sendable {
     case driveBy(DriveBySegment)
     case freeReflection(FreeReflectionSegment)
     case emptyBlock(EmptyBlockSegment)
+    case generalSection(GeneralSectionSegment)
 
     private enum CodingKeys: String, CodingKey { case segment_type }
 
@@ -117,10 +118,11 @@ public enum Segment: Codable, Sendable {
             .decode(String.self, forKey: .segment_type)
         let single = try decoder.singleValueContainer()
         switch kind {
-        case "calendar_event": self = .calendarEvent(try single.decode(CalendarEventSegment.self))
-        case "drive_by":       self = .driveBy(try single.decode(DriveBySegment.self))
+        case "calendar_event":  self = .calendarEvent(try single.decode(CalendarEventSegment.self))
+        case "drive_by":        self = .driveBy(try single.decode(DriveBySegment.self))
         case "free_reflection": self = .freeReflection(try single.decode(FreeReflectionSegment.self))
-        case "empty_block":    self = .emptyBlock(try single.decode(EmptyBlockSegment.self))
+        case "empty_block":     self = .emptyBlock(try single.decode(EmptyBlockSegment.self))
+        case "general_section": self = .generalSection(try single.decode(GeneralSectionSegment.self))
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .segment_type,
@@ -133,19 +135,21 @@ public enum Segment: Codable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var single = encoder.singleValueContainer()
         switch self {
-        case .calendarEvent(let v):  try single.encode(v)
-        case .driveBy(let v):        try single.encode(v)
-        case .freeReflection(let v): try single.encode(v)
-        case .emptyBlock(let v):     try single.encode(v)
+        case .calendarEvent(let v):   try single.encode(v)
+        case .driveBy(let v):         try single.encode(v)
+        case .freeReflection(let v):  try single.encode(v)
+        case .emptyBlock(let v):      try single.encode(v)
+        case .generalSection(let v):  try single.encode(v)
         }
     }
 
     public var audioFile: String {
         switch self {
-        case .calendarEvent(let v): return v.audio_file
-        case .driveBy(let v):       return v.audio_file
+        case .calendarEvent(let v):  return v.audio_file
+        case .driveBy(let v):        return v.audio_file
         case .freeReflection(let v): return v.audio_file
-        case .emptyBlock(let v):    return v.audio_file
+        case .emptyBlock(let v):     return v.audio_file
+        case .generalSection(let v): return v.audio_file
         }
     }
 }
@@ -254,6 +258,40 @@ public struct EmptyBlockSegment: Codable, Sendable {
     }
 }
 
+/// One audio segment captured during a user-defined "general" walkthrough
+/// section (SPEC §6 / §10.4). `section_id` is the stable id from the user's
+/// settings so the server can group multiple sessions' answers under the
+/// same theme; `title` and `prompt_text` are echoed in for diary
+/// attribution even if the user later renames or deletes the section.
+public struct GeneralSectionSegment: Codable, Sendable {
+    public let segment_type: String = "general_section"
+    public var segment_id: String
+    public var section_id: String
+    public var title: String
+    public var prompt_text: String
+    public var audio_file: String
+    public var transcript: String
+    public var language: String
+
+    public init(
+        segment_id: String,
+        section_id: String,
+        title: String,
+        prompt_text: String,
+        audio_file: String,
+        transcript: String = "",
+        language: String = "de-DE"
+    ) {
+        self.segment_id = segment_id
+        self.section_id = section_id
+        self.title = title
+        self.prompt_text = prompt_text
+        self.audio_file = audio_file
+        self.transcript = transcript
+        self.language = language
+    }
+}
+
 public struct Manifest: Codable, Sendable {
     public var session_id: String
     public var date: String  // YYYY-MM-DD
@@ -264,7 +302,12 @@ public struct Manifest: Codable, Sendable {
     public var segments: [Segment]
     public var todos_implicit_confirmed: [Todo]
     public var todos_implicit_rejected: [TodoRejected]
-    public var drive_by_seeds_unsurfaced: [String]  // placeholder; refine in M10
+    /// Seed ids reviewed during the drive-by section of this session.
+    /// Server treats these as "consumed" — they won't be re-surfaced.
+    public var drive_by_seeds_surfaced: [String]
+    /// Seed ids the user explicitly skipped (or that aged out of the
+    /// retention window without surfacing). Kept for narrative context.
+    public var drive_by_seeds_unsurfaced: [String]
     public var raw_session_audio: String?
     public var ai_prompts: [AiPrompt]
     public var response_language_setting: String  // "match_input" | "de" | "en"
@@ -279,6 +322,7 @@ public struct Manifest: Codable, Sendable {
         segments: [Segment] = [],
         todos_implicit_confirmed: [Todo] = [],
         todos_implicit_rejected: [TodoRejected] = [],
+        drive_by_seeds_surfaced: [String] = [],
         drive_by_seeds_unsurfaced: [String] = [],
         raw_session_audio: String? = nil,
         ai_prompts: [AiPrompt] = [],
@@ -293,6 +337,7 @@ public struct Manifest: Codable, Sendable {
         self.segments = segments
         self.todos_implicit_confirmed = todos_implicit_confirmed
         self.todos_implicit_rejected = todos_implicit_rejected
+        self.drive_by_seeds_surfaced = drive_by_seeds_surfaced
         self.drive_by_seeds_unsurfaced = drive_by_seeds_unsurfaced
         self.raw_session_audio = raw_session_audio
         self.ai_prompts = ai_prompts

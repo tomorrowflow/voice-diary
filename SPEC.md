@@ -276,6 +276,16 @@ See §6 for the full state machine.
 
 ### 6.1 Top level
 
+The walkthrough runs an ordered **section plan** built in `WalkthroughCoordinator.begin()` from `WalkthroughSettingsStore.order` (see §12) plus the day's filtered calendar events plus any unsurfaced drive-by seeds. Three section kinds:
+
+| Kind | Cardinality | Produces |
+|---|---|---|
+| `general` | 0..N (user-defined) | one `general_section` segment per occurrence |
+| `calendar_events` | 0..1 (singleton) | one `calendar_event` segment per event |
+| `drive_by` | 0..1 (singleton) | one `free_reflection` segment + one `drive_by` segment per surfaced seed |
+
+The user reorders these in **Mehr → Walkthrough → Reihenfolge** and edits / adds general sections in **Mehr → Walkthrough → Abschnitte**. Default plan = `[calendar_events, drive_by]` (the original behaviour, no generals).
+
 ```
 IDLE
   │ user opens app in evening window
@@ -283,13 +293,15 @@ IDLE
 BRIEFING                         ← AI speaks day summary
   │ briefing complete or user says "start"
   ▼
-WALKING                          ← per-event loop (§6.2)
-  │ last event consumed
-  ▼
-DRIVEBY_RECAP (conditional)      ← only if setting enabled; covers unsurfaced drive-bys
+PLAN_LOOP                        ← iterate the section plan
+  │
+  │  for each section in plan:
+  │    case general          → GENERAL_OPENER → GENERAL_LISTENING
+  │    case calendar_events  → per-event loop (§6.2), one EVENT_LISTENING per event
+  │    case drive_by         → DRIVEBY_OPENER (recap intro) → DRIVEBY_LISTENING (free reflection)
   │
   ▼
-CLOSING                          ← free reflection + todo confirmation pass
+TODO_CONFIRM (if implicit candidates) ← per-candidate ja / nein / anders pass (§8.2)
   │
   ├─ if older missing days → GAP_PROMPT (§6.5) → loop back to BRIEFING for that day
   ▼
@@ -298,6 +310,8 @@ INGESTING                        ← multipart upload to /api/sessions
   ▼
 DONE
 ```
+
+State cases (`Sources/Dialog/WalkthroughState.swift`): `.briefing`, `.eventOpener(stepIndex, eventIndex)`, `.eventListening(stepIndex, eventIndex)`, `.generalOpener(stepIndex, sectionID)`, `.generalListening(stepIndex, sectionID)`, `.driveByOpener(stepIndex)`, `.driveByListening(stepIndex)`, `.confirmingTodos(index)`, `.ingesting`, `.done`. The legacy `.closingPrompt` / `.closingListening` cases are subsumed by `.driveByOpener` / `.driveByListening` — drive-by surfacing and the closing free reflection are now one section.
 
 ### 6.2 Per-event loop
 
@@ -664,6 +678,7 @@ All `audio_file` fields in the manifest reference these part names as relative p
   "todos_implicit_rejected": [
     { "text": "Mit Christian telefonieren", "type": "implicit", "source_segment_id": "s01" }
   ],
+  "drive_by_seeds_surfaced": ["seed-2026-04-24T11:15:00+02:00"],
   "drive_by_seeds_unsurfaced": [],
   "raw_session_audio": "raw/session.m4a",
   "ai_prompts": [
@@ -680,9 +695,17 @@ All `audio_file` fields in the manifest reference these part names as relative p
 | `segment_type` | Meaning |
 |---|---|
 | `calendar_event` | Reflection anchored to a specific Graph calendar event. `calendar_ref` required. |
-| `drive_by` | Ad-hoc thought captured during the day. `captured_at` required. May be linked to an event via `linked_calendar_event_id`. |
-| `free_reflection` | Unanchored reflection captured during CLOSING or in response to an empty-calendar day. |
+| `drive_by` | Ad-hoc thought captured during the day. `captured_at` required. May be linked to an event via `linked_calendar_event_id`. Also written by the drive-by walkthrough section when surfacing existing seeds (one segment per seed, populated from the on-disk metadata). |
+| `free_reflection` | Unanchored reflection captured during the drive-by section's listening phase or in response to an empty-calendar day. |
 | `empty_block` | Reflection prompted by an empty block in the schedule. `time_range` required. |
+| `general_section` | User-defined opener (§6 / §12). Required fields: `section_id` (stable UUID), `title`, `prompt_text` (the TTS line), plus the usual `audio_file` / `transcript` / `language`. |
+
+Manifest-level fields tied to the drive-by section:
+
+| Field | Meaning |
+|---|---|
+| `drive_by_seeds_surfaced` | seed_ids reviewed during this session's drive-by section. Server treats these as consumed — they will not be re-surfaced in future walkthroughs. |
+| `drive_by_seeds_unsurfaced` | seed_ids the user explicitly skipped (or that aged out of retention without surfacing). Kept for narrative context. |
 
 ### 10.5 Response
 
@@ -797,6 +820,8 @@ When Apple FM is used for dynamic follow-ups, the prompt is:
 - Evening diary notification time (default 20:00)
 
 **Walkthrough**
+- **Sections** (Mehr → Walkthrough → Abschnitte): list of user-defined `general` sections. Each has `id` (stable UUID), `title` (header text + manifest field), `introText` (TTS opener line). Stored in `UserDefaults` under `walkthrough.generals.v1`.
+- **Reihenfolge** (Mehr → Walkthrough → Reihenfolge): ordered list of `WalkthroughSection` (`.general(id) | .calendarEvents | .driveBy`). Drag to reorder. The two system sections (`calendarEvents`, `driveBy`) always appear once each; if missing from the stored order they're appended in default order on read. Stored in `UserDefaults` under `walkthrough.sectionOrder.v1`. Default order = `[.calendarEvents, .driveBy]`.
 - RSVP filter: multi-select `Accepted | Tentative | All` (default: Accepted + Tentative)
 - Multi-day gap cap: integer days (default 7)
 - Lull thresholds: three sliders for 3s / 6s / 15s (defaults shown)
