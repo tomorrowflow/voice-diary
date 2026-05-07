@@ -10,8 +10,7 @@
 
 <div class="container">
   <div class="toolbar">
-    <h2>Transcripts</h2>
-    <div class="toolbar-right">
+    <div class="toolbar-right" style="margin-left:auto;">
       <button class="btn-batch-process" id="processBtn" onclick="processSelected()">
         Process (<span id="processCount">0</span>)
       </button>
@@ -25,6 +24,7 @@
     </div>
   </div>
 
+  <div class="ds-section-h">Transcripts</div>
   <div class="filter-bar">
     <button class="filter-btn active" data-filter="all" onclick="filterStatus('all', this)">
       All<span class="filter-count" id="fc-all">0</span>
@@ -46,6 +46,7 @@
     </button>
   </div>
 
+  <div class="ds-card" style="padding:0; overflow:hidden;">
   <table class="transcript-table">
     <thead>
       <tr>
@@ -60,6 +61,7 @@
     </thead>
     <tbody id="tableBody"></tbody>
   </table>
+  </div>
 
   <div class="no-results" id="noResults">No transcripts match your search.</div>
 

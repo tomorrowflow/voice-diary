@@ -248,22 +248,22 @@
       </p>
 
       <!-- Sync Status -->
-      <div id="skeletonStatus" style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px;">
-        <div style="flex:1;min-width:120px;padding:12px;border-radius:8px;background:#f0fdf4;text-align:center;">
-          <div style="font-size:24px;font-weight:700;color:#16a34a;" id="bonesSynced">-</div>
-          <div style="font-size:12px;color:#666;">Synced</div>
+      <div id="skeletonStatus" class="ds-stat-grid">
+        <div class="ds-stat-tile">
+          <div class="ds-stat-tile-num success" id="bonesSynced">-</div>
+          <div class="ds-stat-tile-label">Synced</div>
         </div>
-        <div style="flex:1;min-width:120px;padding:12px;border-radius:8px;background:#fefce8;text-align:center;">
-          <div style="font-size:24px;font-weight:700;color:#ca8a04;" id="bonesPending">-</div>
-          <div style="font-size:12px;color:#666;">Pending</div>
+        <div class="ds-stat-tile">
+          <div class="ds-stat-tile-num warn" id="bonesPending">-</div>
+          <div class="ds-stat-tile-label">Pending</div>
         </div>
-        <div style="flex:1;min-width:120px;padding:12px;border-radius:8px;background:#fef2f2;text-align:center;">
-          <div style="font-size:24px;font-weight:700;color:#dc2626;" id="bonesFailed">-</div>
-          <div style="font-size:12px;color:#666;">Failed</div>
+        <div class="ds-stat-tile">
+          <div class="ds-stat-tile-num danger" id="bonesFailed">-</div>
+          <div class="ds-stat-tile-label">Failed</div>
         </div>
-        <div style="flex:1;min-width:120px;padding:12px;border-radius:8px;background:#f8fafc;text-align:center;">
-          <div style="font-size:24px;font-weight:700;color:#475569;" id="bonesTotal">-</div>
-          <div style="font-size:12px;color:#666;">Total</div>
+        <div class="ds-stat-tile">
+          <div class="ds-stat-tile-num primary" id="bonesTotal">-</div>
+          <div class="ds-stat-tile-label">Total</div>
         </div>
       </div>
 
@@ -429,25 +429,18 @@
   </div>
 
   <!-- DANGER ZONE -->
-  <div class="danger-zone">
-    <div class="section-header">
-      <div class="section-title">
-        <div class="section-icon danger-zone-icon">&#9888;</div>
-        <h2>Danger Zone</h2>
+  <div class="ds-danger-zone">
+    <div class="ds-danger-zone-title">Danger Zone</div>
+    <div class="ds-danger-zone-grid">
+      <div>
+        <div class="ds-danger-zone-item-title">Clear Dictionary</div>
+        <div class="ds-danger-zone-item-desc">Delete all persons, terms, and variations. Transcripts are kept.</div>
+        <button class="btn btn-danger btn-full" onclick="confirmClearDictionary()">Clear Dictionary</button>
       </div>
-    </div>
-    <div class="section-body">
-      <div class="backup-grid">
-        <div class="backup-panel" style="border-color:#f8514930;">
-          <h3>Clear Dictionary</h3>
-          <p>Delete all persons, terms, and variations. Transcripts are kept.</p>
-          <button class="btn btn-danger" onclick="confirmClearDictionary()" style="width:100%;justify-content:center;">Clear Dictionary</button>
-        </div>
-        <div class="backup-panel" style="border-color:#f8514930;">
-          <h3>Reset Everything</h3>
-          <p>Delete all data: dictionary, transcripts, and review log.</p>
-          <button class="btn btn-danger" onclick="confirmResetAll()" style="width:100%;justify-content:center;">Reset All Data</button>
-        </div>
+      <div>
+        <div class="ds-danger-zone-item-title">Reset Everything</div>
+        <div class="ds-danger-zone-item-desc">Delete all data: dictionary, transcripts, and review log.</div>
+        <button class="btn btn-danger btn-full" onclick="confirmResetAll()">Reset All Data</button>
       </div>
     </div>
   </div>
