@@ -22,3 +22,18 @@ public enum Log {
     public static let reachability = Logger(subsystem: subsystem, category: "reachability")
     public static let storage      = Logger(subsystem: subsystem, category: "storage")
 }
+
+/// Cardinal-event log for the walkthrough state machine + wake-word
+/// pipeline. Thin wrapper over `Log.app.notice` with `.public`
+/// privacy so the lull-detector / coordinator / ASR sites all flow
+/// through one symbol — keeps the call sites short and lets us
+/// retarget (e.g. to a separate category) without touching every line.
+///
+/// Use for low-frequency, high-signal events (state transitions,
+/// matches, skipped / failed paths). Per-buffer or per-partial logs
+/// belong on `Log.audio.debug` or nowhere.
+public enum Diag {
+    public static func log(_ message: String) {
+        Log.app.notice("\(message, privacy: .public)")
+    }
+}

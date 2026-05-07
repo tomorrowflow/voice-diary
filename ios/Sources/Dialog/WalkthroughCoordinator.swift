@@ -1,4 +1,5 @@
 @preconcurrency import ActivityKit
+import AudioToolbox
 import AVFoundation
 import Foundation
 import SwiftUI
@@ -38,9 +39,35 @@ public final class WalkthroughCoordinator {
     public private(set) var recordedDates: Set<String> = []
     public private(set) var statusHint: String = ""
     public private(set) var isEnriching: Bool = false
+    /// True from the moment a TTS line starts being synthesized until
+    /// audio playback finishes. Mirrors the lifetime of the in-flight
+    /// `speak(_:language:)` call. Apple voices flip it briefly (sub-ms
+    /// synth, then for the audible duration); Piper voices hold it
+    /// during the noticeable ~400–800 ms synthesis pause too, which is
+    /// the silent gap the user previously had no signal for.
+    public private(set) var isSpeaking: Bool = false
+    /// The most recent silence-threshold the user has crossed without
+    /// speaking, in seconds (one of 0 / 3 / 6 / 15). Set by
+    /// `handleLull(threshold:…)` and cleared whenever the AI starts
+    /// speaking, the user advances/skips, or playback is cancelled.
+    /// Surfaces in the bottom status row so the user can see WHY the
+    /// follow-up prompt fires after a few seconds of quiet.
+    public private(set) var silenceLevel: Int = 0
+    /// True while the 3 s wake-word listen window is open (after the
+    /// ping plays, until match / timeout). Surfaced in the bottom
+    /// status row so the user knows the assistant is listening for
+    /// "weiter" / "next" specifically.
+    public private(set) var isWakeListening: Bool = false
 
     private let engine = AudioEngine()
-    private let tts: any TTSEngine = VoiceRegistry.engine(for: "de")
+    // Resolve the TTS engine fresh on every utterance via `speak(_:language:)`.
+    // The previous code cached `VoiceRegistry.engine(for: "de")` here, which
+    // meant a voice picked in Settings (Apple ↔ Piper, or Thorsten ↔ Cori)
+    // had no effect until the coordinator was rebuilt — typically requiring
+    // an app restart. The hardcoded "de" also routed every English line
+    // through the German bucket. `speak(_:language:)` below resolves per
+    // call with the actual language, so changes take effect on the next
+    // line spoken.
     private let lullDetector = LullDetector()
     private var sessionDir: URL?
     private var segmentURLs: [String: URL] = [:]    // multipart name → on-disk URL
@@ -58,6 +85,26 @@ public final class WalkthroughCoordinator {
     private var confirmationLanguage: OpenerLanguage = .de
     public private(set) var isAwaitingTodoAnswer: Bool = false
     private var todoAnswerTask: Task<Void, Never>?
+    /// Tracks the in-flight 6 s follow-up so we can abort it when the
+    /// user resumes speaking before the AI finishes preparing/playing.
+    /// Cancelling propagates through the LLM generation step *and*
+    /// the Piper synth boundary; if audio is already playing the
+    /// AVAudioPlayer is left alone (we don't cut the AI off mid-word).
+    private var followUpTask: Task<Void, Never>?
+    /// Tracks the in-flight 3 s wake-word listen window. Cancelled by
+    /// any state transition that ends the listening phase
+    /// (advance / skip / finishEarly / cancel) so the streaming ASR
+    /// is torn down promptly and the audio fan-out sink is cleared.
+    private var wakeWordTask: Task<Void, Never>?
+    /// Segment IDs whose recording was advanced by a wake-word match.
+    /// Their audio file gets a tail trim before upload so the matched
+    /// command word ("weiter" etc.) doesn't end up in the reflection.
+    private var wakeMatchedSegmentIDs: Set<String> = []
+    /// Length to lop off the end of a wake-matched segment. Covers the
+    /// command word itself (~500 ms), the streaming ASR latency
+    /// (~300–500 ms), and a small buffer. Errs on the side of dropping
+    /// a hair too much rather than leaking the wake word.
+    private static let wakeMatchTrimSeconds: TimeInterval = 1.5
     private let answerLullDetector = LullDetector()
     private static let todoAnswerMaxSeconds: TimeInterval = 7.0
     private var interruptInFlight: Bool = false
@@ -112,6 +159,17 @@ public final class WalkthroughCoordinator {
         surfacedSeedIDs = []
         syncLiveActivity()
         Task { await ParakeetManager.shared.warmUp() }
+        // Pre-arm the AVAudioSession in the foreground. Without this, the
+        // first event's `engine.start()` happens *after* the AI's opener
+        // — and if the user has locked the phone during the opener, the
+        // session's `setCategory(.playAndRecord, …)` then fires from
+        // background and silently fails (`Failed to set properties,
+        // error: '!int'`), leaving the input tap unable to deliver
+        // buffers. With the session already configured + active here,
+        // every later transition between TTS and recording is allowed
+        // even from a locked screen.
+        do { try await engine.prepareSession() }
+        catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
         do {
             try makeSessionDir()
             try await fetchCalendar(date: targetDate)
@@ -181,27 +239,36 @@ public final class WalkthroughCoordinator {
     /// Advance to the next plan step (or the next event inside the
     /// calendar block).
     public func advance(language: OpenerLanguage = .de) async {
+        // Drop the wake-word window + its in-flight follow-up before
+        // transitioning. Without these, a stale `wakeWordTask` from
+        // the previous event would block `handleLull(case 3)` on the
+        // next event (the `wakeWordTask?.cancel()` guard there only
+        // helps if the field is non-nil but cancelled — clearing here
+        // makes the whole pipeline self-resetting).
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        followUpTask?.cancel(); followUpTask = nil
         switch state {
         case .eventListening(let stepIdx, let eventIdx):
             await stopSegmentCapture()
             await advanceFromCalendar(stepIndex: stepIdx, eventIndex: eventIdx, language: language)
         case .eventOpener(let stepIdx, let eventIdx):
             interruptInFlight = true
-            await tts.cancel()
+            await cancelTTS()
             await advanceFromCalendar(stepIndex: stepIdx, eventIndex: eventIdx, language: language)
         case .generalListening(let stepIdx, _):
             await stopSegmentCapture()
             await runStep(at: stepIdx + 1, language: language)
         case .generalOpener(let stepIdx, _):
             interruptInFlight = true
-            await tts.cancel()
+            await cancelTTS()
             await runStep(at: stepIdx + 1, language: language)
         case .driveByListening(let stepIdx):
             await stopSegmentCapture()
             await runStep(at: stepIdx + 1, language: language)
         case .driveByOpener(let stepIdx):
             interruptInFlight = true
-            await tts.cancel()
+            await cancelTTS()
             await runStep(at: stepIdx + 1, language: language)
         default:
             return
@@ -210,20 +277,23 @@ public final class WalkthroughCoordinator {
 
     /// Skip the current step's segment without recording it.
     public func skip(language: OpenerLanguage = .de) async {
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        followUpTask?.cancel(); followUpTask = nil
         switch state {
         case .eventListening(let stepIdx, let eventIdx):
             await dropStagedSegment(forStepIndex: stepIdx, eventIndex: eventIdx)
             await advanceFromCalendar(stepIndex: stepIdx, eventIndex: eventIdx, language: language)
         case .eventOpener(let stepIdx, let eventIdx):
             interruptInFlight = true
-            await tts.cancel()
+            await cancelTTS()
             await advanceFromCalendar(stepIndex: stepIdx, eventIndex: eventIdx, language: language)
         case .generalListening(let stepIdx, _):
             await dropStagedSegment(forStepIndex: stepIdx, eventIndex: nil)
             await runStep(at: stepIdx + 1, language: language)
         case .generalOpener(let stepIdx, _):
             interruptInFlight = true
-            await tts.cancel()
+            await cancelTTS()
             await runStep(at: stepIdx + 1, language: language)
         case .driveByListening(let stepIdx):
             await dropStagedSegment(forStepIndex: stepIdx, eventIndex: nil)
@@ -232,7 +302,7 @@ public final class WalkthroughCoordinator {
             await runStep(at: stepIdx + 1, language: language)
         case .driveByOpener(let stepIdx):
             interruptInFlight = true
-            await tts.cancel()
+            await cancelTTS()
             surfacedSeedIDs = []
             await runStep(at: stepIdx + 1, language: language)
         default:
@@ -242,13 +312,16 @@ public final class WalkthroughCoordinator {
 
     /// Jump straight to ingest from any in-event/in-section state.
     public func finishEarly(language: OpenerLanguage = .de) async {
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        followUpTask?.cancel(); followUpTask = nil
         switch state {
         case .eventListening, .generalListening, .driveByListening:
             await stopSegmentCapture()
             await ingestAndUpload()
         case .briefing, .eventOpener, .generalOpener, .driveByOpener:
             interruptInFlight = true
-            await tts.cancel()
+            await cancelTTS()
             await ingestAndUpload()
         default:
             break
@@ -256,10 +329,45 @@ public final class WalkthroughCoordinator {
     }
 
     public func cancel() async {
+        // Set the abort flag FIRST, before any await. The runEvent /
+        // runGeneral / runDriveBy chains all check `interruptInFlight`
+        // after each `await speak(...)` — without setting it here, a
+        // suspended chain would resume after `cancelTTS()` returns and
+        // happily call `startEventCapture()` + `state = .eventListening`
+        // again, which is what was causing the walkthrough screen to
+        // re-appear and audio to keep playing after the X tap. The
+        // existing advance() / skip() / finishEarly() paths already use
+        // this signal — cancel() just wasn't joining the protocol.
+        interruptInFlight = true
+        // Halt the lull detector so a buffered threshold callback can't
+        // fire `handleLull` → `speakFollowUp` after we've torn down.
+        // (The detector also auto-pauses when the engine stops feeding
+        // it, but stopping it explicitly closes the timing race.)
+        lullDetector.stop()
+        // Cancel any in-flight follow-up Task spawned by handleLull.
+        // Without this, an LLM call that started just before the user
+        // tapped X would still resolve later and call `speak()` on the
+        // already-torn-down coordinator.
+        followUpTask?.cancel(); followUpTask = nil
+        // Same for the 3 s wake-word window. Cancellation makes the
+        // task drop out of `withTaskGroup`, after which it tears down
+        // the streaming ASR + clears the audio fan-out sink itself.
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
         timer?.invalidate(); timer = nil
         await cancelTodoAnswerCapture()
+        // Engine.stop() finalises the in-flight segment file on disk —
+        // that's what "recordings until this point shall be stored"
+        // depends on. The local session dir survives; it just won't be
+        // ingested + uploaded to the server, since the user explicitly
+        // aborted rather than reached DONE.
         try? await engine.stop()
-        await tts.cancel()
+        // Now tear the AVAudioEngine down. We kept it alive across the
+        // walkthrough's TTS ↔ recording transitions so iOS wouldn't
+        // reject `kAUStartIO` from a locked screen — but at cancel we
+        // genuinely want the audio session released.
+        await engine.shutdown()
+        await cancelTTS()
         state = .idle
         await endLiveActivity()
     }
@@ -362,13 +470,28 @@ public final class WalkthroughCoordinator {
         lastSpoken = line
         let segID = makeEventSegmentID(stepIndex: stepIndex, eventIndex: eventIndex)
         recordAiPrompt(role: "opener", segmentID: segID, text: line)
-        await tts.speak(line, language: language.rawValue)
+        await speak(line, language: language.rawValue)
+        // State-tuple guard: if the user tapped Weiter mid-opener and
+        // advance() kicked off runEvent(N+1), `state` will already be
+        // `.eventOpener(N+1)` by the time our `await speak` returns.
+        // The legacy `interruptInFlight` check broke down because the
+        // newer runEvent invocation resets that flag at its own entry
+        // (line above), so this older chain would happily proceed to
+        // startEventCapture on N — double-starting the audio engine on
+        // a segment that the later chain is also recording, which is
+        // the `File exists` error you saw on `s01e05.m4a.tmp`.
+        guard case .eventOpener(let liveStep, let liveEvt) = state,
+              liveStep == stepIndex, liveEvt == eventIndex else { return }
         if interruptInFlight { return }
         do {
             try await startEventCapture(
                 segmentID: segID,
                 event: evts[eventIndex]
             )
+            // Re-check after startEventCapture too — that's an async
+            // hop where another advance could fire.
+            guard case .eventOpener(let liveStep2, let liveEvt2) = state,
+                  liveStep2 == stepIndex, liveEvt2 == eventIndex else { return }
             state = .eventListening(stepIndex: stepIndex, eventIndex: eventIndex)
             startTimer()
             startLullDetection(eventIndex: eventIndex, language: language,
@@ -401,11 +524,18 @@ public final class WalkthroughCoordinator {
         let segID = "s\(zeroPad(stepIndex + 1))"
         recordAiPrompt(role: "general_opener", segmentID: segID, text: line)
         if !line.isEmpty {
-            await tts.speak(line, language: language.rawValue)
+            await speak(line, language: language.rawValue)
         }
+        // Same state-tuple guard as runEvent — if a concurrent advance
+        // moved on (state is now .generalOpener(N+1) or .eventOpener(...) or .idle),
+        // bail rather than double-start the engine on this section's segment.
+        guard case .generalOpener(let liveStep, let liveID) = state,
+              liveStep == stepIndex, liveID == section.id else { return }
         if interruptInFlight { return }
         do {
             try await startGeneralCapture(segmentID: segID, section: section)
+            guard case .generalOpener(let liveStep2, let liveID2) = state,
+                  liveStep2 == stepIndex, liveID2 == section.id else { return }
             state = .generalListening(stepIndex: stepIndex, sectionID: section.id)
             startTimer()
         } catch {
@@ -433,7 +563,12 @@ public final class WalkthroughCoordinator {
         if !intro.isEmpty {
             recordAiPrompt(role: "drive_by_recap", segmentID: segID, text: intro)
             lastSpoken = intro
-            await tts.speak(intro, language: language.rawValue)
+            await speak(intro, language: language.rawValue)
+            // State-tuple guard against a concurrent advance() spawning
+            // the next step while we were mid-speak. See runEvent for
+            // the full reasoning.
+            guard case .driveByOpener(let liveStep) = state,
+                  liveStep == stepIndex else { return }
             if interruptInFlight { return }
         }
 
@@ -442,11 +577,15 @@ public final class WalkthroughCoordinator {
             : "Anything else you want to say about the day overall?"
         recordAiPrompt(role: "closing_prompt", segmentID: segID, text: closing)
         lastSpoken = closing
-        await tts.speak(closing, language: language.rawValue)
+        await speak(closing, language: language.rawValue)
+        guard case .driveByOpener(let liveStep) = state,
+              liveStep == stepIndex else { return }
         if interruptInFlight { return }
 
         do {
             try await startDriveByCapture(segmentID: segID, seeds: seeds)
+            guard case .driveByOpener(let liveStep2) = state,
+                  liveStep2 == stepIndex else { return }
             state = .driveByListening(stepIndex: stepIndex)
             startTimer()
         } catch {
@@ -493,7 +632,7 @@ public final class WalkthroughCoordinator {
         let cue = language == .de
             ? "Einen Moment, ich schaue nach."
             : "One moment, let me check."
-        await tts.speak(cue, language: language.rawValue)
+        await speak(cue, language: language.rawValue)
 
         do {
             let result = try await EnrichmentService.shared.enrich(
@@ -501,7 +640,7 @@ public final class WalkthroughCoordinator {
                 responseLanguage: language.rawValue
             )
             recordAiPrompt(role: "enrichment_answer", segmentID: segmentID, text: result.summary)
-            await tts.speak(result.summary, language: language.rawValue)
+            await speak(result.summary, language: language.rawValue)
         } catch {
             Log.app.warning(
                 "enrichment failed: \(String(describing: error), privacy: .public)"
@@ -510,7 +649,7 @@ public final class WalkthroughCoordinator {
                 ? "Ich konnte die Frage gerade nicht beantworten."
                 : "I couldn't answer that just now."
             recordAiPrompt(role: "enrichment_failed", segmentID: segmentID, text: "\(error)")
-            await tts.speak(fallback, language: language.rawValue)
+            await speak(fallback, language: language.rawValue)
         }
     }
 
@@ -679,6 +818,29 @@ public final class WalkthroughCoordinator {
             Log.audio.warning("walkthrough engine stop: \(String(describing: error), privacy: .public)")
         }
 
+        // Tail-trim the segment file if it was advanced by a wake-word
+        // match. We do this *before* spawning the finalise task so
+        // Parakeet sees the cleaned file. Server-side Whisper picks
+        // up the same trimmed audio at upload time. The trim runs
+        // synchronously on this code path because the file is small
+        // (a few minutes of AAC at 64 kbps) and the export-passthrough
+        // preset just rewrites the moov atom.
+        if let segmentID = finishingSegmentID,
+           let url = finishingURL,
+           wakeMatchedSegmentIDs.contains(segmentID) {
+            do {
+                try await AudioMerger.trimTail(of: url, removingLastSeconds: Self.wakeMatchTrimSeconds)
+                Log.audio.notice(
+                    "wake-word trim: \(segmentID, privacy: .public) (-\(Self.wakeMatchTrimSeconds)s)"
+                )
+            } catch {
+                Log.audio.warning(
+                    "wake-word trim failed for \(segmentID, privacy: .public): \(String(describing: error), privacy: .public)"
+                )
+            }
+            wakeMatchedSegmentIDs.remove(segmentID)
+        }
+
         if let segmentID = finishingSegmentID, let url = finishingURL {
             let task = Task { [weak self] in
                 guard let self else { return }
@@ -817,6 +979,10 @@ public final class WalkthroughCoordinator {
         )
         recordedDates.insert(manifest.date)
         state = .done
+        // Walkthrough is over — release the always-running audio engine
+        // and let the audio session deactivate cleanly. The next
+        // walkthrough will pre-arm again from foreground.
+        await engine.shutdown()
         Task { await loadRecordedDates(around: selectedDate) }
     }
 
@@ -828,38 +994,161 @@ public final class WalkthroughCoordinator {
         step: Int,
         evts: [ServerCalendarEvent]
     ) {
-        lullDetector.start { [weak self] threshold in
-            guard let self else { return }
-            Task { @MainActor in
-                guard case .eventListening(let s, let e) = self.state,
-                      s == step, e == eventIndex else {
-                    return
+        // Loop timing: 3 s → ping + wake-word window opens. 6 s → wake
+        // window closes (if still open) and the AI fires the follow-up
+        // remark. 15 s → silence indicator updates. 20 s → auto-advance
+        // to the next meeting (the user has clearly finished).
+        lullDetector.thresholds = [3, 6, 15, 20]
+        lullDetector.start(
+            onThresholdCrossed: { [weak self] threshold in
+                guard let self else { return }
+                Task { @MainActor in
+                    guard case .eventListening(let s, let e) = self.state,
+                          s == step, e == eventIndex else {
+                        return
+                    }
+                    await self.handleLull(
+                        threshold: threshold,
+                        eventIndex: eventIndex,
+                        language: language,
+                        evts: evts
+                    )
                 }
-                await self.handleLull(
-                    threshold: threshold,
-                    eventIndex: eventIndex,
-                    language: language,
-                    evts: evts
-                )
+            },
+            onSpeechResumed: { [weak self] in
+                guard let self else { return }
+                Task { @MainActor in
+                    await self.handleSpeechResumed()
+                }
             }
+        )
+    }
+
+    /// User started speaking again after at least one lull threshold
+    /// had fired. Reset the silence-level UI hint and abort any
+    /// follow-up TTS that's still being prepared (LLM gen + Piper
+    /// synth) so the AI doesn't speak over the user. Audio that's
+    /// already playing audibly is left alone — Task cancellation only
+    /// propagates through the pre-playback path in `PiperTTS`.
+    private func handleSpeechResumed() async {
+        silenceLevel = 0
+        statusHint = ""
+        if let task = followUpTask {
+            task.cancel()
+            followUpTask = nil
         }
     }
 
+    /// Per-silence-run loop, identical for every silence cycle within
+    /// an event:
+    ///
+    /// ```
+    ///                       ┌── user speaks ──┐
+    ///                       ▼                 │  resets all of below
+    ///   t=0   ── quiet listening, no UI ──    │
+    ///   t=3   ── wake-window opens ───────────│
+    ///                "Höre auf „Weiter"…" ───►│
+    ///                ASR streaming on PCM ──► │
+    ///   t=6   ── wake-window CLOSES ─────────►│   ALWAYS, regardless of run #
+    ///                "Stille seit 6s" ───────►│
+    ///                + AI follow-up question ─│   ONLY on first silence run
+    ///                                          │   of this event (gated by
+    ///                                          │   `followUpUsed[eventIndex]`)
+    ///   t=15  ── "Stille seit 15s" ──────────►│
+    ///   t=20  ── auto-advance to next event ──┘
+    /// ```
+    ///
+    /// Earlier the wake-cancel + follow-up dispatch were both wrapped
+    /// in the `followUpUsed` guard — meaning the second silence run
+    /// (where `followUpUsed = true`) hit `return` before cancelling the
+    /// wake task, so the wake window stayed visually open until its own
+    /// 8 s timeout. The user perceived this as "no 3-second indicator
+    /// on the second run, only the 6-second indicator a few seconds
+    /// late". Splitting the two responsibilities fixes the loop.
     private func handleLull(
         threshold: Int,
         eventIndex: Int,
         language: OpenerLanguage,
         evts: [ServerCalendarEvent]
     ) async {
+        silenceLevel = threshold
         switch threshold {
+
+        case 3:
+            // Open the wake-word listen window. Spawned as a tracked
+            // Task so handleLull returns promptly; the wake task
+            // plays the ping, opens a streaming ASR, listens until
+            // either a wake word matches (`advance`/`finishEarly`),
+            // the 6 s threshold cancels it, or its own ~8 s timeout
+            // closes it.
+            //
+            // If a stale task is hanging around (cancelled but the
+            // body hadn't yet hit its `wakeWordTask = nil` line) we
+            // cancel it explicitly so it can't shadow the new window.
+            wakeWordTask?.cancel(); wakeWordTask = nil
+            let lang = language
+            wakeWordTask = Task { [weak self] in
+                await self?.runWakeWordWindow(language: lang)
+            }
+
         case 6:
-            guard followUpUsed[eventIndex] != true else { return }
+            // Branch on output route. With headphones (or any non-
+            // speaker output) we LEAVE the wake-word window open so
+            // the user can interrupt the AI's follow-up question with
+            // "weiter" / "fertig" — the speaker→mic feedback that
+            // makes this dangerous on the built-in speaker isn't a
+            // factor when audio is going into AirPods / a wired headset
+            // / Bluetooth / CarPlay. The wake-window timeout was bumped
+            // to 15 s at window-open time precisely to survive the AI
+            // follow-up TTS (~7 s) plus a small post-TTS buffer.
+            let extendThroughFollowUp = Self.isHeadphonesOutputActive()
+            if !extendThroughFollowUp {
+                wakeWordTask?.cancel(); wakeWordTask = nil
+                isWakeListening = false
+            }
+
+            // Only fire the AI follow-up question once per event.
+            // After the first time, subsequent silence runs simply
+            // show "Stille seit 6s" and let the lull keep ticking.
+            guard followUpUsed[eventIndex] != true else {
+                Diag.log("lull case=6 follow-up already used, no AI prompt")
+                return
+            }
             followUpUsed[eventIndex] = true
-            await speakFollowUp(eventIndex: eventIndex, language: language, evts: evts)
+
+            // Spawn the follow-up as a *cancellable* Task and stash
+            // the handle. `handleSpeechResumed` cancels it if the
+            // user starts talking again before the AI finishes
+            // preparing. A wake-word match (in headphones mode)
+            // cancels it too — see `runWakeWordWindow`'s match path.
+            // Don't `await` here — the lull callback path needs to
+            // return promptly so the main actor stays responsive to a
+            // concurrent speech-resumed event.
+            Diag.log("lull case=6 spawning follow-up task headphones=\(extendThroughFollowUp)")
+            let captured = (eventIndex: eventIndex, language: language, evts: evts)
+            followUpTask = Task { [weak self] in
+                guard let self else { return }
+                await self.speakFollowUp(
+                    eventIndex: captured.eventIndex,
+                    language: captured.language,
+                    evts: captured.evts
+                )
+            }
+
         case 15:
-            statusHint = language == .de
-                ? "Tippe Weiter, wenn du fertig bist."
-                : "Tap Continue when you're done."
+            // No coordinator-side action — the silence row's
+            // "Stille seit 15s" message is enough on its own.
+            break
+
+        case 20:
+            // The user has been silent for 20 s straight. Auto-advance
+            // to the next meeting — they're clearly done with this
+            // one.
+            Diag.log("lull case=20 auto-advance")
+            wakeWordTask?.cancel(); wakeWordTask = nil
+            isWakeListening = false
+            await advance(language: language)
+
         default:
             break
         }
@@ -891,6 +1180,11 @@ public final class WalkthroughCoordinator {
                 )
             }
         }
+        // First cancellation gate: bail if the user resumed speech
+        // while the LLM was generating. Prevents the AI from speaking
+        // over the user just because they paused for 6 seconds.
+        if Task.isCancelled { return }
+
         if line == nil || line?.isEmpty == true {
             line = OpenerTemplates.followUp(language: language, rotation: followUpRotation)
             followUpRotation += 1
@@ -905,7 +1199,13 @@ public final class WalkthroughCoordinator {
             return nil
         }()
         recordAiPrompt(role: "follow_up", segmentID: segID, text: spoken)
-        await tts.speak(spoken, language: language.rawValue)
+        // Second cancellation gate: skip the speak entirely if the
+        // user spoke during prompt-template selection. PiperTTS's own
+        // serial queue checks `Task.isCancelled` between synth and
+        // play too, so even if `speak` was called we still have one
+        // more bailout before audio reaches the speaker.
+        if Task.isCancelled { return }
+        await speak(spoken, language: language.rawValue)
     }
 
     // MARK: - Implicit-todo confirmation (M8 phase B) -----------------
@@ -978,7 +1278,7 @@ public final class WalkthroughCoordinator {
             ? "Mir sind ein paar mögliche Aufgaben aufgefallen. Lass uns kurz drüber gehen."
             : "I noticed a few possible to-dos. Let's run through them quickly."
         lastSpoken = intro
-        await tts.speak(intro, language: lang.rawValue)
+        await speak(intro, language: lang.rawValue)
         await advanceTodoConfirmation(initial: true)
     }
 
@@ -1022,7 +1322,7 @@ public final class WalkthroughCoordinator {
         recordAiPrompt(role: "todo_prompt",
                        segmentID: candidate.source_segment_id,
                        text: line)
-        await tts.speak(line, language: lang.rawValue)
+        await speak(line, language: lang.rawValue)
         await beginTodoAnswerCapture(forCandidateIndex: i)
     }
 
@@ -1315,7 +1615,13 @@ public final class WalkthroughCoordinator {
         }
         let started = liveActivityStartedAt ?? Date()
         liveActivityStartedAt = started
-        let elapsed = Int(Date().timeIntervalSince(started))
+        // Counter shows the *current segment's* elapsed seconds, mirror
+        // of the in-app `ListeningTimer`. During speaking states we send
+        // 0 (the lock-screen UI also hides the counter for `.speaking`).
+        // Previously this computed `Date() - liveActivityStartedAt`,
+        // which is a wall-clock since `begin()` — that's why the counter
+        // never zeroed and ticked during speaking.
+        let elapsed = (kind == .speaking) ? 0 : self.elapsedSeconds
         let content = CaptureActivityAttributes.ContentState(
             startedAt: started,
             elapsedSeconds: elapsed,
@@ -1350,6 +1656,311 @@ public final class WalkthroughCoordinator {
                 guard let self else { return }
                 self.syncLiveActivity()
                 self.observeStateForIsland()
+            }
+        }
+    }
+
+    // MARK: - TTS routing
+
+    /// Resolve and speak through whichever engine the user has currently
+    /// picked for `language`. Called per-utterance (not cached) so a voice
+    /// change in Settings takes effect on the very next line.
+    ///
+    /// Sets `isSpeaking` for the lifetime of the underlying `speak()`
+    /// call so the UI can render a "Stimme spricht…" indicator. The
+    /// flag covers both the synthesis phase (Piper's ~400–800 ms
+    /// silent gap) and the audible playback phase, since the engines
+    /// don't expose them separately and the user's request was for any
+    /// "TTS process running" cue.
+    private func speak(_ text: String, language: String) async {
+        isSpeaking = true
+        // Clear any silence indicator when the AI takes over — by the
+        // time playback ends the user has heard the prompt and can
+        // resume speaking, so the previously-crossed threshold is no
+        // longer the relevant signal.
+        silenceLevel = 0
+        defer { isSpeaking = false }
+        await VoiceRegistry.engine(for: language).speak(text, language: language)
+    }
+
+    /// Cancel any in-flight playback. Broadcasts to both engines because
+    /// we don't track which one spoke the most recent line — and calling
+    /// `cancel()` on an idle engine is a cheap no-op. This matters when
+    /// the user switches engines mid-walkthrough: the previous engine's
+    /// queued utterance must still be silenced even though the *next*
+    /// `speak(_:language:)` will resolve to the new engine.
+    private func cancelTTS() async {
+        await AppleSpeechTTS.shared.cancel()
+        await PiperTTS.shared.cancel()
+        isSpeaking = false
+        silenceLevel = 0
+    }
+
+    // MARK: - Wake-word listen window (M7 phase B)
+    //
+    // Sendable-bridge helpers for the audio-thread → actor handoff.
+    // Both are reference types marked `@unchecked Sendable` because
+    // they're produced fresh per buffer / per window, immediately
+    // handed off to a Task, and never mutated after construction —
+    // exactly the contract `@unchecked Sendable` is meant to express.
+
+    /// One-buffer transport across the audio-thread → actor boundary.
+    /// `AVAudioPCMBuffer` itself isn't `Sendable`; wrapping it in a
+    /// class lets the Task closure capture a Sendable handle.
+    private final class WakeWordPCMFrame: @unchecked Sendable {
+        let buffer: AVAudioPCMBuffer
+        init(buffer: AVAudioPCMBuffer) { self.buffer = buffer }
+    }
+
+    /// Stable reference to the existential `any StreamingASR` so the
+    /// audio-tap closure doesn't capture an existential whose Sendable
+    /// witness the compiler can't verify.
+    private final class WakeWordASRRef: @unchecked Sendable {
+        let asr: any StreamingASR
+        init(asr: any StreamingASR) { self.asr = asr }
+    }
+
+
+    /// Open a wake-word listen window. Plays a soft ping, fans out PCM
+    /// from the running `AudioEngine` into a streaming ASR backend
+    /// (Apple `SFSpeechRecognizer` for DE, FluidAudio's 120 M
+    /// `parakeet-realtime-eou` for EN), runs the partials through
+    /// `WakeWordDetector`, and either calls `advance()` /
+    /// `finishEarly()` on a match or closes the window after ~5 s
+    /// without one. Idempotent on cancellation: if the parent Task is
+    /// cancelled mid-window the streaming ASR is torn down and the
+    /// fan-out sink is cleared.
+    private func runWakeWordWindow(language: OpenerLanguage) async {
+        // Don't keep the window open across a state change. If the
+        // user already advanced manually (or the X tap moved us to
+        // .idle) we just bail.
+        guard isInListeningState else {
+            Diag.log("wake-word: aborted, not in listening state")
+            wakeWordTask = nil
+            return
+        }
+
+        // Two-gate pre-flight before we touch ASR or the UI indicator.
+        //
+        //   1. User toggle. WakeWordSettingsView writes this; the
+        //      default is true so existing devices behave as before.
+        //   2. Capability. SFSpeechRecognizer's on-device asset for
+        //      `language` must be installed. Apple downloads it lazily
+        //      after the user enables Dictation in Settings — until
+        //      then, `start()` would throw `.onDeviceUnsupported` and
+        //      the wake-listen indicator would briefly flash for
+        //      nothing. Silently no-op instead.
+        //
+        // Lull thresholds 6/15/20 still fire normally; we're only
+        // suppressing the listen-window phase of the cycle.
+        guard WakeWordPreferences.isEnabled else {
+            Diag.log("wake-word: skipped — user disabled in Settings")
+            wakeWordTask = nil
+            return
+        }
+        guard AppleStreamingRecognizer.supportsOnDeviceRecognition(language: language.rawValue) else {
+            Diag.log("wake-word: skipped — on-device asset not installed for \(language.rawValue)")
+            wakeWordTask = nil
+            return
+        }
+
+        // Pick the backend by active language. The streaming Parakeet
+        // model is English-only; German falls back to Apple's
+        // on-device SFSpeechRecognizer (which the Info.plist's
+        // NSSpeechRecognitionUsageDescription gates).
+        let asr: any StreamingASR
+        let phrases: [WakeWordDetector.Phrase]
+        switch language {
+        case .de:
+            // Pre-flight permission. The system caches the answer
+            // after the first prompt so this is cheap on subsequent
+            // runs. If denied, skip the wake window entirely rather
+            // than open a recogniser that won't deliver partials.
+            do {
+                try await AppleStreamingRecognizer.requestAuthorization()
+            } catch {
+                Diag.log("wake-word: SFSpeech permission denied/unavailable — open Settings → Voice Diary → Speech Recognition. (\(String(describing: error)))")
+                wakeWordTask = nil
+                return
+            }
+            asr = AppleStreamingRecognizer()
+            phrases = WakeWordDetector.german
+        case .en:
+            asr = FluidAudioStreaming()
+            phrases = WakeWordDetector.english
+        }
+
+        // Match arrives via the detector's callback; we surface it as
+        // an AsyncStream element. `finish()` from the timeout side
+        // closes the loop without emitting an action.
+        let (matchStream, matchContinuation) = AsyncStream<WakeWordDetector.Action>.makeStream()
+        let detector = WakeWordDetector(phrases: phrases) { action, matched in
+            Diag.log("wake-word match: \(matched) → \(action.rawValue)")
+            matchContinuation.yield(action)
+            matchContinuation.finish()
+        }
+        detector.resetForNewWindow()
+        // Each partial is now logged inside `AppleStreamingRecognizer`
+        // (the recogniser logs the raw text + isFinal flag) and inside
+        // `WakeWordDetector.consume(partial:)` (which logs the
+        // tail tokens it actually checks). We just feed straight in.
+        let partialHandler: @Sendable (String) -> Void = { partial in
+            detector.consume(partial: partial)
+        }
+
+        // Audible + haptic confirmation that listening is open. The
+        // ping is a synthesised AVAudioPlayer tone (Piper's audio
+        // path) — `AudioServicesPlaySystemSound` was inaudible while
+        // the `.playAndRecord` session was hot. The haptic is a
+        // belt-and-suspenders cue for silent-mode hands-off use.
+        await MainActor.run { WakePing.shared.playListenOpen() }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        Diag.log("wake-word window open lang=\(language.rawValue)")
+        isWakeListening = true
+
+        // Open the streaming ASR. If init fails we never set the
+        // fan-out sink so the rest of the system stays untouched.
+        // Common DE failure: `sfr_no_on_device:de-DE` — Apple's
+        // on-device de_DE pack isn't installed (Settings → General →
+        // Language & Region → ensure German is added) or hasn't
+        // downloaded yet. We refuse to fall back to Apple's servers
+        // because the project's no-telemetry rule.
+        do {
+            try await asr.start(language: language.rawValue, onPartial: partialHandler)
+        } catch {
+            Diag.log("wake-word: ASR start failed: \(String(describing: error))")
+            isWakeListening = false
+            wakeWordTask = nil
+            return
+        }
+
+        // Hook the AudioEngine's third sink. Each PCM buffer arrives
+        // on the audio thread; we hop into a Task to call the
+        // actor-isolated `append`. Two concurrency wrinkles:
+        //   • `AVAudioPCMBuffer` is not `Sendable`, so it can't be
+        //     captured directly into a Task. We box it in a tiny
+        //     class marked `@unchecked Sendable` — sound here because
+        //     the audio thread allocates each buffer fresh, hands it
+        //     off, and never touches it again.
+        //   • `asr` is an `any StreamingASR` existential. Wrapping it
+        //     in a captured local that's pre-bound and Sendable keeps
+        //     the Task's `sending`-parameter check happy.
+        let asrRef = WakeWordASRRef(asr: asr)
+        await engine.setWakeWordSink { buffer in
+            let frame = WakeWordPCMFrame(buffer: buffer)
+            Task { await asrRef.asr.append(buffer: frame.buffer) }
+        }
+
+        // Race: first wins between match callback and a timeout.
+        // Speaker mode: 8 s — enough breathing room for the ping to
+        // play and the user to articulate a wake word, but bounded so
+        // the recogniser doesn't sit idle forever. With the built-in
+        // speaker, case=6 cancels this window explicitly anyway.
+        // Headphones mode: 15 s — survives the AI's ~7 s follow-up
+        // TTS plus a few seconds of post-TTS buffer, so the user can
+        // interrupt the AI mid-question with "weiter" / "fertig".
+        // `withTaskGroup` cleans both tasks up on early return.
+        let timeoutNs: UInt64 = Self.isHeadphonesOutputActive()
+            ? 15_000_000_000
+            : 8_000_000_000
+        let resolvedAction: WakeWordDetector.Action? = await withTaskGroup(of: WakeWordDetector.Action?.self) { group -> WakeWordDetector.Action? in
+            group.addTask {
+                for await action in matchStream {
+                    return action
+                }
+                return nil
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: timeoutNs)
+                matchContinuation.finish()
+                return nil
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first
+        }
+        Diag.log("wake-word window closed action=\(resolvedAction?.rawValue ?? "none")")
+
+        // Tear down regardless of outcome.
+        await engine.setWakeWordSink(nil)
+        await asr.stop()
+        isWakeListening = false
+
+        // Trigger the matched action on the main actor. The
+        // `wakeWordTask = nil` clear has to happen *before* dispatch —
+        // advance() itself nils the task ref to avoid double-cancel,
+        // and our local Task is the one calling advance, which would
+        // re-enter the cancellation path for itself otherwise.
+        wakeWordTask = nil
+        if let action = resolvedAction {
+            // If the AI's follow-up was speaking when the wake word
+            // matched (only possible in headphones mode where the
+            // wake-window is kept alive through case=6), cut it off so
+            // the user isn't talked over while we advance. The cancel
+            // also tears down the in-flight TTS at the next checkpoint
+            // inside speakFollowUp.
+            if let task = followUpTask {
+                task.cancel()
+                followUpTask = nil
+            }
+            // Audible confirmation: hands-off users need to know the
+            // word was heard before the next event's opener starts
+            // talking over the silence. Fires *after* cancelling the
+            // follow-up TTS so the pip doesn't overlap the AI's voice.
+            await MainActor.run { WakePing.shared.playMatch() }
+            // Mark the active segment so `stopSegmentCapture` knows to
+            // tail-trim the audio file. The matched command word
+            // (`weiter` / `next` / etc.) was just spoken into the mic
+            // and is sitting at the end of the M4A; without the trim
+            // it would show up verbatim in both the client-side
+            // Parakeet transcript and the server-side Whisper output.
+            if let segID = currentRecordingSegmentID {
+                wakeMatchedSegmentIDs.insert(segID)
+            }
+            switch action {
+            case .advance:     await advance()
+            case .finishEarly: await finishEarly()
+            }
+        }
+    }
+
+    /// True while we're in any listening segment-capture state. Used
+    /// by `runWakeWordWindow` as a pre-flight to bail if the user
+    /// already advanced before the lull callback fired.
+    private var isInListeningState: Bool {
+        switch state {
+        case .eventListening, .generalListening, .driveByListening:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// True when audio is currently routed to anything *other* than the
+    /// device's own loudspeaker / earpiece — i.e. wired headphones,
+    /// AirPods, Bluetooth, CarPlay, AirPlay, USB. Used to gate the
+    /// "keep wake-word listening alive through the AI follow-up TTS"
+    /// behaviour: with headphones there's no acoustic feedback loop
+    /// between speaker and mic, so the wake-word ASR can safely run
+    /// while the AI is speaking. With the built-in speaker the AI's
+    /// own voice would bleed into the mic and risk false matches.
+    ///
+    /// Read via the **active** audio session, not the AVAudioEngine
+    /// node graph — those don't always agree mid-session, but the
+    /// `currentRoute` is what the OS will actually output on next
+    /// playback, which is what matters for feedback risk.
+    private static func isHeadphonesOutputActive() -> Bool {
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+        guard !outputs.isEmpty else { return false }
+        return outputs.contains { output in
+            switch output.portType {
+            case .builtInSpeaker, .builtInReceiver:
+                return false
+            default:
+                // Anything else (.headphones, .bluetoothA2DP, .bluetoothHFP,
+                // .bluetoothLE, .airPlay, .carAudio, .usbAudio, .lineOut, …)
+                // is fine — speaker→mic feedback is unlikely.
+                return true
             }
         }
     }
