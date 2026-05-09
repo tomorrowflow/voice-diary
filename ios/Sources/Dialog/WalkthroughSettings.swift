@@ -56,11 +56,37 @@ public struct GeneralSection: Codable, Sendable, Identifiable, Equatable {
     public var id: String                 // UUID string, stable
     public var title: String              // shown in the header during walkthrough
     public var introText: String          // spoken via TTS at section start
+    /// When true, the listening loop fires a generated follow-up question
+    /// after 6 s of silence (same UX shape as the calendar-event loop, but
+    /// seeded from `introText` so the prompt stays on-topic for this
+    /// section). Off by default so existing sections keep their current
+    /// quieter behaviour until the user opts in.
+    public var followUpEnabled: Bool
 
-    public init(id: String = UUID().uuidString, title: String, introText: String) {
+    public init(
+        id: String = UUID().uuidString,
+        title: String,
+        introText: String,
+        followUpEnabled: Bool = false
+    ) {
         self.id = id
         self.title = title
         self.introText = introText
+        self.followUpEnabled = followUpEnabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, title, introText, followUpEnabled
+    }
+
+    // Custom decoder so JSON written before `followUpEnabled` existed
+    // still loads cleanly with the field defaulting to false.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        title = try c.decode(String.self, forKey: .title)
+        introText = try c.decode(String.self, forKey: .introText)
+        followUpEnabled = try c.decodeIfPresent(Bool.self, forKey: .followUpEnabled) ?? false
     }
 }
 
@@ -127,6 +153,8 @@ public enum WalkthroughSettingsStore {
     private static let notAcceptedKey = "walkthrough.includeNotAccepted"
     private static let generalsKey    = "walkthrough.generals.v1"
     private static let orderKey       = "walkthrough.sectionOrder.v1"
+    private static let mixedLangKey   = "walkthrough.mixedLanguageSpeech"
+    private static let mixedLangDefault = true
 
     // --- event filters ---------------------------------------------------
 
@@ -142,6 +170,31 @@ public enum WalkthroughSettingsStore {
     public static func setIncludeAllDay(_ value: Bool)      { UserDefaults.standard.set(value, forKey: allDayKey) }
     public static func setIncludeTentative(_ value: Bool)   { UserDefaults.standard.set(value, forKey: tentativeKey) }
     public static func setIncludeNotAccepted(_ value: Bool) { UserDefaults.standard.set(value, forKey: notAcceptedKey) }
+
+    // --- mixed-language speech ------------------------------------------
+    //
+    // When on, an event opener like "Um 14 Uhr hattest du <Quarterly Sync
+    // with Alex> mit Sarah — wie ist das gelaufen?" is spoken as three
+    // segments: the German frame in the German voice, the English title
+    // in the English voice, the German tail in the German voice. When
+    // off, the whole line is read by the German voice (the historical
+    // behaviour where English titles got German phonemes).
+    //
+    // `UserDefaults.bool(forKey:)` returns `false` for an unset key, so
+    // we read it through `object(forKey:)` and apply our own default —
+    // existing devices upgrade into the new default-on behaviour without
+    // a migration step.
+
+    public static var mixedLanguageSpeech: Bool {
+        guard let stored = UserDefaults.standard.object(forKey: mixedLangKey) as? Bool else {
+            return mixedLangDefault
+        }
+        return stored
+    }
+
+    public static func setMixedLanguageSpeech(_ value: Bool) {
+        UserDefaults.standard.set(value, forKey: mixedLangKey)
+    }
 
     // --- general sections ------------------------------------------------
 

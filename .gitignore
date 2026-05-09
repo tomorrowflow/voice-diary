@@ -52,3 +52,13 @@ ios/Package.resolved
 *.ipa
 *.dSYM.zip
 *.dSYM
+
+# Piper TTS bootstrap (M9). Populated by ios/scripts/fetch_piper_voices.sh.
+# Binary frameworks (~60 MB), upstream Swift bindings, VITS voice models
+# (~120 MB each), the bootstrap-generated XcodeGen overlay — none belong
+# in git.
+ios/Frameworks/
+ios/Sources/TTS/Vendor/
+ios/Resources/Models/Voices/
+ios/project-piper.yml
+ios/.cache/

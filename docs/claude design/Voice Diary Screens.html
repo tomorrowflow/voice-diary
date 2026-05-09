@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Voice Diary — Screen Designs</title>
+<link rel="stylesheet" href="tokens.css"/>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #f0eee9; font-family: 'Geist', -apple-system, sans-serif; }
+  * { box-sizing: border-box; }
+  .iphone, .iphone * { font-family: 'Geist', -apple-system, sans-serif; }
+  button { font-family: inherit; }
+  textarea { font-family: inherit; }
+  /* Tame the iPhone bezel inside artboards (we want flush 393×852 frames) */
+  .vd-iphone-host { width: 393px; height: 852px; }
+</style>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="shared.jsx"></script>
+<script type="text/babel" src="screens-abend.jsx"></script>
+<script type="text/babel" src="screens-flows.jsx"></script>
+<script type="text/babel" src="screens-meta.jsx"></script>
+<script type="text/babel" src="screens-webapp.jsx"></script>
+
+<script type="text/babel">
+const Light = ({ children }) => <div className="theme-light vd-iphone-host">{children}</div>;
+const Dark  = ({ children }) => <div className="theme-dark vd-iphone-host">{children}</div>;
+
+const App = () => (
+  <DesignCanvas>
+    {/* SECTION 1 — Walkthrough */}
+    <DCSection id="walkthrough"
+      title="01 · Walkthrough — Abend, in-session"
+      subtitle="One card per moment. Recording dot is the only red on screen. Timer is tabular Geist Mono. One primary action — Weiter.">
+      <DCArtboard id="wt-rec-light" label="Recording · Light" width={393} height={852}>
+        <Light><Walkthrough state="recording"/></Light>
+      </DCArtboard>
+      <DCArtboard id="wt-rec-dark" label="Recording · Dark (default)" width={393} height={852}>
+        <Dark><Walkthrough state="recording"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="wt-spk-dark" label="Editor speaking · Dark" width={393} height={852}>
+        <Dark><Walkthrough state="speaking"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="wt-lst-dark" label="Listening lull · Dark" width={393} height={852}>
+        <Dark><Walkthrough state="listening"/></Dark>
+      </DCArtboard>
+      <DCPostIt top={40} right={-160} rotate={-1.4} width={200}>
+        Editor line lives in <b>card-inset</b> with an EDITOR caption — clearly the AI's voice, never first-person. The pulse on the rec-dot is platform-native (no hand-rolled bokeh).
+      </DCPostIt>
+    </DCSection>
+
+    {/* SECTION 2 — Day overview */}
+    <DCSection id="day-overview"
+      title="02 · Tagesübersicht — Abend start"
+      subtitle="The pre-session screen. Calendar event rows use the four RSVP encodings. CTA is sticky and disabled when there are no events.">
+      <DCArtboard id="day-full-light" label="3 events · Light" width={393} height={852}>
+        <Light><DayOverview variant="full"/></Light>
+      </DCArtboard>
+      <DCArtboard id="day-full-dark" label="3 events · Dark" width={393} height={852}>
+        <Dark><DayOverview variant="full"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="day-dense-dark" label="Dense day (7) · Dark" width={393} height={852}>
+        <Dark><DayOverview variant="dense"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="day-empty-dark" label="Empty · Dark" width={393} height={852}>
+        <Dark><DayOverview variant="empty"/></Dark>
+      </DCArtboard>
+      <DCPostIt top={40} right={-180} rotate={1.2} width={210}>
+        Event rows: blue = organiser, green = accepted, amber = tentative, neutral = default. No other colour appears on this screen.
+      </DCPostIt>
+    </DCSection>
+
+    {/* SECTION 3 — Todo confirm */}
+    <DCSection id="todo-confirm"
+      title="03 · Aufgaben-Bestätigung"
+      subtitle="The candidate todo is the largest type on screen. Three buttons, three intents: ja / nein / anders. Destructive red is reserved for cancel-with-loss only.">
+      <DCArtboard id="todo-idle-light" label="Idle · Light" width={393} height={852}>
+        <Light><TodoConfirm state="idle"/></Light>
+      </DCArtboard>
+      <DCArtboard id="todo-idle-dark" label="Idle · Dark" width={393} height={852}>
+        <Dark><TodoConfirm state="idle"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="todo-listen-dark" label="Listening · Dark" width={393} height={852}>
+        <Dark><TodoConfirm state="listening"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="todo-refine-dark" label={'„Anders" — refine · Dark'} width={393} height={852}>
+        <Dark><TodoConfirm state="refining"/></Dark>
+      </DCArtboard>
+    </DCSection>
+
+    {/* SECTION 4 — Voice picker */}
+    <DCSection id="voices"
+      title="04 · Stimmen — Settings"
+      subtitle={'One section per language. „Automatisch" is the recommended row; quality badges (Premium / Enhanced / Standard) sit on the trailing side. Ghost link to iOS Settings when no voices are installed.'}>
+      <DCArtboard id="voice-rich-light" label="Many voices · Light" width={393} height={852}>
+        <Light><VoicePicker variant="rich"/></Light>
+      </DCArtboard>
+      <DCArtboard id="voice-rich-dark" label="Many voices · Dark" width={393} height={852}>
+        <Dark><VoicePicker variant="rich"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="voice-sparse-dark" label="No DE voices installed · Dark" width={393} height={852}>
+        <Dark><VoicePicker variant="sparse"/></Dark>
+      </DCArtboard>
+    </DCSection>
+
+    {/* SECTION 5 — Done card */}
+    <DCSection id="done"
+      title="05 · Sitzung abgeschlossen"
+      subtitle="Quiet exit. Session ID is mono and subdued — present but unobtrusive. Single secondary action.">
+      <DCArtboard id="done-summary-light" label="With summary · Light" width={393} height={852}>
+        <Light><DoneCard withSummary={true}/></Light>
+      </DCArtboard>
+      <DCArtboard id="done-summary-dark" label="With summary · Dark" width={393} height={852}>
+        <Dark><DoneCard withSummary={true}/></Dark>
+      </DCArtboard>
+      <DCArtboard id="done-bare-dark" label="Bare · Dark" width={393} height={852}>
+        <Dark><DoneCard withSummary={false}/></Dark>
+      </DCArtboard>
+    </DCSection>
+
+    {/* SECTION 6 — Capture */}
+    <DCSection id="capture"
+      title="06 · Drive-by Capture — Aufnahme tab"
+      subtitle="A single round button at the bottom-third gravity point. Recording state replaces the resting mic with a tabular timer.">
+      <DCArtboard id="cap-idle-light" label="Idle · Light" width={393} height={852}>
+        <Light><Capture recording={false}/></Light>
+      </DCArtboard>
+      <DCArtboard id="cap-idle-dark" label="Idle · Dark" width={393} height={852}>
+        <Dark><Capture recording={false}/></Dark>
+      </DCArtboard>
+      <DCArtboard id="cap-rec-dark" label="Recording · Dark" width={393} height={852}>
+        <Dark><Capture recording={true}/></Dark>
+      </DCArtboard>
+    </DCSection>
+
+    {/* SECTION 7 — Onboarding */}
+    <DCSection id="onboarding"
+      title="07 · Onboarding (M11)"
+      subtitle="Three steps, each one decision. Progress dots at top, no back-button on the first screen.">
+      <DCArtboard id="onb-1-empty-dark" label="Step 1 · Server (idle)" width={393} height={852}>
+        <Dark><OnboardStep step={1}/></Dark>
+      </DCArtboard>
+      <DCArtboard id="onb-1-ok-dark" label="Step 1 · Reachable" width={393} height={852}>
+        <Dark><OnboardStep step={1} state="ok"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="onb-1-down-dark" label="Step 1 · Server down" width={393} height={852}>
+        <Dark><OnboardStep step={1} state="down"/></Dark>
+      </DCArtboard>
+      <DCArtboard id="onb-2-dark" label="Step 2 · Bearer" width={393} height={852}>
+        <Dark><OnboardStep step={2}/></Dark>
+      </DCArtboard>
+      <DCArtboard id="onb-3-dark" label="Step 3 · Voice preview" width={393} height={852}>
+        <Dark><OnboardStep step={3}/></Dark>
+      </DCArtboard>
+    </DCSection>
+
+    {/* SECTION 8 — Server review */}
+    <DCSection id="server-review"
+      title="08 · Server Review (HTMX)"
+      subtitle="Desktop view for the morning-after entity-confirmation flow. Same Geist + token system, hosted on the home server.">
+      <DCArtboard id="srv-progress-light" label="In-progress · Light" width={920} height={720}>
+        <div className="theme-light"><ServerReview variant="in-progress"/></div>
+      </DCArtboard>
+      <DCArtboard id="srv-progress-dark" label="In-progress · Dark" width={920} height={720}>
+        <div className="theme-dark"><ServerReview variant="in-progress"/></div>
+      </DCArtboard>
+      <DCArtboard id="srv-complete-dark" label="Complete · Dark" width={920} height={720}>
+        <div className="theme-dark"><ServerReview variant="complete"/></div>
+      </DCArtboard>
+      <DCPostIt top={40} right={-180} rotate={-1.5} width={210}>
+        Entity chips: dashed = rejected, solid blue = pending, green-tinted = confirmed. Same RSVP encoding logic as the calendar event rows.
+      </DCPostIt>
+    </DCSection>
+
+    {/* ──── WEBAPP REDESIGNS ──── */}
+
+    <DCSection id="wa-overview"
+      title="09 · Server — Overview (Transcript List)"
+      subtitle="Master table of all transcripts. Status filter pills, paginated, sortable. Filenames are tappable links into the review screen.">
+      <DCArtboard id="wa-ov-light" label="Light" width={1120} height={720}>
+        <div className="theme-light"><WaOverview/></div>
+      </DCArtboard>
+      <DCArtboard id="wa-ov-dark" label="Dark" width={1120} height={720}>
+        <div className="theme-dark"><WaOverview/></div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="wa-transcript"
+      title="10 · Server — Transcript Review"
+      subtitle="Two-pane: transcript with inline entity chips (pending/confirmed/rejected) on left, detected entities list on right. LLM correction banner at top.">
+      <DCArtboard id="wa-tr-light" label="Light" width={1120} height={720}>
+        <div className="theme-light"><WaTranscript/></div>
+      </DCArtboard>
+      <DCArtboard id="wa-tr-dark" label="Dark" width={1120} height={720}>
+        <div className="theme-dark"><WaTranscript/></div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="wa-process"
+      title="11 · Server — Process Pipeline"
+      subtitle="4-step pipeline (Context → Summary → Analysis → Document) with document preview. Log output in sidebar shows pipeline progress.">
+      <DCArtboard id="wa-pr-complete-light" label="Complete · Light" width={1120} height={720}>
+        <div className="theme-light"><WaProcess state="complete"/></div>
+      </DCArtboard>
+      <DCArtboard id="wa-pr-empty-dark" label="Not started · Dark" width={1120} height={720}>
+        <div className="theme-dark"><WaProcess state="empty"/></div>
+      </DCArtboard>
+      <DCArtboard id="wa-pr-complete-dark" label="Complete · Dark" width={1120} height={720}>
+        <div className="theme-dark"><WaProcess state="complete"/></div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="wa-harvest"
+      title="12 · Server — Harvest Time Tracking"
+      subtitle="Calendar + diary transcript sources on left, LLM-suggested time entries on right with project/task assignment.">
+      <DCArtboard id="wa-hv-light" label="Light" width={1120} height={720}>
+        <div className="theme-light"><WaHarvest/></div>
+      </DCArtboard>
+      <DCArtboard id="wa-hv-dark" label="Dark" width={1120} height={720}>
+        <div className="theme-dark"><WaHarvest/></div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="wa-ingest"
+      title="13 · Server — Audio Ingestion"
+      subtitle="Drag-and-drop upload for .mp3/.m4a files. Server-side ffmpeg + Whisper transcription.">
+      <DCArtboard id="wa-ig-light" label="Light" width={1120} height={720}>
+        <div className="theme-light"><WaIngest/></div>
+      </DCArtboard>
+      <DCArtboard id="wa-ig-dark" label="Dark" width={1120} height={720}>
+        <div className="theme-dark"><WaIngest/></div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="wa-dictionary"
+      title="14 · Server — Dictionary"
+      subtitle="Persons and Terms management. Inline expandable rows with edit form, variations with type badges, status filters.">
+      <DCArtboard id="wa-dict-light" label="Light" width={1120} height={720}>
+        <div className="theme-light"><WaDictionary/></div>
+      </DCArtboard>
+      <DCArtboard id="wa-dict-dark" label="Dark" width={1120} height={720}>
+        <div className="theme-dark"><WaDictionary/></div>
+      </DCArtboard>
+    </DCSection>
+
+    <DCSection id="wa-settings"
+      title="15 · Server — Settings"
+      subtitle="Admin config: CSV import, LightRAG skeleton sync with stats, service URLs, and danger zone for destructive actions.">
+      <DCArtboard id="wa-set-light" label="Light" width={1120} height={720}>
+        <div className="theme-light"><WaSettings/></div>
+      </DCArtboard>
+      <DCArtboard id="wa-set-dark" label="Dark" width={1120} height={720}>
+        <div className="theme-dark"><WaSettings/></div>
+      </DCArtboard>
+    </DCSection>
+
+  </DesignCanvas>
+);
+
+window.__VDApp = App;
+const tryMount = () => {
+  if (!window.DesignCanvas || !window.Walkthrough || !window.OnboardStep || !window.WaOverview) {
+    return setTimeout(tryMount, 50);
+  }
+  ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+};
+tryMount();
+</script>
+</body>
+</html>

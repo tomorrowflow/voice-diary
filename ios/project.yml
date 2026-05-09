@@ -6,6 +6,15 @@
 #
 # Install xcodegen:
 #     brew install xcodegen
+#
+# M9 Piper TTS test area: `scripts/fetch_piper_voices.sh` overwrites the
+# committed stub `project-piper.yml` with the sherpa-onnx framework deps +
+# the `PIPER_TTS` compilation flag. The `include:` below pulls that file
+# into every generation. Without the bootstrap, the stub is a no-op and
+# `PiperTTS.swift` falls back to its `#if PIPER_TTS` stub.
+
+include:
+  - project-piper.yml
 
 name: VoiceDiary
 options:
@@ -29,7 +38,7 @@ settings:
 packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
-    from: 0.12.4
+    from: 0.14.4
 
 targets:
   VoiceDiary:
@@ -43,9 +52,17 @@ targets:
         buildPhase: resources
       - path: Resources/Geist-OFL.txt
         buildPhase: resources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
       - path: Resources/Models
         buildPhase: resources
         optional: true
+        # Folder reference so the Piper voice subtree under
+        # Resources/Models/Voices/{de_DE-thorsten-high,en_US-lessac-high,espeak-ng-data}/
+        # is copied into the app bundle preserving its directory structure.
+        # Without `type: folder`, Xcode flattens children into the bundle
+        # root and collides on duplicate `tokens.txt` / `MODEL_CARD`.
+        type: folder
     info:
       # IMPORTANT: this block is the source of truth for Config/Info.plist.
       # XcodeGen regenerates the plist from `properties` on every run —
@@ -60,6 +77,13 @@ targets:
         UIBackgroundModes:
           - audio
         NSMicrophoneUsageDescription: "Voice Diary nimmt deine Sprache auf, um den Tag chronologisch zu reflektieren. (Voice Diary records your speech to walk through your day chronologically.)"
+        # Speech recognition is used for the German wake-word path
+        # ("weiter / nächstes / fertig") via SFSpeechRecognizer with
+        # `requiresOnDeviceRecognition = true`. No audio leaves the
+        # device — the system permission prompt still fires regardless.
+        # English wake words run through FluidAudio's on-device
+        # streaming Parakeet model and don't trigger this prompt.
+        NSSpeechRecognitionUsageDescription: 'Voice Diary erkennt Befehle wie „weiter" oder „fertig" lokal auf dem Gerät, damit du den Walkthrough auch bei gesperrtem Bildschirm steuern kannst. (On-device only; nothing is sent to Apple.)'
         ITSAppUsesNonExemptEncryption: false
         UIAppFonts:
           - "Geist-Variable.ttf"
@@ -86,6 +110,7 @@ targets:
         CODE_SIGN_STYLE: Automatic
         ENABLE_HARDENED_RUNTIME: YES
         CODE_SIGN_ENTITLEMENTS: Config/VoiceDiary.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - package: FluidAudio
       - target: VoiceDiaryWidget

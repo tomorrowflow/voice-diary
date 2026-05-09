@@ -27,6 +27,7 @@ public enum Theme {
         public let bg     = BgColors()
         public let border = BorderColors()
         public let status = StatusColors()
+        public let tint   = TintColors()
         public let raw    = RawColors()
     }
 
@@ -76,6 +77,24 @@ public enum Theme {
         public let success     = DSSemantic.Status.success
         public let warning     = DSSemantic.Status.warning
         public let destructive = DSSemantic.Status.destructive
+    }
+
+    /// Pre-mixed semantic tints (state-coloured at 6/10/20% opacity).
+    /// Used by `event-row`, `state-pill`, the `qbadge` voice quality badges,
+    /// and any "filled chip" pattern that needs a transparent state colour.
+    public struct TintColors: Sendable {
+        public let link6:         Color = DSColor.color_tint_link_6
+        public let link10:        Color = DSColor.color_tint_link_10
+        public let link20:        Color = DSColor.color_tint_link_20
+        public let success6:      Color = DSColor.color_tint_success_6
+        public let success10:     Color = DSColor.color_tint_success_10
+        public let success20:     Color = DSColor.color_tint_success_20
+        public let warning6:      Color = DSColor.color_tint_warning_6
+        public let warning10:     Color = DSColor.color_tint_warning_10
+        public let warning20:     Color = DSColor.color_tint_warning_20
+        public let destructive6:  Color = DSColor.color_tint_destructive_6
+        public let destructive10: Color = DSColor.color_tint_destructive_10
+        public let destructive20: Color = DSColor.color_tint_destructive_20
     }
 
     /// Raw colour ramps — escape hatch when you need an exact shade.

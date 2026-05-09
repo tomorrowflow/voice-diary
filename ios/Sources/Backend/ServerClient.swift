@@ -111,6 +111,24 @@ public actor ServerClient {
         return data
     }
 
+    /// Distinct dates (yyyy-MM-dd, recording-target) that already have at
+    /// least one transcript on the server. Used by the walkthrough date
+    /// picker to mark days that have already been recorded for.
+    public func recordedDates(from: String? = nil, to: String? = nil) async throws -> [String] {
+        let (url, token) = try endpoint("/api/sessions/dates")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        var items: [URLQueryItem] = []
+        if let from { items.append(URLQueryItem(name: "date_from", value: from)) }
+        if let to   { items.append(URLQueryItem(name: "date_to", value: to)) }
+        components.queryItems = items.isEmpty ? nil : items
+        var req = URLRequest(url: components.url!)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response: response, body: data)
+        struct Payload: Decodable { let dates: [String] }
+        return try JSONDecoder().decode(Payload.self, from: data).dates
+    }
+
     // --- enrichment ---------------------------------------------------
 
     public func emailSearch(query: String, responseLanguage: String = "de") async throws -> EnrichmentSummary {
@@ -153,6 +171,42 @@ public actor ServerClient {
             return try JSONDecoder().decode(type, from: data)
         } catch {
             throw ServerClientError.decodingFailed("\(error)")
+        }
+    }
+
+    // --- /api/sessions/{id}/status -------------------------------------
+
+    /// Per-segment processing status for a previously-uploaded session.
+    /// Returns `nil` when the server has no record (HTTP 404) — the
+    /// status map is in-memory on the server, so a restart loses it
+    /// even though the bundle on disk survives.
+    public func sessionStatus(sessionID: String) async throws -> SessionStatusResponse? {
+        // Path-encode the session id; ISO8601 timestamps contain ':'.
+        let escaped = sessionID.addingPercentEncoding(
+            withAllowedCharacters: .urlPathAllowed
+        ) ?? sessionID
+        let (url, token) = try endpoint("/api/sessions/\(escaped)/status")
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: req)
+        if let http = response as? HTTPURLResponse, http.statusCode == 404 {
+            return nil
+        }
+        try Self.assertOK(response: response, body: data)
+        return try Self.decode(SessionStatusResponse.self, from: data)
+    }
+
+    public struct SessionStatusResponse: Codable, Sendable {
+        public let session_id: String
+        public let received_at: String
+        public let state: String         // "processing" | "done" | "failed" | "partial"
+        public let segments: [SegmentStatus]
+
+        public struct SegmentStatus: Codable, Sendable {
+            public let segment_id: String
+            public let status: String    // "processed" | "failed" | "pending_analysis"
+            public let transcript_id: Int?
+            public let error: String?
         }
     }
 

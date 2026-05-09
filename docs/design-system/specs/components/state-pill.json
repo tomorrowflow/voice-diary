@@ -1,0 +1,17 @@
+{
+  "name": "StatePill",
+  "description": "Always-visible-when-active component for recording state. Single anchor for 'is the mic open / who is talking'. Three states: recording (red), speaking (warning), listening (red, calmer).",
+  "variants": {
+    "recording": { "bg": "tint.destructive-10", "fg": "semantic.status.destructive", "dot": "semantic.status.destructive", "pulse": true  },
+    "listening": { "bg": "tint.destructive-10", "fg": "semantic.status.destructive", "dot": "semantic.status.destructive", "pulse": true  },
+    "speaking":  { "bg": "tint.warning-10",     "fg": "semantic.status.warning",     "dot": "semantic.status.warning",     "pulse": false }
+  },
+  "sizes": {
+    "default": { "height": 24, "paddingX": "spacing.3", "paddingY": "spacing.1", "fontSize": "font.size.xs", "radius": "radius.full" }
+  },
+  "platformNotes": {
+    "ios":     "On iPhone with Dynamic Island, the island itself expands to host this content via ActivityKit. Off-island fallback is a sticky pill below the status bar.",
+    "web":     "Class .pill-recording / .pill-state. Fixed height, dot + label inline.",
+    "swiftui": "ActivityKit live activity expanded leading/trailing regions render the dot + label."
+  }
+}

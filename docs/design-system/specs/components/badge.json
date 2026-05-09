@@ -1,0 +1,13 @@
+{
+  "name": "Badge",
+  "description": "Small text marker. Two flavours: subdued (transparent bg, secondary text) for metadata, and quality (Premium/Enhanced/Standard) for voice-picker rows. Status badges (PENDING/SAVED/SUBMITTED/PROCESSED/FAILED) on the server side use the same shape.",
+  "variants": {
+    "subdued":  { "bg": "transparent",       "fg": "semantic.text.secondary" },
+    "premium":  { "bg": "tint.link-10",      "fg": "semantic.text.link" },
+    "enhanced": { "bg": "tint.success-10",   "fg": "semantic.status.success" },
+    "standard": { "bg": "semantic.bg.container-inset", "fg": "semantic.text.subdued" }
+  },
+  "sizes": {
+    "default": { "height": 22, "paddingX": "spacing.2", "paddingY": "spacing.0.5", "fontSize": "font.size.xs", "radius": "radius.full" }
+  }
+}

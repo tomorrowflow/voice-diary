@@ -171,6 +171,7 @@ private struct GeneralEditorSheet: View {
 
     @State private var title: String
     @State private var introText: String
+    @State private var followUpEnabled: Bool
     @FocusState private var titleFocused: Bool
 
     init(
@@ -183,6 +184,7 @@ private struct GeneralEditorSheet: View {
         self.onCancel = onCancel
         _title = State(initialValue: initial?.title ?? "")
         _introText = State(initialValue: initial?.introText ?? "")
+        _followUpEnabled = State(initialValue: initial?.followUpEnabled ?? false)
     }
 
     var body: some View {
@@ -221,6 +223,19 @@ private struct GeneralEditorSheet: View {
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
+
+                    Section {
+                        Toggle("Nachfrage bei Stille", isOn: $followUpEnabled)
+                            .font(Theme.font.body)
+                    } header: {
+                        Text("Vertiefung")
+                            .font(Theme.font.subheadline)
+                            .foregroundStyle(Theme.color.text.secondary)
+                    } footer: {
+                        Text("Stellt nach 6 Sekunden Stille eine kurze, zur Einleitung passende Folgefrage. Ohne Aktivierung bleibt der Abschnitt still und wartet einfach.")
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                    }
                 }
                 .scrollContentBackground(.hidden)
             }
@@ -237,7 +252,8 @@ private struct GeneralEditorSheet: View {
                         let section = GeneralSection(
                             id: initial?.id ?? UUID().uuidString,
                             title: trimmedTitle,
-                            introText: trimmedIntro
+                            introText: trimmedIntro,
+                            followUpEnabled: followUpEnabled
                         )
                         onSave(section)
                         onCancel()
