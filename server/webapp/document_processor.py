@@ -9,6 +9,7 @@ Steps:
 5. (Optional) Ingest into LightRAG
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -83,6 +84,48 @@ def _lightrag_headers(api_key: str) -> dict:
     if api_key:
         headers["X-API-Key"] = api_key
     return headers
+
+
+async def lightrag_request_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    method: str = "POST",
+    json: dict | None = None,
+    headers: dict | None = None,
+    max_attempts: int = 3,
+) -> httpx.Response:
+    """Send a request to LightRAG with exponential backoff on transient failures.
+
+    Retries connect/read/write errors, timeouts, and 5xx responses (1s, 2s, 4s).
+    4xx responses are surfaced immediately — those indicate a bad payload or
+    auth problem and won't recover from a retry.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = await client.request(method, url, json=json, headers=headers)
+            resp.raise_for_status()
+            return resp
+        except httpx.HTTPStatusError as e:
+            transient = 500 <= e.response.status_code < 600
+            if not transient or attempt >= max_attempts:
+                raise
+            last_exc = e
+        except (httpx.TransportError, httpx.TimeoutException) as e:
+            if attempt >= max_attempts:
+                raise
+            last_exc = e
+
+        delay = 2 ** (attempt - 1)
+        logger.warning(
+            "LightRAG %s %s attempt %d/%d failed (%s) — retrying in %ds",
+            method, url, attempt, max_attempts, last_exc, delay,
+        )
+        await asyncio.sleep(delay)
+
+    # Loop always returns or raises; this is a defensive fallback.
+    raise last_exc or RuntimeError("LightRAG retry exhausted without exception")
 
 
 async def query_lightrag_context(date_str: str) -> str:
@@ -625,7 +668,8 @@ async def ingest_to_lightrag(markdown: str, metadata: dict) -> dict:
     diary_id = f"diary:{date_str}"
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await client.post(
+            resp = await lightrag_request_with_retry(
+                client,
                 f"{url}/documents/text",
                 json={
                     "id": diary_id,
@@ -635,7 +679,6 @@ async def ingest_to_lightrag(markdown: str, metadata: dict) -> dict:
                 },
                 headers=_lightrag_headers(api_key),
             )
-            resp.raise_for_status()
             return resp.json()
     except Exception as e:
         logger.error("LightRAG ingest failed: %s", e)
