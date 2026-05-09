@@ -14,7 +14,12 @@ import httpx
 
 import bone_generator
 import db
-from document_processor import get_lightrag_api_key, get_lightrag_url, _lightrag_headers
+from document_processor import (
+    get_lightrag_api_key,
+    get_lightrag_url,
+    _lightrag_headers,
+    lightrag_request_with_retry,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -43,20 +48,38 @@ class SyncStats:
 
 # ── LightRAG HTTP helpers ───────────────────────────────────────────
 
+def _bone_metadata(bone_id: str) -> dict:
+    """Build the metadata dict that travels with a bone POST.
+
+    bone_id format: bone:{category}:{slug}. Adding type/category/language lets
+    downstream queries scope to skeleton vs narrative documents and filter by
+    bone category (person, term, org, ...) without parsing the doc ID.
+    """
+    parts = bone_id.split(":", 2)
+    category = parts[1] if len(parts) >= 2 else "unknown"
+    return {
+        "type": "skeleton",
+        "category": category,
+        "source": "voice_diary",
+        "language": "de",
+    }
+
+
 async def _lightrag_insert(url: str, api_key: str, bone_id: str, content: str):
     """Insert a bone document into LightRAG with an explicit ID."""
     async with _lightrag_semaphore:
         async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
+            resp = await lightrag_request_with_retry(
+                client,
                 f"{url}/documents/text",
                 json={
                     "text": content,
                     "id": bone_id,
                     "file_source": bone_id,
+                    "metadata": _bone_metadata(bone_id),
                 },
                 headers=_lightrag_headers(api_key),
             )
-            resp.raise_for_status()
             return resp.json()
 
 
@@ -64,13 +87,13 @@ async def _lightrag_delete(url: str, api_key: str, bone_id: str):
     """Delete a bone document from LightRAG by doc ID."""
     async with _lightrag_semaphore:
         async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.request(
-                "DELETE",
+            resp = await lightrag_request_with_retry(
+                client,
                 f"{url}/documents/delete_document",
+                method="DELETE",
                 json={"doc_ids": [bone_id]},
                 headers=_lightrag_headers(api_key),
             )
-            resp.raise_for_status()
             return resp.json()
 
 
