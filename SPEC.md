@@ -123,10 +123,13 @@ Two tiers: **iOS app** (this repo, `ios/`) and **the server** (this repo, `serve
 │  │    GET  /health                    upstream-aware probe        │  │
 │  │                                                                │  │
 │  │  In-process pipeline (all Python, all local):                  │  │
-│  │    ffmpeg (system) → whisper service → transcript_corrector.py │  │
-│  │      → entity_detector.py (4-pass) → document_processor.py     │  │
-│  │      → LightRAG ingest. Skeleton sync, bone generator, and     │  │
-│  │      Qdrant-backed vector store available as before.           │  │
+│  │    Phase 1 (per segment, in order):                            │  │
+│  │      ffmpeg (system) → whisper service → transcript_corrector  │  │
+│  │      → entity_detector.py (4-pass)                             │  │
+│  │    Phase 2 (once per session, after all segments):             │  │
+│  │      document_processor.py (LightRAG context + Ollama analysis │  │
+│  │      + narrative) → single LightRAG ingest under `diary:{date}`│  │
+│  │      Skeleton sync, bone generator, Qdrant store as before.    │  │
 │  └──┬──────────┬────────────┬──────────────┬──────────────┬───────┘  │
 │     │          │            │              │              │          │
 │     ▼          ▼            ▼              ▼              ▼          │
@@ -595,11 +598,11 @@ Total ~220 MB voice models in bundle. If bundle size is a concern later, voices 
 
 ## 10. Ingest contract
 
-The iOS app talks only to the server (`server/webapp/` — the merged FastAPI app). All routes below live in the same app. For each segment, the server runs the full diary-processor pipeline (ffmpeg → whisper → transcript_corrector → entity_detector → document_processor → LightRAG ingest) in-process.
+The iOS app talks only to the server (`server/webapp/` — the merged FastAPI app). All routes below live in the same app. The server runs a two-phase pipeline in-process: per segment it does ffmpeg → whisper → transcript_corrector → entity_detector and persists the transcript; then once per session it concatenates all segments (with per-segment headers preserving meeting title, time range, and attendees), runs `document_processor` (LightRAG context query + Ollama analysis + narrative generation) a single time, and ingests one combined document into LightRAG under id `diary:{date}`. The combined narrative is saved as a `processed_documents` row against every segment's transcript so segment-keyed read paths keep working.
 
 ### 10.1 Endpoint
 
-**`POST /api/sessions`** — receives the multipart bundle, persists it under `server/data/sessions/{session_id}/`, then processes each segment synchronously (or via a background task for long sessions). There is no external hand-off.
+**`POST /api/sessions`** — receives the multipart bundle, persists it under `server/data/sessions/{session_id}/`, then runs the two-phase pipeline as a background task. There is no external hand-off.
 
 ### 10.2 Transport
 
@@ -718,7 +721,7 @@ Manifest-level fields tied to the drive-by section:
 }
 ```
 
-Processing (Whisper re-transcription, entity normalization, LightRAG ingest) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload.
+Processing (per-segment Whisper re-transcription + entity normalization, then a single session-level Ollama analysis + LightRAG ingest) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres.
 
 ### 10.6 Retry & offline behaviour
 
