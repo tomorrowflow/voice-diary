@@ -40,16 +40,17 @@ public extension WalkthroughState {
     }
 
     /// True for any state where the user is "inside a section" — briefing,
-    /// any opener, any listening. Used to keep the per-section action
-    /// stack (Überspringen / Ich bin fertig / Weiter) and the timer
-    /// visible from the moment `begin()` is called instead of waiting for
-    /// TTS to finish.
+    /// any opener, any listening, plus the per-candidate todo-confirmation
+    /// pass. Drives the persistent chrome (timer, StatusIndicator, single
+    /// "Weiter" button) so the confirmation pass reads as just another
+    /// listening loop instead of a modal three-button popover.
     var isInEventLoop: Bool {
         switch self {
         case .briefing,
              .eventOpener, .eventListening,
              .generalOpener, .generalListening,
-             .driveByOpener, .driveByListening:
+             .driveByOpener, .driveByListening,
+             .confirmingTodos:
             return true
         default:
             return false

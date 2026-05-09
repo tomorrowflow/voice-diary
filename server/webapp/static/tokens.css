@@ -30,6 +30,18 @@
   --color-tint-green-10: rgba(18, 183, 106, 0.1);
   --color-tint-yellow-5: rgba(247, 144, 9, 0.05);
   --color-tint-yellow-10: rgba(247, 144, 9, 0.1);
+  --color-tint-link-6: rgba(21, 112, 239, 0.06);
+  --color-tint-link-10: rgba(21, 112, 239, 0.1);
+  --color-tint-link-20: rgba(21, 112, 239, 0.2);
+  --color-tint-success-6: rgba(16, 168, 97, 0.06);
+  --color-tint-success-10: rgba(16, 168, 97, 0.1);
+  --color-tint-success-20: rgba(16, 168, 97, 0.2);
+  --color-tint-warning-6: rgba(220, 104, 3, 0.06);
+  --color-tint-warning-10: rgba(220, 104, 3, 0.1);
+  --color-tint-warning-20: rgba(220, 104, 3, 0.2);
+  --color-tint-destructive-6: rgba(236, 34, 34, 0.06);
+  --color-tint-destructive-10: rgba(236, 34, 34, 0.1);
+  --color-tint-destructive-20: rgba(236, 34, 34, 0.2);
   --color-tint-cyan-5: rgba(6, 174, 212, 0.05);
   --color-tint-cyan-10: rgba(6, 174, 212, 0.1);
   --color-tint-blue-5: rgba(46, 144, 250, 0.05);
@@ -169,7 +181,7 @@
   --semantic-dark-text-secondary: #9e9e9e;
   --semantic-dark-text-subdued: #5c5c5c;
   --semantic-dark-text-inverse: #171717;
-  --semantic-dark-text-link: #2e90fa;
+  --semantic-dark-text-link: #53b1fd;
   --semantic-dark-fg-primary: #ffffff;
   --semantic-dark-fg-primary-variant: #f7f7f7;
   --semantic-dark-fg-secondary: #363636;

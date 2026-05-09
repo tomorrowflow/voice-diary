@@ -71,6 +71,101 @@ struct OpenerTemplatesTests {
         #expect(line.contains("10:00"))
     }
 
+    // MARK: - Mixed-language script
+
+    @Test("English title in German template emits an EN span for the title")
+    func mixedLanguageScript() {
+        let event = ServerCalendarEvent(
+            graph_event_id: "id",
+            subject: "Quarterly Business Review",
+            start: "2026-04-28T14:00:00+02:00",
+            end: "2026-04-28T15:00:00+02:00",
+            is_all_day: false,
+            show_as: "busy",
+            rsvp_status: "accepted",
+            organizer: ServerAttendee(name: "Florian", email: "florian@example.com"),
+            attendees: [
+                ServerAttendee(name: "Florian", email: "florian@example.com"),
+                ServerAttendee(name: "Alex", email: "alex@example.com"),
+                ServerAttendee(name: "Sam", email: "sam@example.com"),
+            ],
+            body_preview: "",
+            is_recurring: false,
+            web_link: ""
+        )
+        let spans = OpenerTemplates.script(
+            slot: .groupMeeting,
+            event: event,
+            language: .de,
+            mixedLanguage: true
+        )
+        // German frame surrounds the English title — at minimum we
+        // expect one span with the title, tagged "en".
+        let titleSpan = spans.first { $0.text.contains("Quarterly Business Review") }
+        #expect(titleSpan != nil)
+        #expect(titleSpan?.language == "en")
+        // And at least one German span for the surrounding frame.
+        #expect(spans.contains { $0.language == "de" })
+    }
+
+    @Test("German title stays in one DE span")
+    func sameLanguageScript() {
+        let event = ServerCalendarEvent(
+            graph_event_id: "id",
+            subject: "Quartalsbesprechung",
+            start: "2026-04-28T14:00:00+02:00",
+            end: "2026-04-28T15:00:00+02:00",
+            is_all_day: false,
+            show_as: "busy",
+            rsvp_status: "accepted",
+            organizer: ServerAttendee(name: "Florian", email: "florian@example.com"),
+            attendees: [
+                ServerAttendee(name: "Florian", email: "florian@example.com"),
+                ServerAttendee(name: "Sabine", email: "sabine@example.com"),
+                ServerAttendee(name: "Markus", email: "markus@example.com"),
+            ],
+            body_preview: "",
+            is_recurring: false,
+            web_link: ""
+        )
+        let spans = OpenerTemplates.script(
+            slot: .groupMeeting,
+            event: event,
+            language: .de,
+            mixedLanguage: true
+        )
+        // Coalesced: every span ends up tagged "de", regardless of
+        // span count (placeholder boundaries may or may not survive
+        // coalescing depending on detector verdict for the title).
+        #expect(spans.allSatisfy { $0.language == "de" })
+    }
+
+    @Test("toggle off → single DE span even with English title")
+    func mixedLanguageDisabled() {
+        let event = ServerCalendarEvent(
+            graph_event_id: "id",
+            subject: "Quarterly Business Review",
+            start: "2026-04-28T14:00:00+02:00",
+            end: "2026-04-28T15:00:00+02:00",
+            is_all_day: false,
+            show_as: "busy",
+            rsvp_status: "accepted",
+            organizer: ServerAttendee(name: "Florian", email: "florian@example.com"),
+            attendees: [ServerAttendee(name: "Alex", email: "alex@example.com")],
+            body_preview: "",
+            is_recurring: false,
+            web_link: ""
+        )
+        let spans = OpenerTemplates.script(
+            slot: .oneOnOne,
+            event: event,
+            language: .de,
+            mixedLanguage: false
+        )
+        #expect(spans.count == 1)
+        #expect(spans.first?.language == "de")
+    }
+
     // MARK: - helpers
 
     private func makeEvent(attendees: [String], duration: Int, recurring: Bool) -> ServerCalendarEvent {

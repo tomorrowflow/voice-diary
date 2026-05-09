@@ -1,0 +1,19 @@
+{
+  "name": "StatusDot",
+  "description": "Tiny coloured dot used inline with text to mark state. Five colours. Pulses optional via `.pulse` modifier.",
+  "variants": {
+    "destructive": { "fill": "semantic.status.destructive" },
+    "warning":     { "fill": "semantic.status.warning" },
+    "success":     { "fill": "semantic.status.success" },
+    "link":        { "fill": "semantic.text.link" },
+    "subdued":     { "fill": "semantic.text.subdued" }
+  },
+  "sizes": {
+    "sm": { "size": 8 },
+    "md": { "size": 10 }
+  },
+  "platformNotes": {
+    "swiftui": "Circle().fill(...).frame(width:height:). Use Theme.color.status.* and Theme.color.text.*.",
+    "web":     "Class .dot.dot-rec / .dot-warn / .dot-success / .dot-link / .dot-subdued."
+  }
+}

@@ -160,6 +160,91 @@ public enum OpenerTemplates {
         return render(slot: s, event: event, language: language)
     }
 
+    // MARK: - Script-style rendering (mixed-language voice routing)
+
+    /// Render an opener as a sequence of language-tagged spans. Each
+    /// `{title}` / `{who}` placeholder whose value reads as a *different*
+    /// language from the surrounding template is emitted as its own span
+    /// so `WalkthroughCoordinator.speak(script:)` can route it to the
+    /// matching voice.
+    ///
+    /// When `mixedLanguage` is false, every span gets the template's
+    /// language — collapses back to the legacy single-voice path.
+    public static func script(
+        slot: OpenerSlot,
+        event: ServerCalendarEvent,
+        language: OpenerLanguage = .de,
+        mixedLanguage: Bool = WalkthroughSettingsStore.mixedLanguageSpeech
+    ) -> [SpokenSpan] {
+        let template = templates(language)[slot] ?? fallback(language)
+        let baseLang = language.rawValue
+
+        // Substitute non-foreign-leaking placeholders (time/range/duration)
+        // first — these never trigger a voice switch, so doing them up
+        // front leaves only {title}/{who} as potential split points.
+        var pre = template
+        pre = pre.replacingOccurrences(of: "{time}", with: timeString(event.startDate))
+        pre = pre.replacingOccurrences(of: "{time_range}", with: timeRange(event.startDate, event.endDate))
+        pre = pre.replacingOccurrences(of: "{duration}", with: durationString(event.durationMinutes, language: language))
+
+        let title = event.subject.isEmpty ? defaultTitle(language) : event.subject
+        let who = event.primaryAttendeeName
+
+        let titleLang = mixedLanguage
+            ? (LanguageDetector.detect(title) ?? baseLang)
+            : baseLang
+        let whoLang = mixedLanguage
+            ? (LanguageDetector.detect(who) ?? baseLang)
+            : baseLang
+
+        // Walk the template once, emitting a span every time we cross a
+        // placeholder. The span's language is the surrounding template's
+        // language; the placeholder span's language is the detected one.
+        var spans: [SpokenSpan] = []
+        var cursor = pre.startIndex
+
+        // Order-stable scan: find earliest placeholder occurrence each step.
+        let markers: [(token: String, value: String, lang: String)] = [
+            ("{title}", title, titleLang),
+            ("{who}",   who,   whoLang),
+        ]
+
+        while cursor < pre.endIndex {
+            // Find the next placeholder occurrence.
+            let candidates = markers.compactMap { marker -> (Range<String.Index>, (String, String, String))? in
+                guard let r = pre.range(of: marker.token, range: cursor..<pre.endIndex) else { return nil }
+                return (r, marker)
+            }
+            guard let next = candidates.min(by: { $0.0.lowerBound < $1.0.lowerBound }) else {
+                // No more placeholders — emit the trailing tail in baseLang.
+                let tail = String(pre[cursor..<pre.endIndex])
+                spans.append(SpokenSpan(text: tail, language: baseLang))
+                break
+            }
+            let (range, marker) = next
+            // Lead-in fragment in baseLang, then the placeholder value
+            // in its detected language.
+            let lead = String(pre[cursor..<range.lowerBound])
+            spans.append(SpokenSpan(text: lead, language: baseLang))
+            spans.append(SpokenSpan(text: marker.1, language: marker.2))
+            cursor = range.upperBound
+        }
+
+        return spans.coalesced()
+    }
+
+    /// Convenience: pick the slot from the day position and emit spans.
+    public static func scriptLine(
+        for event: ServerCalendarEvent,
+        index: Int,
+        of total: Int,
+        language: OpenerLanguage = .de,
+        mixedLanguage: Bool = WalkthroughSettingsStore.mixedLanguageSpeech
+    ) -> [SpokenSpan] {
+        let s = slot(for: event, positionInDay: position(of: index, count: total))
+        return script(slot: s, event: event, language: language, mixedLanguage: mixedLanguage)
+    }
+
     // MARK: - Follow-up rotation (SPEC §11.4)
 
     /// Rotation pool used when the on-device LLM isn't available or

@@ -63,7 +63,24 @@ struct CaptureWidgetView: View {
     let entry: CaptureWidgetEntry
 
     var body: some View {
-        Link(destination: URL(string: "voicediary://capture/start")!) {
+        // App Intent button so a lock-screen tap triggers the system
+        // press animation + haptic before the intent runs (matches the
+        // flashlight / camera shortcuts). The intent's
+        // `openAppWhenRun = true` surfaces the app in the foreground;
+        // the consumer in `IntentRouter.processPending` switches the
+        // root TabView to the Aufnahme tab and starts recording.
+        //
+        // Two earlier mistakes reverted here:
+        //   • `Color.clear` was being passed to `.containerBackground`,
+        //     which suppressed the lock-screen accent material and made
+        //     the icon stay at full opacity against dark wallpapers.
+        //     Now we hand the system `AccessoryWidgetBackground()` as
+        //     the container background so it can apply its standard
+        //     accent + vibrancy treatment.
+        //   • `.buttonStyle(.plain)` stripped the press animation +
+        //     haptic from the App Intent button. Default style keeps
+        //     them.
+        Button(intent: CaptureThoughtIntent()) {
             switch family {
             case .accessoryCircular: circular
             case .accessoryRectangular: rectangular
@@ -71,25 +88,30 @@ struct CaptureWidgetView: View {
             default: circular
             }
         }
-        .containerBackground(for: .widget) { Color.clear }
+        .containerBackground(for: .widget) {
+            AccessoryWidgetBackground()
+        }
     }
 
     private var circular: some View {
-        ZStack {
-            AccessoryWidgetBackground()
-            Image(systemName: entry.isRecording ? "record.circle.fill" : "mic.circle.fill")
-                .font(.system(size: 28, weight: .semibold))
-                .symbolRenderingMode(.hierarchical)
-        }
+        // No ZStack — `AccessoryWidgetBackground()` is now the
+        // container background, not a sibling view. The icon is the
+        // only thing inside the button label, which is what the system
+        // expects on `.accessoryCircular`.
+        Image(systemName: entry.isRecording ? "record.circle.fill" : "mic.circle.fill")
+            .font(.system(size: 28, weight: .semibold))
+            .widgetAccentable()
     }
 
     private var rectangular: some View {
         HStack(spacing: 8) {
             Image(systemName: entry.isRecording ? "record.circle.fill" : "mic.circle.fill")
                 .font(.title2)
+                .widgetAccentable()
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.isRecording ? "Aufnahme läuft" : "Voice Diary")
                     .font(.headline)
+                    .widgetAccentable()
                 Text(entry.isRecording ? "Tippen zum Stoppen" : "Tippen zum Aufnehmen")
                     .font(.caption)
                     .foregroundStyle(.secondary)

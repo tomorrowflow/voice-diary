@@ -64,6 +64,15 @@ public final class CaptureCoordinator {
                            directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let audio = dir.appending(path: "audio.m4a")
+            // Pre-arm the AVAudioSession before `engine.start()`. When
+            // the drive-by trigger originates from the lock-screen widget
+            // / Action Button, `start()` runs as the app is just being
+            // foregrounded — calling `setCategory(.playAndRecord)` on a
+            // not-yet-fully-active scene reliably hits
+            // `Failed to set properties, error: '!int'`. Pre-arming
+            // configures the session idempotently and tolerates being
+            // called when the category is already set.
+            try await engine.prepareSession()
             try await engine.start(outputURL: audio)
             let now = Date()
             startedAt = now
@@ -85,7 +94,13 @@ public final class CaptureCoordinator {
         timer = nil
         statusLine = "Transkribiere …"
         do {
-            guard let url = try await engine.stop(), let started = startedAt else {
+            let captured = try await engine.stop()
+            // Drive-by is one-shot — once the segment is finalised, tear
+            // the engine fully down. We pre-armed it in `start()` to
+            // cope with the lock-screen / Action-Button trigger path,
+            // so it's running until we explicitly shutdown here.
+            await engine.shutdown()
+            guard let url = captured, let started = startedAt else {
                 isRecording = false
                 statusLine = ""
                 persistRecordingState(active: false, startedAt: nil)

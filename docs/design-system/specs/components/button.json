@@ -15,6 +15,20 @@
   },
   "states": ["default", "hover", "active", "focus", "disabled", "loading"],
   "slots": ["leadingIcon", "label", "trailingIcon"],
+  "feedback": {
+    "press": {
+      "opacity": 0.92,
+      "easing": "spring(response 0.30, damping 0.78)"
+    },
+    "release": {
+      "flashColor": "white",
+      "flashOpacity": 0.45,
+      "blendMode": "plusLighter",
+      "durationMs": 240,
+      "easing": "easeOut",
+      "rationale": "Visual analog of the haptic confirmation tap. Required because iOS silences every haptic API (UIImpactFeedbackGenerator, .sensoryFeedback, CHHapticEngine even with playsHapticsOnly = true, AudioServicesPlaySystemSound) while an AVAudioEngine is mid-recording in .playAndRecord — and the walkthrough's primary CTA (Weiter) is tapped during exactly that state. The flash fires on press-release so it always confirms 'tap registered', regardless of audio session state."
+    }
+  },
   "a11y": {
     "role": "button",
     "keyboard": ["Enter", "Space"],

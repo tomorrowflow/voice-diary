@@ -29,18 +29,37 @@ public final class AppleSpeechTTS: NSObject, TTSEngine, AVSpeechSynthesizerDeleg
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        let voice = Self.voice(for: language)
         let utterance = AVSpeechUtterance(string: trimmed)
-        utterance.voice = Self.voice(for: language)
+        utterance.voice = voice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.95
         utterance.pitchMultiplier = 1.0
+        utterance.volume = 1.0   // honour the system volume verbatim, no per-utterance attenuation
         utterance.preUtteranceDelay = 0.05
         utterance.postUtteranceDelay = 0.10
 
         let key = ObjectIdentifier(utterance)
+        let start = Date()
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             pending.withLock { $0[key] = cont }
             synth.speak(utterance)
         }
+        let totalMs = Int(Date().timeIntervalSince(start) * 1000)
+        // Apple's AVSpeechSynthesizer doesn't separate "synthesis time" from
+        // "playback time" — `speak()` returns when playback ends. So `total`
+        // here is wall-clock parity with PiperTTS's `synth + play` total. The
+        // voice quality tier is included so we can spot the gap between
+        // Premium / Enhanced / Default tiers in the same log line.
+        let voiceID = voice?.identifier ?? "default"
+        let qualityTag: String
+        switch voice?.quality {
+        case .premium:  qualityTag = "premium"
+        case .enhanced: qualityTag = "enhanced"
+        default:        qualityTag = "standard"
+        }
+        Log.app.notice(
+            "AppleSpeechTTS speak lang=\(language, privacy: .public) chars=\(trimmed.count, privacy: .public) total=\(totalMs, privacy: .public)ms voice=\(voiceID, privacy: .public) quality=\(qualityTag, privacy: .public)"
+        )
     }
 
     public func cancel() async {

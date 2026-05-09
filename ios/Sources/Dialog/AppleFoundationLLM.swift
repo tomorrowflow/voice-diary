@@ -91,6 +91,50 @@ public actor AppleFoundationLLM {
         #endif
     }
 
+    /// Follow-up question for a user-defined "general" section
+    /// (e.g. "Lernen", "Tagesabschluss"). Same shape as
+    /// `generateFollowUp` but seeded from the section's title +
+    /// intro text instead of a calendar event. Used by the
+    /// walkthrough's 6 s lull branch when the user has enabled
+    /// follow-ups for that section.
+    public func generateGeneralFollowUp(
+        sectionTitle: String,
+        sectionIntro: String,
+        userTranscript: String,
+        language: String
+    ) async throws -> String {
+        #if canImport(FoundationModels)
+        guard SystemLanguageModel.default.isAvailable else {
+            throw LLMError.unavailable("system_model_not_ready")
+        }
+        let isGerman = language.hasPrefix("de")
+        let session = LanguageModelSession(
+            model: SystemLanguageModel.default,
+            instructions: Self.systemInstructions(german: isGerman)
+        )
+        let prompt = makeGeneralFollowUpPrompt(
+            sectionTitle: sectionTitle,
+            sectionIntro: sectionIntro,
+            userTranscript: userTranscript,
+            german: isGerman
+        )
+        do {
+            let response = try await session.respond(to: prompt)
+            let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw LLMError.empty }
+            let cleaned = cleanForSpeech(text)
+            try Self.assertLanguage(cleaned, expectedGerman: isGerman)
+            return cleaned
+        } catch let error as LLMError {
+            throw error
+        } catch {
+            throw LLMError.underlying(error)
+        }
+        #else
+        throw LLMError.unavailable("FoundationModels_not_compiled_in")
+        #endif
+    }
+
     /// Scan a free-form segment transcript for *implicit* todos —
     /// commitments / next-actions the user spoke without an explicit
     /// trigger phrase ("ich rufe morgen Stephan an", "wir machen das
@@ -271,6 +315,50 @@ public actor AppleFoundationLLM {
             User's response: \(transcriptLine)
             Generate ONE short follow-up question (max 12 words) IN ENGLISH.
             Return only the question.
+            """
+        }
+    }
+
+    private func makeGeneralFollowUpPrompt(
+        sectionTitle: String,
+        sectionIntro: String,
+        userTranscript: String,
+        german: Bool
+    ) -> String {
+        let trimmedIntro = sectionIntro.trimmingCharacters(in: .whitespacesAndNewlines)
+        let introLine: String
+        if trimmedIntro.isEmpty {
+            introLine = german
+                ? "(keine Einleitung vorhanden)"
+                : "(no intro provided)"
+        } else {
+            introLine = trimmedIntro
+        }
+        let transcriptLine: String
+        if userTranscript.isEmpty {
+            transcriptLine = german
+                ? "(Transkript nicht verfügbar — stelle eine zur Einleitung passende Vertiefung.)"
+                : "(transcript not available — ask a deepening question that fits the intro)"
+        } else {
+            transcriptLine = userTranscript
+        }
+        if german {
+            return """
+            Der Nutzer reflektiert gerade in einem benutzerdefinierten Tagebuch-Abschnitt.
+            Abschnittstitel: \(sectionTitle).
+            Einleitung des Abschnitts: \(introLine).
+            Bisherige Reaktion des Nutzers: \(transcriptLine)
+            Stelle EINE kurze Folgefrage (maximal 12 Wörter) AUF DEUTSCH,
+            die im Geist der Einleitung weiterführt. Gib nur die Frage zurück.
+            """
+        } else {
+            return """
+            The user is reflecting in a user-defined diary section.
+            Section title: \(sectionTitle).
+            Section intro: \(introLine).
+            User's response so far: \(transcriptLine)
+            Generate ONE short follow-up question (max 12 words) IN ENGLISH
+            that continues in the spirit of the intro. Return only the question.
             """
         }
     }

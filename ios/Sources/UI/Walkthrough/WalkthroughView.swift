@@ -3,7 +3,24 @@ import SwiftUI
 @MainActor
 public struct WalkthroughView: View {
     @State private var coordinator = WalkthroughCoordinator.shared
-    @State private var showEnrichment: Bool = false
+    /// Core-Haptics-backed tap feedback. Used for Begin (fires
+    /// reliably — no recording active yet). The Weiter tap does not
+    /// produce a haptic on iPhone 17 Pro / iOS 26 because iOS silences
+    /// every haptic path (UIImpactFeedbackGenerator, `.sensoryFeedback`,
+    /// `CHHapticEngine` with `playsHapticsOnly = true`, even
+    /// `AudioServicesPlaySystemSound`) while an `AVAudioEngine` is
+    /// recording in `.playAndRecord`. Voice Memos avoids this by
+    /// using `.record` only — we can't, since we need playback for
+    /// TTS in the same session. `DSButtonStyle` already flashes the
+    /// button visually on press; that's the user-visible feedback
+    /// during a segment. `haptics.tap()` is left in the action so it
+    /// fires in any non-recording state (e.g., end-of-walkthrough).
+    @StateObject private var haptics = HapticPlayer()
+    // The enrichment sheet was previously presented by a "Frage stellen"
+    // ghost button in the bottom action stack. That button was dropped
+    // along with Skip / Finish-early so the dialog flows uninterrupted;
+    // the sheet itself is intentionally not deleted (see EnrichmentSheet
+    // below) in case a voice-driven trigger surfaces it again later.
     @State private var modelState: ParakeetManager.LoadState = .idle
 
     public init() {}
@@ -73,6 +90,17 @@ public struct WalkthroughView: View {
             VStack(spacing: 0) {
                 Spacer()
                 if coordinator.state.isInEventLoop {
+                    // Combined status row above the timer. Same horizontal
+                    // slot covers the AI-speaking indicator AND the silence
+                    // hint; only one is ever visible. Reserved-height so the
+                    // ListeningTimer's vertical position never jumps.
+                    StatusIndicator(
+                        isSpeaking: coordinator.isSpeaking,
+                        silenceLevel: coordinator.silenceLevel,
+                        isWakeListening: coordinator.isWakeListening
+                    )
+                    .padding(.bottom, Theme.spacing.xs)
+
                     // Pinned counter — same Y from the bottom regardless
                     // of what's in the scroll area above. Lives in the
                     // overlay (not the scroll view) so EventCard growth
@@ -81,45 +109,37 @@ public struct WalkthroughView: View {
                         .padding(.bottom, Theme.spacing.sm)
                 }
                 if coordinator.state.isInEventLoop {
+                    // Single-action bottom: the dialog drives itself, so the
+                    // user only ever needs to confirm "I'm done with this
+                    // event" via Weiter. Skip / Finish-early / Frage-stellen
+                    // were dropped because they encouraged interrupting the
+                    // assistant rather than letting the dialogue flow. The
+                    // wake-word "Hey Voice Diary" still triggers enrichment;
+                    // a future skip-by-voice command can replace the button.
                     BottomActionStack {
-                        Button {
-                            showEnrichment = true
-                        } label: {
-                            Label("Frage stellen", systemImage: "magnifyingglass")
-                                .foregroundStyle(Theme.color.text.link)
-                        }
-                        .buttonStyle(.dsGhost(fullWidth: true))
-                        .opacity(coordinator.isEnriching ? 0.4 : 1.0)
-                        .disabled(coordinator.isEnriching)
-
-                        HStack(spacing: Theme.spacing.sm) {
-                            Button {
-                                Task { await coordinator.skip() }
-                            } label: {
-                                Text("Überspringen")
-                            }
-                            .buttonStyle(.dsSecondary(fullWidth: true))
-
-                            Button {
-                                Task { await coordinator.finishEarly() }
-                            } label: {
-                                Text("Ich bin fertig")
-                            }
-                            .buttonStyle(.dsSecondary(fullWidth: true))
-                        }
+                        Text(bottomHintText)
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
 
                         Button {
+                            // No-op when iOS is muting haptics during
+                            // recording — see comment on `haptics`.
+                            // The button still feels live thanks to the
+                            // `.dsPrimary` opacity / scale press
+                            // animation baked into DSButtonStyle.
+                            haptics.tap()
                             Task { await coordinator.advance() }
                         } label: {
                             Label("Weiter", systemImage: "arrow.right.circle.fill")
                         }
                         .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
                     }
-                } else if case .confirmingTodos = coordinator.state {
-                    TodoConfirmationActions(coordinator: coordinator)
                 } else if case .idle = coordinator.state {
                     BottomActionStack {
                         Button {
+                            haptics.tap()
                             Task { await coordinator.begin() }
                         } label: {
                             startCtaLabel
@@ -131,15 +151,19 @@ public struct WalkthroughView: View {
             }
             .ignoresSafeArea(.keyboard)
         }
-        .sheet(isPresented: $showEnrichment) {
-            EnrichmentSheet(coordinator: coordinator, isPresented: $showEnrichment)
-        }
         .task {
             // Surface Parakeet load state so the user sees the
             // ~1.2 GB first-launch download instead of silently
             // hitting "Sitzung starten" before the model is ready.
             await ParakeetManager.shared.warmUp()
             modelState = await ParakeetManager.shared.loadState
+        }
+        .onAppear {
+            // Boot Core Haptics ahead of the first tap so the initial
+            // Begin / Weiter is as crisp as subsequent ones. The
+            // engine survives audio-recording mute via
+            // `playsHapticsOnly = true`.
+            haptics.start()
         }
     }
 
@@ -152,15 +176,24 @@ public struct WalkthroughView: View {
             return 120
         case .briefing, .eventOpener, .eventListening,
              .generalOpener, .generalListening,
-             .driveByOpener, .driveByListening:
+             .driveByOpener, .driveByListening,
+             .confirmingTodos:
             // Action stack (~190) + pinned timer (80 slot + 12 padding) +
-            // breathing room — keeps the EventCard above both.
+            // breathing room — keeps the section card above both.
             return 320
-        case .confirmingTodos:
-            return 200
         default:
             return Theme.spacing.lg
         }
+    }
+
+    /// Caption above the Weiter button. Phrased per state so the affordance
+    /// reads correctly: in a normal listening loop "Weiter = next event",
+    /// in todo confirmation "Weiter = skip this candidate".
+    private var bottomHintText: String {
+        if case .confirmingTodos = coordinator.state {
+            return "Sag Ja, Nein oder formuliere die Aufgabe um. Weiter überspringt diese Aufgabe."
+        }
+        return "Sprich frei. Tippe Weiter, wenn du zum nächsten Termin willst."
     }
 
     private var isModelReady: Bool {
@@ -377,6 +410,65 @@ private struct ListeningTimer: View {
     }
 }
 
+/// Combined status row above the ListeningTimer. Surfaces, in priority
+/// order:
+///   1. "Stimme spricht …" while the assistant is talking (covers both
+///      Piper synthesis and audible playback).
+///   2. "Höre auf 'Weiter' …" while the M7 wake-word window is open.
+///   3. "Stille seit Xs" once a lull threshold has been crossed.
+///   4. Empty (reserved-height slot) the rest of the time.
+///
+/// Only one signal is shown at a time so the row stays calm. The fixed
+/// frame height prevents the surrounding overlay from shifting when the
+/// status changes mid-event.
+@MainActor
+private struct StatusIndicator: View {
+    let isSpeaking: Bool
+    let silenceLevel: Int
+    let isWakeListening: Bool
+
+    var body: some View {
+        HStack(spacing: Theme.spacing.xs) {
+            if isSpeaking {
+                ProgressView().controlSize(.small)
+                Text("Stimme spricht …")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+            } else if isWakeListening {
+                // Wake-word window is open — the ping has played and
+                // the streaming ASR is hot. Take priority over the
+                // silence indicator so the user knows we're listening
+                // for a command, not just counting quiet seconds.
+                Image(systemName: "waveform.badge.mic")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.link)
+                Text("Höre auf „Weiter\" …")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.link)
+            } else if silenceLevel >= 6 {
+                // 3 s threshold isn't surfaced here — that slot belongs
+                // to the wake-word indicator above. We start showing
+                // the silence counter at 6 s so the user sees a clean
+                // sequence: (nothing) → "Höre auf 'Weiter'" →
+                // "Stille seit 6s" → "Stimme spricht …" → 15 s update
+                // → 20 s auto-advance.
+                Image(systemName: "ear.badge.waveform")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                Text("Stille seit \(silenceLevel)s")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 20)                  // reserved slot — prevents layout jumps
+        .opacity(isSpeaking || isWakeListening || silenceLevel >= 6 ? 1 : 0)
+        .animation(Theme.motion.snappy, value: isSpeaking)
+        .animation(Theme.motion.snappy, value: isWakeListening)
+        .animation(Theme.motion.snappy, value: silenceLevel)
+    }
+}
+
 @MainActor
 private struct StartCard: View {
     let coordinator: WalkthroughCoordinator
@@ -398,7 +490,16 @@ private struct StartCard: View {
             DayOverview(
                 events: coordinator.previewEvents,
                 isLoading: coordinator.isPreviewing,
-                error: coordinator.previewError
+                error: coordinator.previewError,
+                onRefresh: {
+                    Task {
+                        await coordinator.previewDay(selectedDate)
+                        await coordinator.loadRecordedDates(around: selectedDate)
+                    }
+                },
+                onOpenSettings: {
+                    AppRouter.shared.selectedTab = .mehr
+                }
             )
         }
         .padding(Theme.spacing.md)
@@ -542,7 +643,9 @@ private struct StartCard: View {
 private struct DayOverview: View {
     let events: [ServerCalendarEvent]
     let isLoading: Bool
-    let error: String?
+    let error: ConnectionDiagnosis?
+    let onRefresh: () -> Void
+    let onOpenSettings: () -> Void
 
     private var timed: [ServerCalendarEvent] {
         events.filter { !$0.is_all_day && $0.startDate != nil }
@@ -563,9 +666,12 @@ private struct DayOverview: View {
             }
 
             if let error {
-                Text(error)
-                    .font(Theme.font.caption)
-                    .foregroundStyle(Theme.color.status.destructive)
+                ConnectionErrorCard(
+                    diagnosis: error,
+                    isLoading: isLoading,
+                    onRefresh: onRefresh,
+                    onOpenSettings: onOpenSettings
+                )
             } else if events.isEmpty && !isLoading {
                 Text("Keine zugesagten Termine.")
                     .font(Theme.font.callout)
@@ -584,6 +690,110 @@ private struct DayOverview: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Replaces the single-line red error string in DayOverview with a
+/// proper card: icon + title + actionable hint + technical detail in a
+/// monospaced caption + a primary action ("Tagesübersicht erneut laden"
+/// or "Einstellungen öffnen", depending on the diagnosis).
+@MainActor
+private struct ConnectionErrorCard: View {
+    let diagnosis: ConnectionDiagnosis
+    let isLoading: Bool
+    let onRefresh: () -> Void
+    let onOpenSettings: () -> Void
+
+    @State private var detailExpanded: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            HStack(alignment: .top, spacing: Theme.spacing.sm) {
+                Image(systemName: diagnosis.systemImage)
+                    .font(.system(size: 22))
+                    .foregroundStyle(Theme.color.status.destructive)
+                    .frame(width: 28)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(diagnosis.title)
+                        .font(Theme.font.callout.weight(.semibold))
+                        .foregroundStyle(Theme.color.text.primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text(diagnosis.hint)
+                        .font(Theme.font.caption)
+                        .foregroundStyle(Theme.color.text.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            if let detail = diagnosis.detail, !detail.isEmpty {
+                Button {
+                    detailExpanded.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: detailExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(detailExpanded ? "Technische Details ausblenden" : "Technische Details")
+                            .font(Theme.font.caption2)
+                    }
+                    .foregroundStyle(Theme.color.text.subdued)
+                }
+                .buttonStyle(.plain)
+
+                if detailExpanded {
+                    Text(detail)
+                        .font(Theme.font.monoCaption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(Theme.spacing.xs)
+                        .background(
+                            RoundedRectangle(cornerRadius: Theme.radius.sm, style: .continuous)
+                                .fill(Theme.color.bg.surface)
+                        )
+                }
+            }
+
+            primaryAction
+        }
+        .padding(Theme.spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .fill(Theme.color.bg.containerInset)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .strokeBorder(Theme.color.status.destructive.opacity(0.30), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private var primaryAction: some View {
+        switch diagnosis.kind {
+        case .notConfigured:
+            Button {
+                onOpenSettings()
+            } label: {
+                Label("Einstellungen öffnen", systemImage: "gearshape.fill")
+            }
+            .buttonStyle(.dsPrimary(fullWidth: true))
+        default:
+            Button {
+                onRefresh()
+            } label: {
+                if isLoading {
+                    HStack(spacing: Theme.spacing.xs) {
+                        ProgressView().controlSize(.small)
+                            .tint(Theme.color.text.inverse)
+                        Text("Lade …")
+                    }
+                } else {
+                    Label("Tagesübersicht erneut laden", systemImage: "arrow.clockwise")
+                }
+            }
+            .buttonStyle(.dsPrimary(fullWidth: true))
+            .disabled(isLoading)
         }
     }
 }
@@ -716,145 +926,34 @@ private struct UploadingCard: View {
     }
 }
 
-/// CLOSING confirmation pass for an implicit-todo candidate.
-/// Renders only the EDITOR prompt and the candidate text — actions live
-/// in the parent's bottom action stack (`TodoConfirmationActions`).
+/// CLOSING confirmation pass for an implicit-todo candidate. Renders the
+/// candidate as a card visually consistent with `EventCard` so the user
+/// reads the confirmation pass as another listening step instead of a
+/// modal popover. Voice-driven: the answer is captured by the coordinator's
+/// `runTodoAnswerCapture` (yes/no/refine via Parakeet → TodoAnswerParser).
+/// The Weiter button in the parent's bottom action stack maps to "skip
+/// this candidate" via `coordinator.advance()`.
 @MainActor
 private struct TodoConfirmationCard: View {
     let coordinator: WalkthroughCoordinator
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.lg) {
-            // EDITOR prompt removed: TTS speaks "Ja, nein, oder anders?"
-            // — visible duplicate was redundant.
+        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            Text("AUFGABE")
+                .font(Theme.font.monoCaption)
+                .foregroundStyle(Theme.color.text.subdued)
+                .tracking(0.5)
 
-            VStack(alignment: .leading, spacing: Theme.spacing.md) {
-                Text("AUFGABE")
-                    .font(Theme.font.monoCaption)
-                    .foregroundStyle(Theme.color.text.subdued)
-                    .tracking(0.5)
-                Text(coordinator.currentTodoCandidate?.text ?? "")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(Theme.color.text.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Divider().background(Theme.color.border.subdued)
-                if coordinator.isAwaitingTodoAnswer {
-                    HStack(spacing: Theme.spacing.xs) {
-                        Circle()
-                            .fill(Theme.color.status.destructive)
-                            .frame(width: 8, height: 8)
-                        Text("höre dich")
-                            .font(Theme.font.caption)
-                            .foregroundStyle(Theme.color.text.subdued)
-                        Spacer(minLength: 0)
-                    }
-                }
-            }
+            Text(coordinator.currentTodoCandidate?.text ?? "")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(Theme.color.text.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-}
-
-/// Bottom action stack rendered for `.confirmingTodos`. Mirrors the
-/// design's three-button pattern: Anders + Nein on top (Nein styled with
-/// destructive border per DESIGN.md), Ja primary at the bottom. Tapping
-/// "Anders" reveals an inline rename field and swaps the actions to
-/// Abbrechen / Übernehmen.
-@MainActor
-private struct TodoConfirmationActions: View {
-    let coordinator: WalkthroughCoordinator
-    @State private var refining: Bool = false
-    @State private var refinedText: String = ""
-    @FocusState private var refineFocused: Bool
-
-    var body: some View {
-        BottomActionStack {
-            if refining {
-                TextField("Aufgabe umformulieren", text: $refinedText, axis: .vertical)
-                    .lineLimit(2...4)
-                    .focused($refineFocused)
-                    .padding(Theme.spacing.sm)
-                    .background(
-                        RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
-                            .fill(Theme.color.bg.container)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
-                            .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-                    )
-
-                HStack(spacing: Theme.spacing.sm) {
-                    Button("Abbrechen") {
-                        refining = false
-                        refinedText = ""
-                        refineFocused = false
-                    }
-                    .buttonStyle(.dsGhost(fullWidth: true))
-
-                    Button("Übernehmen") {
-                        let snapshot = refinedText
-                        refining = false
-                        refineFocused = false
-                        Task { await coordinator.refineCurrentTodo(snapshot) }
-                    }
-                    .buttonStyle(.dsPrimary(fullWidth: true))
-                    .disabled(refinedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
-            } else {
-                HStack(spacing: Theme.spacing.sm) {
-                    Button {
-                        refinedText = coordinator.currentTodoCandidate?.text ?? ""
-                        refining = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                            refineFocused = true
-                        }
-                    } label: {
-                        Label("Anders", systemImage: "pencil")
-                    }
-                    .buttonStyle(.dsSecondary(fullWidth: true))
-
-                    Button("Nein") {
-                        Task { await coordinator.rejectCurrentTodo() }
-                    }
-                    .buttonStyle(NeinButtonStyle())
-                }
-
-                Button {
-                    Task { await coordinator.confirmCurrentTodo() }
-                } label: {
-                    Text("Ja, übernehmen")
-                }
-                .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
-            }
-        }
-        .onChange(of: coordinator.todoCandidateProgress?.index) { _, _ in
-            refining = false
-            refinedText = ""
-            refineFocused = false
-        }
-    }
-}
-
-/// "Nein" gets a destructive-coloured border + label per DESIGN.md so it
-/// reads as the rejection action without filling the whole row in red.
-private struct NeinButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 16, weight: .medium))
-            .frame(height: 40)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, Theme.spacing.md)
-            .background(
-                configuration.isPressed
-                    ? Theme.color.tint.destructive10
-                    : Theme.color.bg.container
-            )
-            .foregroundStyle(Theme.color.status.destructive)
-            .overlay(
-                RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
-                    .strokeBorder(Theme.color.status.destructive, lineWidth: 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous))
-            .opacity(configuration.isPressed ? 0.92 : 1.0)
+        .padding(Theme.spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .fill(Theme.color.bg.containerInset)
+        )
     }
 }
 

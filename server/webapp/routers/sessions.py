@@ -236,6 +236,58 @@ async def session_status(session_id: str) -> SessionStatus:
     return status_obj
 
 
+@router.get("/api/sessions/dates")
+async def session_dates(
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> dict[str, list[str]]:
+    """Distinct calendar dates that already have at least one transcript.
+
+    `date_from` and `date_to` are inclusive ISO yyyy-MM-dd bounds; both are
+    optional (omit to query all-time). Used by the iOS walkthrough date
+    picker to mark which days have already been recorded *for*.
+    Note these are recording target dates (`manifest.date`), not upload
+    timestamps.
+    """
+    from datetime import date as _date
+
+    def _parse(label: str, value: str | None) -> _date | None:
+        if value is None:
+            return None
+        try:
+            return _date.fromisoformat(value)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"invalid_{label}",
+            ) from exc
+
+    lo = _parse("date_from", date_from)
+    hi = _parse("date_to", date_to)
+
+    pool = await db.get_pool()
+    if lo is not None and hi is not None:
+        rows = await pool.fetch(
+            "SELECT DISTINCT date FROM transcripts WHERE date BETWEEN $1 AND $2 ORDER BY date",
+            lo, hi,
+        )
+    elif lo is not None:
+        rows = await pool.fetch(
+            "SELECT DISTINCT date FROM transcripts WHERE date >= $1 ORDER BY date",
+            lo,
+        )
+    elif hi is not None:
+        rows = await pool.fetch(
+            "SELECT DISTINCT date FROM transcripts WHERE date <= $1 ORDER BY date",
+            hi,
+        )
+    else:
+        rows = await pool.fetch(
+            "SELECT DISTINCT date FROM transcripts ORDER BY date"
+        )
+    return {"dates": [r["date"].isoformat() for r in rows]}
+
+
 # --- per-segment pipeline -------------------------------------------------
 
 
