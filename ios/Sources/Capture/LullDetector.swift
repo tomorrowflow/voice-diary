@@ -37,21 +37,34 @@ public final class LullDetector: @unchecked Sendable {
     /// over the user just because they paused for a moment.
     private var onSpeechResumed: (@Sendable () -> Void)?
     /// Silence thresholds only fire AFTER the user has spoken at least
-    /// once since `start()`. Without this gate the first 3 s of
-    /// "thinking before talking" right after the AI's opener finishes
-    /// would immediately trip the 3 s threshold and open a wake-word
-    /// window before the user has had a chance to start their
-    /// reflection.
+    /// once since `start()` — UNLESS `firePreSpeech` is true. Without
+    /// this gate the first 3 s of "thinking before talking" right
+    /// after the AI's opener finishes would immediately trip the 3 s
+    /// threshold and open a wake-word window before the user has had
+    /// a chance to start their reflection.
     ///
     /// We require **sustained** non-silence (≥ 200 ms) before flipping
     /// the flag — a single noise spike (HVAC, the AI's last-ms speaker
     /// bleed-through, a chair creak) is not "the user spoke". Once
     /// flipped, the flag stays true for the lifetime of the listen run.
-    private var hasHeardSpeech: Bool = false
+    ///
+    /// Public getter — the todo-confirmation flow reads it to tell
+    /// "user gave a verbal answer" from "user stayed silent" when a
+    /// threshold fires.
+    private var _hasHeardSpeech: Bool = false
+    public var hasHeardSpeech: Bool { queue.sync { _hasHeardSpeech } }
     private var sustainedSpeechSamples: Int = 0
     /// 200 ms of consecutive non-silent buffers count as real speech.
     /// Resolves to a sample count once `sampleRate` is known.
     public var minSpeechMillis: Int = 200
+    /// When true, the silence accumulator runs from `start()` even if
+    /// the user hasn't spoken yet — so thresholds can fire on the
+    /// "user is silent the entire time" path. Used by the todo
+    /// confirmation pass: 3 s opens a "say weiter to skip" wake-word
+    /// window, 12 s auto-rejects. The default (`false`) preserves the
+    /// listening-loop behaviour — silence only counts after the user
+    /// has spoken at least once.
+    public var firePreSpeech: Bool = false
 
     public init() {}
 
@@ -70,7 +83,7 @@ public final class LullDetector: @unchecked Sendable {
             self.lastFiredAtSecond = -1
             self.firedThresholds.removeAll()
             self.sampleRate = 0
-            self.hasHeardSpeech = false
+            self._hasHeardSpeech = false
             self.sustainedSpeechSamples = 0
             self.onThresholdCrossed = onThresholdCrossed
             self.onSpeechResumed = onSpeechResumed
@@ -114,7 +127,13 @@ public final class LullDetector: @unchecked Sendable {
                 // Without this gate, every event would trip the 3 s
                 // wake-word threshold the instant the listen phase
                 // began.
-                guard self.hasHeardSpeech else { return }
+                //
+                // `firePreSpeech` opts back into pre-speech ticks. The
+                // todo confirmation flow needs this so a user who
+                // stays silent the entire time still gets the 3 s
+                // wake-word window (to say "weiter") and the 12 s
+                // auto-skip.
+                if !self.firePreSpeech && !self._hasHeardSpeech { return }
                 self.silentSamples += frameCount
                 let elapsedSeconds = Int(Double(self.silentSamples) / max(self.sampleRate, 1))
                 for threshold in self.thresholds where elapsedSeconds >= threshold && !self.firedThresholds.contains(threshold) {
@@ -130,10 +149,10 @@ public final class LullDetector: @unchecked Sendable {
                 //   2. Reset the silence tracker + fire onSpeechResumed
                 //      if we'd previously crossed a threshold.
                 self.sustainedSpeechSamples += frameCount
-                if !self.hasHeardSpeech {
+                if !self._hasHeardSpeech {
                     let neededSamples = Int(self.sampleRate * Double(self.minSpeechMillis) / 1000.0)
                     if self.sustainedSpeechSamples >= max(neededSamples, 1) {
-                        self.hasHeardSpeech = true
+                        self._hasHeardSpeech = true
                         Diag.log("LullDetector hasHeardSpeech=true (sustained=\(self.sustainedSpeechSamples) samples)")
                     }
                 }

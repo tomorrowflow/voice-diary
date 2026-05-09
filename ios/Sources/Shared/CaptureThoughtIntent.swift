@@ -1,13 +1,23 @@
 import AppIntents
 import Foundation
 
-// Action Button binding: "Voice Diary — Gedanke aufnehmen".
+// Drive-by capture toggle exposed both as the Action Button binding
+// ("Voice Diary — Gedanke aufnehmen") and as the tap target of the
+// lock-screen accessory widget. Living in `Sources/Shared` lets the
+// widget extension reference the intent directly — that's what gives
+// the lock-screen tap its haptic feedback (a `Link(URL)` doesn't
+// trigger one; an App Intent button does).
 //
 // Behavior: each invocation toggles drive-by capture. First press opens
 // the app and starts a recording; second press (while recording)
 // stops it. We *open the app on run* so AVAudioEngine has a foreground
 // audio session — starting capture from a true background context is
 // unreliable and we want the haptic + UI feedback anyway.
+//
+// The `AppShortcutsProvider` registration lives in
+// `Sources/Intents/VoiceDiaryAppShortcuts.swift` — it's main-app-only
+// so the widget extension doesn't accidentally re-register the
+// shortcut.
 
 public struct CaptureThoughtIntent: AppIntent {
     public static let title: LocalizedStringResource = "Gedanke aufnehmen"
@@ -32,20 +42,5 @@ public struct CaptureThoughtIntent: AppIntent {
         // Group inbox; the host app consumes it on scenePhase active.
         CaptureIntentInbox.write(.toggle)
         return .result()
-    }
-}
-
-public struct VoiceDiaryAppShortcuts: AppShortcutsProvider {
-    public static var appShortcuts: [AppShortcut] {
-        AppShortcut(
-            intent: CaptureThoughtIntent(),
-            phrases: [
-                "Mit \(.applicationName) etwas aufnehmen",
-                "Capture with \(.applicationName)",
-                "Hey \(.applicationName), Notiz aufnehmen",
-            ],
-            shortTitle: "Gedanke aufnehmen",
-            systemImageName: "mic.circle.fill"
-        )
     }
 }

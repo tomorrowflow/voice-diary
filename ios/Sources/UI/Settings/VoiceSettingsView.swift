@@ -1,23 +1,34 @@
 import AVFoundation
 import SwiftUI
 
-// Per-language voice picker. Reads installed voices from
-// `AVSpeechSynthesisVoice.speechVoices()` at appear time, groups them by
-// language (de / en), surfaces the quality tier (Premium/Enhanced/Standard)
-// and lets the user lock in a specific voice — or "Auto" to fall back to
-// the AppleSpeechTTS auto-selection (Premium > Enhanced > default).
+// Per-language voice picker. Combines Apple Premium voices (filtered
+// from `AVSpeechSynthesisVoice.speechVoices()`) and bundled Piper
+// voices (`PiperTTS.voices`) into a single radio list per language.
 //
-// Preview taps speak a one-line German or English sample with the chosen
-// voice (using `AppleSpeechTTS.shared` so volume + audio session match
-// the walkthrough). The selection takes effect immediately — no rebuild
-// required.
+// The selected row is the source of truth for both *which engine* runs
+// (the registry switches on the `piper:` prefix) and *which voice
+// within that engine* speaks. There is no separate engine picker — the
+// caption under each row tells the user which engine they're on.
+//
+// Non-premium Apple voices (Enhanced / Standard / Compact) are
+// intentionally hidden — they sound noticeably worse than both Premium
+// and Piper. If the user wants them, they can re-enable them via the
+// system Settings → Accessibility flow and we'll surface them again
+// when they change tier.
+//
+// Preview taps speak a one-line German or English sample with the
+// chosen voice using a dedicated `previewSynth` (Apple) or
+// `PiperTTS.shared.speak(text, stem:)` (Piper) — kept separate from
+// the walkthrough's continuation map so a tap never collides with an
+// in-flight evening session.
 
 @MainActor
 public struct VoiceSettingsView: View {
-    @State private var voicesByLanguage: [String: [AVSpeechSynthesisVoice]] = [:]
-    @State private var overrideByLanguage: [String: String?] = [:]
+    @State private var appleVoicesByLanguage: [String: [AVSpeechSynthesisVoice]] = [:]
+    @State private var selectedIDByLanguage: [String: String?] = [:]
     @State private var previewing: String?
-    // Dedicated synthesizer for previews — kept separate from
+    @State private var mixedLanguageSpeech: Bool = WalkthroughSettingsStore.mixedLanguageSpeech
+    // Dedicated synthesizer for Apple previews — kept separate from
     // AppleSpeechTTS.shared so a preview tap never collides with the
     // walkthrough's continuation map.
     @State private var previewSynth = AVSpeechSynthesizer()
@@ -30,83 +41,90 @@ public struct VoiceSettingsView: View {
     public init() {}
 
     public var body: some View {
-        Form {
-            ForEach(Self.supportedLanguages, id: \.code) { lang in
-                Section {
-                    autoRow(language: lang.code)
-                    ForEach(voicesByLanguage[lang.code] ?? [], id: \.identifier) { voice in
-                        voiceRow(voice: voice, language: lang.code, sample: lang.sample)
+        ZStack(alignment: .top) {
+            Theme.color.bg.surface.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                FlowHeader(title: "Stimmen")
+
+                Form {
+                    ForEach(Self.supportedLanguages, id: \.code) { lang in
+                        let appleVoices = appleVoicesByLanguage[lang.code] ?? []
+                        let piperVoices = PiperTTS.voices(for: lang.code)
+
+                        Section {
+                            ForEach(appleVoices, id: \.identifier) { voice in
+                                appleRow(voice: voice, language: lang.code, sample: lang.sample)
+                            }
+                            ForEach(piperVoices, id: \.stem) { voice in
+                                piperRow(voice: voice, language: lang.code)
+                            }
+                            if appleVoices.isEmpty && piperVoices.isEmpty {
+                                Text("Keine Stimmen verfügbar. Premium-Stimme über iOS-Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen laden, oder `ios/scripts/fetch_piper_voices.sh` ausführen.")
+                                    .font(Theme.font.caption)
+                                    .foregroundStyle(Theme.color.text.subdued)
+                            }
+                        } header: {
+                            Text(lang.label)
+                                .font(Theme.font.subheadline)
+                                .foregroundStyle(Theme.color.text.secondary)
+                        }
                     }
-                    if (voicesByLanguage[lang.code] ?? []).isEmpty {
-                        Text("Keine Stimmen installiert. iOS-Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen.")
+
+                    Section {
+                        Toggle(isOn: Binding(
+                            get: { mixedLanguageSpeech },
+                            set: { newValue in
+                                mixedLanguageSpeech = newValue
+                                WalkthroughSettingsStore.setMixedLanguageSpeech(newValue)
+                            }
+                        )) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Sprache pro Termin erkennen")
+                                    .font(Theme.font.body)
+                                Text("Englisch betitelte Termine werden mit der englischen Stimme gelesen, der deutsche Rahmen bleibt deutsch.")
+                                    .font(Theme.font.caption)
+                                    .foregroundStyle(Theme.color.text.subdued)
+                            }
+                        }
+                    } header: {
+                        Text("Sprachausgabe")
+                            .font(Theme.font.subheadline)
+                            .foregroundStyle(Theme.color.text.secondary)
+                    }
+
+                    Section {
+                        Text("Apple-Premium-Stimmen müssen einmalig in den iOS-Einstellungen geladen werden. Piper-Stimmen werden mit der App ausgeliefert (≈ 110 MB pro Stimme). Beide Engines spielen direkt auf dem Gerät — keine Cloud.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
-                } header: {
-                    Text(lang.label)
-                        .font(Theme.font.subheadline)
-                        .foregroundStyle(Theme.color.text.secondary)
                 }
-            }
-
-            Section {
-                Text("Premium-Stimmen müssen einmalig in den iOS-Einstellungen geladen werden. Voice Diary spielt sie sofort ab — kein App-Neustart nötig.")
-                    .font(Theme.font.caption)
-                    .foregroundStyle(Theme.color.text.subdued)
+                .scrollContentBackground(.hidden)
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(Theme.color.bg.surface.ignoresSafeArea())
-        .navigationTitle("Stimmen")
+        .navigationBarHidden(true)
         .onAppear { loadVoices() }
     }
 
     // MARK: - Rows
 
-    private func autoRow(language: String) -> some View {
-        let isSelected = (overrideByLanguage[language] ?? nil) == nil
-        return Button {
-            VoicePreferences.setSelectedVoiceID(nil, for: language)
-            overrideByLanguage[language] = nil
-        } label: {
-            HStack(spacing: Theme.spacing.sm) {
-                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(isSelected ? Theme.color.text.link : Theme.color.text.subdued)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Automatisch")
-                        .font(Theme.font.body)
-                        .foregroundStyle(Theme.color.text.primary)
-                    Text("Beste verfügbare Premium-Stimme")
-                        .font(Theme.font.caption)
-                        .foregroundStyle(Theme.color.text.subdued)
-                }
-                Spacer()
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
-    private func voiceRow(voice: AVSpeechSynthesisVoice, language: String, sample: String) -> some View {
-        let isSelected = (overrideByLanguage[language] ?? nil) == voice.identifier
+    private func appleRow(voice: AVSpeechSynthesisVoice, language: String, sample: String) -> some View {
+        let isSelected = (selectedIDByLanguage[language] ?? nil) == voice.identifier
         let isPreviewing = previewing == voice.identifier
         return HStack(spacing: Theme.spacing.sm) {
             Button {
                 VoicePreferences.setSelectedVoiceID(voice.identifier, for: language)
-                overrideByLanguage[language] = voice.identifier
+                selectedIDByLanguage[language] = voice.identifier
             } label: {
                 HStack(spacing: Theme.spacing.sm) {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(isSelected ? Theme.color.text.link : Theme.color.text.subdued)
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack(spacing: Theme.spacing.xs) {
-                            Text(voice.name)
-                                .font(Theme.font.body)
-                                .foregroundStyle(Theme.color.text.primary)
-                            QualityBadge(quality: voice.quality)
-                        }
-                        Text(voice.language)
-                            .font(Theme.font.monoCaption)
+                        Text(voice.name)
+                            .font(Theme.font.body)
+                            .foregroundStyle(Theme.color.text.primary)
+                        Text("Apple Premium · System (\(voice.language))")
+                            .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
                     Spacer()
@@ -116,7 +134,7 @@ public struct VoiceSettingsView: View {
             .buttonStyle(.plain)
 
             Button {
-                Task { await preview(voice: voice, sample: sample) }
+                Task { await previewApple(voice: voice, sample: sample) }
             } label: {
                 if isPreviewing {
                     ProgressView().controlSize(.small)
@@ -131,34 +149,74 @@ public struct VoiceSettingsView: View {
         }
     }
 
+    private func piperRow(voice: PiperTTS.PiperVoice, language: String) -> some View {
+        let available = PiperTTS.assets(forStem: voice.stem) != nil
+        let isSelected = (selectedIDByLanguage[language] ?? nil) == voice.voiceID
+        let isPreviewing = previewing == voice.voiceID
+        return HStack(spacing: Theme.spacing.sm) {
+            Button {
+                guard available else { return }
+                VoicePreferences.setSelectedVoiceID(voice.voiceID, for: language)
+                selectedIDByLanguage[language] = voice.voiceID
+            } label: {
+                HStack(spacing: Theme.spacing.sm) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? Theme.color.text.link : Theme.color.text.subdued)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(voice.label)
+                            .font(Theme.font.body)
+                            .foregroundStyle(available ? Theme.color.text.primary : Theme.color.text.subdued)
+                        Text(available
+                             ? voice.accent
+                             : "\(voice.accent) — Modelle nicht installiert")
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!available)
+
+            Button {
+                Task { await previewPiper(voice: voice) }
+            } label: {
+                if isPreviewing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "play.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(available ? Theme.color.text.link : Theme.color.text.subdued)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(!available || isPreviewing)
+        }
+    }
+
     // MARK: - Loading + preview
 
     private func loadVoices() {
         let installed = AVSpeechSynthesisVoice.speechVoices()
         var grouped: [String: [AVSpeechSynthesisVoice]] = [:]
         for lang in Self.supportedLanguages.map(\.code) {
-            let prefix = lang
-            let candidates = installed.filter { $0.language.hasPrefix(prefix) }
-            // Sort: Premium first, then Enhanced, then default; tie-break
-            // by name for stable ordering.
-            grouped[lang] = candidates.sorted { lhs, rhs in
-                let lq = score(lhs.quality), rq = score(rhs.quality)
-                if lq != rq { return lq > rq }
-                return lhs.name < rhs.name
+            // Premium-only — Enhanced and Standard tiers are intentionally
+            // hidden because they sound noticeably worse than both Premium
+            // and Piper, and the long unfiltered list overwhelms the picker.
+            let candidates = installed.filter {
+                $0.language.hasPrefix(lang) && $0.quality == .premium
             }
-            overrideByLanguage[lang] = VoicePreferences.selectedVoiceID(for: lang)
+            grouped[lang] = candidates.sorted { $0.name < $1.name }
+            selectedIDByLanguage[lang] = VoicePreferences.selectedVoiceID(for: lang)
         }
-        voicesByLanguage = grouped
+        appleVoicesByLanguage = grouped
     }
 
-    private func preview(voice: AVSpeechSynthesisVoice, sample: String) async {
+    private func previewApple(voice: AVSpeechSynthesisVoice, sample: String) async {
         previewing = voice.identifier
         defer { previewing = nil }
 
-        // Speak the sample with the picked voice — use the shared
-        // synth via a one-off utterance configured directly so the
-        // preview ignores any persisted preference and demonstrates
-        // the voice the user is *about* to choose.
         let utterance = AVSpeechUtterance(string: sample)
         utterance.voice = voice
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.95
@@ -169,50 +227,11 @@ public struct VoiceSettingsView: View {
         try? await Task.sleep(nanoseconds: 2_500_000_000)
     }
 
-    private func score(_ quality: AVSpeechSynthesisVoiceQuality) -> Int {
-        switch quality {
-        case .premium:  return 3
-        case .enhanced: return 2
-        default:        return 1
-        }
-    }
-}
-
-private struct QualityBadge: View {
-    let quality: AVSpeechSynthesisVoiceQuality
-
-    var body: some View {
-        Text(label)
-            .font(Theme.font.caption2.weight(.medium))
-            .foregroundStyle(textColor)
-            .padding(.horizontal, Theme.spacing.xs)
-            .padding(.vertical, 2)
-            .background(
-                Capsule().fill(bgColor)
-            )
-    }
-
-    private var label: String {
-        switch quality {
-        case .premium:  return "Premium"
-        case .enhanced: return "Enhanced"
-        default:        return "Standard"
-        }
-    }
-
-    private var textColor: Color {
-        switch quality {
-        case .premium:  return Theme.color.text.link
-        case .enhanced: return Theme.color.status.success
-        default:        return Theme.color.text.subdued
-        }
-    }
-
-    private var bgColor: Color {
-        switch quality {
-        case .premium:  return Theme.color.text.link.opacity(0.10)
-        case .enhanced: return Theme.color.status.success.opacity(0.10)
-        default:        return Theme.color.bg.containerInset
-        }
+    private func previewPiper(voice: PiperTTS.PiperVoice) async {
+        previewing = voice.voiceID
+        defer { previewing = nil }
+        // Pass the explicit stem so the preview demonstrates *this* row's
+        // voice, regardless of what the user has currently saved.
+        await PiperTTS.shared.speak(voice.sample, stem: voice.stem, language: voice.language)
     }
 }

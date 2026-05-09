@@ -48,6 +48,8 @@
 	</dict>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Voice Diary nimmt deine Sprache auf, um den Tag chronologisch zu reflektieren. (Voice Diary records your speech to walk through your day chronologically.)</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Voice Diary erkennt Befehle wie „weiter" oder „fertig" lokal auf dem Gerät, damit du den Walkthrough auch bei gesperrtem Bildschirm steuern kannst. (On-device only; nothing is sent to Apple.)</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>UIAppFonts</key>

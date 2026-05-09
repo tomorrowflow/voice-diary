@@ -78,22 +78,22 @@
   --color-orange-light: var(--color-orange-100);
   --color-orange-dark:  var(--color-orange-700);
 
-  /* --- status badges ----------------------------------------------- */
-  --status-pending-bg:    var(--color-yellow-100);
-  --status-pending-text:  var(--color-yellow-700);
-  --status-pending-border: var(--color-yellow-400);
-  --status-saved-bg:      var(--color-cyan-100);
-  --status-saved-text:    var(--color-cyan-700);
-  --status-saved-border:  var(--color-cyan-500);
-  --status-submitted-bg:    var(--color-blue-100);
-  --status-submitted-text:  var(--color-blue-700);
-  --status-submitted-border: var(--color-blue-500);
-  --status-processed-bg:    var(--color-green-100);
-  --status-processed-text:  var(--color-green-700);
-  --status-processed-border: var(--color-green-500);
-  --status-failed-bg:    var(--color-red-100);
-  --status-failed-text:  var(--color-red-700);
-  --status-failed-border: var(--color-red-500);
+  /* --- status badges (DS state tints, see DESIGN.md) --------------- */
+  --status-pending-bg:    var(--color-tint-warning-10);
+  --status-pending-text:  var(--status-warning);
+  --status-pending-border: var(--color-tint-warning-20);
+  --status-saved-bg:      var(--color-tint-success-10);
+  --status-saved-text:    var(--status-success);
+  --status-saved-border:  var(--color-tint-success-20);
+  --status-submitted-bg:    var(--color-tint-link-10);
+  --status-submitted-text:  var(--text-link);
+  --status-submitted-border: var(--color-tint-link-20);
+  --status-processed-bg:    var(--color-tint-success-10);
+  --status-processed-text:  var(--status-success);
+  --status-processed-border: var(--color-tint-success-20);
+  --status-failed-bg:    var(--color-tint-destructive-10);
+  --status-failed-text:  var(--status-destructive);
+  --status-failed-border: var(--color-tint-destructive-20);
 
   /* --- entity types ------------------------------------------------ */
   --entity-person-bg:    var(--color-green-100);
@@ -128,16 +128,8 @@
     --shadow-border-md: 0 0 0 1px rgba(255,255,255,0.06), 0 4px 12px rgba(0,0,0,0.60);
     --shadow-border-lg: 0 0 0 1px rgba(255,255,255,0.06), 0 8px 24px rgba(0,0,0,0.70);
 
-    --status-pending-bg:   var(--color-yellow-900);
-    --status-pending-text: var(--color-yellow-200);
-    --status-saved-bg:     var(--color-cyan-900);
-    --status-saved-text:   var(--color-cyan-200);
-    --status-submitted-bg:   var(--color-blue-900);
-    --status-submitted-text: var(--color-blue-200);
-    --status-processed-bg:   var(--color-green-900);
-    --status-processed-text: var(--color-green-200);
-    --status-failed-bg:    var(--color-red-900);
-    --status-failed-text:  var(--color-red-200);
+    /* Status tints reuse the same DS state-tint primitives — they
+       already work in dark mode without per-state overrides. */
 
     --entity-person-bg:   var(--color-green-900);
     --entity-person-text: var(--color-green-200);
@@ -185,9 +177,9 @@ body {
    SIDEBAR NAVIGATION
    ============================================================ */
 .sidebar {
-  width: 84px;
+  width: 72px;
   background: var(--bg-container);
-  border-right: 1px solid var(--border-secondary);
+  border-right: 1px solid var(--border-subdued);
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -196,11 +188,12 @@ body {
   overflow-y: auto;
 }
 .sidebar-brand {
-  font-size: 18px;
+  font-family: var(--font-mono);
+  font-size: 13px;
   font-weight: 700;
   color: var(--text-primary);
-  margin-bottom: 24px;
-  letter-spacing: -0.5px;
+  margin-bottom: 16px;
+  letter-spacing: 0.06em;
 }
 .sidebar-nav {
   display: flex;
@@ -216,24 +209,25 @@ body {
   align-items: center;
   gap: 4px;
   padding: 8px 0;
-  width: 72px;
+  width: 56px;
   text-decoration: none;
-  color: var(--text-secondary);
+  color: var(--text-subdued);
   border-radius: var(--radius-md);
-  transition: all 0.15s;
+  transition: background 0.15s, color 0.15s;
   position: relative;
 }
 .sidebar-item:hover {
   color: var(--text-primary);
-  background: var(--bg-surface-hover);
+  background: var(--bg-surface-inset);
   text-decoration: none;
 }
 .sidebar-item.active {
   color: var(--text-primary);
+  background: var(--bg-surface-inset);
 }
 .sidebar-item.active .sidebar-icon {
-  background: var(--bg-container);
-  box-shadow: var(--shadow-border-xs);
+  background: transparent;
+  box-shadow: none;
 }
 .sidebar-item.active::before {
   content: '';
@@ -247,23 +241,23 @@ body {
   border-radius: 0 2px 2px 0;
 }
 .sidebar-icon {
-  width: 36px;
-  height: 36px;
+  width: 28px;
+  height: 28px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-md);
-  transition: all 0.15s;
 }
 .sidebar-label {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 500;
   line-height: 1;
+  letter-spacing: 0.02em;
 }
 .sidebar-sep {
-  width: 40px;
+  width: 32px;
   height: 1px;
-  background: var(--border-primary);
+  background: var(--border-subdued);
   margin: 8px 0;
 }
 
@@ -392,22 +386,28 @@ header h1 {
 /* ============================================================
    INDEX PAGE: FILTER PILLS
    ============================================================ */
-.filter-bar { display: flex; gap: 6px; margin-bottom: 16px; }
+.filter-bar { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
 .filter-btn {
-  padding: 5px 14px; font-size: 12px; font-weight: 600;
-  border: 1px solid var(--border-primary); border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; font-size: 13px; font-weight: 500;
+  border: 1px solid var(--border-subdued); border-radius: var(--radius-md);
   background: var(--bg-container); color: var(--text-secondary);
-  cursor: pointer; transition: all 0.15s;
+  cursor: pointer; transition: background 0.15s, color 0.15s, border-color 0.15s;
+  font-family: var(--font-family);
 }
-.filter-btn:hover { color: var(--text-primary); border-color: var(--gray-300); }
-.filter-btn.active { background: var(--bg-container-inset); color: var(--text-primary); border-color: var(--gray-900); }
+.filter-btn:hover { color: var(--text-primary); border-color: var(--border-secondary); }
+.filter-btn.active {
+  background: var(--text-primary); color: var(--text-inverse);
+  border-color: var(--text-primary);
+}
 .filter-btn .filter-count {
   display: inline-block; min-width: 16px; height: 16px; line-height: 16px;
-  text-align: center; font-size: 10px; font-weight: 700;
-  border-radius: 8px; background: var(--bg-surface); color: var(--text-secondary);
-  margin-left: 6px; padding: 0 5px;
+  text-align: center; font-size: 11px; font-weight: 600;
+  color: var(--text-subdued);
+  margin-left: 2px;
+  font-variant-numeric: tabular-nums;
 }
-.filter-btn.active .filter-count { background: rgba(0,0,0,0.08); color: var(--text-primary); }
+.filter-btn.active .filter-count { color: var(--text-inverse); opacity: 0.7; }
 .filter-btn.filter-pending.active { border-color: var(--status-pending-border); background: var(--status-pending-bg); color: var(--status-pending-text); }
 .filter-btn.filter-pending.active .filter-count { background: rgba(234, 179, 8, 0.2); color: var(--status-pending-text); }
 .filter-btn.filter-saved.active { border-color: var(--status-saved-border); background: var(--status-saved-bg); color: var(--status-saved-text); }
@@ -446,14 +446,16 @@ header h1 {
 .filename-cell a:hover { text-decoration: underline; }
 .filename-author { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
 .status-badge {
-  display: inline-block; font-size: 10px; padding: 2px 8px;
-  border-radius: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+  display: inline-block; font-size: 11px; padding: 2px 8px;
+  border-radius: var(--radius-full); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.04em;
+  border: 1px solid transparent;
 }
-.status-pending { background: var(--status-pending-bg); color: var(--status-pending-text); }
-.status-saved { background: var(--status-saved-bg); color: var(--status-saved-text); }
-.status-submitted { background: var(--status-submitted-bg); color: var(--status-submitted-text); }
-.status-processed { background: var(--status-processed-bg); color: var(--status-processed-text); }
-.status-failed { background: var(--status-failed-bg); color: var(--status-failed-text); }
+.status-pending { background: var(--status-pending-bg); color: var(--status-pending-text); border-color: var(--status-pending-border); }
+.status-saved { background: var(--status-saved-bg); color: var(--status-saved-text); border-color: var(--status-saved-border); }
+.status-submitted { background: var(--status-submitted-bg); color: var(--status-submitted-text); border-color: var(--status-submitted-border); }
+.status-processed { background: var(--status-processed-bg); color: var(--status-processed-text); border-color: var(--status-processed-border); }
+.status-failed { background: var(--status-failed-bg); color: var(--status-failed-text); border-color: var(--status-failed-border); }
 .cell-words { font-size: 13px; color: var(--text-primary); font-variant-numeric: tabular-nums; }
 .cell-date { font-size: 13px; color: var(--text-primary); white-space: nowrap; }
 .cell-date-secondary { font-size: 11px; color: var(--text-secondary); display: block; }
@@ -788,47 +790,47 @@ header h1 {
   position: relative;
 }
 .entity-highlight:hover {
-  filter: brightness(0.95);
+  filter: brightness(0.97);
 }
 .entity-highlight.auto-matched {
-  background: rgba(34, 197, 94, 0.15);
-  border-bottom: 2px solid var(--color-green);
-  color: var(--color-green-dark);
+  background: var(--color-tint-success-10);
+  border: 1px solid var(--color-tint-success-20);
+  color: var(--text-primary);
 }
 .entity-highlight.suggested {
-  background: rgba(234, 179, 8, 0.15);
-  border-bottom: 2px dashed var(--color-yellow);
-  color: var(--color-yellow-dark);
+  background: var(--color-tint-warning-10);
+  border: 1px dashed var(--color-tint-warning-20);
+  color: var(--text-primary);
 }
 .entity-highlight.ambiguous {
-  background: rgba(139, 92, 246, 0.15);
-  border-bottom: 2px dashed var(--color-purple);
-  color: var(--color-purple-dark);
+  background: var(--color-tint-link-6);
+  border: 1px dashed var(--color-tint-link-20);
+  color: var(--text-primary);
 }
 .entity-highlight.new-entity {
-  background: rgba(59, 130, 246, 0.15);
-  border-bottom: 2px solid var(--color-blue);
-  color: var(--color-blue-dark);
+  background: var(--color-tint-link-6);
+  border: 1px solid var(--color-tint-link-20);
+  color: var(--text-primary);
 }
 .entity-highlight.dismissed {
-  background: none;
-  border-bottom: none;
-  color: var(--text-primary);
-  opacity: 0.6;
+  background: transparent;
+  border: 1px dashed var(--border-subdued);
+  color: var(--text-subdued);
+  text-decoration: line-through;
 }
 .entity-highlight.active {
-  outline: 2px solid var(--color-blue);
+  outline: 2px solid var(--text-link);
   outline-offset: 2px;
 }
 
 /* Correction indicator */
 .entity-highlight .correction-arrow {
   font-size: 11px;
-  color: var(--text-secondary);
+  color: var(--text-subdued);
   margin: 0 2px;
 }
 .entity-highlight .corrected-text {
-  color: var(--color-green-dark);
+  color: var(--status-success);
   font-weight: 600;
 }
 
@@ -2899,6 +2901,7 @@ footer {
 .row-actions-divider { height: 1px; background: var(--border-secondary); margin: 4px 0; }
 
 /* ============================================================
+<<<<<<< Updated upstream
    DESIGN PRIMITIVES
    ============================================================
    Vocabulary lifted directly from the Claude Design handoff
@@ -2919,11 +2922,31 @@ footer {
   padding: 16px;
 }
 .ds-card-inset {
+=======
+   VOICE DIARY DESIGN-SYSTEM COMPONENTS
+   ============================================================
+   Mirrors the canonical preview in `docs/claude design/tokens.css`.
+   Card shells, state pills, status dots, calendar event rows, voice
+   quality badges, and the editorial entity highlight chips. All values
+   resolve to design tokens via the alias layer above — never use raw
+   hex/rgba in feature templates.
+   ============================================================ */
+
+/* --- Cards (DESIGN.md spec) --------------------------------- */
+.card-ds {
+  background: var(--bg-container);
+  border: 1px solid var(--border-subdued);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+}
+.card-ds-inset {
+>>>>>>> Stashed changes
   background: var(--bg-container-inset);
   border-radius: var(--radius-lg);
   padding: 16px;
 }
 
+<<<<<<< Updated upstream
 /* --- button additions: ghost + full + lg + size variants ----------- */
 .btn-ghost {
   background: transparent;
@@ -2954,10 +2977,26 @@ footer {
 .dot-link    { background: var(--text-link, var(--color-blue)); }
 .dot-subdued { background: var(--text-subdued, var(--gray-400)); }
 @keyframes ds-dot-pulse {
+=======
+/* --- Status dots ------------------------------------------- */
+.dot {
+  width: 10px; height: 10px; border-radius: 50%;
+  flex: 0 0 10px; display: inline-block;
+}
+.dot-sm { width: 8px; height: 8px; flex-basis: 8px; }
+.dot-rec { background: var(--status-destructive); }
+.dot-warn { background: var(--status-warning); }
+.dot-success { background: var(--status-success); }
+.dot-link { background: var(--text-link); }
+.dot-subdued { background: var(--text-subdued); }
+.dot.pulse { animation: vd-pulse 1.4s ease-in-out infinite; }
+@keyframes vd-pulse {
+>>>>>>> Stashed changes
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.45; }
 }
 
+<<<<<<< Updated upstream
 /* --- design's status-badge palette (tinted bg + colored border) -----
    Existing .status-badge keeps its solid-tint pattern for legacy markup.
    New code can use .ds-badge to opt into the design's exact look. */
@@ -3096,4 +3135,114 @@ footer {
   text-transform: uppercase;
   color: var(--text-subdued, var(--text-tertiary));
   margin: 0 0 12px;
+=======
+/* --- State pills (recording / speaking / listening) -------- */
+.pill-recording,
+.pill-state {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 500; letter-spacing: 0.01em;
+  padding: 4px 12px; border-radius: var(--radius-full);
+  font-family: var(--font-family);
+}
+.pill-recording {
+  background: var(--color-tint-destructive-10);
+  color: var(--status-destructive);
+}
+.pill-state {
+  background: var(--bg-container-inset);
+  color: var(--text-secondary);
+}
+.pill-state.speaking {
+  background: var(--color-tint-warning-10);
+  color: var(--status-warning);
+}
+
+/* --- Voice quality badges (Premium / Enhanced / Standard) -- */
+.qbadge {
+  font-size: 11px; font-weight: 500;
+  padding: 2px 8px; border-radius: var(--radius-full);
+  letter-spacing: 0.02em; display: inline-block;
+}
+.qbadge-premium  { background: var(--color-tint-link-10);    color: var(--text-link); }
+.qbadge-enhanced { background: var(--color-tint-success-10); color: var(--status-success); }
+.qbadge-standard { background: var(--bg-container-inset);    color: var(--text-subdued); }
+
+/* --- Calendar event row (RSVP-coloured) -------------------- */
+.event-row {
+  display: grid;
+  grid-template-columns: 56px 3px 1fr;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-md);
+  align-items: stretch;
+}
+.event-row .time {
+  text-align: right;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  padding-top: 2px;
+}
+.event-row .bar {
+  width: 3px; border-radius: 2px; align-self: stretch;
+}
+.event-row .body { display: flex; flex-direction: column; gap: 2px; }
+.event-row .row-title {
+  font-size: 15px; font-weight: 500; color: var(--text-primary);
+}
+.event-row .meta { font-size: 13px; color: var(--text-secondary); }
+.event-row.rsvp-link    { background: var(--color-tint-link-6);    border: 1px solid var(--color-tint-link-20); }
+.event-row.rsvp-link    .bar { background: var(--text-link); }
+.event-row.rsvp-success { background: var(--color-tint-success-6); border: 1px solid var(--color-tint-success-20); }
+.event-row.rsvp-success .bar { background: var(--status-success); }
+.event-row.rsvp-warn    { background: var(--color-tint-warning-6); border: 1px solid var(--color-tint-warning-20); }
+.event-row.rsvp-warn    .bar { background: var(--status-warning); }
+.event-row.rsvp-subdued { background: var(--bg-container-inset);   border: 1px solid var(--border-subdued); }
+.event-row.rsvp-subdued .bar { background: var(--text-subdued); }
+
+.allday-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 12px; border-radius: var(--radius-md);
+  background: var(--bg-container-inset);
+}
+.allday-row .icon { color: var(--text-subdued); }
+.allday-row .row-title { flex: 1; font-size: 15px; }
+
+/* --- Section header (small caps) --------------------------- */
+.sec-h {
+  font-size: 12px; font-weight: 500;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-subdued); margin: 0 0 8px;
+}
+.t-mono-cap {
+  font-family: var(--font-mono); font-size: 12px;
+  letter-spacing: 0.02em; color: var(--text-subdued);
+  font-weight: 500;
+}
+
+/* --- Editorial entity chips (transcript review) ------------ */
+.entity {
+  font-family: var(--font-mono); font-size: 13px;
+  padding: 2px 6px; border-radius: 4px;
+  background: var(--bg-container-inset);
+  border: 1px solid var(--text-link);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.entity.confirmed {
+  background: var(--color-tint-success-10);
+  border-color: var(--color-tint-success-20);
+  color: var(--text-primary);
+}
+.entity.pending {
+  background: var(--color-tint-link-6);
+  border-color: var(--color-tint-link-20);
+}
+.entity.rejected {
+  background: transparent;
+  border: 1px dashed var(--border-subdued);
+  color: var(--text-subdued);
+  text-decoration: line-through;
+>>>>>>> Stashed changes
 }

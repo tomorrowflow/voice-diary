@@ -17,7 +17,11 @@ let package = Package(
         .library(name: "VoiceDiaryCore", targets: ["VoiceDiaryCore"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.12.4"),
+        // 0.14.x adds the streaming Parakeet pipeline (`StreamingEouAsrManager`,
+        // EN-only `parakeet-realtime-eou-120m` model) used by the wake-word
+        // detector. The batch v3 multilingual path we already use for upload
+        // transcription is preserved.
+        .package(url: "https://github.com/FluidInference/FluidAudio", from: "0.14.4"),
     ],
     targets: [
         .target(

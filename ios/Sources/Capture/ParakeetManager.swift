@@ -44,18 +44,37 @@ public actor ParakeetManager {
 
     private var manager: AsrManager?
     public private(set) var loadState: LoadState = .idle
+    /// Reference to the in-flight load task, if any. Multiple callers
+    /// (CaptureView's `.task`, WalkthroughView's `.task`, the first
+    /// transcribe call) all await this same task so the second caller
+    /// doesn't return early with a stale `.loading` state.
+    private var loadTask: Task<Void, Never>?
 
     public init() {}
 
     // --- model lifecycle -------------------------------------------------
 
     /// Lazily load Parakeet v3 (multilingual). First call downloads from
-    /// HuggingFace (~1.2 GB) — subsequent calls are no-ops once `.ready`.
+    /// HuggingFace (~1.2 GB). Subsequent calls re-await any in-flight
+    /// load and become no-ops once `.ready`.
     public func warmUp() async {
-        switch loadState {
-        case .ready, .loading: return
-        case .idle, .failed: break
+        if case .ready = loadState { return }
+        // If a load is already in progress (likely kicked off by another
+        // view's `.task`), latch onto it so we get notified when it
+        // finishes — instead of returning immediately while the state
+        // is still `.loading` (which left the caller's button stuck on
+        // the loading label forever).
+        if let existing = loadTask {
+            await existing.value
+            return
         }
+        let task = Task<Void, Never> { await self.performWarmUp() }
+        loadTask = task
+        await task.value
+        loadTask = nil
+    }
+
+    private func performWarmUp() async {
         loadState = .loading
         Log.audio.info("Parakeet v3: starting download/load…")
         do {

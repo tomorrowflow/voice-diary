@@ -26,7 +26,7 @@ public enum DSSemantic {
         public static let secondary: Color = dsDynamic(light: Color(red: 0.4510, green: 0.4510, blue: 0.4510, opacity: 1.0000), dark: Color(red: 0.6196, green: 0.6196, blue: 0.6196, opacity: 1.0000))
         public static let subdued: Color = dsDynamic(light: Color(red: 0.6196, green: 0.6196, blue: 0.6196, opacity: 1.0000), dark: Color(red: 0.3608, green: 0.3608, blue: 0.3608, opacity: 1.0000))
         public static let inverse: Color = dsDynamic(light: Color(red: 1.0000, green: 1.0000, blue: 1.0000, opacity: 1.0000), dark: Color(red: 0.0902, green: 0.0902, blue: 0.0902, opacity: 1.0000))
-        public static let link: Color = dsDynamic(light: Color(red: 0.0824, green: 0.4392, blue: 0.9373, opacity: 1.0000), dark: Color(red: 0.1804, green: 0.5647, blue: 0.9804, opacity: 1.0000))
+        public static let link: Color = dsDynamic(light: Color(red: 0.0824, green: 0.4392, blue: 0.9373, opacity: 1.0000), dark: Color(red: 0.3255, green: 0.6941, blue: 0.9922, opacity: 1.0000))
     }
     public enum Fg {
         public static let primary: Color = dsDynamic(light: Color(red: 0.0902, green: 0.0902, blue: 0.0902, opacity: 1.0000), dark: Color(red: 1.0000, green: 1.0000, blue: 1.0000, opacity: 1.0000))

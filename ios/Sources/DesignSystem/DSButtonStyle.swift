@@ -37,6 +37,12 @@ public struct DSButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: radius, style: .continuous)
                     .strokeBorder(borderColor, lineWidth: borderWidth)
             )
+            // Press-release flash. Substitutes for the
+            // `.sensoryFeedback(.selection, …)` haptic that iOS
+            // mutes while AVAudioEngine is recording in
+            // `.playAndRecord`. The modifier owns the @State that a
+            // bare `ButtonStyle` struct can't hold.
+            .modifier(DSPressFlash(isPressed: configuration.isPressed, cornerRadius: radius))
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .opacity(configuration.isPressed ? 0.92 : 1.0)
             .animation(Theme.motion.snappy, value: configuration.isPressed)
@@ -122,5 +128,42 @@ public extension ButtonStyle where Self == DSButtonStyle {
     }
     static func dsDestructive(size: DSButtonStyle.Size = .md, fullWidth: Bool = false) -> DSButtonStyle {
         DSButtonStyle(variant: .destructive, size: size, fullWidth: fullWidth)
+    }
+}
+
+/// Press-release white flash. Mirrors the `feedback.release` block in
+/// `docs/design-system/specs/components/button.json` — see that file
+/// for the rationale (iOS suppresses haptics during AVAudioEngine
+/// recording, so the flash is the universally-visible confirmation).
+///
+/// Implemented as a `ViewModifier` so it can hold the `@State` that a
+/// `ButtonStyle` struct can't, while still composing cleanly into the
+/// existing `DSButtonStyle.makeBody` pipeline.
+private struct DSPressFlash: ViewModifier {
+    let isPressed: Bool
+    let cornerRadius: CGFloat
+    @State private var flashOpacity: Double = 0
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(Color.white)
+                    .opacity(flashOpacity)
+                    .blendMode(.plusLighter)
+                    .allowsHitTesting(false)
+            )
+            .onChange(of: isPressed) { oldValue, newValue in
+                // Fire on release (true → false). Press-down feedback
+                // is already covered by the parent's opacity dip; the
+                // flash confirms "tap registered" the moment the
+                // action runs, the way the haptic used to.
+                if oldValue && !newValue {
+                    flashOpacity = 0.45
+                    withAnimation(.easeOut(duration: 0.24)) {
+                        flashOpacity = 0
+                    }
+                }
+            }
     }
 }
