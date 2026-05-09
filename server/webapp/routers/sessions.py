@@ -26,8 +26,8 @@ import logging
 import re
 import shutil
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 import httpx
 from fastapi import (
@@ -51,6 +51,9 @@ from logging_setup import bind_session_id
 from paths import sessions_dir
 from models import (
     CalendarEventSegment,
+    DriveBySegment,
+    EmptyBlockSegment,
+    FreeReflectionSegment,
     Manifest,
     Segment,
     SegmentResult,
@@ -315,41 +318,89 @@ async def _process_session_bg(parsed: Manifest, session_dir: Path) -> None:
                 current.state = "failed"
 
 
+@dataclass
+class _SegmentArtifact:
+    """Per-segment outputs handed off to the session-level analysis stage."""
+
+    segment: Segment
+    transcript_id: int
+    raw_text: str
+    corrected_text: str
+    entities: list[dict] = field(default_factory=list)
+
+
 async def _process_session(parsed: Manifest, session_dir: Path) -> list[SegmentResult]:
-    """Walk all segments, returning a per-segment status list."""
+    """Two-phase pipeline.
+
+    Phase 1: per-segment Whisper + correction + entity detection. Each
+    segment's transcript and entities are persisted independently.
+
+    Phase 2: a single session-level pass — one LightRAG context query, one
+    Ollama analysis, one narrative, one LightRAG ingest under
+    `diary:{date}`. This replaces the previous per-segment ingest (which
+    accidentally collapsed to one document per day anyway, since every
+    segment shared the `diary:{date}` ID and the last writer won).
+    """
     bind_session_id(parsed.session_id)
     todos_by_segment = _todos_grouped_by_segment(parsed)
-    results: list[SegmentResult] = []
+    results_by_id: dict[str, SegmentResult] = {}
+    artifacts: list[_SegmentArtifact] = []
+
+    # Phase 1 — per segment
     for seg in parsed.segments:
         try:
-            transcript_id = await _process_segment(
+            artifact = await _process_segment(
                 manifest=parsed,
                 segment=seg,
                 session_dir=session_dir,
-                segment_todos=todos_by_segment.get(seg.segment_id, []),
             )
-            results.append(SegmentResult(
-                segment_id=seg.segment_id,
-                status="processed",
-                transcript_id=transcript_id,
-            ))
-        except _PendingAnalysis as exc:
-            # Upstream analysis (Ollama / LightRAG) was unreachable but we
-            # have the raw transcript persisted. iOS treats this as success.
-            results.append(SegmentResult(
+            artifacts.append(artifact)
+            # Provisional state until phase 2 confirms analysis succeeded.
+            results_by_id[seg.segment_id] = SegmentResult(
                 segment_id=seg.segment_id,
                 status="pending_analysis",
-                transcript_id=exc.transcript_id,
-                error=str(exc),
-            ))
+                transcript_id=artifact.transcript_id,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "session %s segment %s failed: %s",
                 parsed.session_id, seg.segment_id, exc,
             )
-            results.append(SegmentResult(
+            results_by_id[seg.segment_id] = SegmentResult(
                 segment_id=seg.segment_id, status="failed", error=str(exc),
-            ))
+            )
+
+    # Phase 2 — session-level analysis + LightRAG ingest (only if anything transcribed)
+    if artifacts:
+        try:
+            await _run_session_document_processor(
+                manifest=parsed,
+                artifacts=artifacts,
+                todos_by_segment=todos_by_segment,
+            )
+            for art in artifacts:
+                results_by_id[art.segment.segment_id] = SegmentResult(
+                    segment_id=art.segment.segment_id,
+                    status="processed",
+                    transcript_id=art.transcript_id,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "session %s document_processor failed: %s — leaving segments pending",
+                parsed.session_id, exc,
+            )
+            # Transcripts are already in Postgres; analysis can be retried later.
+            for art in artifacts:
+                results_by_id[art.segment.segment_id] = SegmentResult(
+                    segment_id=art.segment.segment_id,
+                    status="pending_analysis",
+                    transcript_id=art.transcript_id,
+                    error=f"analysis_pending: {exc}",
+                )
+
+    # Preserve manifest segment order in the response.
+    results = [results_by_id[seg.segment_id] for seg in parsed.segments]
+
     async with _status_lock:
         current = _session_status.get(parsed.session_id)
         if current is not None:
@@ -364,20 +415,18 @@ async def _process_session(parsed: Manifest, session_dir: Path) -> list[SegmentR
     return results
 
 
-class _PendingAnalysis(Exception):
-    def __init__(self, transcript_id: int, message: str) -> None:
-        super().__init__(message)
-        self.transcript_id = transcript_id
-
-
 async def _process_segment(
     *,
     manifest: Manifest,
     segment: Segment,
     session_dir: Path,
-    segment_todos: list[Todo],
-) -> int:
-    """Process a single segment end to end. Returns the transcript ID."""
+) -> _SegmentArtifact:
+    """Per-segment pipeline up to entity detection.
+
+    Returns an artifact with the persisted transcript ID and detected
+    entities. Document analysis + LightRAG ingest happen once per session
+    in `_run_session_document_processor`.
+    """
     audio_path = session_dir / segment.audio_file
     if not audio_path.exists():
         raise FileNotFoundError(f"segment audio missing on disk: {segment.audio_file}")
@@ -433,37 +482,20 @@ async def _process_segment(
     )
     # Convert dataclass instances to dicts in the shape document_processor
     # expects (the HTMX review flow stores `text` for the canonical name).
-    entities = []
+    entities: list[dict] = []
     for d in detected:
         item = d.to_dict()
         item["text"] = d.canonical or d.original_text
         item["type"] = d.entity_type
         entities.append(item)
 
-    # 6. Document processor → narrative + LightRAG ingest. Failures here
-    # are recoverable: the raw + corrected transcripts are already on disk
-    # and in Postgres; LightRAG/Ollama can be retried later.
-    try:
-        await _run_document_processor(
-            transcript_id=transcript_id,
-            transcript_record={
-                "id": transcript_id,
-                "raw_text": raw_transcript,
-                "corrected_text": corrected_text,
-                "date": manifest.date,
-                "author": "Florian Wolf",
-            },
-            entities=entities,
-            extra_todo_block=_format_todo_block(segment_todos),
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "document_processor failed for %s/%s: %s",
-            manifest.session_id, segment.segment_id, exc,
-        )
-        raise _PendingAnalysis(transcript_id, f"analysis_pending: {exc}") from exc
-
-    return transcript_id
+    return _SegmentArtifact(
+        segment=segment,
+        transcript_id=transcript_id,
+        raw_text=raw_transcript,
+        corrected_text=corrected_text,
+        entities=entities,
+    )
 
 
 def _attendees_to_canonical_names(attendees: list[str]) -> list[str]:
@@ -528,18 +560,31 @@ def _format_todo_block(todos: list[Todo]) -> str:
     return "\n".join(lines)
 
 
-async def _run_document_processor(
+async def _run_session_document_processor(
     *,
-    transcript_id: int,
-    transcript_record: dict[str, Any],
-    entities: list[dict],
-    extra_todo_block: str,
+    manifest: Manifest,
+    artifacts: list[_SegmentArtifact],
+    todos_by_segment: dict[str, list[Todo]],
 ) -> None:
-    """Run the full document_processor pipeline in-process."""
-    date_str = str(transcript_record.get("date", ""))
+    """Run the document_processor pipeline once per session.
+
+    Concatenates all transcribed segments (with per-segment headers so the
+    analysis LLM can still reason about meeting boundaries), unions the
+    detected entities, runs LightRAG context + Ollama analysis + narrative
+    generation a single time, then ingests one combined document into
+    LightRAG under `diary:{date}`.
+
+    The combined narrative is saved as a `processed_documents` row against
+    every segment's transcript_id so any segment-level read path keeps
+    working.
+    """
+    date_str = manifest.date.isoformat()
+    combined_text = _build_combined_transcript(artifacts)
+    merged_entities = _merge_entities([art.entities for art in artifacts])
+
     person_names = [
         e.get("text") or e.get("canonical", "")
-        for e in entities
+        for e in merged_entities
         if (e.get("type") or e.get("entity_type", "")) == "PERSON"
     ]
     recent_ctx, entity_hist = await asyncio.gather(
@@ -549,22 +594,140 @@ async def _run_document_processor(
     context_summary = await document_processor.summarize_context(
         recent_ctx, entity_hist, date_str
     )
+
+    transcript_record = {
+        "id": None,
+        "raw_text": combined_text,
+        "corrected_text": combined_text,
+        "date": manifest.date,
+        "author": "Florian Wolf",
+    }
     enriched = document_processor.build_enriched_context(
-        transcript_record, entities, context_summary
+        transcript_record, merged_entities, context_summary
     )
     analysis = await document_processor.analyze_transcript(enriched)
     markdown = document_processor.generate_narrative_document(enriched, analysis)
-    if extra_todo_block:
-        markdown = f"{markdown.rstrip()}\n{extra_todo_block}\n"
+
+    todo_block = _format_session_todo_block(manifest, artifacts, todos_by_segment)
+    if todo_block:
+        markdown = f"{markdown.rstrip()}\n{todo_block}\n"
+
     metadata = document_processor.build_document_metadata(enriched)
-    await db.save_processed_document(
-        transcript_id=transcript_id,
-        document_markdown=markdown,
-        analysis_json=analysis,
-        context_summary=context_summary,
-        metadata=metadata,
-    )
+
+    # Save the combined document against every segment's transcript so any
+    # transcript-id-keyed read path returns the canonical day narrative.
+    for art in artifacts:
+        await db.save_processed_document(
+            transcript_id=art.transcript_id,
+            document_markdown=markdown,
+            analysis_json=analysis,
+            context_summary=context_summary,
+            metadata=metadata,
+        )
+
     await document_processor.ingest_to_lightrag(markdown, metadata)
+
+
+def _build_combined_transcript(artifacts: list[_SegmentArtifact]) -> str:
+    """Concatenate all transcribed segments with German per-segment headers.
+
+    The headers preserve enough context (meeting title, time range,
+    attendees) for `analyze_transcript` to attribute relationships and
+    decisions to the right block, even though the LLM now sees one combined
+    text instead of one per call.
+    """
+    blocks: list[str] = []
+    for art in artifacts:
+        text = (art.corrected_text or "").strip()
+        if not text:
+            continue
+        header = _segment_header(art.segment)
+        blocks.append(f"{header}\n\n{text}")
+    return "\n\n".join(blocks)
+
+
+def _segment_header(segment: Segment) -> str:
+    if isinstance(segment, CalendarEventSegment):
+        ref = segment.calendar_ref
+        title = (ref.title or "Termin").strip()
+        time_range = _format_time_range(ref.start, ref.end)
+        attendees = _attendees_to_canonical_names(ref.attendees)
+        attendee_str = (
+            f", Teilnehmer: {', '.join(attendees)}" if attendees else ""
+        )
+        return f"## Termin: {title}{time_range}{attendee_str}"
+    if isinstance(segment, DriveBySegment):
+        time_str = _extract_hhmm(segment.captured_at)
+        return f"## Notiz unterwegs{(' um ' + time_str) if time_str else ''}"
+    if isinstance(segment, FreeReflectionSegment):
+        time_str = _extract_hhmm(segment.captured_at) if segment.captured_at else ""
+        return f"## Freie Reflexion{(' um ' + time_str) if time_str else ''}"
+    if isinstance(segment, EmptyBlockSegment):
+        return f"## Zeitblock {segment.time_range.start}–{segment.time_range.end}"
+    return f"## Abschnitt {segment.segment_id}"
+
+
+def _format_time_range(start: str, end: str) -> str:
+    s = _extract_hhmm(start)
+    e = _extract_hhmm(end)
+    if s and e:
+        return f" ({s}–{e})"
+    if s:
+        return f" (ab {s})"
+    return ""
+
+
+_HHMM_RE = re.compile(r"\b(\d{2}):(\d{2})\b")
+
+
+def _extract_hhmm(value: str | None) -> str:
+    if not value:
+        return ""
+    m = _HHMM_RE.search(value)
+    if not m:
+        return ""
+    return f"{m.group(1)}:{m.group(2)}"
+
+
+def _merge_entities(per_segment: list[list[dict]]) -> list[dict]:
+    """Union entities across segments, deduplicated by (type, lowercase name).
+
+    First occurrence wins so we keep whatever role/company metadata the
+    detector attached on first sight.
+    """
+    seen: set[tuple[str, str]] = set()
+    merged: list[dict] = []
+    for entities in per_segment:
+        for ent in entities:
+            ent_type = (ent.get("type") or ent.get("entity_type") or "").upper()
+            name = (ent.get("text") or ent.get("canonical") or "").strip().lower()
+            if not name:
+                continue
+            key = (ent_type, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(ent)
+    return merged
+
+
+def _format_session_todo_block(
+    manifest: Manifest,
+    artifacts: list[_SegmentArtifact],
+    todos_by_segment: dict[str, list[Todo]],
+) -> str:
+    """Aggregate every segment's todos plus any unattached implicit todos."""
+    todos: list[Todo] = []
+    seen_ids = {art.segment.segment_id for art in artifacts}
+    for segment_id, segment_todos in todos_by_segment.items():
+        if segment_id in seen_ids:
+            todos.extend(segment_todos)
+    # Implicit-confirmed todos without a source segment are not in
+    # `todos_by_segment`; include them so the day's narrative captures them.
+    for todo in manifest.todos_implicit_confirmed:
+        if not todo.source_segment_id:
+            todos.append(todo)
+    return _format_todo_block(todos)
 
 
 # --- ffmpeg + Whisper helpers --------------------------------------------
