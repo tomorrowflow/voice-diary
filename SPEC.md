@@ -205,7 +205,7 @@ The server in `server/` is one FastAPI app with three clusters of responsibility
 | Layer | Engine | Rationale |
 |---|---|---|
 | STT | **Parakeet v3 via FluidAudio** | ~210× realtime, multilingual (25 languages incl. DE & EN), streaming hypotheses, already validated in `murmur`. |
-| TTS | **Piper via sherpa-onnx iOS xcframework** | Only serious open German voice (`de_DE-thorsten-high`). ~75 MB per voice, Apache 2.0 runtime + MIT weights, RTF ~0.2–0.3 on A-series. Kokoro-82M used in `murmur` does not support German. |
+| TTS | **Piper via sherpa-onnx iOS xcframework** (offline) + **Voxtral via vLLM Omni on server** (network, opt-in) | Piper: only serious open German voice (`de_DE-thorsten-high`), ~75 MB per voice, Apache 2.0 runtime + MIT weights, RTF ~0.2–0.3 on A-series. Kokoro-82M used in `murmur` does not support German. Voxtral: Mistral's 4 B TTS, served on the Tailscale-only server (vLLM Omni on GPU 0). Higher quality than Piper for DE, opt-in per language in Settings, falls back to Piper or Apple per utterance on any failure. **CC BY-NC 4.0 weights — fine for the personal-tool use case; revisit before any distribution.** |
 | Dialog LLM | **Apple Foundation Models (iOS 26)** | 3B on-device on ANE, German first-class, zero app-size hit, thermal-efficient, no memory-limit entitlement needed. |
 | Enrichment LLM | **Ollama over Tailscale** | Only invoked on wake-word. Server model is bigger and better for summarising retrieved email/LightRAG results. Audible "einen Moment…" cue masks network latency. |
 | Wake-word detection | **Streaming regex on Parakeet** | No dedicated model. "hey voice diary" is 3 words — Levenshtein ≤ 2 on the rolling hypothesis is robust. Zero new dependencies, zero extra battery cost during listening states. |
@@ -883,6 +883,18 @@ When Apple FM is used for dynamic follow-ups, the prompt is:
 └── caches/
     └── calendar_cache/       # short-lived, for current session
 ```
+
+### 13.1.1 Server-side data layout
+
+```
+server/data/
+├── sessions/               # iOS session bundles (raw m4a, manifest, segments)
+├── msal_cache.bin          # MSAL refresh-token cache (bootstrap once)
+└── voxtral-models/         # HuggingFace cache for Voxtral-4B-TTS-2603
+                            #   (~8 GB; mounted as docker volume `voxtral_models`)
+```
+
+All of `server/data/` is gitignored.
 
 ### 13.2 Retention
 
