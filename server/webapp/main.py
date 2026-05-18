@@ -104,12 +104,14 @@ from routers.email import router as email_router  # noqa: E402
 from routers.lightrag import router as lightrag_router  # noqa: E402
 from routers.sessions import router as sessions_router  # noqa: E402
 from routers.health import router as health_router  # noqa: E402
+from routers.tts import router as tts_router  # noqa: E402
 
 app.include_router(calendar_router)
 app.include_router(email_router)
 app.include_router(lightrag_router)
 app.include_router(sessions_router)
 app.include_router(health_router)
+app.include_router(tts_router)
 
 
 # ─── Text correction pre-processing ──────────────────────────────────

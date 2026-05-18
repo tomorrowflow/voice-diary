@@ -8,6 +8,9 @@ services:
     environment:
       - DATABASE_URL=postgresql://diary:diary@postgres:5432/diary_processor
       - WHISPER_URL=${WHISPER_URL:-http://whisper:9000}
+      - VOXTRAL_BASE_URL=${VOXTRAL_BASE_URL:-http://voxtral:8001}
+      - VOXTRAL_MODEL=${VOXTRAL_MODEL:-mistralai/Voxtral-4B-TTS-2603}
+      - VOXTRAL_TIMEOUT_SECONDS=${VOXTRAL_TIMEOUT_SECONDS:-30}
       - DATA_DIR=/data
     volumes:
       # Persists iOS session bundles + MSAL refresh-token cache across
@@ -23,6 +26,40 @@ services:
         condition: service_started
       whisper:
         condition: service_started
+    restart: unless-stopped
+
+  voxtral:
+    # Mistral's Voxtral-4B-TTS-2603 served by vLLM Omni. Exposes the
+    # OpenAI-compatible /v1/audio/speech endpoint that webapp's
+    # /api/tts/synthesize route proxies for the iOS app.
+    #
+    # CC BY-NC 4.0 weights — fine for personal use, see SPEC.md §4.
+    # Not bound to a host port — only webapp (same compose network)
+    # reaches Voxtral. HF model cache lives in a named volume so a
+    # restart does not re-download ~8 GB.
+    image: vllm/vllm-omni:v0.18.0
+    command:
+      - "--model"
+      - "${VOXTRAL_MODEL:-mistralai/Voxtral-4B-TTS-2603}"
+      - "--port"
+      - "8001"
+    environment:
+      # Mistral models are gated on Hugging Face — accept the license
+      # at huggingface.co/mistralai/Voxtral-4B-TTS-2603 with the same
+      # account whose token you put here, then `docker compose up -d voxtral`.
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+    volumes:
+      - voxtral_models:/root/.cache/huggingface
+    # Pinned to GPU 0 — leaves GPU 1 free for Ollama / future workloads.
+    # Requires nvidia-container-toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["0"]
+              capabilities: [gpu]
     restart: unless-stopped
 
   whisper:
@@ -78,3 +115,4 @@ volumes:
   pgdata:
   qdrant_data:
   whisper_models:
+  voxtral_models:
