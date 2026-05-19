@@ -97,12 +97,20 @@ def _get_client() -> VoxtralClient:
 
 
 @router.get("/voices")
-async def voices() -> dict[str, list[dict[str, str]]]:
-    """Bundled Voxtral voice references, grouped by source language.
+async def voices() -> dict[str, list[dict[str, str | None]]]:
+    """Bundled + custom + LibriVox voice references, grouped by source
+    language.
 
     The route surfaces only the languages Voice Diary's UI supports
     (DE + EN). The full catalog has 9 languages — extending the route
     is a one-line change when we add free-reflection in other languages.
+
+    Return type allows `str | None` per descriptor field because
+    `VoiceDescriptor.ref_text` is nullable (bundled voices don't carry
+    one). FastAPI 0.115+ uses the return annotation as an implicit
+    response model, so a stricter `dict[str, str]` here fails
+    validation on every nullable field and surfaces as a 500 with no
+    useful log line.
     """
     return voice_catalog.list_grouped(languages=("DE", "EN"))
 
