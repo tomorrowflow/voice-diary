@@ -20,6 +20,7 @@ import Foundation
 public enum VoicePreferences {
     private static let prefix = "voicediary.tts.voice."
     public static let piperPrefix = "piper:"
+    public static let voxtralPrefix = "voxtral:"
 
     /// Returns the user-chosen voice identifier for `language`, or nil
     /// when none is set / the previously chosen voice is no longer
@@ -36,6 +37,13 @@ public enum VoicePreferences {
                 UserDefaults.standard.removeObject(forKey: key)
                 return nil
             }
+            return stored
+        }
+        if stored.hasPrefix(voxtralPrefix) {
+            // Server-hosted Voxtral voice. We can't validate availability
+            // here (catalog lives on the server) — slice 02's catalog
+            // client is the place to reconcile against the server's
+            // current list. Return as-is.
             return stored
         }
         // Apple voice — drop the preference if the user uninstalled it
@@ -67,6 +75,18 @@ public enum VoicePreferences {
 
     public static func isPiperVoiceID(_ identifier: String?) -> Bool {
         identifier?.hasPrefix(piperPrefix) ?? false
+    }
+
+    public static func isVoxtralVoiceID(_ identifier: String?) -> Bool {
+        identifier?.hasPrefix(voxtralPrefix) ?? false
+    }
+
+    /// Convenience: if the selected voice for `language` is a Voxtral
+    /// voice, return its bare id (without the `voxtral:` prefix).
+    public static func selectedVoxtralVoice(for language: String) -> String? {
+        guard let id = selectedVoiceID(for: language),
+              id.hasPrefix(voxtralPrefix) else { return nil }
+        return String(id.dropFirst(voxtralPrefix.count))
     }
 
     private static func storageKey(for language: String) -> String {

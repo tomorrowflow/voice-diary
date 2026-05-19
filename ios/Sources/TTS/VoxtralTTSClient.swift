@@ -69,7 +69,10 @@ public struct VoxtralTTSClient: Sendable {
         req.setValue("audio/wav", forHTTPHeaderField: "Accept")
         req.httpBody = try JSONEncoder().encode([
             "text": request.text,
-            "language": request.language,
+            // Server's Pydantic schema accepts upper-case "DE"/"EN"; iOS
+            // uses lower-case throughout for storage keys, so normalise
+            // at the wire boundary rather than forcing every caller to.
+            "language": request.language.uppercased(),
             "voice": request.voice,
             "response_format": request.responseFormat,
         ])

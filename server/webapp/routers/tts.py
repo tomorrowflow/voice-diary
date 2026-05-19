@@ -22,6 +22,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 from routers.auth import require_bearer
+from voice_catalog import catalog as voice_catalog
 from voxtral_client import (
     TTSEngineError,
     TTSTimeoutError,
@@ -77,8 +78,25 @@ def _get_client() -> VoxtralClient:
 # --- route ----------------------------------------------------------------
 
 
+@router.get("/voices")
+async def voices() -> dict[str, list[dict[str, str]]]:
+    """Bundled Voxtral voice references, grouped by source language.
+
+    The route surfaces only the languages Voice Diary's UI supports
+    (DE + EN). The full catalog has 9 languages — extending the route
+    is a one-line change when we add free-reflection in other languages.
+    """
+    return voice_catalog.list_grouped(languages=("DE", "EN"))
+
+
 @router.post("/synthesize")
 async def synthesize(req: SynthesizeRequest) -> Response:
+    if not voice_catalog.exists(req.voice):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "unknown_voice", "detail": f"voice '{req.voice}' is not in the Voxtral catalog"},
+        )
+
     client = _get_client()
     try:
         result = await client.synthesize(
