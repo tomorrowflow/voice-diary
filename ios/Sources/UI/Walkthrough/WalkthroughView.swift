@@ -37,6 +37,10 @@ public struct WalkthroughView: View {
                     onClose: headerCloseAction
                 )
 
+                VoxtralPreflightBanner(message: coordinator.voxtralPreflightWarning)
+                    .animation(.easeInOut(duration: 0.25),
+                               value: coordinator.voxtralPreflightWarning)
+
                 // The model-load banner used to live here; the floating
                 // bottom CTA carries that signal now (label + spinner +
                 // disabled state) so we don't double up.
@@ -445,6 +449,41 @@ private struct ListeningTimer: View {
 /// frame height prevents the surrounding overlay from shifting when the
 /// status changes mid-event.
 @MainActor
+/// Transient warning banner shown during BRIEFING when the user has a
+/// Voxtral voice selected but `/health` reports the sidecar is down.
+/// Set + auto-cleared by `WalkthroughCoordinator.preflightVoxtral`.
+/// Renders as `EmptyView` when nil so it doesn't reserve layout space.
+private struct VoxtralPreflightBanner: View {
+    let message: String?
+
+    var body: some View {
+        if let message {
+            HStack(alignment: .top, spacing: Theme.spacing.sm) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(Theme.color.status.warning)
+                    .padding(.top, 2)
+                Text(message)
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.primary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(Theme.spacing.sm)
+            .background(
+                RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                    .fill(Theme.color.status.warning.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius.md, style: .continuous)
+                    .strokeBorder(Theme.color.status.warning.opacity(0.30), lineWidth: 1)
+            )
+            .padding(.horizontal, Theme.spacing.md)
+            .padding(.top, Theme.spacing.sm)
+            .transition(.opacity.combined(with: .move(edge: .top)))
+        }
+    }
+}
+
 private struct StatusIndicator: View {
     let isSpeaking: Bool
     let silenceLevel: Int
