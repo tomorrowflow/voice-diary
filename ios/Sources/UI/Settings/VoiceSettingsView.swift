@@ -67,15 +67,6 @@ public struct VoiceSettingsView: View {
                             ForEach(voxtralVoices, id: \.id) { voice in
                                 voxtralRow(voice: voice, language: lang.code, sample: lang.sample)
                             }
-                            // The "Eigene Stimme aufnehmen" row was here. Removed
-                            // because Voxtral's open-source checkpoint is missing
-                            // the audio encoder needed to clone from a reference
-                            // (verified via vLLM crash trace + community
-                            // confirmation on the HF model page). The recorder
-                            // and upload UI stay in the codebase for if Mistral
-                            // ever releases the encoder, but the entry point is
-                            // hidden so users don't record voices that can never
-                            // synth. See docs/prd/voxtral-tts-integration.md.
                             if appleVoices.isEmpty && piperVoices.isEmpty && voxtralVoices.isEmpty {
                                 Text("Keine Stimmen verfügbar. Premium-Stimme über iOS-Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen laden, oder `ios/scripts/fetch_piper_voices.sh` ausführen, oder Voxtral-Server in den Server-Einstellungen prüfen.")
                                     .font(Theme.font.caption)
@@ -339,7 +330,7 @@ public struct VoiceSettingsView: View {
                         Text(voice.label)
                             .font(Theme.font.body)
                             .foregroundStyle(Theme.color.text.primary)
-                        Text(voxtralRowCaption(voice))
+                        Text("Voxtral · Server — \(voice.description)")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
@@ -363,49 +354,6 @@ public struct VoiceSettingsView: View {
             .buttonStyle(.plain)
             .disabled(isPreviewing)
         }
-        // User-recorded voices get a swipe-to-delete affordance.
-        // Bundled and LibriVox voices stay — the server refuses to
-        // delete them, so we don't even show the option.
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if voice.isUserDeletable {
-                Button(role: .destructive) {
-                    Task { await deleteVoxtral(voice: voice, language: language) }
-                } label: {
-                    Label("Löschen", systemImage: "trash")
-                }
-            }
-        }
-    }
-
-    private func voxtralRowCaption(_ voice: VoxtralVoice) -> String {
-        let prefix: String
-        switch voice.source {
-        case "user":     prefix = "Eigene Aufnahme"
-        case "librivox": prefix = "LibriVox"
-        default:         prefix = "Voxtral · Server"
-        }
-        return "\(prefix) — \(voice.description)"
-    }
-
-    private func recordVoxtralVoiceRow(for language: String) -> some View {
-        let lang: VoxtralCloneRecorderView.Language = language.hasPrefix("en") ? .en : .de
-        return NavigationLink {
-            VoxtralCloneRecorderView(language: lang)
-        } label: {
-            HStack(spacing: Theme.spacing.sm) {
-                Image(systemName: "mic.badge.plus")
-                    .foregroundStyle(Theme.color.text.link)
-                Text("Eigene Stimme aufnehmen")
-                    .font(Theme.font.body)
-                    .foregroundStyle(Theme.color.text.link)
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundStyle(Theme.color.text.subdued)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
     }
 
     // MARK: - Loading + preview
@@ -454,23 +402,5 @@ public struct VoiceSettingsView: View {
         // Pass the bare voice id so the preview demonstrates *this* row's
         // voice, regardless of what the user has currently saved.
         await VoxtralTTS.shared.speak(sample, voice: voice.id, language: language)
-    }
-
-    private func deleteVoxtral(voice: VoxtralVoice, language: String) async {
-        do {
-            try await voiceCatalog.deleteCustomVoice(id: voice.id)
-            // If the deleted voice was the active one for this language,
-            // clear the preference so the next utterance falls back to
-            // Apple / Piper rather than calling a now-missing voice id.
-            if VoicePreferences.selectedVoiceID(for: language) == voice.voiceID {
-                VoicePreferences.setSelectedVoiceID(nil, for: language)
-                selectedIDByLanguage[language] = nil
-            }
-        } catch {
-            // Surface the failure inline by reusing the existing catalog
-            // lastError channel — refresh() will repopulate but a delete
-            // can still fail (server unreachable, 401, etc.).
-            Log.app.warning("voxtral voice delete failed: \(String(describing: error), privacy: .public)")
-        }
     }
 }
