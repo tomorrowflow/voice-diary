@@ -647,6 +647,121 @@ def build_document_metadata(enriched_ctx: dict) -> dict:
     }
 
 
+def _split_diary_markdown(markdown: str) -> list[dict]:
+    """Split diary markdown into section chunks for interchange JSONL.
+
+    Recognises # / ## / ### headings as section boundaries, skips ---
+    separators, and detects the *Verarbeitet am footer as a references chunk.
+    Empty sections (no non-whitespace content) are dropped.
+    """
+    SUMMARY_HEADINGS = frozenset({"Zusammenfassung", "Historischer Kontext"})
+
+    def _content_type(heading: str) -> str:
+        bare = re.sub(r"\s*\([^)]*\)", "", heading).strip()
+        return "summary" if bare in SUMMARY_HEADINGS else "body"
+
+    sections: list[dict] = []
+    current: dict = {"heading": "", "level": 1, "parent_headings": [], "content_type": "summary"}
+    current_lines: list[str] = []
+    h2_heading = ""
+
+    def _flush() -> None:
+        content = "\n".join(current_lines).strip()
+        current_lines.clear()
+        if content:
+            sections.append({**current, "content": content})
+
+    for line in markdown.split("\n"):
+        if line.startswith("### "):
+            _flush()
+            heading = line[4:].strip()
+            current = {
+                "heading": heading,
+                "level": 3,
+                "parent_headings": [h2_heading] if h2_heading else [],
+                "content_type": _content_type(heading),
+            }
+        elif line.startswith("## "):
+            _flush()
+            heading = line[3:].strip()
+            h2_heading = heading
+            current = {
+                "heading": heading,
+                "level": 2,
+                "parent_headings": [],
+                "content_type": _content_type(heading),
+            }
+        elif line.startswith("# "):
+            _flush()
+            heading = line[2:].strip()
+            h2_heading = ""
+            current = {
+                "heading": heading,
+                "level": 1,
+                "parent_headings": [],
+                "content_type": "summary",
+            }
+        elif line.strip() == "---":
+            pass  # visual separator — not a chunk boundary
+        elif line.strip().startswith("*Verarbeitet am"):
+            _flush()
+            sections.append({
+                "heading": "",
+                "level": 0,
+                "parent_headings": [],
+                "content_type": "references",
+                "content": line.strip(),
+            })
+        else:
+            current_lines.append(line)
+
+    _flush()
+    return sections
+
+
+def diary_to_interchange_jsonl(doc_id: str, markdown: str, metadata: dict) -> str:
+    """Convert diary markdown to LightRAG interchange JSONL.
+
+    LightRAG auto-detects this format from the text field of /documents/text,
+    skipping its legacy token-based chunker and preserving section boundaries.
+    Metadata is embedded in the meta line's source_metadata field.
+    """
+    meta_line = json.dumps(
+        {
+            "type": "meta",
+            "format_version": "2.0",
+            "engine": "voice-diary",
+            "chunking_method": "heading_aware",
+            "source_metadata": metadata,
+        },
+        ensure_ascii=False,
+    )
+
+    chunks = _split_diary_markdown(markdown)
+
+    lines = [meta_line]
+    for idx, chunk in enumerate(chunks):
+        content = chunk["content"]
+        lines.append(
+            json.dumps(
+                {
+                    "type": "text",
+                    "chunk_id": f"{doc_id}-chunk-{idx:03d}",
+                    "chunk_order_index": idx,
+                    "content": content,
+                    "tokens": max(1, len(content) // 4),
+                    "content_type": chunk["content_type"],
+                    "heading": chunk.get("heading", ""),
+                    "parent_headings": chunk.get("parent_headings", []),
+                    "level": chunk.get("level", 2),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    return "\n".join(lines)
+
+
 async def ingest_to_lightrag(markdown: str, metadata: dict) -> dict:
     """POST document to LightRAG /documents/text.
 
@@ -674,8 +789,7 @@ async def ingest_to_lightrag(markdown: str, metadata: dict) -> dict:
                 json={
                     "id": diary_id,
                     "file_source": f"diary-{date_str}.md",
-                    "text": markdown,
-                    "metadata": metadata,
+                    "text": diary_to_interchange_jsonl(diary_id, markdown, metadata),
                 },
                 headers=_lightrag_headers(api_key),
             )
