@@ -119,15 +119,39 @@ def _refs_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "data" / "voxtral-refs"
 
 
+def _is_complete(target_dir: Path) -> bool:
+    """A target dir counts as complete only when both files exist —
+    so a half-failed previous run doesn't poison-pill future re-runs."""
+    return (target_dir / "audio.wav").is_file() and (target_dir / "metadata.json").is_file()
+
+
+def _cleanup_incomplete(target_dir: Path) -> None:
+    """Remove any stale artifacts from a previous failed attempt so
+    the next pass can start fresh without manual rm -rf."""
+    if not target_dir.exists():
+        return
+    for entry in target_dir.iterdir():
+        try:
+            entry.unlink()
+        except OSError:
+            pass
+    try:
+        target_dir.rmdir()
+    except OSError:
+        pass
+
+
 def _seed_clip(clip: dict[str, object], refs_root: Path) -> bool:
     slug = str(clip["slug"])
     voice_id = f"librivox_{slug}"
     target_dir = refs_root / voice_id
 
-    if target_dir.exists():
+    if _is_complete(target_dir):
         print(f"  skip  {voice_id} (already present)")
         return True
 
+    # Either fresh or a previous-attempt corpse — clean either way.
+    _cleanup_incomplete(target_dir)
     print(f"  seed  {voice_id}")
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -142,9 +166,13 @@ def _seed_clip(clip: dict[str, object], refs_root: Path) -> bool:
             return False
 
         # Stage outputs into the target dir, then atomic-rename so a
-        # half-written entry is never visible to the catalog.
+        # half-written entry is never visible to the catalog. The
+        # trailing extension on the temp file is `.wav` (not `.tmp.wav`
+        # or similar) because ffmpeg uses the *trailing* extension to
+        # pick the output container format. Belt-and-suspenders: also
+        # pass `-f wav` explicitly so even unconventional filenames work.
         target_dir.mkdir(parents=True, exist_ok=True)
-        wav_tmp = target_dir / "audio.wav.tmp"
+        wav_tmp = target_dir / "audio.partial.wav"
         wav_path = target_dir / "audio.wav"
 
         ffmpeg_args = [
@@ -154,6 +182,7 @@ def _seed_clip(clip: dict[str, object], refs_root: Path) -> bool:
             "-t", str(clip["duration_sec"]),
             "-ar", "24000",
             "-ac", "1",
+            "-f", "wav",
             "-c:a", "pcm_s16le",
             str(wav_tmp),
         ]
@@ -161,12 +190,11 @@ def _seed_clip(clip: dict[str, object], refs_root: Path) -> bool:
             result = subprocess.run(ffmpeg_args, capture_output=True, text=True, check=False)
         except FileNotFoundError:
             print("    FAILED ffmpeg: binary not on PATH (run inside webapp container)")
-            target_dir.rmdir()
+            _cleanup_incomplete(target_dir)
             return False
         if result.returncode != 0:
             print(f"    FAILED ffmpeg: {result.stderr.strip()[:200]}")
-            wav_tmp.unlink(missing_ok=True)
-            target_dir.rmdir()
+            _cleanup_incomplete(target_dir)
             return False
 
         wav_tmp.replace(wav_path)
@@ -179,7 +207,7 @@ def _seed_clip(clip: dict[str, object], refs_root: Path) -> bool:
             "source": "librivox",
             "ref_text": clip["ref_text"] or None,
         }
-        meta_tmp = target_dir / "metadata.json.tmp"
+        meta_tmp = target_dir / "metadata.partial.json"
         meta_tmp.write_text(json.dumps(metadata, ensure_ascii=False, indent=2))
         meta_tmp.replace(target_dir / "metadata.json")
         return True
