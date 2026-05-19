@@ -145,10 +145,26 @@ public actor AppleFoundationLLM {
     /// always in the user's language. The caller dedupes against
     /// already-detected explicit todos and confirms each via the
     /// CLOSING confirmation flow before they reach the manifest.
+    /// One implicit-todo candidate produced by the on-device LLM.
+    /// `text` is the paraphrased imperative ("Stephan anrufen");
+    /// `sourceQuote` is a short verbatim phrase from the transcript that
+    /// justified it, when the model returned one. The confirmation UI
+    /// uses the quote to highlight the originating words inside the
+    /// surrounding 5-line excerpt; absence is tolerated and the UI falls
+    /// back to fuzzy match on the candidate text.
+    public struct ImplicitCandidate: Sendable, Equatable {
+        public let text: String
+        public let sourceQuote: String?
+        public init(text: String, sourceQuote: String? = nil) {
+            self.text = text
+            self.sourceQuote = sourceQuote
+        }
+    }
+
     public func extractImplicit(
         transcript: String,
         language: String
-    ) async throws -> [String] {
+    ) async throws -> [ImplicitCandidate] {
         let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 20 else { return [] }
         #if canImport(FoundationModels)
@@ -164,7 +180,7 @@ public actor AppleFoundationLLM {
         do {
             let response = try await session.respond(to: prompt)
             let raw = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            return Self.parseImplicitList(raw)
+            return Self.parseImplicitList(raw, transcript: trimmed)
         } catch {
             throw LLMError.underlying(error)
         }
@@ -185,10 +201,18 @@ public actor AppleFoundationLLM {
             Gefühle. Keine allgemeinen Beobachtungen.
 
             Antworte AUSSCHLIESSLICH auf Deutsch. Gib eine Liste mit
-            maximal 5 Einträgen zurück, jede Zeile beginnt mit "- ", jede
-            Zeile ist EIN kurzer Satz im Imperativ ("Stephan anrufen",
-            "Deck an Carsten schicken"). Wenn nichts Konkretes drin ist,
-            antworte mit dem einzigen Wort "KEINE".
+            maximal 5 Einträgen zurück. Jeder Eintrag besteht aus GENAU
+            zwei Zeilen:
+              - Erste Zeile beginnt mit "- " und enthält EINEN kurzen
+                Satz im Imperativ ("Stephan anrufen",
+                "Deck an Carsten schicken").
+              - Zweite Zeile beginnt mit ">> " und ist ein WÖRTLICHES
+                Zitat aus der Reflexion (10–120 Zeichen), das diese
+                Aufgabe begründet. Verwende NUR Worte, die exakt im
+                Transkript stehen — keine Umformulierung.
+
+            Wenn nichts Konkretes drin ist, antworte mit dem einzigen
+            Wort "KEINE".
             """
         } else {
             return """
@@ -200,10 +224,17 @@ public actor AppleFoundationLLM {
             No already-completed actions. No feelings or wishes. No
             generic observations.
 
-            Reply ONLY in English. Return a list of at most 5 items,
-            each line starting with "- ", each line ONE short imperative
-            sentence ("Call Stephan", "Send the deck to Carsten"). If
-            nothing concrete is present, reply with the single word
+            Reply ONLY in English. Return a list of at most 5 items.
+            Each item is EXACTLY two lines:
+              - First line starts with "- " and contains ONE short
+                imperative sentence ("Call Stephan",
+                "Send the deck to Carsten").
+              - Second line starts with ">> " and is a VERBATIM quote
+                from the reflection (10–120 characters) that justifies
+                this todo. Use ONLY words that appear exactly in the
+                transcript — no paraphrasing.
+
+            If nothing concrete is present, reply with the single word
             "NONE".
             """
         }
@@ -227,36 +258,76 @@ public actor AppleFoundationLLM {
         }
     }
 
-    /// Parse the model's bulleted list (or "KEINE" / "NONE") into an
-    /// array of plain task strings. Tolerates "* item", "- item",
-    /// "1. item", numbered lists, etc.
-    private static func parseImplicitList(_ raw: String) -> [String] {
+    /// Parse the model's two-line-per-item format into candidates with
+    /// optional verbatim source quotes. Each item is expected as:
+    ///
+    ///   - Imperative sentence
+    ///   >> Verbatim quote from transcript
+    ///
+    /// Tolerant of older single-line outputs (no quote line), of bullet
+    /// variants (`*`, `•`, numbered), and of stray blank lines between
+    /// items. The quote is validated against the transcript: if the
+    /// model paraphrased instead of quoting verbatim, we drop the quote
+    /// and let the UI fall back to fuzzy matching on the candidate text.
+    private static func parseImplicitList(_ raw: String, transcript: String) -> [ImplicitCandidate] {
         let normalised = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if normalised.isEmpty { return [] }
         let upper = normalised.uppercased()
         if upper == "KEINE" || upper == "NONE" || upper == "—" { return [] }
 
-        var items: [String] = []
-        for rawLine in normalised.split(separator: "\n") {
-            var line = rawLine.trimmingCharacters(in: .whitespaces)
-            // Strip bullets and numbering.
-            while let first = line.first, "-•*0123456789.):".contains(first) {
-                line.removeFirst()
-                line = line.trimmingCharacters(in: .whitespaces)
+        // Lower-cased transcript for case-insensitive verbatim check.
+        let transcriptLower = transcript.lowercased()
+
+        var items: [ImplicitCandidate] = []
+        var pendingText: String? = nil
+        var pendingQuote: String? = nil
+
+        func commit() {
+            if let text = pendingText {
+                let quote: String? = {
+                    guard let q = pendingQuote, !q.isEmpty else { return nil }
+                    return transcriptLower.contains(q.lowercased()) ? q : nil
+                }()
+                items.append(ImplicitCandidate(text: text, sourceQuote: quote))
             }
-            // Drop trailing punctuation.
-            while let last = line.last, ".,;".contains(last) {
-                line.removeLast()
+            pendingText = nil
+            pendingQuote = nil
+        }
+
+        for rawLine in normalised.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+
+            // Quote line — pairs with the most recent item.
+            if line.hasPrefix(">>") {
+                var q = String(line.dropFirst(2))
+                q = q.trimmingCharacters(in: CharacterSet(charactersIn: " \"'„“”«»"))
+                if pendingText != nil { pendingQuote = q.isEmpty ? nil : q }
+                continue
             }
-            let cleaned = line.trimmingCharacters(in: .whitespaces)
+
+            // New item — flush any in-flight pair.
+            commit()
+
+            var head = line
+            while let first = head.first, "-•*0123456789.):".contains(first) {
+                head.removeFirst()
+                head = head.trimmingCharacters(in: .whitespaces)
+            }
+            while let last = head.last, ".,;".contains(last) {
+                head.removeLast()
+            }
+            let cleaned = head.trimmingCharacters(in: .whitespaces)
             guard cleaned.count >= 4 else { continue }
-            // Reject obvious non-todos.
             if cleaned.uppercased() == "KEINE" || cleaned.uppercased() == "NONE" {
                 continue
             }
-            items.append(cleaned)
+            pendingText = cleaned
+
             if items.count >= 5 { break }
         }
+        commit()
+        if items.count > 5 { items = Array(items.prefix(5)) }
         return items
     }
 

@@ -53,19 +53,29 @@ public struct Todo: Codable, Sendable {
     public var due: String?
     public var status: String
     public var source_segment_id: String?
+    /// Verbatim phrase from the source transcript that justified this
+    /// todo. For explicit todos, the regex capture (already exact). For
+    /// implicit todos, the on-device LLM is asked to echo a short literal
+    /// quote alongside its paraphrased imperative. Used by the
+    /// confirmation UI to highlight the originating words inside a
+    /// surrounding 5-line excerpt; nil when no quote was returned and
+    /// the UI falls back to fuzzy matching.
+    public var source_quote: String?
 
     public init(
         text: String,
         type: String = "explicit",
         due: String? = nil,
         status: String = "Offen",
-        source_segment_id: String? = nil
+        source_segment_id: String? = nil,
+        source_quote: String? = nil
     ) {
         self.text = text
         self.type = type
         self.due = due
         self.status = status
         self.source_segment_id = source_segment_id
+        self.source_quote = source_quote
     }
 }
 
