@@ -17,9 +17,10 @@ import Synchronization
 public final class VoxtralTTS: NSObject, TTSEngine, @unchecked Sendable {
     public static let shared = VoxtralTTS()
 
-    /// Voice id used when nothing else is available. Real voice selection
-    /// arrives in slice 02 via the server's `/api/tts/voices` catalog.
-    public static let fallbackVoice = "casual_male"
+    /// Voice id used when nothing else is available. Native German
+    /// reference voice — see `voice_embedding/de_male.pt` in the model
+    /// repo. Slice 02's picker lets the user override per language.
+    public static let fallbackVoice = "de_male"
 
     public static let voiceIDPrefix = "voxtral:"
 
@@ -186,7 +187,7 @@ public final class VoxtralTTS: NSObject, TTSEngine, @unchecked Sendable {
     // MARK: - Playback plumbing (mirrors PiperTTS, kept private so the
     // two engines don't share internal state)
 
-    private struct PendingPlayback {
+    private struct PendingPlayback: @unchecked Sendable {
         let player: AVAudioPlayer
         let cont: CheckedContinuation<Void, Never>
     }

@@ -28,6 +28,7 @@ public struct VoiceSettingsView: View {
     @State private var selectedIDByLanguage: [String: String?] = [:]
     @State private var previewing: String?
     @State private var mixedLanguageSpeech: Bool = WalkthroughSettingsStore.mixedLanguageSpeech
+    @StateObject private var voiceCatalog = VoiceCatalogClient.shared
     // Dedicated synthesizer for Apple previews — kept separate from
     // AppleSpeechTTS.shared so a preview tap never collides with the
     // walkthrough's continuation map.
@@ -51,6 +52,7 @@ public struct VoiceSettingsView: View {
                     ForEach(Self.supportedLanguages, id: \.code) { lang in
                         let appleVoices = appleVoicesByLanguage[lang.code] ?? []
                         let piperVoices = PiperTTS.voices(for: lang.code)
+                        let voxtralVoices = voiceCatalog.voices(for: lang.code)
 
                         Section {
                             ForEach(appleVoices, id: \.identifier) { voice in
@@ -59,13 +61,36 @@ public struct VoiceSettingsView: View {
                             ForEach(piperVoices, id: \.stem) { voice in
                                 piperRow(voice: voice, language: lang.code)
                             }
-                            if appleVoices.isEmpty && piperVoices.isEmpty {
-                                Text("Keine Stimmen verfügbar. Premium-Stimme über iOS-Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen laden, oder `ios/scripts/fetch_piper_voices.sh` ausführen.")
+                            ForEach(voxtralVoices, id: \.id) { voice in
+                                voxtralRow(voice: voice, language: lang.code, sample: lang.sample)
+                            }
+                            if appleVoices.isEmpty && piperVoices.isEmpty && voxtralVoices.isEmpty {
+                                Text("Keine Stimmen verfügbar. Premium-Stimme über iOS-Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen laden, oder `ios/scripts/fetch_piper_voices.sh` ausführen, oder Voxtral-Server in den Server-Einstellungen prüfen.")
                                     .font(Theme.font.caption)
                                     .foregroundStyle(Theme.color.text.subdued)
                             }
                         } header: {
                             Text(lang.label)
+                                .font(Theme.font.subheadline)
+                                .foregroundStyle(Theme.color.text.secondary)
+                        }
+                    }
+
+                    if let catalogError = voiceCatalog.lastError {
+                        Section {
+                            Text("Voxtral-Stimmen konnten nicht geladen werden: \(catalogError)")
+                                .font(Theme.font.caption)
+                                .foregroundStyle(Theme.color.text.subdued)
+                            Button {
+                                Task { await voiceCatalog.refresh() }
+                            } label: {
+                                Label("Erneut versuchen", systemImage: "arrow.clockwise")
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(Theme.color.text.link)
+                            .disabled(voiceCatalog.isLoading)
+                        } header: {
+                            Text("Voxtral · Server")
                                 .font(Theme.font.subheadline)
                                 .foregroundStyle(Theme.color.text.secondary)
                         }
@@ -94,7 +119,7 @@ public struct VoiceSettingsView: View {
                     }
 
                     Section {
-                        Text("Apple-Premium-Stimmen müssen einmalig in den iOS-Einstellungen geladen werden. Piper-Stimmen werden mit der App ausgeliefert (≈ 110 MB pro Stimme). Beide Engines spielen direkt auf dem Gerät — keine Cloud.")
+                        Text("Apple-Premium-Stimmen müssen einmalig in den iOS-Einstellungen geladen werden. Piper-Stimmen werden mit der App ausgeliefert (≈ 110 MB pro Stimme) und spielen direkt auf dem Gerät. Voxtral-Stimmen kommen aus deinem Server über Tailscale — höhere Qualität, aber benötigen eine Verbindung.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
@@ -103,7 +128,10 @@ public struct VoiceSettingsView: View {
             }
         }
         .navigationBarHidden(true)
-        .onAppear { loadVoices() }
+        .onAppear {
+            loadVoices()
+            Task { await voiceCatalog.refresh() }
+        }
     }
 
     // MARK: - Rows
@@ -195,6 +223,47 @@ public struct VoiceSettingsView: View {
         }
     }
 
+    private func voxtralRow(voice: VoxtralVoice, language: String, sample: String) -> some View {
+        let isSelected = (selectedIDByLanguage[language] ?? nil) == voice.voiceID
+        let isPreviewing = previewing == voice.voiceID
+        return HStack(spacing: Theme.spacing.sm) {
+            Button {
+                VoicePreferences.setSelectedVoiceID(voice.voiceID, for: language)
+                selectedIDByLanguage[language] = voice.voiceID
+            } label: {
+                HStack(spacing: Theme.spacing.sm) {
+                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(isSelected ? Theme.color.text.link : Theme.color.text.subdued)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(voice.label)
+                            .font(Theme.font.body)
+                            .foregroundStyle(Theme.color.text.primary)
+                        Text("Voxtral · Server — \(voice.description)")
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                    }
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                Task { await previewVoxtral(voice: voice, language: language, sample: sample) }
+            } label: {
+                if isPreviewing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "play.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(Theme.color.text.link)
+                }
+            }
+            .buttonStyle(.plain)
+            .disabled(isPreviewing)
+        }
+    }
+
     // MARK: - Loading + preview
 
     private func loadVoices() {
@@ -233,5 +302,13 @@ public struct VoiceSettingsView: View {
         // Pass the explicit stem so the preview demonstrates *this* row's
         // voice, regardless of what the user has currently saved.
         await PiperTTS.shared.speak(voice.sample, stem: voice.stem, language: voice.language)
+    }
+
+    private func previewVoxtral(voice: VoxtralVoice, language: String, sample: String) async {
+        previewing = voice.voiceID
+        defer { previewing = nil }
+        // Pass the bare voice id so the preview demonstrates *this* row's
+        // voice, regardless of what the user has currently saved.
+        await VoxtralTTS.shared.speak(sample, voice: voice.id, language: language)
     }
 }
