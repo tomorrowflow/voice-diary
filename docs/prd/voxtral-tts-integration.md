@@ -156,7 +156,7 @@ These are not automated but must be executed end-to-end on a real iPhone 17 Pro 
 
 ## Out of Scope
 
-- **Custom voice cloning from a 3 s user reference.** Voxtral supports it; we are not exposing it in v1. The Settings UI will only surface the bundled Mistral reference voices. Custom cloning may become its own PRD later.
+- ~~**Custom voice cloning from a 3 s user reference.**~~ Originally out of scope; **reopened as Slice 07** (2026-05-19) after the user found Voxtral's two bundled German voices regionally biased. See the Slice 07 addendum below.
 - **Streaming inference.** The official model card mentions streaming but documents only batch. v1 uses batch. M13c will measure whether streaming is worth pursuing.
 - **Replacing Whisper STT with Voxtral Transcribe.** Different model, different milestone. The user separately noted the `virtUOS/vllm-voxtral` repo as a potential STT path; explicitly not addressed here.
 - **Apple Foundation Models or Gemma fallback for the dialog LLM.** Unchanged by this PRD.
@@ -206,3 +206,28 @@ We close M13c on **qualitative dogfood evidence** instead:
 **Decision.** No follow-up streaming-inference issue is opened. Slice 04 (opener prefetch) remains deferred for the same reason — the latency it would hide is already imperceptible. Both can be reopened later if the workload changes (e.g. longer free-reflection prompts, off-Tailscale operation, or a noticeable degradation after a model upgrade).
 
 **Operational note for future re-measurement.** If we ever do want hard numbers, the cheapest path is to add a `Date()` at the start of `VoxtralTTS.performSpeak`, capture `audioPlayerDidBeginPlaying` (not just `didFinishPlaying`) on the playback delegate, log the delta as TTFA, and gate the whole thing behind the debug toggle already in place for synth-time logging. That adds maybe 20 lines and zero production risk; the only reason to do it would be to settle an objective vs subjective dispute about whether the gap is acceptable. None today.
+
+---
+
+## Addendum — Slice 07: custom voice cloning (2026-05-19)
+
+**Trigger.** After slice 02 shipped, the user reported that `de_male` sounds Austrian/Bavarian, not Hochdeutsch. With only two German voices in Voxtral's bundled set (`de_male`, `de_female`) drawn from a regionally unfiltered dataset, expanding the catalog inside Voxtral is the only path to neutral-German variety. Custom voice cloning — originally listed under Out of Scope — is reopened.
+
+**API confirmed.** vLLM Omni's `/v1/audio/speech` accepts cloning via three new optional fields: `task_type: "Base"`, `ref_audio` (HTTP URL, base64 data URL, or `file://` URI), and `ref_text` (transcript of the reference, improves clone quality). No embedding-generation step, no vLLM restart per new voice. Source: `docs.vllm.ai/projects/vllm-omni/en/latest/serving/speech_api/`.
+
+**Architecture.** Reference clips live in a docker volume shared between `webapp` and `voxtral`. `voxtral` mounts it read-only at `/voxtral-refs` and is started with `--allowed-local-media-path /voxtral-refs`. iOS uploads a clip via the webapp; the webapp writes `voxtral-refs/<uuid>/audio.wav` + `metadata.json`; subsequent synth calls for voice id `custom_<uuid>` pass `file:///voxtral-refs/<uuid>/audio.wav` to vLLM. No per-utterance HTTP overhead for references.
+
+**Locked product decisions.**
+- **Reference sources:** both bundled and user-recorded. Bundled clips arrive via a LibriVox fetcher script (`scripts/seed_voxtral_refs.py`) with a small hardcoded list of public-domain German tracks trimmed to 5–10 second snippets and seeded with their known transcripts. Quality is a known gamble — the user accepted this knowing the recording UI is the fallback.
+- **ref_text strategy:** auto-transcribe the user's recording via the on-device Parakeet (already loaded) and pre-fill an editable text field. User can correct misheard words before submitting.
+- **Per-language scoping:** each reference clip is tagged with one language (DE or EN). The voice appears only in that language's section of the picker. Avoids the cross-language accent artifacts that motivated this whole work.
+
+**Voice id format.** Custom voices use voice id `custom_<uuid>` (8-char hex), stored as `voxtral:custom_<uuid>` in `VoicePreferences`. Bundled-via-LibriVox voices use a stable id `librivox_<slug>` (e.g. `librivox_thoreau_de_01`) so the catalog is idempotent across seed-script runs. Both flow through the same `voxtral:` prefix in `VoiceRegistry`.
+
+**Out of scope for Slice 07 itself.**
+- Cross-language clone rendering (the "use one voice for both DE and EN" path).
+- Bundled-clip curation by anyone other than the LibriVox fetcher. Future iteration could add an admin upload route for first-party clips.
+- Per-voice quality scoring / sorting. Voices appear in catalog order; the user picks by ear.
+- Cloud-hosted reference clips. References stay on the server's local disk, Tailscale-only, same posture as session bundles.
+
+**Time estimate.** ~6–7 hours of focused build, split across the server architecture (~2h), the LibriVox fetcher (~1h), the iOS recording + transcribe UI (~3h), and integration testing (~1h).
