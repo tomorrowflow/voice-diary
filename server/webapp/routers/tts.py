@@ -14,6 +14,7 @@ pass a voice id that vLLM will accept (vLLM's 400 propagates back as
 
 from __future__ import annotations
 
+import base64
 import logging
 import secrets
 from typing import Literal
@@ -35,11 +36,14 @@ from voxtral_client import (
 logger = logging.getLogger(__name__)
 
 
-# Path inside the `voxtral` container where the shared refs volume is
-# mounted. Read-only. Construct `file://` URIs against this path when
-# forwarding cloned-synthesis requests. Webapp's view of the same
-# data lives at `voxtral_refs_dir()` from paths.py.
-_VOXTRAL_REFS_MOUNT = "/voxtral-refs"
+# vLLM Omni's docs claim `--allowed-local-media-path` enables `file://`
+# URIs for ref_audio, but in practice (v0.18.0 + Voxtral-4B-TTS-2603)
+# the cloning path still tries to base64-decode the ref_audio string
+# regardless of the flag. We send a `data:audio/wav;base64,...` data
+# URL instead — also documented and works reliably. The shared
+# voxtral-refs bind mount stays in compose for now (cheap to keep,
+# might be useful later if vLLM fixes the file:// path), but the
+# webapp no longer depends on it for synthesis.
 
 # Upload limits: 10 MB matches vLLM Omni's own cap; ~15 s of WAV at
 # 24 kHz / mono / 16-bit is ~720 KB, so the limit only kicks in if the
@@ -126,19 +130,30 @@ async def synthesize(req: SynthesizeRequest) -> Response:
 
     # Bundled voices use the preset-name path; filesystem-backed voices
     # (librivox + user-recorded) clone from the on-disk WAV via vLLM
-    # Omni's task_type="Base" surface, passing a file:// URI that maps
-    # to the voxtral sidecar's read-only mount of the same volume.
+    # Omni's task_type="Base" surface. We inline the WAV as a base64
+    # data URL because vLLM's file:// support is unreliable (see top
+    # of file for context). At ~640 KB per request the overhead is
+    # negligible for our workload.
     ref_audio: str | None = None
     ref_text: str | None = None
     if descriptor.source != "bundled":
-        if voice_catalog.reference_audio_path(req.voice) is None:
+        audio_path = voice_catalog.reference_audio_path(req.voice)
+        if audio_path is None:
             # Metadata exists but the WAV doesn't — treat as unknown so
             # the iOS client falls back per the engine policy.
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail={"error": "unknown_voice", "detail": f"reference audio missing for voice '{req.voice}'"},
             )
-        ref_audio = f"file://{_VOXTRAL_REFS_MOUNT}/{req.voice}/audio.wav"
+        try:
+            audio_bytes = audio_path.read_bytes()
+        except OSError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail={"error": "ref_audio_read_failed", "detail": str(exc)},
+            ) from exc
+        encoded = base64.b64encode(audio_bytes).decode("ascii")
+        ref_audio = f"data:audio/wav;base64,{encoded}"
         ref_text = descriptor.ref_text
 
     client = _get_client()
