@@ -16,7 +16,8 @@ public enum WalkthroughState: Sendable, Equatable {
     case eventListening(stepIndex: Int, eventIndex: Int)     // mic open, recording the user's reflection
     case generalOpener(stepIndex: Int, sectionID: String)    // AI speaking the user-defined intro
     case generalListening(stepIndex: Int, sectionID: String) // mic open, recording the section answer
-    case driveByOpener(stepIndex: Int)                       // AI surfacing seeds + closing prompt
+    case noteReview(stepIndex: Int, seedIndex: Int)          // visual review of one drive-by seed
+    case driveByOpener(stepIndex: Int)                       // AI speaking the closing prompt
     case driveByListening(stepIndex: Int)                    // mic open, recording the closing reflection
     case confirmingTodos(index: Int)                         // post-CLOSING per-candidate ja/nein/anders pass
     case ingesting                                           // building manifest + handing to SessionUploader
@@ -49,6 +50,7 @@ public extension WalkthroughState {
         case .briefing,
              .eventOpener, .eventListening,
              .generalOpener, .generalListening,
+             .noteReview,
              .driveByOpener, .driveByListening,
              .confirmingTodos:
             return true
@@ -65,6 +67,7 @@ public extension WalkthroughState {
         case .eventListening(_, let i):   return "Termin \(i + 1) — Hören"
         case .generalOpener:              return "Abschnitt — Opener"
         case .generalListening:           return "Abschnitt — Hören"
+        case .noteReview(_, let i):       return "Notiz \(i + 1)"
         case .driveByOpener:              return "Drive-by"
         case .driveByListening:           return "Drive-by — Hören"
         case .confirmingTodos:            return "Aufgaben prüfen"
