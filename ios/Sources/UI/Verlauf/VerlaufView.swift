@@ -296,6 +296,8 @@ struct VerlaufDetailView: View {
 
                         sectionsList
 
+                        notesList
+
                         identifierFooter
 
                         if let prepareError {
@@ -540,6 +542,55 @@ struct VerlaufDetailView: View {
         f.setLocalizedDateFormatFromTemplate("EEEE, d. MMMM yyyy")
         return f
     }()
+
+    // MARK: - Notes list
+
+    /// Drive-by seeds folded into this walkthrough. Driven by
+    /// `manifest.drive_by_seeds_surfaced`, joined against the live list
+    /// of seed directories on disk. Renders nothing for drive-by detail
+    /// pages or when no seeds were folded in.
+    @ViewBuilder
+    private var notesList: some View {
+        let entries = surfacedNoteEntries()
+        if entries.isEmpty {
+            EmptyView()
+        } else {
+            VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+                Text("NOTIZEN")
+                    .font(Theme.font.monoCaption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                    .tracking(0.5)
+                    .padding(.horizontal, Theme.spacing.xs)
+
+                VStack(spacing: Theme.spacing.sm) {
+                    ForEach(entries, id: \.seed.seed_id) { e in
+                        NoteRow(
+                            entry: e,
+                            isPlaying: player.playingURL == e.audioURL,
+                            onTogglePlay: { player.toggle(url: e.audioURL) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private func surfacedNoteEntries() -> [SurfacedNoteEntry] {
+        guard case .walkthrough(let w) = item,
+              let manifest = w.manifest,
+              !manifest.drive_by_seeds_surfaced.isEmpty
+        else { return [] }
+        let order = manifest.drive_by_seeds_surfaced
+        let allSeeds = SessionHistoryStore.loadDriveBys()
+        let bySeedID = Dictionary(uniqueKeysWithValues: allSeeds.map {
+            ($0.seed.seed_id, $0)
+        })
+        return order.compactMap { seedID -> SurfacedNoteEntry? in
+            guard let entry = bySeedID[seedID] else { return nil }
+            let url = entry.directory.appending(path: "audio.m4a")
+            return SurfacedNoteEntry(seed: entry.seed, audioURL: url)
+        }
+    }
 
     // MARK: - Sections list
 
@@ -972,6 +1023,87 @@ private struct SegmentRow: View {
             return lines.prefix(2).joined(separator: "\n")
         }
         return trimmed
+    }
+}
+
+// MARK: - Note row
+
+struct SurfacedNoteEntry: Sendable {
+    let seed: DriveBySeed
+    let audioURL: URL
+}
+
+/// One drive-by seed surfaced into a walkthrough. Visually mirrors
+/// `SegmentRow` (play button + meta + transcript preview) but sourced
+/// from a `DriveBySeed` rather than a manifest segment, and labelled
+/// with the seed's capture time instead of an event title.
+private struct NoteRow: View {
+    let entry: SurfacedNoteEntry
+    let isPlaying: Bool
+    let onTogglePlay: () -> Void
+
+    @State private var duration: TimeInterval?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            HStack(alignment: .top, spacing: Theme.spacing.sm) {
+                Button(action: onTogglePlay) {
+                    ZStack {
+                        Circle()
+                            .fill(Theme.color.tint.warning10)
+                            .frame(width: 36, height: 36)
+                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Theme.color.status.warning)
+                            .offset(x: isPlaying ? 0 : 1)
+                    }
+                }
+                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(timeText)
+                        .font(Theme.font.body.weight(.medium))
+                        .foregroundStyle(Theme.color.text.primary)
+                        .monospacedDigit()
+                    if let duration {
+                        Text(SegmentPlayer.formatDuration(duration))
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                            .monospacedDigit()
+                    }
+                }
+
+                Spacer(minLength: Theme.spacing.xs)
+            }
+
+            if !entry.seed.transcript.isEmpty {
+                Text(entry.seed.transcript)
+                    .font(Theme.font.callout)
+                    .foregroundStyle(Theme.color.text.secondary)
+                    .lineLimit(3)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(Theme.spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .fill(Theme.color.bg.container)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
+        )
+        .task(id: entry.audioURL.path) {
+            duration = await SegmentPlayer.duration(of: entry.audioURL)
+        }
+    }
+
+    private var timeText: String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm"
+        return f.string(from: entry.seed.captured_at)
     }
 }
 

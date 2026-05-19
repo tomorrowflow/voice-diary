@@ -70,6 +70,7 @@ public struct WalkthroughView: View {
 
                         switch coordinator.state {
                         case .idle:                StartCard(coordinator: coordinator)
+                        case .noteReview:          NoteReviewCard(coordinator: coordinator)
                         case .confirmingTodos:     TodoConfirmationCard(coordinator: coordinator)
                         case .ingesting:           UploadingCard()
                         case .done:                DoneCard(coordinator: coordinator)
@@ -193,6 +194,9 @@ public struct WalkthroughView: View {
         if case .confirmingTodos = coordinator.state {
             return "Sag Ja, Nein oder formuliere die Aufgabe um. Weiter überspringt diese Aufgabe."
         }
+        if case .noteReview = coordinator.state {
+            return "Tippe Weiter, um zur nächsten Notiz zu gehen."
+        }
         return "Sprich frei. Tippe Weiter, wenn du zum nächsten Termin willst."
     }
 
@@ -248,7 +252,7 @@ public struct WalkthroughView: View {
         case .failed:                          return "Fehler"
         case .briefing where currentEvent != nil,
              .eventOpener, .eventListening:    return currentEvent?.subject ?? "Termin"
-        case .generalOpener, .generalListening,
+        case .noteReview, .generalOpener, .generalListening,
              .driveByOpener, .driveByListening:
             return coordinator.currentSectionTitle ?? "Abend"
         default:                               return "Abend"
@@ -261,6 +265,19 @@ public struct WalkthroughView: View {
             return coordinator.calendarProgress?.total ?? coordinator.events.count
         case .confirmingTodos:
             return coordinator.todoCandidateProgress?.total ?? 0
+        case .noteReview:
+            // Notes + the closing-question step, so the dot row reads
+            // "1 of N+1 ... N of N+1" across the per-note review and
+            // "N+1 of N+1" once the closing card opens. Picking the
+            // total off `currentNoteSeed` so we don't reach into the
+            // private plan from here.
+            return (coordinator.currentNoteSeed?.total ?? 0) + 1
+        case .driveByOpener, .driveByListening:
+            // Final step in the same breadcrumb sequence as the notes
+            // — show the total only when at least one note preceded
+            // it, otherwise the row would just be a single dot.
+            let plannedNotes = coordinator.plannedNoteCount
+            return plannedNotes > 0 ? plannedNotes + 1 : 0
         default:
             return 0
         }
@@ -272,6 +289,12 @@ public struct WalkthroughView: View {
             return coordinator.calendarProgress?.current ?? 0
         case .confirmingTodos:
             return (coordinator.todoCandidateProgress?.index ?? 0) + 1
+        case .noteReview:
+            return coordinator.currentNoteSeed?.index ?? 0
+        case .driveByOpener, .driveByListening:
+            // Closing question = last dot in the breadcrumb row.
+            let plannedNotes = coordinator.plannedNoteCount
+            return plannedNotes > 0 ? plannedNotes + 1 : 0
         default:
             return 0
         }
@@ -926,6 +949,128 @@ private struct UploadingCard: View {
     }
 }
 
+/// One step of the per-note review pass that runs at the start of the
+/// drive-by section. Renders a single drive-by seed full-screen — time,
+/// optional "older" badge for orphan notes, transcript body, and an
+/// optional play button. Visual only; no recording happens here. The
+/// breadcrumb dot row in the FlowHeader carries the "i of N+1" position
+/// across the per-note cards and the closing question that follows.
+@MainActor
+private struct NoteReviewCard: View {
+    let coordinator: WalkthroughCoordinator
+
+    @StateObject private var player = SegmentPlayer()
+
+    var body: some View {
+        let snapshot = coordinator.currentNoteSeed
+        return VStack(alignment: .leading, spacing: Theme.spacing.md) {
+            header(snapshot: snapshot)
+
+            Text(snapshot?.seed.transcript.isEmpty == false
+                 ? snapshot!.seed.transcript
+                 : (coordinator.confirmationLanguage == .de
+                    ? "(kein Transkript verfügbar)"
+                    : "(no transcript available)"))
+                .font(Theme.font.body)
+                .foregroundStyle(Theme.color.text.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let seed = snapshot?.seed {
+                HStack(spacing: Theme.spacing.sm) {
+                    playButton(seed: seed)
+                    if isOrphan(seed: seed) {
+                        Spacer()
+                        deferButton
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(Theme.spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .fill(Theme.color.bg.containerInset)
+        )
+        .onDisappear { player.stop() }
+    }
+
+    @ViewBuilder
+    private func header(snapshot: (seed: DriveBySeed, index: Int, total: Int)?) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.spacing.sm) {
+            Text(timeText(snapshot?.seed.captured_at))
+                .font(Theme.font.monoCaption)
+                .foregroundStyle(Theme.color.text.subdued)
+            Spacer()
+            if let snapshot, isOrphan(seed: snapshot.seed) {
+                Text(orphanBadgeText(seed: snapshot.seed))
+                    .font(Theme.font.caption2.weight(.medium))
+                    .foregroundStyle(Theme.color.status.warning)
+                    .padding(.horizontal, Theme.spacing.xs)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule().fill(Theme.color.status.warning.opacity(0.10))
+                    )
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func playButton(seed: DriveBySeed) -> some View {
+        Button {
+            player.toggle(url: seed.audio_file_url)
+        } label: {
+            Label(
+                isPlaying(seed: seed)
+                    ? (coordinator.confirmationLanguage == .de ? "Stoppen" : "Stop")
+                    : (coordinator.confirmationLanguage == .de ? "Anhören" : "Listen"),
+                systemImage: isPlaying(seed: seed) ? "stop.circle.fill" : "play.circle.fill"
+            )
+        }
+        .buttonStyle(.dsGhost(size: .sm, fullWidth: false))
+    }
+
+    /// "Für später" — only shown on orphan seeds. Tapping marks the
+    /// seed as deferred for this session and advances to the next note
+    /// without folding the current one into the diary entry.
+    private var deferButton: some View {
+        Button {
+            Task { await coordinator.saveCurrentNoteForLater() }
+        } label: {
+            Label(
+                coordinator.confirmationLanguage == .de ? "Für später" : "Save for later",
+                systemImage: "clock.arrow.circlepath"
+            )
+        }
+        .buttonStyle(.dsGhost(size: .sm, fullWidth: false))
+    }
+
+    private func isPlaying(seed: DriveBySeed) -> Bool {
+        player.playingURL == seed.audio_file_url
+    }
+
+    private func isOrphan(seed: DriveBySeed) -> Bool {
+        let cal = Calendar.current
+        return !cal.isDate(seed.captured_at, inSameDayAs: coordinator.selectedDate)
+    }
+
+    private func orphanBadgeText(seed: DriveBySeed) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: coordinator.confirmationLanguage == .de ? "de_DE" : "en_US")
+        f.dateFormat = "d. MMM"
+        return (coordinator.confirmationLanguage == .de ? "Älter — " : "Older — ")
+            + f.string(from: seed.captured_at)
+    }
+
+    private func timeText(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm"
+        return f.string(from: date)
+    }
+}
+
 /// CLOSING confirmation pass for an implicit-todo candidate. Renders the
 /// candidate as a card visually consistent with `EventCard` so the user
 /// reads the confirmation pass as another listening step instead of a
@@ -938,22 +1083,159 @@ private struct TodoConfirmationCard: View {
     let coordinator: WalkthroughCoordinator
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
-            Text("AUFGABE")
-                .font(Theme.font.monoCaption)
-                .foregroundStyle(Theme.color.text.subdued)
-                .tracking(0.5)
+        let candidate = coordinator.currentTodoCandidate
+        return VStack(alignment: .leading, spacing: Theme.spacing.md) {
+            VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+                Text("AUFGABE")
+                    .font(Theme.font.monoCaption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                    .tracking(0.5)
 
-            Text(coordinator.currentTodoCandidate?.text ?? "")
-                .font(.system(size: 24, weight: .medium))
-                .foregroundStyle(Theme.color.text.primary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Text(candidate?.text ?? "")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(Theme.color.text.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let excerpt = excerpt(for: candidate) {
+                Divider().background(Theme.color.border.subdued)
+
+                VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
+                    Text("AUS DEM TRANSKRIPT")
+                        .font(Theme.font.monoCaption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                        .tracking(0.5)
+
+                    excerptText(excerpt)
+                        .font(Theme.font.body)
+                        .foregroundStyle(Theme.color.text.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
         .padding(Theme.spacing.md)
         .background(
             RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
                 .fill(Theme.color.bg.containerInset)
         )
+    }
+
+    /// Build a 5-line window around the todo's source phrase. Returns
+    /// the lines plus the (optional) range of the matched phrase inside
+    /// the joined excerpt — `nil` when the phrase couldn't be located,
+    /// in which case the caller still renders the window but skips the
+    /// highlight.
+    private struct Excerpt {
+        let text: String
+        let highlightRange: Range<String.Index>?
+    }
+
+    private func excerpt(for candidate: Todo?) -> Excerpt? {
+        guard let candidate,
+              let segID = candidate.source_segment_id,
+              let transcript = coordinator.transcript(forSegmentID: segID)
+        else { return nil }
+
+        // Resolve the phrase to highlight: prefer the verbatim source
+        // quote (always exact for explicit; populated by the LLM for
+        // implicit when it complied), fall back to the candidate text.
+        let needle = (candidate.source_quote?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+            $0.isEmpty ? nil : $0
+        } ?? candidate.text
+
+        // Tokenise the transcript into "lines" — the corrected
+        // transcripts are usually one long paragraph, so we sentence-
+        // split on .!? rather than \n, then re-trim.
+        let lines = sentences(in: transcript)
+        guard !lines.isEmpty else { return nil }
+
+        let lowerLines = lines.map { $0.lowercased() }
+        let lowerNeedle = needle.lowercased()
+
+        var matchIdx = lowerLines.firstIndex { $0.contains(lowerNeedle) }
+        if matchIdx == nil {
+            // Token-overlap fallback for paraphrased implicit todos.
+            matchIdx = bestTokenOverlap(needle: lowerNeedle, lines: lowerLines)
+        }
+
+        // Always show 5 lines centred on the match (or the tail of the
+        // transcript when no match could be located).
+        let center = matchIdx ?? max(lines.count - 1, 0)
+        let start = max(center - 2, 0)
+        let end = min(start + 5, lines.count)
+        let actualStart = max(end - 5, 0)
+        let window = Array(lines[actualStart..<end])
+        let joined = window.joined(separator: " ")
+
+        if let matchIdx,
+           matchIdx >= actualStart, matchIdx < end,
+           let span = locate(needle: needle, in: joined) {
+            return Excerpt(text: joined, highlightRange: span)
+        }
+        return Excerpt(text: joined, highlightRange: nil)
+    }
+
+    /// Render the excerpt with the matched span tinted. Falls back to
+    /// plain text when no highlight range is set.
+    private func excerptText(_ ex: Excerpt) -> Text {
+        guard let range = ex.highlightRange else {
+            return Text(ex.text)
+        }
+        let prefix = String(ex.text[..<range.lowerBound])
+        let match  = String(ex.text[range])
+        let suffix = String(ex.text[range.upperBound...])
+        return Text(prefix)
+            + Text(match)
+                .foregroundColor(Theme.color.text.primary)
+                .fontWeight(.semibold)
+            + Text(suffix)
+    }
+
+    /// Sentence-split a transcript on `.`, `!`, `?` (with a trailing
+    /// space or end of string). Strips empties + whitespace.
+    private func sentences(in text: String) -> [String] {
+        var out: [String] = []
+        var current = ""
+        for ch in text {
+            current.append(ch)
+            if ch == "." || ch == "!" || ch == "?" {
+                let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty { out.append(trimmed) }
+                current = ""
+            }
+        }
+        let tail = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !tail.isEmpty { out.append(tail) }
+        return out
+    }
+
+    /// Cheap fuzzy match: split the needle into tokens (lowercased,
+    /// length ≥ 4) and pick the line with the highest token-presence
+    /// ratio. Returns nil when no line shares any meaningful tokens.
+    private func bestTokenOverlap(needle: String, lines: [String]) -> Int? {
+        let tokens = needle
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 4 }
+        guard !tokens.isEmpty else { return nil }
+
+        var bestIdx: Int? = nil
+        var bestScore: Int = 0
+        for (i, line) in lines.enumerated() {
+            let score = tokens.reduce(0) { $0 + (line.contains($1) ? 1 : 0) }
+            if score > bestScore {
+                bestScore = score
+                bestIdx = i
+            }
+        }
+        return bestScore >= 1 ? bestIdx : nil
+    }
+
+    /// Locate a substring case-insensitively. Returns the range over
+    /// the *original* (cased) string so the returned slice preserves
+    /// the transcript's casing.
+    private func locate(needle: String, in haystack: String) -> Range<String.Index>? {
+        haystack.range(of: needle, options: .caseInsensitive)
     }
 }
 
