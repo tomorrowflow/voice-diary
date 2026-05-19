@@ -29,6 +29,7 @@ public struct VoiceSettingsView: View {
     @State private var previewing: String?
     @State private var mixedLanguageSpeech: Bool = WalkthroughSettingsStore.mixedLanguageSpeech
     @StateObject private var voiceCatalog = VoiceCatalogClient.shared
+    @StateObject private var reachability = Reachability()
     // Dedicated synthesizer for Apple previews — kept separate from
     // AppleSpeechTTS.shared so a preview tap never collides with the
     // walkthrough's continuation map.
@@ -49,6 +50,8 @@ public struct VoiceSettingsView: View {
                 FlowHeader(title: "Stimmen")
 
                 Form {
+                    voxtralReachabilitySection
+
                     ForEach(Self.supportedLanguages, id: \.code) { lang in
                         let appleVoices = appleVoicesByLanguage[lang.code] ?? []
                         let piperVoices = PiperTTS.voices(for: lang.code)
@@ -131,6 +134,95 @@ public struct VoiceSettingsView: View {
         .onAppear {
             loadVoices()
             Task { await voiceCatalog.refresh() }
+            Task { await reachability.refresh() }
+        }
+    }
+
+    // MARK: - Voxtral reachability section
+
+    private var voxtralReachabilitySection: some View {
+        Section {
+            HStack(spacing: Theme.spacing.sm) {
+                Image(systemName: voxtralReachabilityIcon)
+                    .foregroundStyle(voxtralReachabilityColor)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(voxtralReachabilityLabel)
+                        .font(Theme.font.body)
+                        .foregroundStyle(Theme.color.text.primary)
+                    Text(voxtralReachabilityDetail)
+                        .font(Theme.font.caption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                }
+                Spacer()
+                Button {
+                    Task {
+                        await reachability.refresh()
+                        await voiceCatalog.refresh()
+                    }
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .foregroundStyle(Theme.color.text.link)
+                }
+                .buttonStyle(.plain)
+            }
+        } header: {
+            Text("Voxtral · Server")
+                .font(Theme.font.subheadline)
+                .foregroundStyle(Theme.color.text.secondary)
+        }
+    }
+
+    private var voxtralUpstreamValue: String? {
+        switch reachability.status {
+        case .ok(let upstream), .degraded(let upstream):
+            return upstream["voxtral"]
+        default:
+            return nil
+        }
+    }
+
+    private var voxtralReachabilityIcon: String {
+        switch voxtralUpstreamValue {
+        case "ok":      return "checkmark.circle.fill"
+        case "down":    return "exclamationmark.triangle.fill"
+        case "skipped": return "minus.circle"
+        default:        return "questionmark.circle"
+        }
+    }
+
+    private var voxtralReachabilityColor: Color {
+        switch voxtralUpstreamValue {
+        case "ok":      return Theme.color.status.success
+        case "down":    return Theme.color.status.destructive
+        case "skipped": return Theme.color.text.subdued
+        default:        return Theme.color.text.subdued
+        }
+    }
+
+    private var voxtralReachabilityLabel: String {
+        switch voxtralUpstreamValue {
+        case "ok":      return "Verbunden"
+        case "down":    return "Nicht erreichbar"
+        case "skipped": return "Nicht konfiguriert"
+        default:
+            switch reachability.status {
+            case .authInvalid: return "Bearer ungültig"
+            case .down:        return "Server nicht erreichbar"
+            default:           return "Status unbekannt"
+            }
+        }
+    }
+
+    private var voxtralReachabilityDetail: String {
+        switch voxtralUpstreamValue {
+        case "ok":
+            return "Voxtral-Stimmen sind verfügbar. Fällt bei Hiccups automatisch auf Piper/Apple zurück."
+        case "down":
+            return "Voxtral-Sidecar antwortet nicht. Voxtral-Stimmen fallen auf deine Piper- oder Apple-Stimme zurück, der Walkthrough läuft weiter."
+        case "skipped":
+            return "VOXTRAL_BASE_URL ist auf dem Server nicht gesetzt — keine Voxtral-Stimmen verfügbar."
+        default:
+            return "Reachability wird beim Öffnen der Einstellungen geprüft. Tippe ↻ zum erneuten Prüfen."
         }
     }
 

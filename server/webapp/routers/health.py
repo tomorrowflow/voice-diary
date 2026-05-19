@@ -95,6 +95,22 @@ async def _probe_ollama() -> ProbeResult:
     return await _probe_http("ollama", base.rstrip("/") + "/api/tags")
 
 
+async def _probe_voxtral() -> ProbeResult:
+    """Reachability check for the vLLM Omni sidecar. Uses voxtral_client's
+    probe() helper with a tight timeout so a slow vLLM startup doesn't
+    block the iOS reachability poll."""
+    base = os.getenv("VOXTRAL_BASE_URL")
+    if not base:
+        return "skipped"
+    try:
+        from voxtral_client import VoxtralClient
+        client = VoxtralClient(base_url=base)
+        return "ok" if await client.probe(timeout_seconds=PROBE_TIMEOUT) else "down"
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("voxtral probe failed: %s", exc)
+        return "down"
+
+
 async def _probe_msgraph() -> ProbeResult:
     """Token freshness check: cache loaded + at least one account.
 
@@ -121,7 +137,7 @@ async def _probe_msgraph() -> ProbeResult:
 
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    names = ("postgres", "qdrant", "whisper", "lightrag", "ollama", "msgraph")
+    names = ("postgres", "qdrant", "whisper", "lightrag", "ollama", "msgraph", "voxtral")
     probes = await asyncio.gather(
         _probe_postgres(),
         _probe_qdrant(),
@@ -129,6 +145,7 @@ async def health() -> HealthResponse:
         _probe_lightrag(),
         _probe_ollama(),
         _probe_msgraph(),
+        _probe_voxtral(),
         return_exceptions=False,
     )
     upstream: dict[str, ProbeResult] = dict(zip(names, probes))
@@ -136,7 +153,7 @@ async def health() -> HealthResponse:
     # Overall status:
     #   "ok"        — everything that isn't 'skipped' is 'ok'
     #   "down"      — postgres or whisper is 'down' (no audio path possible)
-    #   "degraded"  — anything else is failing
+    #   "degraded"  — anything else is failing (incl. voxtral down)
     relevant = [v for v in upstream.values() if v not in ("skipped", "fixture")]
     if upstream["postgres"] == "down" or upstream["whisper"] == "down":
         overall: OverallStatus = "down"
