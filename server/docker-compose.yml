@@ -38,9 +38,15 @@ services:
     # reaches Voxtral. HF model cache lives in a named volume so a
     # restart does not re-download ~8 GB.
     image: vllm/vllm-omni:v0.18.0
+    # The image ships with `vllm` + `vllm-omni` on PATH but no ENTRYPOINT/CMD
+    # set, so we spell out the binary + subcommand explicitly. The `--omni`
+    # flag is REQUIRED for Voxtral TTS — without it vLLM resolves the model
+    # as plain MistralForCausalLM and fails to load the `acoustic_transformer`
+    # weights. See https://huggingface.co/mistralai/Voxtral-4B-TTS-2603.
+    entrypoint: ["vllm", "serve"]
     command:
-      - "--model"
       - "${VOXTRAL_MODEL:-mistralai/Voxtral-4B-TTS-2603}"
+      - "--omni"
       - "--port"
       - "8001"
     environment:
@@ -58,7 +64,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ["0"]
+              device_ids: ["1"]
               capabilities: [gpu]
     restart: unless-stopped
 
@@ -75,13 +81,13 @@ services:
     restart: unless-stopped
     # Uncomment the following block when WHISPER_IMAGE_TAG=latest-gpu and
     # nvidia-container-toolkit is installed on the host.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
   qdrant:
     image: qdrant/qdrant:v1.17.0
