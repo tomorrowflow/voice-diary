@@ -221,8 +221,12 @@ async def test_clone_includes_task_type_and_ref_fields() -> None:
     assert payload["task_type"] == "Base"
     assert payload["ref_audio"] == "file:///voxtral-refs/custom_abc12345/audio.wav"
     assert payload["ref_text"] == "Dies ist meine Referenz."
-    # The voice field is still required by vLLM Omni even when cloning.
-    assert payload["voice"] == "custom_abc12345"
+    # `voice` MUST be omitted when cloning — vLLM Omni validates it
+    # against its preset speaker list regardless of task_type, so
+    # passing a non-preset id (custom_*, librivox_*) alongside
+    # ref_audio causes the request to be rejected with
+    # "Invalid speaker '...'". The reference is the identity.
+    assert "voice" not in payload
 
 
 async def test_clone_omits_ref_text_when_not_provided() -> None:
@@ -245,6 +249,7 @@ async def test_clone_omits_ref_text_when_not_provided() -> None:
     assert payload["task_type"] == "Base"
     assert payload["ref_audio"] == "file:///voxtral-refs/custom_deadbeef/audio.wav"
     assert "ref_text" not in payload
+    assert "voice" not in payload
 
 
 async def test_bundled_synth_does_not_include_clone_fields() -> None:
