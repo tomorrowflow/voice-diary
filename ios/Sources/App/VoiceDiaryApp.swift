@@ -146,10 +146,10 @@ struct RootView: View {
     }
 }
 
-/// "Mehr" hub. Holds the secondary destinations (Stimmen, debug pages
-/// in DEBUG builds). Each row pushes a navigation destination that
-/// renders its own FlowHeader so the title alignment matches the
-/// front-rail screens.
+/// "Mehr" hub. Holds the secondary destinations (Stimmen, Server,
+/// permissions). Each row pushes a navigation destination that renders
+/// its own FlowHeader so the title alignment matches the front-rail
+/// screens.
 private struct MehrView: View {
     var body: some View {
         ZStack(alignment: .top) {
@@ -190,22 +190,17 @@ private struct MehrView: View {
                         } label: {
                             MehrRow(label: "Wake-Word", systemImage: "waveform.and.mic")
                         }
-                    }
-
-                    #if DEBUG
-                    Section("Debug") {
-                        NavigationLink {
-                            DebugUploadView()
-                        } label: {
-                            MehrRow(label: "Test-Upload", systemImage: "arrow.up.circle")
-                        }
                         NavigationLink {
                             DebugSettingsView()
                         } label: {
-                            MehrRow(label: "Server", systemImage: "gear")
+                            MehrRow(label: "Server", systemImage: "server.rack")
+                        }
+                        NavigationLink {
+                            DangerZoneView()
+                        } label: {
+                            MehrRow(label: "Gefahrenzone", systemImage: "exclamationmark.triangle")
                         }
                     }
-                    #endif
                 }
                 .scrollContentBackground(.hidden)
             }
