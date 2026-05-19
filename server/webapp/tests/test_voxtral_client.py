@@ -195,3 +195,72 @@ async def test_probe_returns_false_on_connection_failure() -> None:
         raise httpx.ConnectError("nope")
 
     assert await _client(handler).probe() is False
+
+
+# --- cloning (slice 07) ---------------------------------------------------
+
+
+async def test_clone_includes_task_type_and_ref_fields() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.read()
+        return httpx.Response(200, content=_wav_bytes(), headers={"content-type": "audio/wav"})
+
+    client = _client(handler)
+    await client.synthesize(
+        "Hallo.",
+        language="DE",
+        voice="custom_abc12345",
+        ref_audio="file:///voxtral-refs/custom_abc12345/audio.wav",
+        ref_text="Dies ist meine Referenz.",
+    )
+
+    import json
+    payload = json.loads(captured["body"])
+    assert payload["task_type"] == "Base"
+    assert payload["ref_audio"] == "file:///voxtral-refs/custom_abc12345/audio.wav"
+    assert payload["ref_text"] == "Dies ist meine Referenz."
+    # The voice field is still required by vLLM Omni even when cloning.
+    assert payload["voice"] == "custom_abc12345"
+
+
+async def test_clone_omits_ref_text_when_not_provided() -> None:
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.read()
+        return httpx.Response(200, content=_wav_bytes(), headers={"content-type": "audio/wav"})
+
+    client = _client(handler)
+    await client.synthesize(
+        "Hello.",
+        language="EN",
+        voice="custom_deadbeef",
+        ref_audio="file:///voxtral-refs/custom_deadbeef/audio.wav",
+    )
+
+    import json
+    payload = json.loads(captured["body"])
+    assert payload["task_type"] == "Base"
+    assert payload["ref_audio"] == "file:///voxtral-refs/custom_deadbeef/audio.wav"
+    assert "ref_text" not in payload
+
+
+async def test_bundled_synth_does_not_include_clone_fields() -> None:
+    """Backwards-compat: synth without ref_audio sends no task_type /
+    ref_* fields so a bundled-voice call is byte-identical to slice 02."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = request.read()
+        return httpx.Response(200, content=_wav_bytes(), headers={"content-type": "audio/wav"})
+
+    client = _client(handler)
+    await client.synthesize("Hallo.", language="DE", voice="de_male")
+
+    import json
+    payload = json.loads(captured["body"])
+    assert "task_type" not in payload
+    assert "ref_audio" not in payload
+    assert "ref_text" not in payload
