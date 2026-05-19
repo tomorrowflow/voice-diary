@@ -131,17 +131,60 @@ public final class VoxtralTTS: NSObject, TTSEngine, @unchecked Sendable {
                 VoxtralTTSClient.Request(text: text, language: language, voice: voice)
             )
         } catch {
-            Log.app.error(
-                "VoxtralTTS synth failed voice=\(voice, privacy: .public) lang=\(language, privacy: .public) error=\(String(describing: error), privacy: .public)"
-            )
+            // If the surrounding Task was cancelled (user tapped X
+            // mid-synth, for example), URLSession.data(for:) throws
+            // URLError(.cancelled). Falling back here would start a
+            // Piper/Apple utterance immediately after the user asked
+            // us to stop — the opposite of what they want. Bail
+            // before the policy gets a chance to re-dispatch.
+            if Task.isCancelled {
+                Log.app.notice(
+                    "VoxtralTTS synth cancelled mid-flight lang=\(language, privacy: .public) — skipping fallback"
+                )
+                return
+            }
+            // Voxtral failed for this utterance. Ask the policy what
+            // to do and re-dispatch through that engine so the
+            // walkthrough never speaks silence on a server hiccup.
+            await fallback(error: error, text: text, language: language)
             return
         }
+
+        if Task.isCancelled {
+            // Synth completed but cancel arrived before playback —
+            // discard the temp WAV and exit without playing.
+            try? FileManager.default.removeItem(at: url)
+            return
+        }
+
         let synthMs = Int(Date().timeIntervalSince(start) * 1000)
         Log.app.notice(
             "VoxtralTTS synth ok voice=\(voice, privacy: .public) lang=\(language, privacy: .public) chars=\(text.count, privacy: .public) synth+net=\(synthMs, privacy: .public)ms"
         )
 
         await play(url: url)
+    }
+
+    /// Apply `TTSFallbackPolicy` and dispatch the same utterance to
+    /// the chosen fallback engine. Called from `performSpeak` on any
+    /// `client.synthesize` failure — keeps the walkthrough's perceived
+    /// behaviour identical to a successful Voxtral call, just in a
+    /// different voice.
+    private func fallback(error: Error, text: String, language: String) async {
+        let decision = TTSFallbackPolicy.decide(error: error, language: language)
+        Log.app.notice(
+            "VoxtralTTS fallback lang=\(language, privacy: .public) decision=\(String(describing: decision), privacy: .public) error=\(String(describing: error), privacy: .public)"
+        )
+        switch decision {
+        case .usePiper(let stem):
+            await PiperTTS.shared.speak(text, stem: stem, language: language)
+        case .useApple:
+            await AppleSpeechTTS.shared.speak(text, language: language)
+        case .giveUp:
+            Log.app.error(
+                "VoxtralTTS fallback gave up lang=\(language, privacy: .public) — utterance dropped"
+            )
+        }
     }
 
     private func play(url: URL) async {
