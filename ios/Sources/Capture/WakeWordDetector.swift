@@ -30,20 +30,31 @@ public final class WakeWordDetector: @unchecked Sendable {
 
     public enum Action: String, Sendable, Hashable {
         case advance        // "weiter" / "next" / "continue"
-        case finishEarly    // "fertig" / "done"
+        // End the current section (calendar block, general section, or
+        // drive-by). Coordinator advances to the next plan step rather
+        // than ingesting the whole walkthrough — saying "fertig" inside
+        // meeting 2 of 5 should move you to meeting 3, not finish
+        // everything. The X button is still the full-cancel path.
+        case finishSection  // "fertig" / "Abschluss" / "done" / "finish section"
     }
 
     /// Default phrase tables per language. The coordinator picks one
-    /// based on the active walkthrough language.
+    /// based on the active walkthrough language. "Abschluss" is the
+    /// less ambiguous German trigger — "fertig" sometimes lands
+    /// mid-reflection ("...das war fertig zum Ende der Woche…") and
+    /// gets caught by the Levenshtein gate even when the user didn't
+    /// intend a command. Both are kept so muscle memory still works.
     public static let german: [Phrase] = [
         Phrase("weiter",    action: .advance),
         Phrase("nächstes",  action: .advance),
-        Phrase("fertig",    action: .finishEarly),
+        Phrase("fertig",    action: .finishSection),
+        Phrase("abschluss", action: .finishSection),
     ]
     public static let english: [Phrase] = [
         Phrase("next",      action: .advance),
         Phrase("continue",  action: .advance),
-        Phrase("done",      action: .finishEarly),
+        Phrase("done",      action: .finishSection),
+        Phrase("finish",    action: .finishSection),
     ]
 
     public static func phrases(for language: String) -> [Phrase] {
