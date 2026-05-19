@@ -108,8 +108,6 @@ class VoxtralClient:
         language: str,
         voice: str,
         response_format: ResponseFormat = "wav",
-        ref_audio: str | None = None,
-        ref_text: str | None = None,
     ) -> SynthesisResult:
         """Render `text` in `voice` and return the audio bytes.
 
@@ -117,32 +115,19 @@ class VoxtralClient:
         attempts with exponential backoff. Maps vLLM responses to typed
         exceptions so the router (and iOS, later) can branch on them.
 
-        When `ref_audio` is given (URL or `file://` URI), vLLM Omni
-        clones from the reference instead of using a preset voice. In
-        that mode, the `voice` field MUST be omitted — vLLM Omni
-        validates it against its preset speaker list regardless of
-        `task_type`, so passing a custom voice id alongside `ref_audio`
-        gets the request rejected with "Invalid speaker '...'". The
-        reference audio itself is the identity; the preset-speaker
-        field has no role.
-
-        `ref_text` is optional; supplying the transcript improves
-        clone quality per the vLLM Omni docs.
+        Only the 20 preset speakers Mistral ships with the open-source
+        checkpoint are usable here. An earlier slice tried to add
+        reference-based cloning via `ref_audio` + `ref_text`, but the
+        encoder needed to extract embeddings from raw audio was
+        withheld from the public release. See the PRD post-mortem.
         """
         payload: dict[str, object] = {
             "input": text,
             "model": self._model,
+            "voice": voice,
             "response_format": response_format,
             "language": language,
         }
-        if ref_audio is not None:
-            payload["task_type"] = "Base"
-            payload["ref_audio"] = ref_audio
-            if ref_text is not None:
-                payload["ref_text"] = ref_text
-        else:
-            # Bundled-voice path: pass the preset speaker name through.
-            payload["voice"] = voice
         url = f"{self._base_url}/v1/audio/speech"
 
         last_5xx: httpx.Response | None = None
