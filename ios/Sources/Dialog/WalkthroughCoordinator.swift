@@ -86,7 +86,7 @@ public final class WalkthroughCoordinator {
     private var confirmedImplicit: [Todo] = []
     public var confirmedImplicitCount: Int { confirmedImplicit.count }
     private var rejectedImplicit: [TodoRejected] = []
-    private var confirmationLanguage: OpenerLanguage = .de
+    public private(set) var confirmationLanguage: OpenerLanguage = .de
     public private(set) var isAwaitingTodoAnswer: Bool = false
     private var todoAnswerTask: Task<Void, Never>?
     /// Tracks the in-flight 6 s follow-up so we can abort it when the
@@ -97,7 +97,7 @@ public final class WalkthroughCoordinator {
     private var followUpTask: Task<Void, Never>?
     /// Tracks the in-flight 3 s wake-word listen window. Cancelled by
     /// any state transition that ends the listening phase
-    /// (advance / skip / finishEarly / cancel) so the streaming ASR
+    /// (advance / skip / finishCurrentSection / cancel) so the streaming ASR
     /// is torn down promptly and the audio fan-out sink is cleared.
     private var wakeWordTask: Task<Void, Never>?
     /// Segment IDs whose recording was advanced by a wake-word match.
@@ -112,7 +112,7 @@ public final class WalkthroughCoordinator {
     private let answerLullDetector = LullDetector()
     private static let todoAnswerMaxSeconds: TimeInterval = 20.0
     private var interruptInFlight: Bool = false
-    /// Re-entrancy guard for `advance` / `skip` / `finishEarly`. Without
+    /// Re-entrancy guard for `advance` / `skip` / `finishCurrentSection`. Without
     /// it, two rapid Weiter taps both pattern-match the same listening
     /// state, both await `stopSegmentCapture()` (which doesn't mutate
     /// state), and both call into `runEvent`/`runGeneral`/`runDriveBy`
@@ -129,6 +129,11 @@ public final class WalkthroughCoordinator {
     /// Surfaced drive-by seeds for the current session (mirror of the
     /// drive-by step's payload). Used to write the index file at upload.
     private var surfacedSeedIDs: [String] = []
+    /// Seed ids the user said "Für später" on during the per-note
+    /// review. Excluded from `startDriveByCapture`'s segment attach +
+    /// from `surfacedSeedIDs`, so the next walkthrough picks them up
+    /// again. Reset in `begin()`.
+    private var deferredSeedIDs: Set<String> = []
 
     /// Pre-synthesised opener scripts keyed by their target segment ID.
     /// Populated by `prefetchOpener` running in the background after each
@@ -186,6 +191,7 @@ public final class WalkthroughCoordinator {
         liveActivityStartedAt = Date()
         plan = []
         surfacedSeedIDs = []
+        deferredSeedIDs = []
         clearPrefetchedOpeners()
         syncLiveActivity()
         Task { await ParakeetManager.shared.warmUp() }
@@ -329,6 +335,24 @@ public final class WalkthroughCoordinator {
             interruptInFlight = true
             await cancelTTS()
             await runStep(at: stepIdx + 1, language: language)
+        case .noteReview(let stepIdx, let seedIdx):
+            // Advance to the next note, or to the closing-question
+            // phase if this was the last one. Cancel any TTS still in
+            // flight from the intro line so we don't overlap.
+            interruptInFlight = true
+            await cancelTTS()
+            guard stepIdx >= 0, stepIdx < plan.count,
+                  case .driveBy(let seeds) = plan[stepIdx] else {
+                await runStep(at: stepIdx + 1, language: language)
+                return
+            }
+            let next = seedIdx + 1
+            if next < seeds.count {
+                await runNoteReview(stepIndex: stepIdx, seedIndex: next,
+                                    seeds: seeds, language: language)
+            } else {
+                await runDriveByClosing(stepIndex: stepIdx, seeds: seeds, language: language)
+            }
         case .confirmingTodos:
             // Tapping Weiter on a todo candidate skips it (matches the
             // 20 s auto-reject and the .unknown answer outcome). The
@@ -376,13 +400,28 @@ public final class WalkthroughCoordinator {
             await cancelTTS()
             surfacedSeedIDs = []
             await runStep(at: stepIdx + 1, language: language)
+        case .noteReview(let stepIdx, _):
+            // Skip from the per-note review = bypass the rest of the
+            // notes AND the closing reflection. Don't mark seeds as
+            // surfaced — they should remain visible the next time the
+            // user runs a walkthrough.
+            interruptInFlight = true
+            await cancelTTS()
+            surfacedSeedIDs = []
+            await runStep(at: stepIdx + 1, language: language)
         default:
             return
         }
     }
 
-    /// Jump straight to ingest from any in-event/in-section state.
-    public func finishEarly(language: OpenerLanguage = .de) async {
+    /// End the *current* section and advance to the next plan step.
+    /// Backs the wake-word "fertig" / "Abschluss" / "done" / "finish"
+    /// triggers: inside meeting 2 of 5 it moves you to meeting 3, not
+    /// to ingest. The X button is still the full-abort path
+    /// (`cancel()`); there is no other UI entry point. For drive-by /
+    /// note-review / closing — which is already the last section —
+    /// "next step" naturally falls through to `ingestAndUpload`.
+    public func finishCurrentSection(language: OpenerLanguage = .de) async {
         guard !transitionInFlight else { return }
         transitionInFlight = true
         defer { transitionInFlight = false }
@@ -390,10 +429,40 @@ public final class WalkthroughCoordinator {
         isWakeListening = false
         followUpTask?.cancel(); followUpTask = nil
         switch state {
-        case .eventListening, .generalListening, .driveByListening:
+        case .eventListening(let stepIdx, _):
+            // Stop capturing the in-flight event so its audio is
+            // preserved, then jump past the rest of the calendar block.
             await stopSegmentCapture()
-            await ingestAndUpload()
-        case .briefing, .eventOpener, .generalOpener, .driveByOpener:
+            await runStep(at: stepIdx + 1, language: language)
+        case .generalListening(let stepIdx, _):
+            await stopSegmentCapture()
+            await runStep(at: stepIdx + 1, language: language)
+        case .driveByListening(let stepIdx):
+            // Drive-by is the last section; advancing past it ends the
+            // walkthrough by falling off the plan into ingestAndUpload.
+            await stopSegmentCapture()
+            await runStep(at: stepIdx + 1, language: language)
+        case .eventOpener(let stepIdx, _):
+            interruptInFlight = true
+            await cancelTTS()
+            await runStep(at: stepIdx + 1, language: language)
+        case .generalOpener(let stepIdx, _):
+            interruptInFlight = true
+            await cancelTTS()
+            await runStep(at: stepIdx + 1, language: language)
+        case .driveByOpener(let stepIdx):
+            interruptInFlight = true
+            await cancelTTS()
+            surfacedSeedIDs = []
+            await runStep(at: stepIdx + 1, language: language)
+        case .noteReview(let stepIdx, _):
+            interruptInFlight = true
+            await cancelTTS()
+            surfacedSeedIDs = []
+            await runStep(at: stepIdx + 1, language: language)
+        case .briefing:
+            // No section is active yet; "fertig" during briefing is
+            // ambiguous, so just play it safe and end the walkthrough.
             interruptInFlight = true
             await cancelTTS()
             await ingestAndUpload()
@@ -410,7 +479,7 @@ public final class WalkthroughCoordinator {
         // happily call `startEventCapture()` + `state = .eventListening`
         // again, which is what was causing the walkthrough screen to
         // re-appear and audio to keep playing after the X tap. The
-        // existing advance() / skip() / finishEarly() paths already use
+        // existing advance() / skip() / finishCurrentSection() paths already use
         // this signal — cancel() just wasn't joining the protocol.
         interruptInFlight = true
         // Halt the lull detector so a buffered threshold callback can't
@@ -651,7 +720,65 @@ public final class WalkthroughCoordinator {
 
     // MARK: - Drive-by section step ------------------------------------
 
+    /// Drive-by step entry. If the user has unsurfaced seeds for the
+    /// diary day, walks through them one-at-a-time as breadcrumbed
+    /// `noteReview` cards (silent visual, no per-note TTS) before
+    /// handing off to the closing-question phase. With zero seeds the
+    /// flow drops straight into the closing question.
     private func runDriveBy(
+        stepIndex: Int,
+        seeds: [DriveBySeed],
+        language: OpenerLanguage
+    ) async {
+        interruptInFlight = false
+        statusHint = ""
+        confirmationLanguage = language
+
+        if seeds.isEmpty {
+            await runDriveByClosing(stepIndex: stepIndex, seeds: seeds, language: language)
+        } else {
+            await runNoteReview(stepIndex: stepIndex, seedIndex: 0,
+                                seeds: seeds, language: language)
+        }
+    }
+
+    /// One step of the per-note breadcrumbed review. Speaks the
+    /// "Du hast heute X Notizen aufgenommen…" intro only on the first
+    /// note (`seedIndex == 0`); subsequent notes are silent — the user
+    /// reads the card and taps Weiter. After the last note, advances
+    /// to the closing question via `runDriveByClosing`.
+    private func runNoteReview(
+        stepIndex: Int,
+        seedIndex: Int,
+        seeds: [DriveBySeed],
+        language: OpenerLanguage
+    ) async {
+        guard seedIndex >= 0, seedIndex < seeds.count else {
+            await runDriveByClosing(stepIndex: stepIndex, seeds: seeds, language: language)
+            return
+        }
+        interruptInFlight = false
+        state = .noteReview(stepIndex: stepIndex, seedIndex: seedIndex)
+
+        if seedIndex == 0 {
+            let segID = "s\(zeroPad(stepIndex + 1))"
+            let intro = composeDriveByIntro(seeds: seeds, language: language)
+            if !intro.isEmpty {
+                recordAiPrompt(role: "drive_by_recap", segmentID: segID, text: intro)
+                lastSpoken = intro
+                await speak(intro, language: language.rawValue)
+            }
+        }
+        // Card stays on screen until the user taps Weiter — `advance()`
+        // routes the tap back into `runNoteReview` with the next index
+        // (or into `runDriveByClosing` when this was the last note).
+    }
+
+    /// Closing question for the drive-by step: speaks "Willst du noch
+    /// etwas zum ganzen Tag sagen?" and opens the free-reflection
+    /// capture. Pulled out of `runDriveBy` so the per-note review can
+    /// share it once the user has stepped through all notes.
+    private func runDriveByClosing(
         stepIndex: Int,
         seeds: [DriveBySeed],
         language: OpenerLanguage
@@ -661,26 +788,16 @@ public final class WalkthroughCoordinator {
         statusHint = ""
         confirmationLanguage = language
 
-        // Surface seeds first (if any), then ask the closing question.
-        // Both halves go into the same `free_reflection` segment and
-        // are spoken as one block so Piper can prefetch the whole
-        // line in a single synth pass. Same-language spans coalesce
-        // inside `speakOpenerScript`'s fallback path, so the live
-        // path stays a single utterance too.
         let segID = "s\(zeroPad(stepIndex + 1))"
-        let intro = composeDriveByIntro(seeds: seeds, language: language)
         let closing = language == .de
             ? "Willst du noch etwas zum ganzen Tag sagen?"
             : "Anything else you want to say about the day overall?"
-        var openerSpans: [SpokenSpan] = []
-        if !intro.isEmpty {
-            recordAiPrompt(role: "drive_by_recap", segmentID: segID, text: intro)
-            openerSpans.append(SpokenSpan(text: intro, language: language.rawValue))
-        }
         recordAiPrompt(role: "closing_prompt", segmentID: segID, text: closing)
-        openerSpans.append(SpokenSpan(text: closing, language: language.rawValue))
-        lastSpoken = (intro.isEmpty ? closing : "\(intro) \(closing)")
-        await speakOpenerScript(segmentID: segID, fallbackSpans: openerSpans)
+        lastSpoken = closing
+        await speakOpenerScript(
+            segmentID: segID,
+            fallbackSpans: [SpokenSpan(text: closing, language: language.rawValue)]
+        )
         guard case .driveByOpener(let liveStep) = state,
               liveStep == stepIndex else { return }
         if interruptInFlight { return }
@@ -862,9 +979,11 @@ public final class WalkthroughCoordinator {
         // Attach each surfaced seed as its own `drive_by` segment so the
         // server has the audio + transcript already available. Files are
         // copied into the session dir to keep the upload bundle
-        // self-contained.
+        // self-contained. Seeds the user said "Für später" on during
+        // per-note review are skipped here so they stay in the
+        // unsurfaced pool for the next walkthrough.
         var surfaced: [String] = []
-        for seed in seeds {
+        for seed in seeds where !deferredSeedIDs.contains(seed.seed_id) {
             let copyName = "seed_\(sanitize(seed.seed_id)).m4a"
             let copyPath = "segments/\(copyName)"
             let copyURL = sessionDir.appending(path: copyPath)
@@ -973,11 +1092,27 @@ public final class WalkthroughCoordinator {
             return
         }
 
-        let todos = TodoExtractor.extractExplicit(
-            text: transcript.text,
-            language: transcript.language,
-            sourceSegmentID: segmentID
-        )
+        // Strip stock Parakeet hallucinations ("vielen Dank fürs
+        // Zuschauen" et al.) before feeding the transcript to either
+        // extractor — otherwise the on-device LLM confidently invents
+        // todos from text the user never said. The original
+        // `transcript.text` is preserved on the segment for the
+        // user-facing review surfaces.
+        let sanitised = TodoExtractor.sanitiseForTodos(transcript.text)
+        let isSubstantial = sanitised.count >= 20
+        if !isSubstantial && !transcript.text.isEmpty {
+            Log.app.info(
+                "segment \(segmentID, privacy: .public): transcript reduced to \(sanitised.count, privacy: .public) chars after hallucination strip — skipping todo extraction"
+            )
+        }
+
+        let todos: [Todo] = isSubstantial
+            ? TodoExtractor.extractExplicit(
+                text: sanitised,
+                language: transcript.language,
+                sourceSegmentID: segmentID
+            )
+            : []
         if !todos.isEmpty {
             Log.app.info(
                 "segment \(segmentID, privacy: .public): \(todos.count, privacy: .public) explicit todo(s) detected"
@@ -985,10 +1120,10 @@ public final class WalkthroughCoordinator {
         }
 
         let llm = AppleFoundationLLM.shared
-        if await llm.isAvailable {
+        if isSubstantial, await llm.isAvailable {
             do {
                 let candidates = try await llm.extractImplicit(
-                    transcript: transcript.text,
+                    transcript: sanitised,
                     language: transcript.language
                 )
                 let novel = self.dedupeImplicit(
@@ -1218,7 +1353,7 @@ public final class WalkthroughCoordinator {
             // Open the wake-word listen window. Spawned as a tracked
             // Task so handleLull returns promptly; the wake task
             // plays the ping, opens a streaming ASR, listens until
-            // either a wake word matches (`advance`/`finishEarly`),
+            // either a wake word matches (`advance`/`finishCurrentSection`),
             // the 6 s threshold cancels it, or its own ~8 s timeout
             // closes it.
             //
@@ -1748,7 +1883,7 @@ public final class WalkthroughCoordinator {
     }
 
     private func dedupeImplicit(
-        candidates: [String],
+        candidates: [AppleFoundationLLM.ImplicitCandidate],
         againstExplicit explicit: [Todo],
         forSegmentID segmentID: String,
         transcriptLanguage language: String
@@ -1758,17 +1893,18 @@ public final class WalkthroughCoordinator {
         for t in pendingImplicitTodos { seen.insert(normaliseTodoKey(t.text)) }
 
         var out: [Todo] = []
-        for raw in candidates {
-            let key = normaliseTodoKey(raw)
+        for c in candidates {
+            let key = normaliseTodoKey(c.text)
             guard !key.isEmpty, !seen.contains(key) else { continue }
             seen.insert(key)
-            let due = TodoExtractor.parseDueDate(in: raw, language: language)
+            let due = TodoExtractor.parseDueDate(in: c.text, language: language)
             out.append(Todo(
-                text: raw,
+                text: c.text,
                 type: "implicit",
                 due: due,
                 status: "Offen",
-                source_segment_id: segmentID
+                source_segment_id: segmentID,
+                source_quote: c.sourceQuote
             ))
         }
         return out
@@ -1864,12 +2000,98 @@ public final class WalkthroughCoordinator {
         switch state {
         case .generalOpener(_, let id), .generalListening(_, let id):
             return WalkthroughSettingsStore.generals.first { $0.id == id }?.title
+        case .noteReview:
+            return confirmationLanguage == .de ? "Notizen" : "Notes"
         case .driveByOpener, .driveByListening:
             return confirmationLanguage == .de ? "Tagesabschluss" : "Day close"
         default:
             return nil
         }
     }
+
+    /// The seed currently rendered by `NoteReviewCard`, plus its
+    /// 1-based index and total. `nil` outside `.noteReview`.
+    public var currentNoteSeed: (seed: DriveBySeed, index: Int, total: Int)? {
+        guard case .noteReview(let stepIdx, let seedIdx) = state,
+              stepIdx >= 0, stepIdx < plan.count,
+              case .driveBy(let seeds) = plan[stepIdx],
+              seedIdx >= 0, seedIdx < seeds.count
+        else { return nil }
+        return (seeds[seedIdx], seedIdx + 1, seeds.count)
+    }
+
+    /// "Für später aufheben" on the per-note review card. Marks the
+    /// current seed as deferred — it won't be attached to this
+    /// walkthrough's manifest and won't be flagged surfaced, so the
+    /// next walkthrough re-offers it. Then advances to the next note
+    /// (or to the closing question when this was the last). Used only
+    /// on orphan seeds (older than the diary day); same-day seeds
+    /// always fold into the session via the regular Weiter path.
+    public func saveCurrentNoteForLater(language: OpenerLanguage = .de) async {
+        guard !transitionInFlight else { return }
+        transitionInFlight = true
+        defer { transitionInFlight = false }
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        followUpTask?.cancel(); followUpTask = nil
+
+        guard case .noteReview(let stepIdx, let seedIdx) = state,
+              stepIdx >= 0, stepIdx < plan.count,
+              case .driveBy(let seeds) = plan[stepIdx],
+              seedIdx >= 0, seedIdx < seeds.count
+        else { return }
+
+        deferredSeedIDs.insert(seeds[seedIdx].seed_id)
+
+        interruptInFlight = true
+        await cancelTTS()
+        let next = seedIdx + 1
+        if next < seeds.count {
+            await runNoteReview(stepIndex: stepIdx, seedIndex: next,
+                                seeds: seeds, language: language)
+        } else {
+            await runDriveByClosing(stepIndex: stepIdx, seeds: seeds, language: language)
+        }
+    }
+
+    /// Look up the transcript of an already-finalised segment. Used by
+    /// `TodoConfirmationCard` to render the 5-line excerpt around the
+    /// matched todo phrase. Returns `nil` if the segment_id isn't known
+    /// (e.g. the per-segment finalisation task hasn't completed yet) or
+    /// if the segment carries no transcript.
+    public func transcript(forSegmentID id: String) -> String? {
+        guard let idx = segmentByID[id], idx < segments.count else { return nil }
+        let text: String
+        switch segments[idx] {
+        case .calendarEvent(let s):   text = s.transcript
+        case .driveBy(let s):         text = s.transcript
+        case .freeReflection(let s):  text = s.transcript
+        case .emptyBlock(let s):      text = s.transcript
+        case .generalSection(let s):  text = s.transcript
+        }
+        return text.isEmpty ? nil : text
+    }
+
+    /// Number of unsurfaced seeds the current drive-by step will (or
+    /// did) walk the user through. Read by the WalkthroughView header
+    /// to keep the breadcrumb dot count consistent across the per-note
+    /// review steps and the closing question step that follows.
+    public var plannedNoteCount: Int {
+        let stepIdx: Int? = {
+            switch state {
+            case .noteReview(let s, _),
+                 .driveByOpener(let s),
+                 .driveByListening(let s):
+                return s
+            default:
+                return nil
+            }
+        }()
+        guard let i = stepIdx, i >= 0, i < plan.count,
+              case .driveBy(let seeds) = plan[i] else { return 0 }
+        return seeds.count
+    }
+
 
     /// Convenience used by the header: the (1-based) event index inside the
     /// calendar block, plus its total. Returns `nil` outside the block.
@@ -1900,6 +2122,10 @@ public final class WalkthroughCoordinator {
         case .briefing, .eventOpener, .generalOpener, .driveByOpener: return .speaking
         case .eventListening, .generalListening, .driveByListening:   return .listening
         case .confirmingTodos:                                        return .listening
+        // Note review is silent visual; the seed's intro line plays
+        // briefly on the first card and Live Activity tracks the
+        // walkthrough as a whole, so .speaking matches the rest.
+        case .noteReview:                                             return .speaking
         case .idle, .ingesting, .done, .failed:                       return nil
         }
     }
@@ -1996,7 +2222,14 @@ public final class WalkthroughCoordinator {
         silenceLevel = 0
         defer { isSpeaking = false }
         for span in spans {
-            if Task.isCancelled { return }
+            // `interruptInFlight` is the project's actual abort signal —
+            // `cancel()` sets it before tearing TTS down. `Task.isCancelled`
+            // alone isn't enough because this loop runs inside the actor's
+            // own call chain, not a cancellable Task: the *current* span's
+            // engine.speak() gets silenced by cancelTTS(), but without
+            // this check the loop would proceed to the next span (e.g. an
+            // English title after a German intro is cancelled).
+            if Task.isCancelled || interruptInFlight { return }
             await VoiceRegistry.engine(for: span.language)
                 .speak(span.text, language: span.language)
         }
@@ -2029,7 +2262,11 @@ public final class WalkthroughCoordinator {
             silenceLevel = 0
             defer { isSpeaking = false }
             for utt in prefetched.utterances {
-                if Task.isCancelled { return }
+                // Mirror the `speak(script:)` guard — see comment there
+                // for the full rationale. `interruptInFlight` is what
+                // `cancel()` actually toggles; `Task.isCancelled` won't
+                // fire because this runs inside the actor's call chain.
+                if Task.isCancelled || interruptInFlight { return }
                 await VoiceRegistry.engine(for: utt.language).play(utt)
             }
             return
@@ -2243,15 +2480,19 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    /// Cancel any in-flight playback. Broadcasts to both engines because
-    /// we don't track which one spoke the most recent line — and calling
-    /// `cancel()` on an idle engine is a cheap no-op. This matters when
-    /// the user switches engines mid-walkthrough: the previous engine's
-    /// queued utterance must still be silenced even though the *next*
-    /// `speak(_:language:)` will resolve to the new engine.
+    /// Cancel any in-flight playback. Broadcasts to all three engines
+    /// because we don't track which one spoke the most recent line —
+    /// and calling `cancel()` on an idle engine is a cheap no-op. This
+    /// matters when the user switches engines mid-walkthrough, when
+    /// Voxtral has fallen back to Piper, or when the user taps X
+    /// during the network round-trip: the previous engine's queued
+    /// utterance and any in-flight HTTP request must both be silenced
+    /// even though the *next* `speak(_:language:)` will resolve to a
+    /// different engine.
     private func cancelTTS() async {
         await AppleSpeechTTS.shared.cancel()
         await PiperTTS.shared.cancel()
+        await VoxtralTTS.shared.cancel()
         isSpeaking = false
         silenceLevel = 0
     }
@@ -2286,7 +2527,7 @@ public final class WalkthroughCoordinator {
     /// (Apple `SFSpeechRecognizer` for DE, FluidAudio's 120 M
     /// `parakeet-realtime-eou` for EN), runs the partials through
     /// `WakeWordDetector`, and either calls `advance()` /
-    /// `finishEarly()` on a match or closes the window after ~5 s
+    /// `finishCurrentSection()` on a match or closes the window after ~5 s
     /// without one. Idempotent on cancellation: if the parent Task is
     /// cancelled mid-window the streaming ASR is torn down and the
     /// fan-out sink is cleared.
@@ -2478,8 +2719,8 @@ public final class WalkthroughCoordinator {
                 wakeMatchedSegmentIDs.insert(segID)
             }
             switch action {
-            case .advance:     await advance()
-            case .finishEarly: await finishEarly()
+            case .advance:        await advance()
+            case .finishSection:  await finishCurrentSection()
             }
         }
     }
