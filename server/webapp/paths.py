@@ -31,14 +31,3 @@ def sessions_dir() -> Path:
 
 def msal_cache_path() -> Path:
     return data_dir() / "msal_cache.bin"
-
-
-def voxtral_refs_dir() -> Path:
-    """Voice-reference clips for Voxtral cloning.
-
-    Bind-mounted at the same host path to the `voxtral` sidecar
-    (read-only at `/voxtral-refs`), so vLLM can read references via
-    `file:///voxtral-refs/<id>/audio.wav` during synthesis. The
-    webapp owns the directory; voxtral never writes.
-    """
-    return data_dir() / "voxtral-refs"

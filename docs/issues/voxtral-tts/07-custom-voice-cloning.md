@@ -1,5 +1,9 @@
 # 07 · Voxtral custom voice cloning from 3 s references
 
+**STATUS: REVERTED on 2026-05-19.** The open-source Voxtral checkpoint is missing the audio encoder needed to extract embeddings from reference audio — verified by vLLM crash traceback + HF community discussion + a Towards Data Science article on the gap. All slice 07 code (07a server arch, 07b iOS recording UI, 07c LibriVox script, 07d cross-language mitigation) was removed from the tree in the same session. See `docs/prd/voxtral-tts-integration.md` → "Post-mortem — Slice 07" for the full account. Issue kept as historical record of the attempt.
+
+---
+
 Labels: needs-triage, type/feature, area/tts, area/server, area/ios, area/settings
 Type: AFK
 
