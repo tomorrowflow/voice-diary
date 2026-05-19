@@ -179,7 +179,10 @@ public enum SessionHistoryStore {
 
     // MARK: - Drive-by enumeration
 
-    private static func loadDriveBys() -> [DriveByEntry] {
+    /// Public so the Verlauf detail screen can join a walkthrough's
+    /// `manifest.drive_by_seeds_surfaced` against the on-disk seed
+    /// directories without round-tripping through `load()`.
+    public static func loadDriveBys() -> [DriveByEntry] {
         guard let root = try? LocalStore.driveBySeedsDir(),
               let names = try? FileManager.default.contentsOfDirectory(atPath: root.path)
         else { return [] }
@@ -211,4 +214,166 @@ public enum SessionHistoryStore {
         f.dateFormat = "yyyy-MM-dd"
         return f
     }()
+
+    // MARK: - Storage stats (Danger Zone)
+
+    /// Aggregate disk usage for one category of locally-stored audio.
+    public struct CategoryStats: Sendable {
+        public let label: String
+        public let count: Int
+        public let totalBytes: Int64
+    }
+
+    /// Pre-computed numbers for `DangerZoneView` so it can render the
+    /// volume card and the "X items / Y MB will be removed" hint
+    /// without scanning the file system on every redraw.
+    public struct StorageSnapshot: Sendable {
+        public let walkthroughs: CategoryStats
+        public let driveBys: CategoryStats
+        public let queueBytes: Int64
+        public let queueCount: Int
+
+        /// Sessions + seeds older than `cutoff`. Used to drive the
+        /// "Älter als 30 Tage entfernen" button label so the user knows
+        /// in advance how much will be removed.
+        public let olderThanCutoff: CategoryStats
+
+        public var totalBytes: Int64 {
+            walkthroughs.totalBytes + driveBys.totalBytes + queueBytes
+        }
+    }
+
+    /// Walk both audio directories + the upload-queue file and return
+    /// total sizes / counts. Bytes are measured with `URLResourceKey
+    /// .totalFileAllocatedSizeKey` so the numbers match what iOS
+    /// Settings → Storage reports.
+    public static func storageSnapshot(olderThan cutoff: Date) -> StorageSnapshot {
+        let walkthroughs = scanWalkthroughs()
+        let driveBys = scanDriveBys()
+        let (queueCount, queueBytes) = scanUploadQueue()
+
+        // "Older than cutoff" = sessions + seeds whose capture date is
+        // before the cutoff. Queue entries are intentionally excluded —
+        // they're still active uploads and shouldn't be wiped from
+        // under the uploader actor.
+        var staleCount = 0
+        var staleBytes: Int64 = 0
+        for w in loadWalkthroughs() where w.capturedAt < cutoff {
+            staleCount += 1
+            staleBytes += directorySize(at: w.directory)
+        }
+        for d in loadDriveBys() where d.seed.captured_at < cutoff {
+            staleCount += 1
+            staleBytes += directorySize(at: d.directory)
+        }
+
+        return StorageSnapshot(
+            walkthroughs: walkthroughs,
+            driveBys: driveBys,
+            queueBytes: queueBytes,
+            queueCount: queueCount,
+            olderThanCutoff: CategoryStats(
+                label: "olderThanCutoff",
+                count: staleCount,
+                totalBytes: staleBytes
+            )
+        )
+    }
+
+    /// Remove every locally-stored audio session, seed, the
+    /// surfaced-seed index, and the upload-queue JSON. The Danger Zone
+    /// caller is expected to call `SessionUploader.clear()` immediately
+    /// before this so the actor's in-memory queue doesn't get
+    /// re-persisted after we unlink the file. Returns bytes freed.
+    @discardableResult
+    public static func deleteAllLocalAudio() -> Int64 {
+        var freed: Int64 = 0
+        if let root = try? LocalStore.sessionsStagingDir() {
+            freed += directorySize(at: root)
+            try? FileManager.default.removeItem(at: root)
+        }
+        if let root = try? LocalStore.driveBySeedsDir() {
+            freed += directorySize(at: root)
+            try? FileManager.default.removeItem(at: root)
+        }
+        if let app = try? LocalStore.appSupport() {
+            let surfaced = app.appending(path: LocalStore.surfacedSeedsFilename)
+            try? FileManager.default.removeItem(at: surfaced)
+        }
+        if let queue = try? LocalStore.uploadQueueFile() {
+            freed += fileSize(at: queue)
+            try? FileManager.default.removeItem(at: queue)
+        }
+        return freed
+    }
+
+    /// Remove sessions + seeds older than `cutoff`. Queued sessions are
+    /// skipped — deleting their audio would orphan the upload entry.
+    /// Returns the number of bytes freed.
+    @discardableResult
+    public static func deleteOlderThan(
+        _ cutoff: Date,
+        queuedSessionIDs: Set<String>
+    ) -> Int64 {
+        var freed: Int64 = 0
+        for w in loadWalkthroughs() where w.capturedAt < cutoff {
+            if queuedSessionIDs.contains(w.sessionID) { continue }
+            freed += directorySize(at: w.directory)
+            try? FileManager.default.removeItem(at: w.directory)
+        }
+        for d in loadDriveBys() where d.seed.captured_at < cutoff {
+            freed += directorySize(at: d.directory)
+            try? FileManager.default.removeItem(at: d.directory)
+        }
+        return freed
+    }
+
+    // MARK: - Scan helpers
+
+    private static func scanWalkthroughs() -> CategoryStats {
+        let entries = loadWalkthroughs()
+        let bytes = entries.reduce(Int64(0)) { $0 + directorySize(at: $1.directory) }
+        return CategoryStats(label: "walkthroughs", count: entries.count, totalBytes: bytes)
+    }
+
+    private static func scanDriveBys() -> CategoryStats {
+        let entries = loadDriveBys()
+        let bytes = entries.reduce(Int64(0)) { $0 + directorySize(at: $1.directory) }
+        return CategoryStats(label: "driveBys", count: entries.count, totalBytes: bytes)
+    }
+
+    private static func scanUploadQueue() -> (count: Int, bytes: Int64) {
+        guard let url = try? LocalStore.uploadQueueFile(),
+              FileManager.default.fileExists(atPath: url.path)
+        else { return (0, 0) }
+        let bytes = fileSize(at: url)
+        // The queue is a single JSON file — count the entries inside
+        // so the stat card reads "Upload-Queue · 2 Einträge · 1,4 KB"
+        // instead of just "1,4 KB".
+        guard let data = try? Data(contentsOf: url),
+              let entries = try? JSONDecoder().decode([SessionUploader.QueueEntry].self, from: data)
+        else { return (0, bytes) }
+        return (entries.count, bytes)
+    }
+
+    private static func fileSize(at url: URL) -> Int64 {
+        let keys: Set<URLResourceKey> = [.totalFileAllocatedSizeKey, .fileSizeKey]
+        guard let values = try? url.resourceValues(forKeys: keys) else { return 0 }
+        let allocated = values.totalFileAllocatedSize.map(Int64.init) ?? 0
+        let logical = values.fileSize.map(Int64.init) ?? 0
+        return allocated > 0 ? allocated : logical
+    }
+
+    private static func directorySize(at url: URL) -> Int64 {
+        var total: Int64 = 0
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.totalFileAllocatedSizeKey, .fileSizeKey],
+            options: [.skipsHiddenFiles]
+        ) else { return 0 }
+        for case let fileURL as URL in enumerator {
+            total += fileSize(at: fileURL)
+        }
+        return total
+    }
 }
