@@ -49,6 +49,11 @@ services:
       - "--omni"
       - "--port"
       - "8001"
+      # Slice 07: allow vLLM to fetch reference audio via file:// URIs
+      # from the shared voxtral-refs volume. Without this flag, all
+      # ref_audio requests must use HTTP / base64.
+      - "--allowed-local-media-path"
+      - "/voxtral-refs"
     environment:
       # Mistral models are gated on Hugging Face — accept the license
       # at huggingface.co/mistralai/Voxtral-4B-TTS-2603 with the same
@@ -57,6 +62,11 @@ services:
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
     volumes:
       - voxtral_models:/root/.cache/huggingface
+      # Reference audio for voice cloning. Bound under ./data/voxtral-refs
+      # on the host so webapp (which has ./data mounted at /data) can
+      # write here while voxtral reads. Read-only on voxtral's side —
+      # only webapp manages files.
+      - ./data/voxtral-refs:/voxtral-refs:ro
     # Pinned to GPU 0 — leaves GPU 1 free for Ollama / future workloads.
     # Requires nvidia-container-toolkit on the host.
     deploy:
