@@ -137,6 +137,33 @@ _VOICES: tuple[VoiceDescriptor, ...] = (
 )
 
 
+# Curated cross-language additions. Voxtral's "voice-as-instruction"
+# model lets any speaker render any language; the speaker just imposes
+# their accent on the output. After dogfooding `de_male` and finding
+# it Austrian-leaning, the user picked these four as "promising
+# non-native options" — Dutch (phonologically closest to German) and
+# the neutral English-trained speakers. Each entry is paired with a
+# German accent hint that overrides the native descriptor's text when
+# the voice is shown in the DE picker, so the user knows what they're
+# auditioning before tapping play.
+#
+# Slice 07's cloning work proved that *new* voice embeddings can't be
+# generated from the open-source Voxtral checkpoint (encoder weights
+# withheld by Mistral — see PRD addendum). This curated list is the
+# only practical way to expand the picker beyond the seven native
+# DE/EN voices Mistral ships pre-computed.
+_CROSS_LANGUAGE_EXTRAS: dict[str, tuple[tuple[str, str], ...]] = {
+    "DE": (
+        ("nl_male",        "Niederländischer Akzent — am nächsten zu Hochdeutsch"),
+        ("nl_female",      "Niederländischer Akzent — am nächsten zu Hochdeutsch"),
+        ("neutral_male",   "Englischer Akzent — neutral, sachlich"),
+        ("neutral_female", "Englischer Akzent — neutral, sachlich"),
+    ),
+    # EN already has casual/cheerful/neutral natively; no extras needed.
+    "EN": (),
+}
+
+
 # --- deep-module surface --------------------------------------------------
 
 
@@ -193,6 +220,40 @@ class VoiceCatalog:
             grouped.setdefault(v.language, []).append(v)
         keys = tuple(lang.upper() for lang in languages) if languages else tuple(grouped.keys())
         return {lang: [v.to_dict() for v in grouped.get(lang, [])] for lang in keys}
+
+    def list_for_picker(self, language: str) -> list[dict[str, str | None]]:
+        """Assemble the picker for a given speech-output language.
+
+        Returns native bundled voices for that language first, then a
+        curated set of non-native voices (from `_CROSS_LANGUAGE_EXTRAS`)
+        with a German/English accent hint substituted into the
+        description. Filesystem-backed sources (custom + librivox) are
+        excluded entirely — the open-source Voxtral checkpoint can't
+        actually clone from a reference, so any non-bundled voice in
+        the picker would silently fall back to Piper at synth time.
+
+        The catalog's other read methods (`list`, `list_grouped`,
+        `get`, `exists`) stay unchanged so existing tests + internal
+        callers continue to see the full set.
+        """
+        lang = language.upper()
+        out: list[VoiceDescriptor] = []
+        for v in self._bundled:
+            if v.language == lang:
+                out.append(v)
+        for extra_id, accent_hint in _CROSS_LANGUAGE_EXTRAS.get(lang, ()):
+            native = self._bundled_by_id.get(extra_id)
+            if native is None:
+                continue
+            out.append(VoiceDescriptor(
+                id=native.id,
+                language=lang,                  # re-tag for picker context
+                label=native.label,
+                description=accent_hint,
+                source="bundled",
+                ref_text=None,
+            ))
+        return [v.to_dict() for v in out]
 
     def exists(self, voice_id: str) -> bool:
         return self.get(voice_id) is not None

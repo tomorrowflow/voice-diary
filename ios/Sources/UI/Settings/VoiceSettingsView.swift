@@ -67,7 +67,15 @@ public struct VoiceSettingsView: View {
                             ForEach(voxtralVoices, id: \.id) { voice in
                                 voxtralRow(voice: voice, language: lang.code, sample: lang.sample)
                             }
-                            recordVoxtralVoiceRow(for: lang.code)
+                            // The "Eigene Stimme aufnehmen" row was here. Removed
+                            // because Voxtral's open-source checkpoint is missing
+                            // the audio encoder needed to clone from a reference
+                            // (verified via vLLM crash trace + community
+                            // confirmation on the HF model page). The recorder
+                            // and upload UI stay in the codebase for if Mistral
+                            // ever releases the encoder, but the entry point is
+                            // hidden so users don't record voices that can never
+                            // synth. See docs/prd/voxtral-tts-integration.md.
                             if appleVoices.isEmpty && piperVoices.isEmpty && voxtralVoices.isEmpty {
                                 Text("Keine Stimmen verfügbar. Premium-Stimme über iOS-Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen laden, oder `ios/scripts/fetch_piper_voices.sh` ausführen, oder Voxtral-Server in den Server-Einstellungen prüfen.")
                                     .font(Theme.font.caption)

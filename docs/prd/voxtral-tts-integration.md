@@ -231,3 +231,37 @@ We close M13c on **qualitative dogfood evidence** instead:
 - Cloud-hosted reference clips. References stay on the server's local disk, Tailscale-only, same posture as session bundles.
 
 **Time estimate.** ~6–7 hours of focused build, split across the server architecture (~2h), the LibriVox fetcher (~1h), the iOS recording + transcribe UI (~3h), and integration testing (~1h).
+
+---
+
+## Addendum 2 — Voxtral open-source checkpoint cannot clone (2026-05-19, evening)
+
+**What we learned at integration time.** After 07a/07b/07c shipped, every cloning attempt — both user-uploaded references AND LibriVox-seeded clips — crashed vLLM Omni's orchestrator with:
+
+```
+RuntimeError: encode_waveforms requires encoder weights which are not
+available in the open-source checkpoint.
+```
+
+(file: `vllm_omni/model_executor/models/voxtral_tts/voxtral_tts_audio_tokenizer.py:981`)
+
+Mistral **intentionally withheld the audio-encoder weights** from the public `Voxtral-4B-TTS-2603` release. The 20 bundled voices work because their speaker embeddings (`voice_embedding/*.pt`) were pre-computed by Mistral and shipped alongside the model; but the encoder needed to compute *new* embeddings from a reference WAV is not in the public weights and exists only behind Mistral's hosted API.
+
+Confirmed independently via three sources:
+- The actual Python traceback from vLLM Omni (above).
+- The Hugging Face discussion thread [#16 "Why not open source 😐"](https://huggingface.co/mistralai/Voxtral-4B-TTS-2603/discussions/16) where users complain about exactly this gap.
+- A Towards Data Science article ["A Guide to Voice Cloning on Voxtral with a Missing Encoder"](https://towardsdatascience.com/voxtral-tts-surgery-codes-from-audio-reconstruction-2/) that documents and explores theoretical workarounds (codec reverse-engineering, training a replacement encoder — all research-grade, not practical).
+
+**Slice 07's status as a result:**
+- 07a (server arch) — **shipped, latent**. Upload/delete routes and the file-system-backed catalog stay in place but the public `/api/tts/voices` no longer surfaces non-bundled voices. If Mistral ever releases the encoder, flipping the route filter is a one-line change.
+- 07b (iOS recording UI) — **shipped, hidden**. `VoxtralCloneRecorderView` + `VoiceReferenceRecorder` stay in the codebase but the "Eigene Stimme aufnehmen" entry point in `VoiceSettingsView` is removed. Same one-line restore for future use.
+- 07c (LibriVox seed script) — **shipped, latent**. The fetcher script runs and writes clips to disk; they don't appear in the picker until the encoder is available. Cleaner than deleting the script outright.
+
+**Mitigation (Slice 07d).** Surface the four most-promising non-native bundled voices — `nl_male`, `nl_female`, `neutral_male`, `neutral_female` — under the DE picker with German accent hints ("Niederländischer Akzent", "Englischer Akzent — neutral"). Voxtral's voice-as-instruction model renders any text in any speaker's voice; the speaker just imposes their accent. Dutch is phonologically closest to German of the available options, and the "neutral" English-trained speakers are tonally less casual than `casual_*` which produced the original Austrian/English-accent complaint.
+
+This is the only way to extend the picker beyond the seven native DE/EN voices Mistral ships, given the cloning path is closed. Community-shared `.pt` embeddings don't exist — verified via web search — because nobody else can produce them either.
+
+**Lessons.**
+- The vLLM Omni docs and Voxtral model card both *describe* cloning as a feature without flagging that the public weights can't do it. Mistral's commercial strategy is the cause; the open-source community is still adjusting to the gap. Future architectural bets on "open-source X" should validate against the actual checkpoint, not the docs.
+- The slice 07a–07c work is not wasted — it's blocked. If Mistral releases the encoder weights, restoring the feature is a route filter change + an iOS entry point. Worth keeping the code in the tree for that reason.
+- Qwen3-TTS (Alibaba's open TTS, also supported by vLLM Omni) ships an encoder and supports cloning out of the box. A future "more voices" project that wants real cloning should evaluate Qwen3-TTS as a parallel/replacement engine rather than chasing Voxtral encoder workarounds.
