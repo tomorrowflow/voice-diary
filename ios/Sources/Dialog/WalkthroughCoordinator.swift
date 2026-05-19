@@ -58,6 +58,13 @@ public final class WalkthroughCoordinator {
     /// status row so the user knows the assistant is listening for
     /// "weiter" / "next" specifically.
     public private(set) var isWakeListening: Bool = false
+    /// Non-blocking notice shown at the top of the walkthrough during
+    /// BRIEFING when the user has a Voxtral voice selected but the
+    /// server reports `voxtral: down`. The fallback policy already
+    /// handles per-utterance failure silently, so this is purely a
+    /// heads-up so the voice swap doesn't surprise the user. Cleared
+    /// automatically after a few seconds.
+    public private(set) var voxtralPreflightWarning: String?
 
     private let engine = AudioEngine()
     // Resolve the TTS engine fresh on every utterance via `speak(_:language:)`.
@@ -174,6 +181,16 @@ public final class WalkthroughCoordinator {
         guard case .idle = state else { return }
         let targetDate = today ?? selectedDate
         state = .briefing
+        // Voxtral preflight: if the user has a server-hosted voice
+        // selected for either language, probe /health in the background
+        // so a banner can warn them when the sidecar is unreachable
+        // before the first opener fires. The walkthrough never blocks
+        // on this — the fallback policy handles per-utterance failure
+        // even if /health races us.
+        voxtralPreflightWarning = nil
+        if hasVoxtralVoiceSelected() {
+            Task { await preflightVoxtral() }
+        }
         error = nil
         events = previewEvents
         segments = []
@@ -2478,6 +2495,37 @@ public final class WalkthroughCoordinator {
             default: return "Today is \(dateStr). We'll walk through \(events.count) meetings."
             }
         }
+    }
+
+    // MARK: - Voxtral preflight (slice 05b)
+
+    private func hasVoxtralVoiceSelected() -> Bool {
+        VoicePreferences.isVoxtralVoiceID(VoicePreferences.selectedVoiceID(for: "de"))
+        || VoicePreferences.isVoxtralVoiceID(VoicePreferences.selectedVoiceID(for: "en"))
+    }
+
+    private func preflightVoxtral() async {
+        do {
+            let data = try await ServerClient.shared.health()
+            let payload = try JSONDecoder().decode(VoxtralPreflightPayload.self, from: data)
+            guard payload.upstream["voxtral"] == "down" else { return }
+            let message = "Voxtral nicht erreichbar — Voxtral-Stimmen fallen heute auf Piper zurück."
+            voxtralPreflightWarning = message
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            // Only clear if we still own the message (no other path overwrote it).
+            if voxtralPreflightWarning == message {
+                voxtralPreflightWarning = nil
+            }
+        } catch {
+            // Network/parse failure: walkthrough proceeds normally and
+            // the engine fallback policy handles per-utterance failure.
+            // Surface only at debug level so the log doesn't get noisy.
+            Log.app.debug("voxtral preflight skipped: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private struct VoxtralPreflightPayload: Decodable {
+        let upstream: [String: String]
     }
 
     /// Cancel any in-flight playback. Broadcasts to all three engines
