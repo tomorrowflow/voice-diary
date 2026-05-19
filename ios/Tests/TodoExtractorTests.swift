@@ -53,4 +53,30 @@ struct TodoExtractorTests {
         )
         #expect(todos.isEmpty)
     }
+
+    @Test("Hallucination phrases are stripped")
+    func hallucinationStrip() {
+        let pure = "Vielen Dank fürs Zuschauen. Bis zum nächsten Mal."
+        #expect(TodoExtractor.sanitiseForTodos(pure).isEmpty)
+
+        let mixed = "Wir hatten ein gutes Meeting. Vielen Dank fürs Zuschauen."
+        let cleaned = TodoExtractor.sanitiseForTodos(mixed)
+        #expect(!cleaned.contains("Zuschauen"))
+        #expect(cleaned.contains("gutes Meeting"))
+
+        let englishStock = "Thanks for watching, like and subscribe."
+        #expect(TodoExtractor.sanitiseForTodos(englishStock).isEmpty)
+    }
+
+    @Test("Explicit todos use verbatim source_quote")
+    func explicitSourceQuote() {
+        let text = "Ich muss noch die Doku an Carsten schicken."
+        let todos = TodoExtractor.extractExplicit(
+            text: text, language: "de", sourceSegmentID: "s01"
+        )
+        #expect(todos.count == 1)
+        let q = todos.first?.source_quote ?? ""
+        #expect(q.lowercased().contains("ich muss"))
+        #expect(q.lowercased().contains("doku"))
+    }
 }

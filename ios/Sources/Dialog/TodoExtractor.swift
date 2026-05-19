@@ -12,6 +12,63 @@ import Foundation
 
 public enum TodoExtractor {
 
+    // MARK: - Hallucination denylist
+
+    /// Stock phrases Parakeet (and most streaming ASRs trained on
+    /// scraped video data) tend to emit on near-silence — "vielen Dank
+    /// fürs Zuschauen", "Untertitel von …", "thanks for watching", etc.
+    /// Stripping them before todo extraction stops the on-device LLM
+    /// from confidently inventing a follow-up todo from a hallucinated
+    /// sentence ("Den Kanal abonnieren" turning into "Channel-Abo
+    /// erneuern"). The caller — `WalkthroughCoordinator.finalise` —
+    /// also bails on todo extraction entirely when the *residual* is
+    /// shorter than 20 characters, so a transcript that was nothing
+    /// but hallucinations no longer produces any todos at all.
+    ///
+    /// Patterns are matched case-insensitively, with whitespace
+    /// flexibility, and stripped non-destructively (the user-facing
+    /// transcript stays intact — we only sanitise the copy fed to the
+    /// extractors).
+    private static let hallucinationPatterns: [String] = [
+        // German YouTube-style filler
+        "vielen dank fürs zuschauen",
+        "danke fürs zuschauen",
+        "vielen dank fürs anschauen",
+        "bis zum nächsten mal",
+        "bis zum nächsten video",
+        "untertitel(?: im auftrag des zdf)?(?: für funk)?",
+        "untertitelung(?: des zdf)?",
+        "abonniert den kanal",
+        "abonniert (?:diesen )?kanal",
+        "lasst ein like da",
+        "copyright wdr",
+        // English equivalents
+        "thanks for watching",
+        "thank you for watching",
+        "subtitles? by",
+        "captions? by",
+        "like and subscribe",
+        "see you next time",
+        "see you in the next video",
+    ]
+
+    private nonisolated(unsafe) static let hallucinationRegex: Regex<Substring> = {
+        let alt = hallucinationPatterns.joined(separator: "|")
+        let pattern = #"(?i)\b(?:"# + alt + #")\b[\s.,!?]*"#
+        return try! Regex(pattern)
+    }()
+
+    /// Strip stock ASR-hallucination phrases from a transcript. Returns
+    /// the sanitised text — empty when the transcript was nothing but
+    /// hallucinations. Callers can use a length check on the result to
+    /// decide whether to skip todo extraction entirely.
+    public static func sanitiseForTodos(_ transcript: String) -> String {
+        transcript
+            .replacing(hallucinationRegex, with: "")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     // MARK: - Trigger phrases
 
     /// Case-insensitive regex matching German + English explicit-todo
@@ -66,13 +123,19 @@ public enum TodoExtractor {
             if seen.contains(key) { continue }
             seen.insert(key)
 
+            // The verbatim span from the transcript — trigger phrase plus
+            // the captured tail. The TodoConfirmationCard highlights this
+            // inside a 5-line excerpt, so we want the original wording
+            // rather than the cleaned paraphrase.
+            let fullSpan = String(text[match.output[0].range!]).trimmingCharacters(in: .whitespaces)
             let due = parseDueDate(in: cleaned, language: language)
             found.append(Todo(
                 text: cleaned,
                 type: "explicit",
                 due: due,
                 status: "Offen",
-                source_segment_id: sourceSegmentID
+                source_segment_id: sourceSegmentID,
+                source_quote: fullSpan.isEmpty ? nil : fullSpan
             ))
         }
         return found
