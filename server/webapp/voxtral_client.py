@@ -108,20 +108,33 @@ class VoxtralClient:
         language: str,
         voice: str,
         response_format: ResponseFormat = "wav",
+        ref_audio: str | None = None,
+        ref_text: str | None = None,
     ) -> SynthesisResult:
         """Render `text` in `voice` and return the audio bytes.
 
         Retries on connection errors and 5xx up to `retry_budget` extra
         attempts with exponential backoff. Maps vLLM responses to typed
         exceptions so the router (and iOS, later) can branch on them.
+
+        When `ref_audio` is given (URL or `file://` URI), vLLM Omni
+        clones from the reference instead of using a preset voice. The
+        `voice` field is still required by the API but is ignored for
+        cloned synthesis. `ref_text` is optional; supplying the
+        transcript improves clone quality per the vLLM Omni docs.
         """
-        payload = {
+        payload: dict[str, object] = {
             "input": text,
             "model": self._model,
             "voice": voice,
             "response_format": response_format,
             "language": language,
         }
+        if ref_audio is not None:
+            payload["task_type"] = "Base"
+            payload["ref_audio"] = ref_audio
+            if ref_text is not None:
+                payload["ref_text"] = ref_text
         url = f"{self._base_url}/v1/audio/speech"
 
         last_5xx: httpx.Response | None = None
