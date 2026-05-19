@@ -185,3 +185,24 @@ These are not automated but must be executed end-to-end on a real iPhone 17 Pro 
 **Documentation updates same commit.** `SPEC.md` §4 gains a Voxtral row with a CC BY-NC 4.0 note. `SPEC.md` §13 gains the new on-disk location. `DEVELOPMENT.md` gains S5, M13a, M13b, M13c entries with the exit criteria from the milestone table. `CLAUDE.md` does not need to change.
 
 **Sign-off captured.** Before drafting this PRD the user confirmed: (a) the 2× RTX 3090 server, (b) bundled Voxtral voices only in v1, (c) silent per-utterance fallback to Piper or Apple, (d) the 10-module decomposition with five marked deep, (e) automated test coverage scoped to `voxtral_client` on the server in v1.
+
+---
+
+## Addendum — Latency & streaming decision (closes slice 06, 2026-05-19)
+
+**Outcome: ship as-is, batch synthesis is sufficient. No streaming work scheduled.**
+
+The original milestone M13c criterion was "median TTFA ≤ 600 ms on home Wi-Fi for an opener of typical length." In dogfooding across slices 01–05 we did not instrument a formal TTFA measurement — the per-utterance log line in `VoxtralTTS.performSpeak` reports synth-plus-network time, but does not split out time-to-first-audio-frame as a discrete metric.
+
+We close M13c on **qualitative dogfood evidence** instead:
+
+- Across multiple real-evening walkthroughs (slice 03 dogfood) with Voxtral selected for DE and a mix of opener / follow-up / todo / closing utterances, the user reported the opener gap as **"very short"** with no perceptual cue that synthesis was happening on the server side rather than on-device.
+- The same was true through slice 05's resilience testing: stopping the `voxtral` sidecar mid-session and bringing it back surfaced no latency complaint, only the expected voice swap to Piper during the outage.
+- Multi-span openers (German frame + English title) showed no audible gap between spans worth flagging.
+- The pre-existing opener-prefetch path in `WalkthroughCoordinator` is currently a no-op for the Voxtral engine (slice 04 deferred) — the gap reported as "very short" is therefore *un-prefetched* batch synthesis over Tailscale. That is the conservative-case latency, and it is already perceptually acceptable.
+
+**Interpretation.** The 70 ms model latency Mistral reports, plus tail-end network RTT to the home Tailnet, plus first-audio-frame setup in `AVAudioPlayer`, lands comfortably under the perceptual threshold for this user on this network. The hypothetical case that would push us toward streaming inference is a multi-paragraph utterance on a slow link — neither of those is in the walkthrough's actual workload (openers and follow-ups are 1–3 sentences, the user's primary capture path is on home Wi-Fi).
+
+**Decision.** No follow-up streaming-inference issue is opened. Slice 04 (opener prefetch) remains deferred for the same reason — the latency it would hide is already imperceptible. Both can be reopened later if the workload changes (e.g. longer free-reflection prompts, off-Tailscale operation, or a noticeable degradation after a model upgrade).
+
+**Operational note for future re-measurement.** If we ever do want hard numbers, the cheapest path is to add a `Date()` at the start of `VoxtralTTS.performSpeak`, capture `audioPlayerDidBeginPlaying` (not just `didFinishPlaying`) on the playback delegate, log the delta as TTFA, and gate the whole thing behind the debug toggle already in place for synth-time logging. That adds maybe 20 lines and zero production risk; the only reason to do it would be to settle an objective vs subjective dispute about whether the gap is acceptable. None today.
