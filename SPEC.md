@@ -487,7 +487,9 @@ resume segment recording
 
 ### 7.4 Audio & transcript handling
 
-**Audio:** raw M4A stays untouched. No chopping.
+**Audio:** raw M4A stays untouched. The enrichment wake-word span, the query, and the spoken answer are **never** cut from the recording — they are removed text-only (below). There is exactly **one** exception to "no chopping", documented next; nothing else is ever removed from a recording.
+
+**The one exception — walkthrough command words.** When the user advances or ends a section *by voice at a lull* — "weiter" / "nächstes" / "fertig" / "Abschluss" (DE) or "next" / "continue" / "done" / "finish" (EN), see §6.6 / §6.7 — that command word is the only audio ever cut from a segment. It always lands at the tail, after a ≥ 3 s reflective pause that opened the listen window, so on a match the segment file is trimmed (on-device, before upload) at the **start of that silence run**, dropping the trailing silence, the listen-open ping, and the command word itself. This is required because the server re-transcribes the *raw audio* with Whisper: unlike the enrichment span there is no transcript-only way to keep the command word out of the final narrative. If the clean cut point is unavailable — the user resumed talking before the command, so the run start no longer marks where reflection ended — a conservative fixed tail trim is applied instead so the command never leaks. A wholly-silent segment that ends on a command word collapses to a near-empty (still valid) M4A. This trim never applies to the enrichment wake word ("hey voice diary"), which leaves the audio intact.
 
 **Transcript:** the wake-word span + enrichment query + AI answer are filtered out of the segment's final `transcript` field before ingest. The full exchange is preserved in the manifest's `ai_prompts[]` array for audit.
 

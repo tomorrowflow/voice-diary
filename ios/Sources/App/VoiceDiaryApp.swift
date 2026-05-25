@@ -22,6 +22,26 @@ struct VoiceDiaryApp: App {
                     }
                 }
                 .task {
+                    // Sweep orphan recording temp files left behind by a
+                    // crashed / suspended previous run. The writer
+                    // stages each segment to `{stem}.tmp.m4a` and
+                    // renames on clean close; a process death between
+                    // those two steps leaves the temp file on disk.
+                    // Old `{stem}.m4a.tmp` orphans from before the
+                    // container fix are also caught by the same sweep.
+                    // Runs once per app launch, before any capture
+                    // intent is processed, so an Action Button press
+                    // that immediately starts a new recording can never
+                    // race the cleanup against its own staging file.
+                    if let root = try? LocalStore.appSupport() {
+                        let removed = M4AWriter.cleanupOrphans(in: root)
+                        if removed > 0 {
+                            Log.app.info(
+                                "swept \(removed, privacy: .public) orphan recording temp file(s)"
+                            )
+                        }
+                    }
+
                     // Notifications first (transient capture-complete
                     // toasts). Then mic + speech-recognition prompts
                     // up-front — see `Permissions.swift` for why we

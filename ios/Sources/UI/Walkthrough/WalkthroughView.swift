@@ -99,19 +99,43 @@ public struct WalkthroughView: View {
                     // slot covers the AI-speaking indicator AND the silence
                     // hint; only one is ever visible. Reserved-height so the
                     // ListeningTimer's vertical position never jumps.
-                    StatusIndicator(
-                        isSpeaking: coordinator.isSpeaking,
-                        silenceLevel: coordinator.silenceLevel,
-                        isWakeListening: coordinator.isWakeListening
-                    )
-                    .padding(.bottom, Theme.spacing.xs)
+                    //
+                    // The whole status+timer group sits on the same opaque
+                    // surface as BottomActionStack — without it the scroll
+                    // content shows through behind the 64pt timer digits.
+                    // The 16pt linear-gradient fade above the group mirrors
+                    // BottomActionStack so text dissolves into the float
+                    // instead of cutting hard.
+                    VStack(spacing: 0) {
+                        StatusIndicator(
+                            isSpeaking: coordinator.isSpeaking,
+                            silenceLevel: coordinator.silenceLevel,
+                            isWakeListening: coordinator.isWakeListening
+                        )
+                        .padding(.bottom, Theme.spacing.xs)
 
-                    // Pinned counter — same Y from the bottom regardless
-                    // of what's in the scroll area above. Lives in the
-                    // overlay (not the scroll view) so EventCard growth
-                    // can't push it around.
-                    ListeningTimer(seconds: coordinator.elapsedSeconds)
-                        .padding(.bottom, Theme.spacing.sm)
+                        // Pinned counter — same Y from the bottom regardless
+                        // of what's in the scroll area above. Lives in the
+                        // overlay (not the scroll view) so EventCard growth
+                        // can't push it around.
+                        ListeningTimer(seconds: coordinator.elapsedSeconds)
+                            .padding(.bottom, Theme.spacing.sm)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .background {
+                        Theme.color.bg.surface
+                            .allowsHitTesting(false)
+                    }
+                    .overlay(alignment: .top) {
+                        LinearGradient(
+                            colors: [Theme.color.bg.surface.opacity(0), Theme.color.bg.surface],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 16)
+                        .offset(y: -16)
+                        .allowsHitTesting(false)
+                    }
                 }
                 if coordinator.state.isInEventLoop {
                     // Single-action bottom: the dialog drives itself, so the
@@ -998,12 +1022,58 @@ private struct UploadingCard: View {
 private struct NoteReviewCard: View {
     let coordinator: WalkthroughCoordinator
 
-    @StateObject private var player = SegmentPlayer()
+    @State private var duration: TimeInterval?
+
+    /// The coordinator owns the player so the automatic read-aloud and
+    /// this card's play/pause/scrub are one audio stream — the scrubber
+    /// tracks the auto-playback, and the coordinator's `stopNotePlayback`
+    /// tears it down on advance / drop / cancel.
+    private var player: SegmentPlayer { coordinator.notePlayer }
 
     var body: some View {
         let snapshot = coordinator.currentNoteSeed
         return VStack(alignment: .leading, spacing: Theme.spacing.md) {
-            header(snapshot: snapshot)
+            if let seed = snapshot?.seed {
+                // Player header: round play/pause disc + capture time and
+                // duration on the left, optional "older" badge on the
+                // right. Mirrors the Verlauf history row (`NoteRow`) so
+                // the manual replay here and the history playback read as
+                // one component — disc on the left, then a voice-memo
+                // scrubber once this seed is the active file.
+                HStack(alignment: .center, spacing: Theme.spacing.sm) {
+                    playButton(seed: seed)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(timeText(seed.captured_at))
+                            .font(Theme.font.body.weight(.medium))
+                            .foregroundStyle(Theme.color.text.primary)
+                            .monospacedDigit()
+                        // The active row's scrubber already carries
+                        // current/total time, so the static duration is
+                        // redundant there — only show it while inactive.
+                        if !isActive(seed: seed), let duration {
+                            Text(SegmentPlayer.formatDuration(duration))
+                                .font(Theme.font.caption)
+                                .foregroundStyle(Theme.color.text.subdued)
+                                .monospacedDigit()
+                        }
+                    }
+                    Spacer(minLength: Theme.spacing.xs)
+                    if isOrphan(seed: seed) {
+                        Text(orphanBadgeText(seed: seed))
+                            .font(Theme.font.caption2.weight(.medium))
+                            .foregroundStyle(Theme.color.status.warning)
+                            .padding(.horizontal, Theme.spacing.sm)
+                            .padding(.vertical, 4)
+                            .background(
+                                Capsule().fill(Theme.color.status.warning.opacity(0.10))
+                            )
+                    }
+                }
+
+                if isActive(seed: seed) {
+                    PlaybackScrubber(player: player, tint: Theme.color.status.warning)
+                }
+            }
 
             Text(snapshot?.seed.transcript.isEmpty == false
                  ? snapshot!.seed.transcript
@@ -1011,17 +1081,20 @@ private struct NoteReviewCard: View {
                     ? "(kein Transkript verfügbar)"
                     : "(no transcript available)"))
                 .font(Theme.font.body)
-                .foregroundStyle(Theme.color.text.primary)
+                .foregroundStyle(
+                    snapshot?.seed.transcript.isEmpty == false
+                        ? Theme.color.text.primary
+                        : Theme.color.text.subdued
+                )
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if let seed = snapshot?.seed {
+            // "Für später" stays an icon-only escape hatch, bottom-right,
+            // on orphan notes only — the card itself is voice-driven.
+            if let seed = snapshot?.seed, isOrphan(seed: seed) {
                 HStack(spacing: Theme.spacing.sm) {
-                    playButton(seed: seed)
-                    if isOrphan(seed: seed) {
-                        Spacer()
-                        deferButton
-                    }
+                    Spacer(minLength: 0)
+                    deferIconButton
                 }
             }
         }
@@ -1031,61 +1104,67 @@ private struct NoteReviewCard: View {
             RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
                 .fill(Theme.color.bg.containerInset)
         )
-        .onDisappear { player.stop() }
-    }
-
-    @ViewBuilder
-    private func header(snapshot: (seed: DriveBySeed, index: Int, total: Int)?) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: Theme.spacing.sm) {
-            Text(timeText(snapshot?.seed.captured_at))
-                .font(Theme.font.monoCaption)
-                .foregroundStyle(Theme.color.text.subdued)
-            Spacer()
-            if let snapshot, isOrphan(seed: snapshot.seed) {
-                Text(orphanBadgeText(seed: snapshot.seed))
-                    .font(Theme.font.caption2.weight(.medium))
-                    .foregroundStyle(Theme.color.status.warning)
-                    .padding(.horizontal, Theme.spacing.xs)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule().fill(Theme.color.status.warning.opacity(0.10))
-                    )
-            }
+        // Static-duration fallback for the brief window before the
+        // coordinator's auto-play makes this seed the active file. The
+        // player itself is driven by the coordinator (auto-play +
+        // advance/drop teardown), so the card doesn't stop it on change.
+        .task(id: snapshot?.seed.audio_file_url.path) {
+            guard let url = snapshot?.seed.audio_file_url else { return }
+            duration = await SegmentPlayer.duration(of: url)
         }
     }
 
-    @ViewBuilder
+    /// "Für später" — only relevant on orphan seeds. Icon-only so the
+    /// primary surface stays calm; the spoken equivalent is
+    /// `später` / `save for later` via the wake-word.
+    private var deferIconButton: some View {
+        Button {
+            Task { await coordinator.saveCurrentNoteForLater() }
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(Theme.color.text.subdued)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            coordinator.confirmationLanguage == .de ? "Für später" : "Save for later"
+        )
+    }
+
+    /// Round play/pause disc on the left of the card — same shape and
+    /// tint as the Verlauf history note row's button. Tapping toggles
+    /// play/pause in place; the scrubber below appears while this seed is
+    /// the player's active file. The primary interaction model is still
+    /// voice (`nochmal` / `replay`); this is the manual escape hatch.
     private func playButton(seed: DriveBySeed) -> some View {
         Button {
             player.toggle(url: seed.audio_file_url)
         } label: {
-            Label(
-                isPlaying(seed: seed)
-                    ? (coordinator.confirmationLanguage == .de ? "Stoppen" : "Stop")
-                    : (coordinator.confirmationLanguage == .de ? "Anhören" : "Listen"),
-                systemImage: isPlaying(seed: seed) ? "stop.circle.fill" : "play.circle.fill"
-            )
+            ZStack {
+                Circle()
+                    .fill(Theme.color.tint.warning10)
+                    .frame(width: 36, height: 36)
+                Image(systemName: isPlaying(seed: seed) ? "pause.fill" : "play.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Theme.color.status.warning)
+                    // Optically centre the play glyph inside the disc.
+                    .offset(x: isPlaying(seed: seed) ? 0 : 1)
+            }
         }
-        .buttonStyle(.dsGhost(size: .sm, fullWidth: false))
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            isPlaying(seed: seed)
+                ? (coordinator.confirmationLanguage == .de ? "Pause" : "Pause")
+                : (coordinator.confirmationLanguage == .de ? "Anhören" : "Listen")
+        )
     }
 
-    /// "Für später" — only shown on orphan seeds. Tapping marks the
-    /// seed as deferred for this session and advances to the next note
-    /// without folding the current one into the diary entry.
-    private var deferButton: some View {
-        Button {
-            Task { await coordinator.saveCurrentNoteForLater() }
-        } label: {
-            Label(
-                coordinator.confirmationLanguage == .de ? "Für später" : "Save for later",
-                systemImage: "clock.arrow.circlepath"
-            )
-        }
-        .buttonStyle(.dsGhost(size: .sm, fullWidth: false))
+    private func isActive(seed: DriveBySeed) -> Bool {
+        player.activeURL == seed.audio_file_url
     }
 
     private func isPlaying(seed: DriveBySeed) -> Bool {
-        player.playingURL == seed.audio_file_url
+        isActive(seed: seed) && player.isPlaying
     }
 
     private func isOrphan(seed: DriveBySeed) -> Bool {
@@ -1124,33 +1203,27 @@ private struct TodoConfirmationCard: View {
     var body: some View {
         let candidate = coordinator.currentTodoCandidate
         return VStack(alignment: .leading, spacing: Theme.spacing.md) {
-            VStack(alignment: .leading, spacing: Theme.spacing.sm) {
-                Text("AUFGABE")
-                    .font(Theme.font.monoCaption)
-                    .foregroundStyle(Theme.color.text.subdued)
-                    .tracking(0.5)
-
-                Text(candidate?.text ?? "")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(Theme.color.text.primary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            // Section heading "Eine Sache noch" already carries the
+            // context, so the AUFGABE / AUS DEM TRANSKRIPT sublabels are
+            // dropped — the divider between the two sections is enough.
+            Text(candidate?.text ?? "")
+                .font(.system(size: 24, weight: .medium))
+                .foregroundStyle(Theme.color.text.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
             if let excerpt = excerpt(for: candidate) {
                 Divider().background(Theme.color.border.subdued)
 
-                VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
-                    Text("AUS DEM TRANSKRIPT")
-                        .font(Theme.font.monoCaption)
-                        .foregroundStyle(Theme.color.text.subdued)
-                        .tracking(0.5)
-
-                    excerptText(excerpt)
-                        .font(Theme.font.body)
-                        .foregroundStyle(Theme.color.text.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                // Render the transcript excerpt as a quotation: wrap in
+                // German guillemets and italicise so the reader sees at
+                // a glance that this is a verbatim quote from what they
+                // just said.
+                excerptText(excerpt)
+                    .font(Theme.font.body)
+                    .italic()
+                    .foregroundStyle(Theme.color.text.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(Theme.spacing.md)
@@ -1215,20 +1288,25 @@ private struct TodoConfirmationCard: View {
         return Excerpt(text: joined, highlightRange: nil)
     }
 
-    /// Render the excerpt with the matched span tinted. Falls back to
-    /// plain text when no highlight range is set.
+    /// Render the excerpt with the matched span tinted, wrapped in
+    /// German low/high guillemets so the body reads as a quotation.
+    /// Falls back to plain text when no highlight range is set.
     private func excerptText(_ ex: Excerpt) -> Text {
+        let openQuote = Text("„")
+        let closeQuote = Text("\u{201C}") // “
         guard let range = ex.highlightRange else {
-            return Text(ex.text)
+            return openQuote + Text(ex.text) + closeQuote
         }
         let prefix = String(ex.text[..<range.lowerBound])
         let match  = String(ex.text[range])
         let suffix = String(ex.text[range.upperBound...])
-        return Text(prefix)
+        return openQuote
+            + Text(prefix)
             + Text(match)
                 .foregroundColor(Theme.color.text.primary)
                 .fontWeight(.semibold)
             + Text(suffix)
+            + closeQuote
     }
 
     /// Sentence-split a transcript on `.`, `!`, `?` (with a trailing

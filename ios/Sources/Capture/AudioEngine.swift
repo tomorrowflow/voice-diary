@@ -239,15 +239,62 @@ public actor AudioEngine {
         engine.prepare()
         try engine.start()
         engineRunning = true
+        // Re-install the tap now that the engine is running. The input
+        // node's hardware format is only reliable *post*-start, and the
+        // no-op tap builds its wake-word downsampler from that format.
+        // Without this, a wake-word window opened before any segment
+        // recording — note review as the very first step (drive-by
+        // notes, zero calendar events) — would carry a downsampler made
+        // from a possibly-stale pre-start format and silently drop every
+        // buffer. Swapping taps on a live engine is safe (it's exactly
+        // what `start(outputURL:)` does).
+        installNoOpTap(onInput: input)
     }
 
     private func installNoOpTap(onInput input: AVAudioInputNode? = nil) {
         let node = input ?? engine.inputNode
         node.removeTap(onBus: 0)
-        let format = node.outputFormat(forBus: 0)
-        node.installTap(onBus: 0, bufferSize: 4096, format: format) { _, _ in
-            // Drop frames on the floor. The point is to keep the AU
-            // hot; we don't write anything between segments.
+        let inputFormat = node.outputFormat(forBus: 0)
+
+        // Between segments we don't write a file, but we still feed the
+        // wake-word sink *if one is set* — that's what makes the
+        // note-review listen window work (no active recording there, so
+        // `start(outputURL:)`'s tap isn't installed). When no sink is
+        // set this stays a true no-op: the closure returns immediately
+        // after the atomic `get()`. The downsampler mirrors the one in
+        // `start(outputURL:)` so the wake-word ASR sees the same 16 kHz
+        // mono buffers in both paths.
+        let parakeetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: AudioEngine.parakeetTargetSampleRate,
+            channels: M4AWriter.channels,
+            interleaved: false
+        )
+        let downsampler: AVAudioConverter? = parakeetFormat.flatMap {
+            AVAudioConverter(from: inputFormat, to: $0)
+        }
+        let wakeRef = wakeWordSink
+
+        node.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [wakeRef, downsampler, parakeetFormat] buffer, _ in
+            guard buffer.frameLength > 0 else { return }
+            // No wake sink → keep the AU hot, drop frames on the floor.
+            guard let sink = wakeRef.get() else { return }
+            guard let downsampler, let parakeetFormat else { return }
+            let frameCapacity = AVAudioFrameCount(
+                Double(buffer.frameLength) * parakeetFormat.sampleRate / inputFormat.sampleRate
+            ) + 1024
+            guard let outBuf = AVAudioPCMBuffer(
+                pcmFormat: parakeetFormat,
+                frameCapacity: frameCapacity
+            ) else { return }
+            var error: NSError?
+            let status = downsampler.convert(to: outBuf, error: &error) { _, outStatus in
+                outStatus.pointee = .haveData
+                return buffer
+            }
+            guard status == .haveData || status == .inputRanDry else { return }
+            guard outBuf.frameLength > 0 else { return }
+            sink(outBuf)
         }
     }
 

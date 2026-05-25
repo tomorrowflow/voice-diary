@@ -269,4 +269,18 @@ public enum OpenerTemplates {
         let i = ((rotation % pool.count) + pool.count) % pool.count
         return pool[i]
     }
+
+    /// Spoken at the 15 s lull *when the user has stayed completely
+    /// silent* since the opener (SPEC §6.7). It accompanies the
+    /// still-open wake-word window: the user can say "weiter" / "fertig"
+    /// ("next" / "done") to move on, or simply start talking to keep
+    /// reflecting. One fixed line per language — unlike `followUp` there
+    /// is no rotation because it fires at most once per silent segment.
+    /// Deliberately quote-free so Piper reads it cleanly.
+    public static func continuePrompt(language: OpenerLanguage) -> String {
+        switch language {
+        case .de: return "Soll ich weitermachen? Sag weiter, oder fang einfach an zu erzählen."
+        case .en: return "Should I move on? Say next, or just start talking."
+        }
+    }
 }

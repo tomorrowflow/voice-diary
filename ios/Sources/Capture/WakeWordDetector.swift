@@ -22,9 +22,15 @@ public final class WakeWordDetector: @unchecked Sendable {
     public struct Phrase: Sendable, Hashable {
         public let canonical: String     // lowercase, ascii-folded
         public let action: Action
-        public init(_ canonical: String, action: Action) {
+        /// Max Levenshtein distance a tail token may be from `canonical`
+        /// to count as a match. Defaults to 2 (tolerant) for the longer
+        /// command words; short answer words like "ja"/"nein" pass 0 so
+        /// the loose ≤2 gate can't fire them off unrelated short tokens.
+        public let maxDistance: Int
+        public init(_ canonical: String, action: Action, maxDistance: Int = 2) {
             self.canonical = canonical
             self.action = action
+            self.maxDistance = maxDistance
         }
     }
 
@@ -36,6 +42,16 @@ public final class WakeWordDetector: @unchecked Sendable {
         // meeting 2 of 5 should move you to meeting 3, not finish
         // everything. The X button is still the full-cancel path.
         case finishSection  // "fertig" / "Abschluss" / "done" / "finish section"
+
+        // Note-review-only intents (drive-by recap step). The base
+        // phrase tables don't include these — the coordinator hands
+        // the extended `*NoteReview` tables to the detector when
+        // state == .noteReview so a "später" mid-meeting doesn't get
+        // misinterpreted as defer.
+        case dropNote       // "verwerfen" / "discard"
+        case deferNote      // "später" / "later"     (orphan-only)
+        case replayNote     // "nochmal" / "replay"
+        case rerecordNote   // "ändern" / "rerecord"
     }
 
     /// Default phrase tables per language. The coordinator picks one
@@ -57,10 +73,52 @@ public final class WakeWordDetector: @unchecked Sendable {
         Phrase("finish",    action: .finishSection),
     ]
 
+    /// Extended phrase tables for the per-note review step. Includes the
+    /// base advance / finish triggers plus the note-only intents, plus a
+    /// yes/no answer pair so the review reads like the todo confirmation
+    /// ("Soll ich sie aufnehmen?" → ja = include via `.advance`, nein =
+    /// `.dropNote`). The longer canonicals keep the tolerant ≤ 2 gate;
+    /// "ja"/"nein"/"yes"/"no" are short, so they pass `maxDistance: 0`
+    /// (exact match only) to avoid firing off unrelated short tokens.
+    public static let germanNoteReview: [Phrase] = german + [
+        Phrase("ja",          action: .advance,      maxDistance: 0),
+        Phrase("nein",        action: .dropNote,     maxDistance: 0),
+        Phrase("verwerfen",   action: .dropNote),
+        Phrase("weglassen",   action: .dropNote),
+        Phrase("später",      action: .deferNote),
+        Phrase("aufheben",    action: .deferNote),
+        Phrase("nochmal",     action: .replayNote),
+        Phrase("wiederholen", action: .replayNote),
+        Phrase("ändern",      action: .rerecordNote),
+        Phrase("neuaufnahme", action: .rerecordNote),
+    ]
+    public static let englishNoteReview: [Phrase] = english + [
+        Phrase("yes",       action: .advance,    maxDistance: 0),
+        Phrase("no",        action: .dropNote,   maxDistance: 0),
+        Phrase("discard",   action: .dropNote),
+        Phrase("remove",    action: .dropNote),
+        Phrase("later",     action: .deferNote),
+        Phrase("defer",     action: .deferNote),
+        Phrase("replay",    action: .replayNote),
+        Phrase("again",     action: .replayNote),
+        Phrase("rerecord",  action: .rerecordNote),
+        Phrase("change",    action: .rerecordNote),
+    ]
+
     public static func phrases(for language: String) -> [Phrase] {
         switch language.prefix(2).lowercased() {
         case "en": return english
         default:   return german
+        }
+    }
+
+    /// Note-review variant of `phrases(for:)`. Coordinator calls this
+    /// when state == .noteReview so the user can say drop / defer /
+    /// replay / rerecord on top of the standard advance triggers.
+    public static func noteReviewPhrases(for language: String) -> [Phrase] {
+        switch language.prefix(2).lowercased() {
+        case "en": return englishNoteReview
+        default:   return germanNoteReview
         }
     }
 
@@ -100,7 +158,7 @@ public final class WakeWordDetector: @unchecked Sendable {
         for phrase in phrases where !fired.contains(phrase.action) {
             for token in tokens {
                 let dist = Self.levenshtein(token, phrase.canonical)
-                if dist <= 2 {
+                if dist <= phrase.maxDistance {
                     Diag.log("WakeWordDetector MATCH token='\(token)' canonical='\(phrase.canonical)' lev=\(dist) → action=\(phrase.action.rawValue)")
                     fired.insert(phrase.action)
                     onMatch(phrase.action, phrase.canonical)

@@ -71,6 +71,23 @@ struct OpenerTemplatesTests {
         #expect(line.contains("10:00"))
     }
 
+    // MARK: - Continue prompt (silent-path 15s)
+
+    @Test("continue prompt is non-empty per language and quote-free")
+    func continuePrompt() {
+        for lang in [OpenerLanguage.de, .en] {
+            let line = OpenerTemplates.continuePrompt(language: lang)
+            #expect(!line.isEmpty)
+            // Quote-free so Piper doesn't read stray punctuation.
+            #expect(!line.contains("\""))
+            #expect(!line.contains("\u{201E}"))
+            #expect(!line.contains("\u{201C}"))
+        }
+        // Each language invites its own command word.
+        #expect(OpenerTemplates.continuePrompt(language: .de).contains("weiter"))
+        #expect(OpenerTemplates.continuePrompt(language: .en).contains("next"))
+    }
+
     // MARK: - Mixed-language script
 
     @Test("English title in German template emits an EN span for the title")

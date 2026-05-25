@@ -91,6 +91,42 @@ public actor AppleFoundationLLM {
         #endif
     }
 
+    /// Condense a drive-by note's transcript into one short spoken
+    /// sentence for the note-review prompt ("Du hast notiert: …"). Mirrors
+    /// the follow-up generators: on-device only, language-checked, and
+    /// speech-cleaned. Throws on unavailability / wrong language so the
+    /// caller can fall back to the raw transcript.
+    public func summarizeNote(
+        transcript: String,
+        language: String
+    ) async throws -> String {
+        #if canImport(FoundationModels)
+        guard SystemLanguageModel.default.isAvailable else {
+            throw LLMError.unavailable("system_model_not_ready")
+        }
+        let isGerman = language.hasPrefix("de")
+        let session = LanguageModelSession(
+            model: SystemLanguageModel.default,
+            instructions: Self.summaryInstructions(german: isGerman)
+        )
+        let prompt = Self.makeSummaryPrompt(transcript: transcript, german: isGerman)
+        do {
+            let response = try await session.respond(to: prompt)
+            let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw LLMError.empty }
+            let cleaned = cleanForSpeech(text)
+            try Self.assertLanguage(cleaned, expectedGerman: isGerman)
+            return cleaned
+        } catch let error as LLMError {
+            throw error
+        } catch {
+            throw LLMError.underlying(error)
+        }
+        #else
+        throw LLMError.unavailable("FoundationModels_not_compiled_in")
+        #endif
+    }
+
     /// Follow-up question for a user-defined "general" section
     /// (e.g. "Lernen", "Tagesabschluss"). Same shape as
     /// `generateFollowUp` but seeded from the section's title +
@@ -294,16 +330,34 @@ public actor AppleFoundationLLM {
             pendingQuote = nil
         }
 
+        // Strip surrounding straight or typographic quotes from a span —
+        // the model sometimes wraps both the imperative and the verbatim
+        // quote in quotation marks even though the prompt doesn't ask
+        // for them.
+        let quoteChars = CharacterSet(charactersIn: " \"'„“”«»")
+
         for rawLine in normalised.split(separator: "\n", omittingEmptySubsequences: false) {
-            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            var line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.isEmpty { continue }
 
             // Quote line — pairs with the most recent item.
             if line.hasPrefix(">>") {
-                var q = String(line.dropFirst(2))
-                q = q.trimmingCharacters(in: CharacterSet(charactersIn: " \"'„“”«»"))
+                let q = String(line.dropFirst(2)).trimmingCharacters(in: quoteChars)
                 if pendingText != nil { pendingQuote = q.isEmpty ? nil : q }
                 continue
+            }
+
+            // Inline `>>`: the model collapsed the two-line item onto a
+            // single line ("imperative" >> "verbatim quote"). Split on
+            // the first `>>` so the imperative doesn't end up displaying
+            // the quote suffix too.
+            var inlineQuote: String? = nil
+            if let r = line.range(of: ">>") {
+                let after = line[r.upperBound...]
+                    .trimmingCharacters(in: quoteChars)
+                inlineQuote = after.isEmpty ? nil : after
+                line = String(line[..<r.lowerBound])
+                    .trimmingCharacters(in: .whitespaces)
             }
 
             // New item — flush any in-flight pair.
@@ -317,12 +371,16 @@ public actor AppleFoundationLLM {
             while let last = head.last, ".,;".contains(last) {
                 head.removeLast()
             }
+            // Drop quotation marks the model sometimes wraps around the
+            // imperative ("Deck an Carsten schicken").
+            head = head.trimmingCharacters(in: quoteChars)
             let cleaned = head.trimmingCharacters(in: .whitespaces)
             guard cleaned.count >= 4 else { continue }
             if cleaned.uppercased() == "KEINE" || cleaned.uppercased() == "NONE" {
                 continue
             }
             pendingText = cleaned
+            if let q = inlineQuote { pendingQuote = q }
 
             if items.count >= 5 { break }
         }
@@ -348,6 +406,41 @@ public actor AppleFoundationLLM {
             deeper. Reply ONLY in English. Output ONLY the question — no
             preamble, no explanation, maximum 12 words. Never repeat the
             user's own words verbatim.
+            """
+        }
+    }
+
+    private static func summaryInstructions(german: Bool) -> String {
+        if german {
+            return """
+            Du fasst eine kurze Sprachnotiz für ein Tagebuch zusammen. Gib
+            EINEN kurzen Aussagesatz zurück (maximal 14 Wörter), der den
+            Kern der Notiz wiedergibt. Antworte AUSSCHLIESSLICH auf
+            Deutsch. Gib NUR die Zusammenfassung zurück — keine Einleitung,
+            keine Frage, keine Anführungszeichen.
+            """
+        } else {
+            return """
+            You summarize a short voice note for a diary. Return ONE short
+            statement (max 14 words) capturing the gist of the note. Reply
+            ONLY in English. Output ONLY the summary — no preamble, no
+            question, no quotation marks.
+            """
+        }
+    }
+
+    private static func makeSummaryPrompt(transcript: String, german: Bool) -> String {
+        if german {
+            return """
+            Fasse diese Sprachnotiz in einem kurzen Satz zusammen:
+            \(transcript)
+            Gib nur die Zusammenfassung auf Deutsch zurück.
+            """
+        } else {
+            return """
+            Summarize this voice note in one short statement:
+            \(transcript)
+            Return only the summary in English.
             """
         }
     }

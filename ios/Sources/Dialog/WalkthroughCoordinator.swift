@@ -47,7 +47,7 @@ public final class WalkthroughCoordinator {
     /// the silent gap the user previously had no signal for.
     public private(set) var isSpeaking: Bool = false
     /// The most recent silence-threshold the user has crossed without
-    /// speaking, in seconds (one of 0 / 3 / 6 / 15). Set by
+    /// speaking, in seconds (one of 0 / 3 / 6 / 15 / 24). Set by
     /// `handleLull(threshold:…)` and cleared whenever the AI starts
     /// speaking, the user advances/skips, or playback is cancelled.
     /// Surfaces in the bottom status row so the user can see WHY the
@@ -107,15 +107,39 @@ public final class WalkthroughCoordinator {
     /// (advance / skip / finishCurrentSection / cancel) so the streaming ASR
     /// is torn down promptly and the audio fan-out sink is cleared.
     private var wakeWordTask: Task<Void, Never>?
-    /// Segment IDs whose recording was advanced by a wake-word match.
-    /// Their audio file gets a tail trim before upload so the matched
-    /// command word ("weiter" etc.) doesn't end up in the reflection.
-    private var wakeMatchedSegmentIDs: Set<String> = []
-    /// Length to lop off the end of a wake-matched segment. Covers the
-    /// command word itself (~500 ms), the streaming ASR latency
-    /// (~300–500 ms), and a small buffer. Errs on the side of dropping
-    /// a hair too much rather than leaking the wake word.
-    private static let wakeMatchTrimSeconds: TimeInterval = 1.5
+    /// How a wake-matched segment's audio should be trimmed before
+    /// upload, so the spoken command ("weiter" etc.) doesn't leak into
+    /// the reflection transcript (client Parakeet now, server Whisper
+    /// later). Applied in `stopSegmentCapture`.
+    private enum WakeTrim {
+        /// Keep only the first N seconds — used when we know where the
+        /// user's reflection ended: the start of the silence run that
+        /// preceded the command. Drops trailing silence + ping + word.
+        case keepFirst(TimeInterval)
+        /// Lop N seconds off the tail — fallback for when that clean cut
+        /// point was lost (the user had resumed talking before the
+        /// command, so the run start no longer marks the speech end).
+        case dropLast(TimeInterval)
+    }
+    /// Pending wake-word trims keyed by segment id.
+    private var wakeMatchTrim: [String: WakeTrim] = [:]
+    /// Wall-clock start of the current listening segment's recording
+    /// (≈ `engine.start`). With `silenceRunStartedAt` this yields the
+    /// precise keep-duration for a head-keep trim. Reset per segment.
+    private var segmentRecordingStartedAt: Date?
+    /// Wall-clock start of the silence run that most recently opened a
+    /// wake-word window (≈ window-open minus the firing threshold). Marks
+    /// where the user's reflection ended; consumed on a wake match and
+    /// cleared when the user resumes speaking or a new segment begins.
+    private var silenceRunStartedAt: Date?
+    /// Safety margin (s) added to the kept head so a late silence
+    /// detection or audio-vs-wallclock skew can't clip the user's final
+    /// syllable. Only keeps a sliver more silence; the command word sits
+    /// seconds later and is still dropped.
+    private static let wakeMatchKeepMarginSeconds: TimeInterval = 0.25
+    /// Fallback fixed tail length when no clean silence-run cut point is
+    /// available. Covers the command word + ASR latency + a small buffer.
+    private static let wakeMatchFallbackTailSeconds: TimeInterval = 1.5
     private let answerLullDetector = LullDetector()
     private static let todoAnswerMaxSeconds: TimeInterval = 20.0
     private var interruptInFlight: Bool = false
@@ -141,6 +165,30 @@ public final class WalkthroughCoordinator {
     /// from `surfacedSeedIDs`, so the next walkthrough picks them up
     /// again. Reset in `begin()`.
     private var deferredSeedIDs: Set<String> = []
+
+    /// Seed ids the user said "verwerfen" / "discard" on during the
+    /// per-note review. Excluded from this session's manifest (not
+    /// folded into the diary entry) but still marked surfaced in
+    /// `LocalStore` so they don't reappear on the next walkthrough —
+    /// the audio file on disk is preserved. Reset in `begin()`.
+    private var droppedSeedIDs: Set<String> = []
+
+    /// Single in-walkthrough player that reads a note's original
+    /// recording back before the wake-word window opens. The *same*
+    /// instance backs the `NoteReviewCard`'s play disc + scrubber, so the
+    /// automatic read-aloud and the user's manual play/pause/scrub are one
+    /// audio stream — the scrubber tracks the auto-playback, and a single
+    /// `stopNotePlayback()` tears everything down. `managesSession: false`
+    /// keeps it from flipping the session to `.playback`: the walkthrough
+    /// already owns `.playAndRecord` (needed for the wake-word mic), and
+    /// AVAudioPlayer plays fine under it.
+    let notePlayer = SegmentPlayer(managesSession: false)
+    /// Resumed exactly once — by natural playback finish OR by
+    /// `stopNotePlayback()`. `SegmentPlayer.stop()` does NOT fire the
+    /// natural-finish hook, so without this an interrupted note (Weiter /
+    /// X / voice command mid-playback) would orphan the continuation and
+    /// hang `playNoteAudio`.
+    private var notePlaybackContinuation: CheckedContinuation<Void, Never>?
 
     /// Pre-synthesised opener scripts keyed by their target segment ID.
     /// Populated by `prefetchOpener` running in the background after each
@@ -209,6 +257,7 @@ public final class WalkthroughCoordinator {
         plan = []
         surfacedSeedIDs = []
         deferredSeedIDs = []
+        droppedSeedIDs = []
         clearPrefetchedOpeners()
         syncLiveActivity()
         Task { await ParakeetManager.shared.warmUp() }
@@ -355,9 +404,12 @@ public final class WalkthroughCoordinator {
         case .noteReview(let stepIdx, let seedIdx):
             // Advance to the next note, or to the closing-question
             // phase if this was the last one. Cancel any TTS still in
-            // flight from the intro line so we don't overlap.
+            // flight from the intro line + any in-flight note audio
+            // playback so we don't overlap with the next note's audio
+            // or the closing prompt.
             interruptInFlight = true
             await cancelTTS()
+            stopNotePlayback()
             guard stepIdx >= 0, stepIdx < plan.count,
                   case .driveBy(let seeds) = plan[stepIdx] else {
                 await runStep(at: stepIdx + 1, language: language)
@@ -514,6 +566,7 @@ public final class WalkthroughCoordinator {
         // the streaming ASR + clears the audio fan-out sink itself.
         wakeWordTask?.cancel(); wakeWordTask = nil
         isWakeListening = false
+        stopNotePlayback()
         timer?.invalidate(); timer = nil
         await cancelTodoAnswerCapture()
         // Engine.stop() finalises the in-flight segment file on disk —
@@ -759,11 +812,19 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    /// One step of the per-note breadcrumbed review. Speaks the
-    /// "Du hast heute X Notizen aufgenommen…" intro only on the first
-    /// note (`seedIndex == 0`); subsequent notes are silent — the user
-    /// reads the card and taps Weiter. After the last note, advances
-    /// to the closing question via `runDriveByClosing`.
+    /// One step of the per-note breadcrumbed review. Voice-first flow:
+    ///   1. Speak the "Du hast heute X Notizen aufgenommen…" intro
+    ///      (first note only).
+    ///   2. Play the seed's original audio recording (`AVAudioPlayer`
+    ///      under the existing `.playAndRecord` session).
+    ///   3. Open a wake-word window with the extended note-review
+    ///      phrase table — the user can say
+    ///      `weiter / verwerfen / später / nochmal / ändern`.
+    ///   4. Window timeout = "keep" → advance to next note.
+    ///
+    /// The Weiter button still works as a manual override (calls
+    /// `advance()` which lands back here with the next index, or
+    /// runs `runDriveByClosing` once the last note is past).
     private func runNoteReview(
         stepIndex: Int,
         seedIndex: Int,
@@ -786,9 +847,205 @@ public final class WalkthroughCoordinator {
                 await speak(intro, language: language.rawValue)
             }
         }
-        // Card stays on screen until the user taps Weiter — `advance()`
-        // routes the tap back into `runNoteReview` with the next index
-        // (or into `runDriveByClosing` when this was the last note).
+
+        // Bail if the user cancelled / advanced while the intro was
+        // speaking — `cancelTTS` resets state and we don't want to
+        // play the audio over the next event's opener.
+        guard case .noteReview(let liveStep, let liveSeed) = state,
+              liveStep == stepIndex, liveSeed == seedIndex else { return }
+
+        await summariseAndListen(
+            seed: seeds[seedIndex],
+            index: seedIndex,
+            total: seeds.count,
+            language: language
+        )
+    }
+
+    /// Initial surfacing of a note (mirrors `speakCurrentTodoPrompt`):
+    /// speak a one-sentence summary framed as an "include?" question, then
+    /// open the note-review wake-word window. The raw recording is *not*
+    /// auto-played — the user hears it on demand via the play disc or by
+    /// saying "nochmal". This gives every note the same spoken guidance
+    /// the todo confirmation has (previously only the first note had any).
+    private func summariseAndListen(
+        seed: DriveBySeed,
+        index: Int,
+        total: Int,
+        language: OpenerLanguage
+    ) async {
+        guard case .noteReview(let stepIndex, _) = state else { return }
+        let summary = await noteSummary(seed: seed, language: language)
+        guard case .noteReview = state else { return }
+        let prompt = composeNotePrompt(
+            index: index, total: total, summary: summary, language: language
+        )
+        lastSpoken = prompt
+        recordAiPrompt(role: "note_prompt",
+                       segmentID: "s\(zeroPad(stepIndex + 1))",
+                       text: prompt)
+        await speak(prompt, language: language.rawValue)
+        await openNoteWakeWindow(language: language)
+    }
+
+    /// Play the seed's raw recording, then open the wake-word window.
+    /// Used by the "nochmal" / play-disc replay path so the user can
+    /// re-hear the original after the spoken summary.
+    private func playNoteAndListen(
+        seed: DriveBySeed,
+        language: OpenerLanguage
+    ) async {
+        await playNoteAudio(seed: seed)
+        guard case .noteReview = state else { return }
+        await openNoteWakeWindow(language: language)
+    }
+
+    /// Open the note-review wake-word window and route its outcome.
+    /// Shared by the summary pass and the raw-audio replay. Timeout
+    /// (silence) keeps the note — drive-by ideas default to included —
+    /// and advances; a matched command was already dispatched inside the
+    /// window; `.skipped` leaves the card for manual control.
+    private func openNoteWakeWindow(language: OpenerLanguage) async {
+        guard case .noteReview = state else { return }
+        // Short settle so the wake-word ping doesn't land on the tail of
+        // the just-spoken summary / replayed audio. Cancellable.
+        try? await Task.sleep(nanoseconds: 600_000_000)
+        guard case .noteReview = state else { return }
+        wakeWordTask?.cancel()
+        wakeWordTask = Task { [weak self] in
+            guard let self else { return }
+            let outcome = await self.runWakeWordWindow(language: language)
+            switch outcome {
+            case .matched:
+                // A command (ja/weiter / nein/verwerfen / später /
+                // nochmal / ändern) was already dispatched in the window.
+                break
+            case .timedOut:
+                // Silent → keep this note and move on, same as Weiter.
+                guard case .noteReview = self.state else { return }
+                await self.advance()
+            case .skipped:
+                // Window never opened (wake-word off / asset missing /
+                // permission denied) — leave the card for the buttons.
+                break
+            }
+        }
+    }
+
+    /// One-sentence summary of a note for the spoken prompt. Uses the
+    /// on-device LLM for longer transcripts; short transcripts are their
+    /// own summary, and an LLM failure falls back to the first sentence.
+    private func noteSummary(seed: DriveBySeed, language: OpenerLanguage) async -> String {
+        let transcript = seed.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !transcript.isEmpty else { return "" }
+        if transcript.count <= 80 { return transcript }
+        let llm = AppleFoundationLLM.shared
+        if await llm.isAvailable {
+            do {
+                return try await llm.summarizeNote(
+                    transcript: transcript, language: language.rawValue
+                )
+            } catch {
+                Log.app.warning(
+                    "note summary via FoundationModels failed: \(String(describing: error), privacy: .public)"
+                )
+            }
+        }
+        return Self.firstSentence(of: transcript)
+    }
+
+    /// Deterministic summary fallback: the first sentence, or a hard
+    /// length cap when the note is one long run-on.
+    private static func firstSentence(of text: String) -> String {
+        if let range = text.rangeOfCharacter(from: CharacterSet(charactersIn: ".!?")) {
+            let s = String(text[..<range.upperBound]).trimmingCharacters(in: .whitespaces)
+            if s.count >= 12 { return s }
+        }
+        if text.count <= 140 { return text }
+        let idx = text.index(text.startIndex, offsetBy: 140)
+        return String(text[..<idx]).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    /// Per-note spoken prompt, mirroring `speakCurrentTodoPrompt`'s shape:
+    /// optional "X von N" progress anchor + the summary + an include
+    /// question. German guillemets via escapes so the closing quote isn't
+    /// an ASCII " that would end the string literal.
+    private func composeNotePrompt(
+        index: Int,
+        total: Int,
+        summary: String,
+        language: OpenerLanguage
+    ) -> String {
+        let openQ = "\u{201E}"
+        let closeQ = "\u{201C}"
+        let pos: String = total > 1
+            ? (language == .de ? "\(index + 1) von \(total): " : "\(index + 1) of \(total): ")
+            : ""
+        switch language {
+        case .de:
+            if summary.isEmpty {
+                return "\(pos)Eine Notiz ohne Transkript. Soll ich sie aufnehmen?"
+            }
+            return "\(pos)Du hast notiert: \(openQ)\(summary)\(closeQ) Soll ich sie aufnehmen?"
+        case .en:
+            if summary.isEmpty {
+                return "\(pos)A note without a transcript. Should I include it?"
+            }
+            return "\(pos)You noted: \(openQ)\(summary)\(closeQ) Should I include it?"
+        }
+    }
+
+    /// Play the seed's original .m4a through the shared `notePlayer`.
+    /// Runs under the existing `.playAndRecord` session (the player has
+    /// `managesSession: false`) so the walkthrough's mic graph isn't
+    /// disturbed. Returns once playback finishes naturally (or fails to
+    /// start, or is stopped via `stopNotePlayback()`). Because it's the
+    /// same player the `NoteReviewCard` renders, the user can pause /
+    /// resume / scrub this read-aloud; the wake-word window only opens
+    /// once it plays through to the end.
+    private func playNoteAudio(seed: DriveBySeed) async {
+        stopNotePlayback()
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            notePlaybackContinuation = cont
+            notePlayer.onNaturalFinish = { [weak self] in
+                self?.finishNotePlayback()
+            }
+            notePlayer.toggle(url: seed.audio_file_url)
+            // `toggle` loads + plays synchronously; if the file failed to
+            // open it resets `activeURL` to nil. Resume right away so the
+            // caller doesn't hang waiting for audio that never started.
+            if notePlayer.activeURL != seed.audio_file_url {
+                Diag.log("note playback start FAILED seed=\(seed.seed_id)")
+                finishNotePlayback()
+            } else {
+                Diag.log("note playback start seed=\(seed.seed_id) dur=\(notePlayer.duration)s")
+            }
+        }
+    }
+
+    /// Natural-completion path (the player's finish hook). Clears the
+    /// hook and resumes the playback continuation if it hasn't already
+    /// been resumed by `stopNotePlayback()`.
+    private func finishNotePlayback() {
+        notePlayer.onNaturalFinish = nil
+        if let cont = notePlaybackContinuation {
+            notePlaybackContinuation = nil
+            cont.resume()
+        }
+    }
+
+    /// Cancel any in-flight note playback. Idempotent — safe to call
+    /// from cancel paths even when nothing is playing. Resumes the
+    /// continuation so `playNoteAudio`'s awaiter doesn't hang (a manual
+    /// `stop()` never triggers the natural-finish hook). The continuation
+    /// is niled first so a racing natural-finish can't double-resume.
+    private func stopNotePlayback() {
+        notePlayer.onNaturalFinish = nil
+        notePlayer.stop()
+        if let cont = notePlaybackContinuation {
+            notePlaybackContinuation = nil
+            cont.resume()
+        }
     }
 
     /// Closing question for the drive-by step: speaks "Willst du noch
@@ -842,16 +1099,20 @@ public final class WalkthroughCoordinator {
     ) -> String {
         guard !seeds.isEmpty else { return "" }
         let count = seeds.count
+        // Phrased as "we'll go through these now" rather than "I'll fold
+        // them into the entry" — the per-note review now lets the user
+        // drop / defer / re-record each one, so promising up-front that
+        // every note is kept would be wrong.
         switch language {
         case .de:
             switch count {
-            case 1: return "Du hast heute eine Notiz aufgenommen. Ich nehme sie mit in den Eintrag."
-            default: return "Du hast heute \(count) Notizen aufgenommen. Ich nehme sie mit in den Eintrag."
+            case 1: return "Du hast heute eine Notiz aufgenommen. Wir gehen sie nun durch:"
+            default: return "Du hast heute \(count) Notizen aufgenommen. Wir gehen diese nun durch:"
             }
         case .en:
             switch count {
-            case 1: return "You captured one note earlier. I'll fold it into the entry."
-            default: return "You captured \(count) notes earlier. I'll fold them into the entry."
+            case 1: return "You captured one note earlier. Let's go through it now:"
+            default: return "You captured \(count) notes earlier. Let's go through them now:"
             }
         }
     }
@@ -924,6 +1185,8 @@ public final class WalkthroughCoordinator {
             detector.feed(buffer)
         }
         segmentURLs[path] = url
+        segmentRecordingStartedAt = Date()
+        silenceRunStartedAt = nil
 
         let calRef = CalendarRef(
             graph_event_id: event.graph_event_id,
@@ -958,6 +1221,8 @@ public final class WalkthroughCoordinator {
             detector.feed(buffer)
         }
         segmentURLs[path] = url
+        segmentRecordingStartedAt = Date()
+        silenceRunStartedAt = nil
         let seg = GeneralSectionSegment(
             segment_id: segmentID,
             section_id: section.id,
@@ -985,6 +1250,8 @@ public final class WalkthroughCoordinator {
             detector.feed(buffer)
         }
         segmentURLs[path] = url
+        segmentRecordingStartedAt = Date()
+        silenceRunStartedAt = nil
         let seg = FreeReflectionSegment(
             segment_id: segmentID,
             audio_file: path,
@@ -1000,7 +1267,8 @@ public final class WalkthroughCoordinator {
         // per-note review are skipped here so they stay in the
         // unsurfaced pool for the next walkthrough.
         var surfaced: [String] = []
-        for seed in seeds where !deferredSeedIDs.contains(seed.seed_id) {
+        for seed in seeds where !deferredSeedIDs.contains(seed.seed_id)
+                             && !droppedSeedIDs.contains(seed.seed_id) {
             let copyName = "seed_\(sanitize(seed.seed_id)).m4a"
             let copyPath = "segments/\(copyName)"
             let copyURL = sessionDir.appending(path: copyPath)
@@ -1062,27 +1330,42 @@ public final class WalkthroughCoordinator {
             Log.audio.warning("walkthrough engine stop: \(String(describing: error), privacy: .public)")
         }
 
-        // Tail-trim the segment file if it was advanced by a wake-word
-        // match. We do this *before* spawning the finalise task so
-        // Parakeet sees the cleaned file. Server-side Whisper picks
-        // up the same trimmed audio at upload time. The trim runs
-        // synchronously on this code path because the file is small
-        // (a few minutes of AAC at 64 kbps) and the export-passthrough
+        // Trim the matched command word out of the segment file *before*
+        // spawning the finalise task, so Parakeet sees the cleaned file;
+        // server-side Whisper picks up the same trimmed audio at upload.
+        // The trim runs synchronously here because the file is small (a
+        // few minutes of AAC at 64 kbps) and the export-passthrough
         // preset just rewrites the moov atom.
+        //
+        // When the wake word landed during a silence run we know exactly
+        // where the user's reflection ended — the start of that run — so
+        // we keep only up to that point (`keepFirst`), dropping the
+        // trailing silence + ping + command. If that clean cut point was
+        // lost (`dropLast`) we fall back to a conservative fixed tail
+        // trim so the command never leaks, at the cost of possibly
+        // clipping a little real audio.
         if let segmentID = finishingSegmentID,
            let url = finishingURL,
-           wakeMatchedSegmentIDs.contains(segmentID) {
+           let trim = wakeMatchTrim[segmentID] {
             do {
-                try await AudioMerger.trimTail(of: url, removingLastSeconds: Self.wakeMatchTrimSeconds)
-                Log.audio.notice(
-                    "wake-word trim: \(segmentID, privacy: .public) (-\(Self.wakeMatchTrimSeconds)s)"
-                )
+                switch trim {
+                case .keepFirst(let keep):
+                    try await AudioMerger.trim(of: url, keepingFirstSeconds: keep)
+                    Log.audio.notice(
+                        "wake-word trim: \(segmentID, privacy: .public) keep=\(String(format: "%.1f", keep))s"
+                    )
+                case .dropLast(let drop):
+                    try await AudioMerger.trimTail(of: url, removingLastSeconds: drop)
+                    Log.audio.notice(
+                        "wake-word trim (fallback): \(segmentID, privacy: .public) -\(String(format: "%.1f", drop))s"
+                    )
+                }
             } catch {
                 Log.audio.warning(
                     "wake-word trim failed for \(segmentID, privacy: .public): \(String(describing: error), privacy: .public)"
                 )
             }
-            wakeMatchedSegmentIDs.remove(segmentID)
+            wakeMatchTrim.removeValue(forKey: segmentID)
         }
 
         if let segmentID = finishingSegmentID, let url = finishingURL {
@@ -1147,6 +1430,7 @@ public final class WalkthroughCoordinator {
                     candidates: candidates,
                     againstExplicit: todos,
                     forSegmentID: segmentID,
+                    transcriptText: sanitised,
                     transcriptLanguage: transcript.language
                 )
                 if !novel.isEmpty {
@@ -1229,9 +1513,13 @@ public final class WalkthroughCoordinator {
         // Mark surfaced seeds *now* so a successful enqueue doesn't leave
         // them in the unsurfaced pool — the upload itself retries with
         // exponential backoff and we don't want to re-surface across
-        // retries.
-        if !surfacedSeedIDs.isEmpty {
-            LocalStore.markSeedsSurfaced(ids: surfacedSeedIDs)
+        // retries. Dropped seeds (user said "verwerfen") are merged in
+        // here too: the manifest excludes them from the entry, but
+        // marking them surfaced stops them from reappearing on the
+        // next walkthrough. Their audio files stay on disk.
+        let toMarkSurfaced = Array(Set(surfacedSeedIDs).union(droppedSeedIDs))
+        if !toMarkSurfaced.isEmpty {
+            LocalStore.markSeedsSurfaced(ids: toMarkSurfaced)
         }
         await SessionUploader.shared.enqueue(
             manifest: manifest,
@@ -1265,11 +1553,21 @@ public final class WalkthroughCoordinator {
         step: Int,
         language: OpenerLanguage
     ) {
-        // Loop timing: 3 s → ping + wake-word window opens. 6 s → wake
-        // window closes (if still open) and the AI fires the follow-up
-        // remark (when the context wants one). 15 s → silence indicator
-        // updates. 20 s → auto-advance to the next step.
-        lullDetector.thresholds = [3, 6, 15, 20]
+        // Count silence from segment start, not just after the user's
+        // first words, so a user who stays completely silent still gets
+        // a voice path to move on (see `handleLull` case 15). The
+        // `hasHeardSpeech` checks in cases 3/6 preserve the old
+        // post-speech behaviour — and the SPEC §6.7 "3 s — thinking is
+        // fine" think-time — for the common case where the user does speak.
+        lullDetector.firePreSpeech = true
+        // Loop timing:
+        //   3 s  → wake-word window opens (post-speech only).
+        //   6 s  → wake window closes + AI follow-up (post-speech only).
+        //   15 s → silent users get the "soll ich weitermachen?" prompt
+        //          + wake window; users who spoke just see the status row.
+        //   24 s → auto-advance (gives the 15 s window room to run after
+        //          the spoken prompt before the step times out).
+        lullDetector.thresholds = [3, 6, 15, 24]
         lullDetector.start(
             onThresholdCrossed: { [weak self] threshold in
                 guard let self else { return }
@@ -1326,6 +1624,11 @@ public final class WalkthroughCoordinator {
     private func handleSpeechResumed() async {
         silenceLevel = 0
         statusHint = ""
+        // The reflection no longer ends at the prior silence-run start —
+        // the user is talking again. Drop the cut point so a later wake
+        // match (without a fresh lull) falls back to the safe tail trim
+        // instead of slicing off real speech.
+        silenceRunStartedAt = nil
         if let task = followUpTask {
             task.cancel()
             followUpTask = nil
@@ -1335,6 +1638,11 @@ public final class WalkthroughCoordinator {
     /// Per-silence-run loop, identical shape for every listening segment
     /// (events, generals, drive-by closer):
     ///
+    /// Two sub-loops depending on whether the user has spoken yet
+    /// (`lullDetector.hasHeardSpeech`). `firePreSpeech` makes the timer
+    /// run from segment start either way.
+    ///
+    /// Post-speech (user spoke, then paused — the common case):
     /// ```
     ///                       ┌── user speaks ──┐
     ///                       ▼                 │  resets all of below
@@ -1349,7 +1657,17 @@ public final class WalkthroughCoordinator {
     ///                                          │   `followUpUsed[segID]`) and
     ///                                          │   only when the context opts in
     ///   t=15  ── "Stille seit 15s" ──────────►│
-    ///   t=20  ── auto-advance to next step ───┘
+    ///   t=24  ── auto-advance to next step ───┘
+    /// ```
+    ///
+    /// Pre-speech (user silent since the opener):
+    /// ```
+    ///   t=3   ── suppressed (think-time, SPEC §6.7)
+    ///   t=6   ── suppressed
+    ///   t=15  ── AI: "soll ich weitermachen?" + wake-window opens
+    ///                 say "weiter"/"fertig" → advance
+    ///                 start talking         → switch to post-speech loop
+    ///   t=24  ── auto-advance to next step
     /// ```
     ///
     /// Earlier the wake-cancel + follow-up dispatch were both wrapped
@@ -1367,6 +1685,18 @@ public final class WalkthroughCoordinator {
         switch threshold {
 
         case 3:
+            // Post-speech wake window only. A user who hasn't spoken
+            // since the opener is given think-time here (SPEC §6.7:
+            // "3 s — thinking is fine") and gets a voice path at 15 s
+            // instead. Without this guard, `firePreSpeech` would pop the
+            // window the instant the opener ended.
+            guard lullDetector.hasHeardSpeech else {
+                Diag.log("lull case=3 suppressed — no speech yet (think-time)")
+                break
+            }
+            // Mark where the reflection ended (≈ now − 3 s) so a wake
+            // match can cut the trailing silence + command word cleanly.
+            silenceRunStartedAt = Date().addingTimeInterval(-Double(threshold))
             // Open the wake-word listen window. Spawned as a tracked
             // Task so handleLull returns promptly; the wake task
             // plays the ping, opens a streaming ASR, listens until
@@ -1384,6 +1714,13 @@ public final class WalkthroughCoordinator {
             }
 
         case 6:
+            // Silent users skip the follow-up entirely — their voice
+            // path is the 15 s prompt below, and case 3 never opened a
+            // window for them so there's nothing to close here.
+            guard lullDetector.hasHeardSpeech else {
+                Diag.log("lull case=6 suppressed — no speech yet")
+                break
+            }
             // Wake-window close decision: with headphones (or any non-
             // speaker output) we LEAVE the wake-word window open so the
             // user can interrupt the AI's follow-up question with
@@ -1427,14 +1764,35 @@ public final class WalkthroughCoordinator {
             }
 
         case 15:
-            // No coordinator-side action — the silence row's
-            // "Stille seit 15s" message is enough on its own.
-            break
+            // Spoke, then went quiet: the status row's "Stille seit 15s"
+            // message is enough on its own.
+            if lullDetector.hasHeardSpeech { break }
+            // Silent since the opener (SPEC §6.7): give a voice path to
+            // move on. Speak a short "soll ich weitermachen?" nudge, then
+            // open the standard wake window so "weiter"/"fertig" advances.
+            // Saying nothing falls through to the 24 s auto-advance;
+            // starting to talk resets into the normal post-speech loop.
+            // Count it as this segment's one AI prompt so the loop can't
+            // also fire a 6 s follow-up afterwards.
+            Diag.log("lull case=15 silent-path continue prompt + wake window")
+            followUpUsed[lullSegmentID(context, step: step)] = true
+            silenceRunStartedAt = Date().addingTimeInterval(-Double(threshold))
+            let promptLang = language
+            let promptStep = step
+            let promptContext = context
+            wakeWordTask?.cancel(); wakeWordTask = nil
+            wakeWordTask = Task { [weak self] in
+                await self?.speakContinuePromptThenListen(
+                    context: promptContext,
+                    step: promptStep,
+                    language: promptLang
+                )
+            }
 
-        case 20:
-            // The user has been silent for 20 s straight. Auto-advance
-            // to the next step — they're clearly done with this one.
-            Diag.log("lull case=20 auto-advance")
+        case 24:
+            // Silent for 24 s straight (or no response to the 15 s
+            // prompt). Auto-advance — they're clearly done with this one.
+            Diag.log("lull case=24 auto-advance")
             wakeWordTask?.cancel(); wakeWordTask = nil
             isWakeListening = false
             await advance(language: language)
@@ -1442,6 +1800,33 @@ public final class WalkthroughCoordinator {
         default:
             break
         }
+    }
+
+    /// Silent-path 15 s handler: speak the "soll ich weitermachen?"
+    /// prompt, then open a wake-word window. The shared `lullDetector`
+    /// keeps running underneath, so the three outcomes are all covered:
+    /// the user says "weiter"/"fertig" → the window advances; the user
+    /// starts a real reflection → `handleSpeechResumed` fires and the
+    /// normal post-speech loop takes over; the user stays silent → the
+    /// 24 s auto-advance closes the step. On built-in speaker the prompt
+    /// TTS bleeds into the open mic exactly as the 6 s follow-up already
+    /// does — same accepted trade-off, no AEC in this session.
+    private func speakContinuePromptThenListen(
+        context: LullStepContext,
+        step: Int,
+        language: OpenerLanguage
+    ) async {
+        guard isLullContextActive(context, step: step) else { return }
+        let prompt = OpenerTemplates.continuePrompt(language: language)
+        lastSpoken = prompt
+        recordAiPrompt(role: "continue_prompt",
+                       segmentID: currentRecordingSegmentID,
+                       text: prompt)
+        await speak(prompt, language: language.rawValue)
+        // Bail if the user advanced / cancelled / started talking while
+        // the prompt was synthesising or playing.
+        if Task.isCancelled || !isLullContextActive(context, step: step) { return }
+        await runWakeWordWindow(language: language)
     }
 
     /// True when the lull's 6 s branch should generate + speak a follow-up
@@ -1656,21 +2041,32 @@ public final class WalkthroughCoordinator {
         let candidate = pendingImplicitTodos[i]
         let lang = confirmationLanguage
         let total = pendingImplicitTodos.count
-        // Just state the candidate. The trailing "Ja, nein, oder anders?"
-        // was redundant — the listening loop opens the wake-word window
-        // 3 s after the prompt ends and the user can answer "ja" / "nein"
-        // / a refined version directly. The visual chrome (timer + status
-        // indicator + Weiter button) makes the affordance clear.
-        let line: String = total > 1
-            ? (lang == .de
-                ? "\(i + 1) von \(total): \(candidate.text)."
-                : "\(i + 1) of \(total): \(candidate.text).")
-            : "\(candidate.text)."
-        lastSpoken = line
+        // Frame as a question so the yes/no affordance is obvious from
+        // the spoken line alone. With multiple candidates the leading
+        // "1 von 3" anchor still helps the user track progress.
+        // `TodoAnswerParser` recognises both keyword answers (ja / nein
+        // / anders) and refinements ("nimm lieber X stattdessen").
+        // Use German low/high guillemets ( U+201E … U+201C ) so the
+        // closing quote isn't an ASCII " that would terminate the
+        // string literal mid-interpolation.
+        let openQ  = "\u{201E}"
+        let closeQ = "\u{201C}"
+        let body: String
+        switch lang {
+        case .de:
+            body = total > 1
+                ? "\(i + 1) von \(total): Soll ich \(openQ)\(candidate.text)\(closeQ) übernehmen?"
+                : "Soll ich \(openQ)\(candidate.text)\(closeQ) übernehmen?"
+        case .en:
+            body = total > 1
+                ? "\(i + 1) of \(total): Should I keep \(openQ)\(candidate.text)\(closeQ)?"
+                : "Should I keep \(openQ)\(candidate.text)\(closeQ)?"
+        }
+        lastSpoken = body
         recordAiPrompt(role: "todo_prompt",
                        segmentID: candidate.source_segment_id,
-                       text: line)
-        await speak(line, language: lang.rawValue)
+                       text: body)
+        await speak(body, language: lang.rawValue)
         await beginTodoAnswerCapture(forCandidateIndex: i)
     }
 
@@ -1903,16 +2299,34 @@ public final class WalkthroughCoordinator {
         candidates: [AppleFoundationLLM.ImplicitCandidate],
         againstExplicit explicit: [Todo],
         forSegmentID segmentID: String,
+        transcriptText: String,
         transcriptLanguage language: String
     ) -> [Todo] {
         var seen: Set<String> = []
         for t in explicit { seen.insert(normaliseTodoKey(t.text)) }
         for t in pendingImplicitTodos { seen.insert(normaliseTodoKey(t.text)) }
 
+        let transcriptLower = transcriptText.lowercased()
         var out: [Todo] = []
         for c in candidates {
             let key = normaliseTodoKey(c.text)
             guard !key.isEmpty, !seen.contains(key) else { continue }
+
+            // Drop candidates whose words aren't anywhere in the transcript:
+            // the German prompt's few-shot examples ("Stephan anrufen",
+            // "Deck an Carsten schicken") leak through the LLM verbatim
+            // when the real transcript doesn't fit the pattern. Token
+            // overlap on ≥4-char alphanumeric substrings is enough to
+            // catch that without rejecting legitimate paraphrases —
+            // German compound words mean a single matching token is a
+            // very strong signal.
+            if !Self.isGroundedInTranscript(c.text, transcriptLower: transcriptLower) {
+                Log.app.warning(
+                    "segment \(segmentID, privacy: .public): dropping ungrounded implicit candidate '\(c.text, privacy: .public)' — no meaningful token overlap with transcript (likely prompt-example hallucination)"
+                )
+                continue
+            }
+
             seen.insert(key)
             let due = TodoExtractor.parseDueDate(in: c.text, language: language)
             out.append(Todo(
@@ -1925,6 +2339,22 @@ public final class WalkthroughCoordinator {
             ))
         }
         return out
+    }
+
+    /// True when at least one ≥4-char alphanumeric token of `text` appears
+    /// as a substring in `transcriptLower` (which the caller has already
+    /// lower-cased). Substring rather than whole-token match so German
+    /// compound nouns like "Dokumentationsabstimmung" still ground a
+    /// candidate "Dokumentation abstimmen".
+    static func isGroundedInTranscript(_ text: String, transcriptLower: String) -> Bool {
+        let tokens = text
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 4 }
+        // No meaningful tokens to validate — give the candidate the
+        // benefit of the doubt rather than reject blindly.
+        guard !tokens.isEmpty else { return true }
+        return tokens.contains { transcriptLower.contains($0) }
     }
 
     private func normaliseTodoKey(_ s: String) -> String {
@@ -2037,6 +2467,112 @@ public final class WalkthroughCoordinator {
         return (seeds[seedIdx], seedIdx + 1, seeds.count)
     }
 
+    /// "Verwerfen" wake-word on the per-note review step. Drops the
+    /// current seed from this session's manifest AND marks it surfaced
+    /// so it doesn't re-appear in the next walkthrough. The audio file
+    /// itself is kept on disk — the user's recording isn't deleted by
+    /// a stray voice command. Advances to the next seed (or the
+    /// closing question) on completion.
+    public func dropCurrentNote(language: OpenerLanguage = .de) async {
+        guard !transitionInFlight else { return }
+        transitionInFlight = true
+        defer { transitionInFlight = false }
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        followUpTask?.cancel(); followUpTask = nil
+        stopNotePlayback()
+
+        guard case .noteReview(let stepIdx, let seedIdx) = state,
+              stepIdx >= 0, stepIdx < plan.count,
+              case .driveBy(let seeds) = plan[stepIdx],
+              seedIdx >= 0, seedIdx < seeds.count
+        else { return }
+
+        let dropped = seeds[seedIdx]
+        droppedSeedIDs.insert(dropped.seed_id)
+        Log.app.info("note dropped: \(dropped.seed_id, privacy: .public)")
+        recordAiPrompt(role: "note_dropped",
+                       segmentID: "s\(zeroPad(stepIdx + 1))",
+                       text: dropped.transcript)
+
+        interruptInFlight = true
+        await cancelTTS()
+        let next = seedIdx + 1
+        if next < seeds.count {
+            await runNoteReview(stepIndex: stepIdx, seedIndex: next,
+                                seeds: seeds, language: language)
+        } else {
+            await runDriveByClosing(stepIndex: stepIdx, seeds: seeds, language: language)
+        }
+    }
+
+    /// "Nochmal" / "Replay" wake-word on the per-note review step.
+    /// Re-plays the current seed's audio and re-opens the wake-word
+    /// window once playback completes. Same code path the AI runs the
+    /// first time a note is surfaced — kept as one method so the
+    /// timing logic stays in one place.
+    public func replayCurrentNote(language: OpenerLanguage = .de) async {
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        guard case .noteReview(let stepIdx, let seedIdx) = state,
+              stepIdx >= 0, stepIdx < plan.count,
+              case .driveBy(let seeds) = plan[stepIdx],
+              seedIdx >= 0, seedIdx < seeds.count
+        else { return }
+        await playNoteAndListen(seed: seeds[seedIdx], language: language)
+    }
+
+    /// "Ändern" / "Rerecord" wake-word on the per-note review step.
+    /// MVP: drops the original seed (so the user isn't stuck with an
+    /// outcome they explicitly rejected) and speaks a short hint
+    /// telling them to use the Aufnahme tab for the replacement. The
+    /// original audio file stays on disk, matching the `verwerfen`
+    /// "keep audio" semantics — so the user can always recover it.
+    /// In-walkthrough re-recording (start a fresh segment capture,
+    /// transcribe inline, splice the new seed back into the entry) is
+    /// out of scope here and tracked as a follow-up slice.
+    public func rerecordCurrentNote(language: OpenerLanguage = .de) async {
+        guard !transitionInFlight else { return }
+        transitionInFlight = true
+        defer { transitionInFlight = false }
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        followUpTask?.cancel(); followUpTask = nil
+        stopNotePlayback()
+
+        guard case .noteReview(let stepIdx, let seedIdx) = state,
+              stepIdx >= 0, stepIdx < plan.count,
+              case .driveBy(let seeds) = plan[stepIdx],
+              seedIdx >= 0, seedIdx < seeds.count
+        else { return }
+
+        let dropped = seeds[seedIdx]
+        droppedSeedIDs.insert(dropped.seed_id)
+        Log.app.info("note rerecord requested → seed \(dropped.seed_id, privacy: .public) dropped, user redirected to Aufnahme tab")
+        recordAiPrompt(role: "note_rerecord_requested",
+                       segmentID: "s\(zeroPad(stepIdx + 1))",
+                       text: dropped.transcript)
+
+        interruptInFlight = true
+        await cancelTTS()
+        let hint = language == .de
+            ? "Verworfen. Du kannst sie über den Aufnahme-Tab neu aufzeichnen."
+            : "Discarded. You can re-record it via the Aufnahme tab."
+        await speak(hint, language: language.rawValue)
+
+        // Re-enter runNoteReview only if state is still .noteReview —
+        // a parallel X tap or auto-advance during the TTS could have
+        // moved us already.
+        guard case .noteReview = state else { return }
+        let next = seedIdx + 1
+        if next < seeds.count {
+            await runNoteReview(stepIndex: stepIdx, seedIndex: next,
+                                seeds: seeds, language: language)
+        } else {
+            await runDriveByClosing(stepIndex: stepIdx, seeds: seeds, language: language)
+        }
+    }
+
     /// "Für später aufheben" on the per-note review card. Marks the
     /// current seed as deferred — it won't be attached to this
     /// walkthrough's manifest and won't be flagged surfaced, so the
@@ -2051,6 +2587,7 @@ public final class WalkthroughCoordinator {
         wakeWordTask?.cancel(); wakeWordTask = nil
         isWakeListening = false
         followUpTask?.cancel(); followUpTask = nil
+        stopNotePlayback()
 
         guard case .noteReview(let stepIdx, let seedIdx) = state,
               stepIdx >= 0, stepIdx < plan.count,
@@ -2325,18 +2862,16 @@ public final class WalkthroughCoordinator {
             guard !line.isEmpty else { return nil }
             let segID = "s\(zeroPad(stepIndex + 1))"
             return (segID, [SpokenSpan(text: line, language: language.rawValue)])
-        case .driveBy(let seeds):
+        case .driveBy:
+            // Prefetch only the closing prompt. The per-note recap
+            // intro ("Du hast heute N Notizen…") is spoken directly in
+            // `runNoteReview` at seed 0 via `speak()`; bundling it here
+            // too made `runDriveByClosing` replay it after the notes.
             let segID = "s\(zeroPad(stepIndex + 1))"
-            let intro = composeDriveByIntro(seeds: seeds, language: language)
             let closing = language == .de
                 ? "Willst du noch etwas zum ganzen Tag sagen?"
                 : "Anything else you want to say about the day overall?"
-            var spans: [SpokenSpan] = []
-            if !intro.isEmpty {
-                spans.append(SpokenSpan(text: intro, language: language.rawValue))
-            }
-            spans.append(SpokenSpan(text: closing, language: language.rawValue))
-            return (segID, spans)
+            return (segID, [SpokenSpan(text: closing, language: language.rawValue)])
         }
     }
 
@@ -2579,14 +3114,26 @@ public final class WalkthroughCoordinator {
     /// without one. Idempotent on cancellation: if the parent Task is
     /// cancelled mid-window the streaming ASR is torn down and the
     /// fan-out sink is cleared.
-    private func runWakeWordWindow(language: OpenerLanguage) async {
+    /// Outcome of one wake-word window. Lets callers (note review)
+    /// distinguish "the user stayed silent" (auto-advance) from "the
+    /// window never opened" (wake-word off / asset missing → leave the
+    /// card up for a manual Weiter) from "a command was matched and
+    /// already dispatched here" (do nothing further).
+    private enum WakeWindowOutcome {
+        case matched(WakeWordDetector.Action)
+        case timedOut
+        case skipped
+    }
+
+    @discardableResult
+    private func runWakeWordWindow(language: OpenerLanguage) async -> WakeWindowOutcome {
         // Don't keep the window open across a state change. If the
         // user already advanced manually (or the X tap moved us to
         // .idle) we just bail.
         guard isInListeningState else {
             Diag.log("wake-word: aborted, not in listening state")
             wakeWordTask = nil
-            return
+            return .skipped
         }
 
         // Two-gate pre-flight before we touch ASR or the UI indicator.
@@ -2605,12 +3152,12 @@ public final class WalkthroughCoordinator {
         guard WakeWordPreferences.isEnabled else {
             Diag.log("wake-word: skipped — user disabled in Settings")
             wakeWordTask = nil
-            return
+            return .skipped
         }
         guard AppleStreamingRecognizer.supportsOnDeviceRecognition(language: language.rawValue) else {
             Diag.log("wake-word: skipped — on-device asset not installed for \(language.rawValue)")
             wakeWordTask = nil
-            return
+            return .skipped
         }
 
         // Pick the backend by active language. The streaming Parakeet
@@ -2619,6 +3166,14 @@ public final class WalkthroughCoordinator {
         // NSSpeechRecognitionUsageDescription gates).
         let asr: any StreamingASR
         let phrases: [WakeWordDetector.Phrase]
+        // Note-review steps swap the base phrase table for the extended
+        // one (adds drop / defer / replay / rerecord). The base table
+        // stays for every other listening state so a "später" mid-
+        // meeting can't accidentally defer something.
+        let useNoteReviewPhrases: Bool = {
+            if case .noteReview = state { return true }
+            return false
+        }()
         switch language {
         case .de:
             // Pre-flight permission. The system caches the answer
@@ -2630,13 +3185,17 @@ public final class WalkthroughCoordinator {
             } catch {
                 Diag.log("wake-word: SFSpeech permission denied/unavailable — open Settings → Voice Diary → Speech Recognition. (\(String(describing: error)))")
                 wakeWordTask = nil
-                return
+                return .skipped
             }
             asr = AppleStreamingRecognizer()
-            phrases = WakeWordDetector.german
+            phrases = useNoteReviewPhrases
+                ? WakeWordDetector.germanNoteReview
+                : WakeWordDetector.german
         case .en:
             asr = FluidAudioStreaming()
-            phrases = WakeWordDetector.english
+            phrases = useNoteReviewPhrases
+                ? WakeWordDetector.englishNoteReview
+                : WakeWordDetector.english
         }
 
         // Match arrives via the detector's callback; we surface it as
@@ -2680,7 +3239,7 @@ public final class WalkthroughCoordinator {
             Diag.log("wake-word: ASR start failed: \(String(describing: error))")
             isWakeListening = false
             wakeWordTask = nil
-            return
+            return .skipped
         }
 
         // Hook the AudioEngine's third sink. Each PCM buffer arrives
@@ -2757,33 +3316,51 @@ public final class WalkthroughCoordinator {
             // talking over the silence. Fires *after* cancelling the
             // follow-up TTS so the pip doesn't overlap the AI's voice.
             await MainActor.run { WakePing.shared.playMatch() }
-            // Mark the active segment so `stopSegmentCapture` knows to
-            // tail-trim the audio file. The matched command word
-            // (`weiter` / `next` / etc.) was just spoken into the mic
-            // and is sitting at the end of the M4A; without the trim
-            // it would show up verbatim in both the client-side
-            // Parakeet transcript and the server-side Whisper output.
+            // Schedule the trim that keeps the matched command word
+            // (`weiter` / `next` / etc.) out of the segment's transcript.
+            // It was just spoken into the mic and is sitting at the end
+            // of the M4A; without the trim it would show up verbatim in
+            // both the client-side Parakeet transcript and the
+            // server-side Whisper output. Prefer a precise head-keep cut
+            // at the start of the silence run that preceded the command;
+            // fall back to a fixed tail trim if that run start was
+            // cleared (user resumed talking before saying the command).
             if let segID = currentRecordingSegmentID {
-                wakeMatchedSegmentIDs.insert(segID)
+                if let runStart = silenceRunStartedAt,
+                   let segStart = segmentRecordingStartedAt {
+                    let keep = max(0, runStart.timeIntervalSince(segStart)
+                                      + Self.wakeMatchKeepMarginSeconds)
+                    wakeMatchTrim[segID] = .keepFirst(keep)
+                } else {
+                    wakeMatchTrim[segID] = .dropLast(Self.wakeMatchFallbackTailSeconds)
+                }
             }
             switch action {
             case .advance:        await advance()
             case .finishSection:  await finishCurrentSection()
+            case .dropNote:       await dropCurrentNote()
+            case .deferNote:      await saveCurrentNoteForLater()
+            case .replayNote:     await replayCurrentNote()
+            case .rerecordNote:   await rerecordCurrentNote()
             }
+            return .matched(action)
         }
+        return .timedOut
     }
 
     /// True for any state where opening a wake-word window is
-    /// meaningful: the three listening segment-capture states, plus
-    /// the per-candidate todo-confirmation pass (`.confirmingTodos`).
-    /// In todo confirmation a "weiter" match routes through
-    /// `advance()` → `rejectCurrentTodo()`, so the same `WakeWordDetector`
-    /// pipeline does double duty as "skip this candidate".
-    /// Used by `runWakeWordWindow` as a pre-flight to bail if the
-    /// user already advanced before the lull callback fired.
+    /// meaningful: the three listening segment-capture states, the
+    /// per-candidate todo-confirmation pass (`.confirmingTodos`), and
+    /// the per-note review step (`.noteReview`). In todo confirmation
+    /// a "weiter" match routes through `advance()` → `rejectCurrentTodo()`;
+    /// in note review the extended phrase table also matches
+    /// drop / defer / replay / rerecord. Used by `runWakeWordWindow`
+    /// as a pre-flight to bail if the user already advanced before
+    /// the lull callback fired.
     private var isInListeningState: Bool {
         switch state {
-        case .eventListening, .generalListening, .driveByListening, .confirmingTodos:
+        case .eventListening, .generalListening, .driveByListening,
+             .confirmingTodos, .noteReview:
             return true
         default:
             return false

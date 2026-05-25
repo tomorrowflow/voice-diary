@@ -148,7 +148,17 @@ public enum SessionHistoryStore {
                 includingPropertiesForKeys: [.fileSizeKey],
                 options: [.skipsHiddenFiles]
             ))?
-                .filter { $0.pathExtension.lowercased() == "m4a" }
+                // Keep `*.m4a`, drop in-progress / orphaned temp files.
+                // The writer's current temp pattern is `{stem}.tmp.m4a`
+                // (trailing extension is `.m4a`, so the legacy
+                // `pathExtension == "m4a"` check would now include them).
+                // The legacy pattern `{stem}.m4a.tmp` is also still
+                // present in older containers. `M4AWriter.isOrphanTempURL`
+                // is the single source of truth for both rules.
+                .filter { url in
+                    url.pathExtension.lowercased() == "m4a"
+                        && !M4AWriter.isOrphanTempURL(url)
+                }
                 .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
 
             // Skip empty session dirs (interrupted before any segment).
@@ -303,6 +313,33 @@ public enum SessionHistoryStore {
         if let queue = try? LocalStore.uploadQueueFile() {
             freed += fileSize(at: queue)
             try? FileManager.default.removeItem(at: queue)
+        }
+        return freed
+    }
+
+    /// Remove every walkthrough session directory (manifest + segments),
+    /// leaving drive-by seeds and the upload-queue file alone. Backs the
+    /// danger-zone "delete all sessions" swipe. Returns bytes freed; the
+    /// caller is expected to `purgeOrphans()` the upload queue afterwards.
+    @discardableResult
+    public static func deleteAllWalkthroughs() -> Int64 {
+        var freed: Int64 = 0
+        for w in loadWalkthroughs() {
+            freed += directorySize(at: w.directory)
+            try? FileManager.default.removeItem(at: w.directory)
+        }
+        return freed
+    }
+
+    /// Remove every drive-by seed directory (audio + metadata), leaving
+    /// walkthrough sessions and the upload-queue file alone. Backs the
+    /// danger-zone "delete all notes" swipe. Returns bytes freed.
+    @discardableResult
+    public static func deleteAllDriveBys() -> Int64 {
+        var freed: Int64 = 0
+        for d in loadDriveBys() {
+            freed += directorySize(at: d.directory)
+            try? FileManager.default.removeItem(at: d.directory)
         }
         return freed
     }
