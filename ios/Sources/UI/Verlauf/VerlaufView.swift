@@ -56,7 +56,9 @@ public struct VerlaufView: View {
             }
         }
         .navigationBarHidden(true)
-        .task { reload() }
+        // `.onAppear` (not `.task`) so the list re-scans when the user
+        // pops back from a detail page after deleting that entry there.
+        .onAppear { reload() }
         .refreshable { reload() }
     }
 
@@ -274,13 +276,15 @@ private struct VerlaufRow: View {
 struct VerlaufDetailView: View {
     let item: SessionHistoryStore.Item
 
+    @Environment(\.dismiss) private var dismiss
     @State private var shareURL: URL?
     @State private var isPreparing: Bool = false
     @State private var prepareError: String?
     @State private var showShare: Bool = false
     @State private var serverStatus: ServerClient.SessionStatusResponse?
     @State private var serverStatusFetched: Bool = false
-    @StateObject private var player = SegmentPlayer()
+    @State private var player = SegmentPlayer()
+    @State private var showDeleteConfirm: Bool = false
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -316,6 +320,17 @@ struct VerlaufDetailView: View {
             VStack {
                 Spacer()
                 BottomActionStack {
+                    // Secondary (top): delete this single entry. Lives
+                    // here so per-item deletion is reachable while
+                    // viewing the entry; the Gefahrenzone only does bulk.
+                    Button(role: .destructive) {
+                        showDeleteConfirm = true
+                    } label: {
+                        Label(deleteButtonTitle, systemImage: "trash")
+                    }
+                    .buttonStyle(.dsDestructive(size: .md, fullWidth: true))
+                    .disabled(isPreparing)
+
                     Button(action: prepareAndShare) {
                         if isPreparing {
                             HStack(spacing: Theme.spacing.xs) {
@@ -340,8 +355,38 @@ struct VerlaufDetailView: View {
                 ShareSheet(items: [url])
             }
         }
+        .confirmationDialog(
+            deleteButtonTitle,
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Endgültig löschen", role: .destructive) { deleteEntry() }
+            Button("Abbrechen", role: .cancel) {}
+        } message: {
+            Text("Diese Aufnahme wird vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden.")
+        }
         .task { await loadServerStatus() }
         .onDisappear { player.stop() }
+    }
+
+    private var deleteButtonTitle: String {
+        switch item {
+        case .walkthrough: return "Sitzung löschen"
+        case .driveBy:     return "Notiz löschen"
+        }
+    }
+
+    /// Delete this entry's on-disk artifacts, drop any orphaned upload,
+    /// stop playback, and pop back to the list (which re-scans onAppear).
+    private func deleteEntry() {
+        player.stop()
+        do {
+            try SessionHistoryStore.delete(item)
+            Task { _ = await SessionUploader.shared.purgeOrphans() }
+            dismiss()
+        } catch {
+            prepareError = "Löschen fehlgeschlagen: \(error.localizedDescription)"
+        }
     }
 
     private func loadServerStatus() async {
@@ -564,11 +609,7 @@ struct VerlaufDetailView: View {
 
                 VStack(spacing: Theme.spacing.sm) {
                     ForEach(entries, id: \.seed.seed_id) { e in
-                        NoteRow(
-                            entry: e,
-                            isPlaying: player.playingURL == e.audioURL,
-                            onTogglePlay: { player.toggle(url: e.audioURL) }
-                        )
+                        NoteRow(entry: e, player: player)
                     }
                 }
             }
@@ -613,13 +654,7 @@ struct VerlaufDetailView: View {
 
                 VStack(spacing: Theme.spacing.sm) {
                     ForEach(descriptors) { d in
-                        SegmentRow(
-                            descriptor: d,
-                            isPlaying: player.playingURL == d.audioURL,
-                            onTogglePlay: {
-                                if let url = d.audioURL { player.toggle(url: url) }
-                            }
-                        )
+                        SegmentRow(descriptor: d, player: player)
                     }
                 }
             }
@@ -876,6 +911,83 @@ private struct StatTile: View {
     }
 }
 
+// MARK: - Playback scrubber
+
+/// Voice-memo-style transport for the active row: a draggable knob on a
+/// track plus elapsed / total time labels. Reads the live position from
+/// the shared `SegmentPlayer`; tap or drag anywhere on the track seeks.
+/// Only the active row mounts one, so only it re-renders on each tick.
+struct PlaybackScrubber: View {
+    let player: SegmentPlayer
+    let tint: Color
+
+    /// Knob position as a 0…1 fraction while the user is dragging; `nil`
+    /// when not dragging, so the view follows the player instead.
+    @State private var dragFraction: Double?
+
+    private let knob: CGFloat = 14
+    private let trackHeight: CGFloat = 4
+
+    var body: some View {
+        let duration = player.duration
+        let positionFraction = dragFraction
+            ?? (duration > 0 ? player.currentTime / duration : 0)
+        let fraction = min(max(positionFraction, 0), 1)
+        let displayTime = duration > 0 ? fraction * duration : 0
+
+        VStack(spacing: 6) {
+            GeometryReader { geo in
+                let usable = max(geo.size.width - knob, 1)
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Theme.color.border.subdued)
+                        .frame(height: trackHeight)
+                    Capsule()
+                        .fill(tint)
+                        .frame(width: knob / 2 + usable * fraction, height: trackHeight)
+                    Circle()
+                        .fill(tint)
+                        .frame(width: knob, height: knob)
+                        .shadow(color: Color.black.opacity(0.18), radius: 1.5, y: 0.5)
+                        .offset(x: usable * fraction)
+                }
+                .frame(maxHeight: .infinity, alignment: .center)
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            // First change event of this drag → pause so
+                            // playback doesn't run on while the user scrubs.
+                            if dragFraction == nil { player.beginScrubbing() }
+                            dragFraction = fractionFor(x: value.location.x, usable: usable)
+                        }
+                        .onEnded { value in
+                            let f = fractionFor(x: value.location.x, usable: usable)
+                            dragFraction = nil
+                            player.endScrubbing(to: f * duration)
+                        }
+                )
+            }
+            .frame(height: max(knob, 24))
+
+            HStack {
+                Text(SegmentPlayer.formatDuration(displayTime))
+                Spacer()
+                Text(SegmentPlayer.formatDuration(duration))
+            }
+            .font(Theme.font.caption)
+            .foregroundStyle(Theme.color.text.subdued)
+            .monospacedDigit()
+        }
+        // A zero-length file can't be scrubbed; keep the row inert.
+        .disabled(duration <= 0)
+    }
+
+    private func fractionFor(x: CGFloat, usable: CGFloat) -> Double {
+        Double(min(max((x - knob / 2) / usable, 0), 1))
+    }
+}
+
 // MARK: - Segment row
 
 struct SegmentDescriptor: Identifiable {
@@ -894,10 +1006,14 @@ struct SegmentDescriptor: Identifiable {
 
 private struct SegmentRow: View {
     let descriptor: SegmentDescriptor
-    let isPlaying: Bool
-    let onTogglePlay: () -> Void
+    let player: SegmentPlayer
 
     @State private var duration: TimeInterval?
+
+    private var isActive: Bool {
+        descriptor.audioURL != nil && player.activeURL == descriptor.audioURL
+    }
+    private var isPlaying: Bool { isActive && player.isPlaying }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.sm) {
@@ -909,18 +1025,21 @@ private struct SegmentRow: View {
                         .font(Theme.font.body.weight(.medium))
                         .foregroundStyle(Theme.color.text.primary)
                         .lineLimit(2)
+                    // The active row's scrubber already shows the
+                    // current/total time, so the static duration would
+                    // be redundant there — drop it while active.
                     HStack(spacing: Theme.spacing.xs) {
                         if let subtitle = descriptor.subtitle {
                             Text(subtitle)
                                 .font(Theme.font.caption)
                                 .foregroundStyle(Theme.color.text.subdued)
                         }
-                        if descriptor.subtitle != nil, duration != nil {
+                        if !isActive, descriptor.subtitle != nil, duration != nil {
                             Text("·")
                                 .font(Theme.font.caption)
                                 .foregroundStyle(Theme.color.text.subdued)
                         }
-                        if let duration {
+                        if !isActive, let duration {
                             Text(SegmentPlayer.formatDuration(duration))
                                 .font(Theme.font.caption)
                                 .foregroundStyle(Theme.color.text.subdued)
@@ -934,6 +1053,10 @@ private struct SegmentRow: View {
                 if let status = descriptor.serverStatus {
                     statusPill(for: status)
                 }
+            }
+
+            if isActive {
+                PlaybackScrubber(player: player, tint: Theme.color.text.link)
             }
 
             if !descriptor.transcript.isEmpty {
@@ -961,7 +1084,9 @@ private struct SegmentRow: View {
     }
 
     private var playButton: some View {
-        Button(action: onTogglePlay) {
+        Button {
+            if let url = descriptor.audioURL { player.toggle(url: url) }
+        } label: {
             ZStack {
                 Circle()
                     .fill(Theme.color.tint.link10)
@@ -1039,15 +1164,19 @@ struct SurfacedNoteEntry: Sendable {
 /// with the seed's capture time instead of an event title.
 private struct NoteRow: View {
     let entry: SurfacedNoteEntry
-    let isPlaying: Bool
-    let onTogglePlay: () -> Void
+    let player: SegmentPlayer
 
     @State private var duration: TimeInterval?
+
+    private var isActive: Bool { player.activeURL == entry.audioURL }
+    private var isPlaying: Bool { isActive && player.isPlaying }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.sm) {
             HStack(alignment: .top, spacing: Theme.spacing.sm) {
-                Button(action: onTogglePlay) {
+                Button {
+                    player.toggle(url: entry.audioURL)
+                } label: {
                     ZStack {
                         Circle()
                             .fill(Theme.color.tint.warning10)
@@ -1065,7 +1194,9 @@ private struct NoteRow: View {
                         .font(Theme.font.body.weight(.medium))
                         .foregroundStyle(Theme.color.text.primary)
                         .monospacedDigit()
-                    if let duration {
+                    // Hide the static duration on the active row — the
+                    // scrubber below carries current/total time instead.
+                    if !isActive, let duration {
                         Text(SegmentPlayer.formatDuration(duration))
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
@@ -1074,6 +1205,10 @@ private struct NoteRow: View {
                 }
 
                 Spacer(minLength: Theme.spacing.xs)
+            }
+
+            if isActive {
+                PlaybackScrubber(player: player, tint: Theme.color.status.warning)
             }
 
             if !entry.seed.transcript.isEmpty {

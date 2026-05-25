@@ -57,6 +57,57 @@ public enum AudioMerger {
         try FileManager.default.moveItem(at: scratch, to: url)
     }
 
+    /// Minimum audio (s) to leave behind when keeping only the head of a
+    /// file, so a fully-silent segment still produces a valid M4A rather
+    /// than a deleted file the upload bundle would reference but not find.
+    /// A silent clip transcribes to nothing, which is the correct outcome.
+    private static let headKeepFloorSeconds: TimeInterval = 0.3
+
+    /// Truncate `url` so only the first `seconds` of audio remain.
+    ///
+    /// Used by the wake-word path when we know exactly where the user's
+    /// reflection ended — the moment the silence run that preceded the
+    /// command word began. Everything after that point (trailing silence,
+    /// the listen-open ping, and the spoken command itself) is dropped.
+    /// Unlike `trimTail`, this never deletes the file: a near-zero keep is
+    /// clamped to a short floor so the resulting M4A stays valid for both
+    /// client-side Parakeet and server-side Whisper.
+    public static func trim(
+        of url: URL,
+        keepingFirstSeconds seconds: TimeInterval
+    ) async throws {
+        let asset = AVURLAsset(url: url)
+        let totalDuration = try await asset.load(.duration)
+        let totalSeconds = CMTimeGetSeconds(totalDuration)
+        let keep = min(max(seconds, headKeepFloorSeconds), totalSeconds)
+        // Nothing meaningful to cut — the command word didn't make it
+        // into the file, or the file is already shorter than the keep.
+        if keep >= totalSeconds - 0.05 { return }
+        let keepDuration = CMTime(seconds: keep, preferredTimescale: 600)
+        let timeRange = CMTimeRange(start: .zero, duration: keepDuration)
+
+        let scratch = url
+            .deletingPathExtension()
+            .appendingPathExtension("trimmed.m4a")
+        if FileManager.default.fileExists(atPath: scratch.path) {
+            try FileManager.default.removeItem(at: scratch)
+        }
+
+        guard let exporter = AVAssetExportSession(
+            asset: asset,
+            presetName: AVAssetExportPresetPassthrough
+        ) else {
+            throw MergeError.exportFailed("could not create exporter for head keep")
+        }
+        exporter.outputURL = scratch
+        exporter.outputFileType = .m4a
+        exporter.timeRange = timeRange
+        try await exporter.export(to: scratch, as: .m4a)
+
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.moveItem(at: scratch, to: url)
+    }
+
     public enum MergeError: Error, LocalizedError {
         case emptyInput
         case missingTrack(URL)

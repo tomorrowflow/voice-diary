@@ -1,31 +1,86 @@
 import SwiftUI
 
-/// "Gefahrenzone" — local-data management. Shows per-category disk
-/// usage and two destructive actions:
+/// "Gefahrenzone" — local-data management. Everything here is bulk and
+/// destructive (per-item deletion lives on the Verlauf detail page):
 ///
-///   * **Älter als 30 Tage entfernen** — removes sessions + seeds
-///     whose capture date is before the cutoff. Queued sessions are
-///     skipped so an in-flight upload isn't orphaned.
-///   * **Alle lokalen Daten löschen** — wipes both audio directories
-///     and the surfaced-seed index. Refuses when the upload queue is
-///     non-empty (the user has to flush first via Verlauf / queue
-///     retry) so we never delete audio referenced by a pending upload.
+///   * **Per-category swipe** — swipe a storage row left to delete *all*
+///     sessions, *all* notes, or the *entire* upload queue at once. Each
+///     swipe asks for confirmation first.
+///   * **Älter als 30 Tage entfernen** — removes sessions + seeds whose
+///     capture date is before the cutoff. Queued sessions are skipped so
+///     an in-flight upload isn't orphaned.
+///   * **Alle lokalen Daten löschen** — wipes both audio directories, the
+///     surfaced-seed index, and the upload queue.
 ///
 /// Server-side data (LightRAG, Postgres, the diary entries themselves)
 /// is **not** touched by anything on this screen.
-/// Identifies which destructive action the user has tapped but not
-/// yet confirmed. Used to drive a single `.alert` modifier — stacking
-/// two `.alert` modifiers on the same view is a long-standing SwiftUI
-/// gotcha (the second one shadows the first) which is why an earlier
-/// version of this screen sometimes appeared to skip the confirmation
-/// for one of the buttons.
+
+/// A swipeable storage category. Drives both the rows and the
+/// confirmation alert.
+private enum Category: String, Identifiable {
+    case sessions, notes, queue
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .sessions: return "Sitzungen"
+        case .notes:    return "Notizen"
+        case .queue:    return "Upload-Queue"
+        }
+    }
+    var icon: String {
+        switch self {
+        case .sessions: return "calendar.day.timeline.left"
+        case .notes:    return "waveform"
+        case .queue:    return "arrow.up.circle"
+        }
+    }
+    func count(_ s: SessionHistoryStore.StorageSnapshot) -> Int {
+        switch self {
+        case .sessions: return s.walkthroughs.count
+        case .notes:    return s.driveBys.count
+        case .queue:    return s.queueCount
+        }
+    }
+    func bytes(_ s: SessionHistoryStore.StorageSnapshot) -> Int64 {
+        switch self {
+        case .sessions: return s.walkthroughs.totalBytes
+        case .notes:    return s.driveBys.totalBytes
+        case .queue:    return s.queueBytes
+        }
+    }
+    var confirmTitle: String {
+        switch self {
+        case .sessions: return "Alle Sitzungen löschen?"
+        case .notes:    return "Alle Notizen löschen?"
+        case .queue:    return "Upload-Queue leeren?"
+        }
+    }
+    func confirmMessage(count: Int) -> String {
+        switch self {
+        case .sessions:
+            return "\(count) Sitzung(en) werden vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden."
+        case .notes:
+            return "\(count) Notiz(en) werden vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden."
+        case .queue:
+            return "\(count) ausstehende(r) Upload(s) werden abgebrochen. Die zugehörigen Aufnahmen bleiben unter Sitzungen / Notizen erhalten."
+        }
+    }
+}
+
+/// Identifies which destructive action the user has tapped but not yet
+/// confirmed. Drives a single `.alert` modifier — stacking two `.alert`
+/// modifiers on the same view is a long-standing SwiftUI gotcha (the
+/// second shadows the first).
 private enum PendingDeletion: Identifiable {
+    case category(Category)
     case partial
     case nuke
     var id: String {
         switch self {
-        case .partial: return "partial"
-        case .nuke:    return "nuke"
+        case .category(let c): return "cat:" + c.rawValue
+        case .partial:         return "partial"
+        case .nuke:            return "nuke"
         }
     }
 }
@@ -55,26 +110,39 @@ public struct DangerZoneView: View {
             VStack(spacing: 0) {
                 FlowHeader(title: "Gefahrenzone")
 
-                ScrollView {
-                    VStack(spacing: Theme.spacing.md) {
-                        scopeCard
-                        volumeCard
-                        partialDeleteCard
-                        nukeCard
-                        if let infoMessage {
-                            infoCard(infoMessage)
+                List {
+                    cardRow { scopeCard }
+
+                    Section {
+                        ForEach([Category.sessions, .notes, .queue]) { cat in
+                            categoryRow(cat)
                         }
+                        totalRow
+                    } header: {
+                        Text("Speicher · nach links wischen zum Löschen")
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                            .textCase(nil)
                     }
-                    .padding(.horizontal, Theme.spacing.md)
-                    .padding(.vertical, Theme.spacing.md)
+
+                    cardRow { partialDeleteCard }
+                    cardRow { nukeCard }
+
+                    if let infoMessage {
+                        cardRow { infoCard(infoMessage) }
+                    }
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
             }
         }
         .navigationBarHidden(true)
-        .task { await refresh() }
-        // Single alert driven by `pendingDeletion`. Title + message
-        // vary per case so the user sees what's about to be removed
-        // *before* the destructive button is enabled.
+        // `.onAppear` (not `.task`) so the counts re-scan when the user
+        // returns to the screen after a delete elsewhere.
+        .onAppear { Task { await refresh() } }
+        // Single alert driven by `pendingDeletion`. Title + message vary
+        // per case so the user sees what's about to be removed *before*
+        // the destructive button is enabled.
         .alert(
             alertTitle,
             isPresented: alertIsPresentedBinding,
@@ -86,8 +154,9 @@ public struct DangerZoneView: View {
             Button("Endgültig löschen", role: .destructive) {
                 Task {
                     switch action {
-                    case .partial: await runPartial()
-                    case .nuke:    await runNuke()
+                    case .category(let c): await runCategory(c)
+                    case .partial:         await runPartial()
+                    case .nuke:            await runNuke()
                     }
                     pendingDeletion = nil
                 }
@@ -99,9 +168,9 @@ public struct DangerZoneView: View {
 
     // MARK: - Alert wiring
 
-    /// SwiftUI's `.alert(_:isPresented:presenting:…)` form needs a
-    /// `Bool` binding alongside the value. Map the optional enum to a
-    /// bool so the alert closes when either button is tapped.
+    /// SwiftUI's `.alert(_:isPresented:presenting:…)` form needs a `Bool`
+    /// binding alongside the value. Map the optional enum to a bool so
+    /// the alert closes when either button is tapped.
     private var alertIsPresentedBinding: Binding<Bool> {
         Binding(
             get: { pendingDeletion != nil },
@@ -113,14 +182,18 @@ public struct DangerZoneView: View {
 
     private var alertTitle: String {
         switch pendingDeletion {
-        case .partial: return "Älter als 30 Tage entfernen?"
-        case .nuke:    return "Alle lokalen Daten löschen?"
-        case .none:    return ""
+        case .category(let c): return c.confirmTitle
+        case .partial:         return "Älter als 30 Tage entfernen?"
+        case .nuke:            return "Alle lokalen Daten löschen?"
+        case .none:            return ""
         }
     }
 
     private func alertMessage(for action: PendingDeletion) -> String {
         switch action {
+        case .category(let c):
+            let count = snapshot.map(c.count) ?? 0
+            return c.confirmMessage(count: count)
         case .partial:
             return partialAlertMessage
         case .nuke:
@@ -129,6 +202,74 @@ public struct DangerZoneView: View {
             }
             return "Sitzungen, Notizen und der Surfaced-Index werden vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden."
         }
+    }
+
+    // MARK: - Rows
+
+    /// Wrap a card view as a chrome-free list row so the existing card
+    /// styling survives the move from `ScrollView` to `List`.
+    @ViewBuilder
+    private func cardRow<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: 6, leading: Theme.spacing.md,
+                                      bottom: 6, trailing: Theme.spacing.md))
+    }
+
+    /// One storage category, swipe-left to bulk-delete (with a
+    /// confirmation alert). The swipe button is omitted when the category
+    /// is already empty, and full-swipe is disabled so a stray gesture
+    /// can't wipe a whole category without the deliberate tap + confirm.
+    private func categoryRow(_ cat: Category) -> some View {
+        let count = snapshot.map(cat.count) ?? 0
+        let bytes = snapshot.map(cat.bytes) ?? 0
+        return HStack(spacing: Theme.spacing.sm) {
+            Image(systemName: cat.icon)
+                .font(.body)
+                .foregroundStyle(Theme.color.text.secondary)
+                .frame(width: 26)
+            Text(cat.title)
+                .font(Theme.font.body)
+                .foregroundStyle(Theme.color.text.primary)
+            Spacer()
+            Text("\(count)")
+                .font(Theme.font.caption)
+                .foregroundStyle(Theme.color.text.subdued)
+                .monospacedDigit()
+            Text(byteFormatter.string(fromByteCount: bytes))
+                .font(Theme.font.monoCaption)
+                .foregroundStyle(Theme.color.text.subdued)
+                .monospacedDigit()
+        }
+        .listRowBackground(Theme.color.bg.surface)
+        .listRowInsets(EdgeInsets(top: 12, leading: Theme.spacing.md,
+                                  bottom: 12, trailing: Theme.spacing.md))
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if count > 0 && !isWorking {
+                Button(role: .destructive) {
+                    pendingDeletion = .category(cat)
+                } label: {
+                    Label("Alle löschen", systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    private var totalRow: some View {
+        HStack {
+            Text("Gesamt")
+                .font(Theme.font.body.weight(.semibold))
+                .foregroundStyle(Theme.color.text.primary)
+            Spacer()
+            Text(byteFormatter.string(fromByteCount: snapshot?.totalBytes ?? 0))
+                .font(Theme.font.monoBody.weight(.semibold))
+                .foregroundStyle(Theme.color.text.primary)
+                .monospacedDigit()
+        }
+        .listRowBackground(Theme.color.bg.surface)
+        .listRowInsets(EdgeInsets(top: 12, leading: Theme.spacing.md,
+                                  bottom: 12, trailing: Theme.spacing.md))
     }
 
     // MARK: - Cards
@@ -145,7 +286,7 @@ public struct DangerZoneView: View {
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
             }
-            Text("Diese Aktionen entfernen ausschließlich Daten auf diesem iPhone (Audio-Aufnahmen, Notizen, Upload-Queue). Tagebucheinträge auf deinem Server bleiben erhalten.")
+            Text("Diese Aktionen entfernen ausschließlich Daten auf diesem iPhone (Audio-Aufnahmen, Notizen, Upload-Queue). Tagebucheinträge auf deinem Server bleiben erhalten. Einzelne Einträge löschst du im Verlauf.")
                 .font(Theme.font.caption)
                 .foregroundStyle(Theme.color.text.subdued)
                 .fixedSize(horizontal: false, vertical: true)
@@ -160,117 +301,6 @@ public struct DangerZoneView: View {
             RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
                 .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
         )
-    }
-
-    private var volumeCard: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
-            HStack(spacing: Theme.spacing.sm) {
-                Image(systemName: "internaldrive")
-                    .font(.title3)
-                    .foregroundStyle(Theme.color.text.primary)
-                    .frame(width: 28)
-                Text("Speicher-Übersicht")
-                    .font(Theme.font.headline)
-                    .foregroundStyle(Theme.color.text.primary)
-                Spacer()
-            }
-
-            if let snap = snapshot {
-                // Grid keeps the three columns (label / count / bytes)
-                // aligned across rows. Without it, each HStack sizes
-                // independently and the bytes column drifts whenever a
-                // value crosses a digit boundary or wraps to a second
-                // line.
-                Grid(alignment: .leadingFirstTextBaseline,
-                     horizontalSpacing: Theme.spacing.sm,
-                     verticalSpacing: Theme.spacing.sm) {
-                    statRow(label: "Sitzungen",
-                            count: snap.walkthroughs.count,
-                            countLabel: "Sitzungen",
-                            bytes: snap.walkthroughs.totalBytes)
-                    GridRow {
-                        Divider().background(Theme.color.border.subdued)
-                            .gridCellColumns(3)
-                    }
-                    statRow(label: "Notizen",
-                            count: snap.driveBys.count,
-                            countLabel: "Stück",
-                            bytes: snap.driveBys.totalBytes)
-                    GridRow {
-                        Divider().background(Theme.color.border.subdued)
-                            .gridCellColumns(3)
-                    }
-                    statRow(label: "Upload-Queue",
-                            count: snap.queueCount,
-                            countLabel: "Einträge",
-                            bytes: snap.queueBytes)
-                    GridRow {
-                        Divider().background(Theme.color.border.subdued)
-                            .gridCellColumns(3)
-                    }
-                    GridRow {
-                        Text("Gesamt")
-                            .font(Theme.font.body.weight(.semibold))
-                            .foregroundStyle(Theme.color.text.primary)
-                        Color.clear.frame(height: 1)
-                        Text(byteFormatter.string(fromByteCount: snap.totalBytes))
-                            .font(Theme.font.monoBody.weight(.semibold))
-                            .foregroundStyle(Theme.color.text.primary)
-                            .monospacedDigit()
-                            .lineLimit(1)
-                            .fixedSize()
-                            .gridColumnAlignment(.trailing)
-                    }
-                }
-            } else {
-                HStack(spacing: Theme.spacing.xs) {
-                    ProgressView().controlSize(.small)
-                    Text("Wird berechnet…")
-                        .font(Theme.font.caption)
-                        .foregroundStyle(Theme.color.text.subdued)
-                }
-            }
-        }
-        .padding(Theme.spacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
-    }
-
-    /// One row inside the `Grid` of the volume card. Returns a
-    /// `GridRow` so the column widths stay consistent across rows.
-    private func statRow(
-        label: String,
-        count: Int,
-        countLabel: String,
-        bytes: Int64
-    ) -> some View {
-        GridRow {
-            Text(label)
-                .font(Theme.font.body)
-                .foregroundStyle(Theme.color.text.primary)
-                .gridColumnAlignment(.leading)
-            Text("\(count) \(countLabel)")
-                .font(Theme.font.caption)
-                .foregroundStyle(Theme.color.text.subdued)
-                .monospacedDigit()
-                .lineLimit(1)
-                .fixedSize()
-                .gridColumnAlignment(.trailing)
-            Text(byteFormatter.string(fromByteCount: bytes))
-                .font(Theme.font.monoBody)
-                .foregroundStyle(Theme.color.text.primary)
-                .monospacedDigit()
-                .lineLimit(1)
-                .fixedSize()
-                .gridColumnAlignment(.trailing)
-        }
     }
 
     private var partialDeleteCard: some View {
@@ -386,6 +416,29 @@ public struct DangerZoneView: View {
         snapshot = snap
         queueCount = pending.count
         queuedSessionIDs = Set(pending.map(\.id))
+    }
+
+    private func runCategory(_ cat: Category) async {
+        isWorking = true
+        defer { isWorking = false }
+        switch cat {
+        case .sessions:
+            let freed = await Task.detached(priority: .userInitiated) {
+                SessionHistoryStore.deleteAllWalkthroughs()
+            }.value
+            _ = await SessionUploader.shared.purgeOrphans()
+            infoMessage = "\(byteFormatter.string(fromByteCount: freed)) wurden freigegeben."
+        case .notes:
+            let freed = await Task.detached(priority: .userInitiated) {
+                SessionHistoryStore.deleteAllDriveBys()
+            }.value
+            _ = await SessionUploader.shared.purgeOrphans()
+            infoMessage = "\(byteFormatter.string(fromByteCount: freed)) wurden freigegeben."
+        case .queue:
+            await SessionUploader.shared.clear()
+            infoMessage = "Upload-Queue geleert."
+        }
+        await refresh()
     }
 
     private func runPartial() async {

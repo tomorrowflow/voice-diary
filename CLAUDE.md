@@ -244,7 +244,7 @@ The iOS app reads server URL + bearer token from Keychain (set during onboarding
 
 ## Key constraints (load-bearing — do not relax without re-reading SPEC.md)
 
-1. **Audio is never chopped.** The wake-word span is filtered from transcripts only. The raw M4A keeps everything.
+1. **Audio is never chopped — with exactly one exception.** The enrichment wake-word span ("hey voice diary") is filtered from transcripts only; the raw M4A keeps everything. The *single* exception is the walkthrough advance/finish command word ("weiter" / "fertig" / "next" / "done") spoken at a lull, which is trimmed from the segment audio because the server re-transcribes the raw file with Whisper. See SPEC §7.4 for the exact rule before changing the trim.
 2. **Max one follow-up question per event.** The AI opens a door; it does not interview.
 3. **All Microsoft Graph access is on the server.** No MSAL on the phone. No OAuth UI on the phone.
 4. **Todos are detected implicitly on-device but confirmed only at CLOSING.** Never interrupt mid-flow for a todo candidate.
