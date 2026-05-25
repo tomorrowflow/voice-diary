@@ -62,3 +62,8 @@ ios/Sources/TTS/Vendor/
 ios/Resources/Models/Voices/
 ios/project-piper.yml
 ios/.cache/
+
+# Debug screenshots dropped into docs/ (camera-roll "IMG_####" exports).
+# These are for local debugging only. Design references under
+# "docs/claude design/" are tracked deliberately and unaffected.
+docs/IMG_*
