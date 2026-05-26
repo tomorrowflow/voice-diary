@@ -760,6 +760,15 @@ All endpoints require a simple bearer token set during onboarding. No per-user O
 
 All five LLM call shapes (event opener, event follow-up, general-section follow-up, note summary, implicit-todo extraction) route through the same `DialogLLM` protocol and share one set of prompt builders in `LLMHelpers`, so the two backends produce equivalent prompts and tone.
 
+**Session-start full pre-generation.** Everything that is deterministic from data we already have at session start is generated up front, in the background, while the briefing intro plays:
+
+- **All event openers** — `prefetchAllOpeners` walks the plan and fires `prefetchOpener` for every event in every calendar block, every general section intro, and every voiceNote closing prompt. Each prefetch generates the text (LLM) + synthesises the audio.
+- **All note summaries** — `prefetchAllNoteSummaries` runs `summarizeNote` once per surfaced note at session start and caches the result keyed by `VoiceNote.id`; the per-note review reads from the cache instead of hitting the LLM mid-walkthrough.
+
+What is *not* pre-generable and stays on-demand: the 6 s-lull follow-up (depends on what the user just said), and implicit-todo extraction at CLOSING (depends on the segment transcripts that aren't recorded yet).
+
+Order matters: the first event opener is enqueued first so it lands quickest; the rest resolve while the user reflects on the early events. If the user backgrounds the app mid-prefetch, `GemmaDialogLLM.suspend()` aborts new loads and the `ChainDialogLLM` routes any not-yet-generated item to Apple FM — already-cached openers replay from pre-rendered audio without touching the model.
+
 **Tone.** German openers (and every other FM-generated German line — follow-ups, note summaries) address the user in the **du-form** (du, dich, dir, dein) — never Sie. The instruction is pinned in each FM system-prompt.
 
 **Tense — past, always.** The walkthrough is an *evening* review of the day. Every calendar event has already happened by the time we open it. Openers and follow-ups are written in the past tense (DE: Präteritum / Perfekt — "du hattest", "der Termin lief", "die Runde war"; EN: simple past — "you had", "the meeting ran", "the room was"). Anticipatory phrasing ("gleich", "demnächst", "wirst du", "about to", "coming up", "you'll") is explicitly forbidden in the FM system-prompts. The deterministic templates in §11.2 / §11.3 follow the same rule.

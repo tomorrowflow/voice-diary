@@ -218,6 +218,16 @@ public final class WalkthroughCoordinator {
     /// call. Stored value is `nil`-safe: callers await `.value`.
     private var openerTextTasks: [String: Task<[SpokenSpan], Never>] = [:]
 
+    /// Pre-generated note summaries, keyed by `VoiceNote.id` (the seed
+    /// id string). Filled at session start by `prefetchAllNoteSummaries`;
+    /// the per-note review (`noteSummary(note:language:)`) reads from
+    /// here instead of firing a fresh LLM call. Whatever can't be
+    /// pre-gen'd in time (LLM still in-flight, or model unavailable)
+    /// falls through to the on-demand path with its existing template +
+    /// first-sentence fallback.
+    private var noteSummaryCache: [String: String] = [:]
+    private var noteSummaryTasks: [String: Task<String, Never>] = [:]
+
     private var liveActivity: Any?
     private var liveActivityStartedAt: Date?
 
@@ -292,13 +302,21 @@ public final class WalkthroughCoordinator {
                 await finishUploadOrConfirmTodos()
                 return
             }
-            // Kick off the first opener's TTS synth in the background
-            // so it lands while the opening intro is still playing —
-            // by the time `runStep(at: 0)` calls `speakOpenerScript`
-            // the WAV is usually already cached. Pure latency hiding;
-            // worst case the prefetch is mid-flight and the consumer
-            // awaits the remaining ms instead of starting fresh.
-            prefetchFirstOpener(language: language)
+            // Pre-generate every LLM-dependent line for the whole
+            // session up front: all event openers, every general
+            // section intro, every voiceNote closing prompt, and one
+            // summary per surfaced note. Each task generates text +
+            // synthesises audio in the background while the user is
+            // still hearing the briefing intro. By front-loading the
+            // LLM work we get Gemma's stronger German on everything
+            // it can finish before the first opener fires, and only
+            // the unfinished items fall through to Apple FM later —
+            // including the case where the user backgrounds the app
+            // mid-session and Gemma suspends, since already-cached
+            // openers replay from their pre-rendered audio without
+            // touching the model.
+            prefetchAllOpeners(language: language)
+            prefetchAllNoteSummaries(language: language)
             // Opening intro: orient the user on the day + the rough
             // shape of what's coming. SPEC §6 calls for a "briefing"
             // before the per-event loop; this fills that slot with a
@@ -955,13 +973,49 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    /// One-sentence summary of a note for the spoken prompt. Uses the
-    /// on-device LLM for longer transcripts; short transcripts are their
-    /// own summary, and an LLM failure falls back to the first sentence.
+    /// One-sentence summary of a note for the spoken prompt. Routes
+    /// through `cachedNoteSummary` so a session-start pre-generation
+    /// (`prefetchAllNoteSummaries`) and the per-note review share the
+    /// same summary — both for correctness (manifest logs the same text
+    /// the user heard) and for latency (the review sees a cache hit).
     private func noteSummary(note: VoiceNote, language: OpenerLanguage) async -> String {
+        await cachedNoteSummary(note, language: language)
+    }
+
+    /// Per-note dedup + cache. Mirrors `eventOpenerSpans` for openers:
+    /// the cache check + task lookup happen with no `await` between them,
+    /// so on the MainActor they're atomic w.r.t. other tasks. A
+    /// concurrent prefetch + live caller resolve onto a single LLM call.
+    private func cachedNoteSummary(_ note: VoiceNote, language: OpenerLanguage) async -> String {
+        if let cached = noteSummaryCache[note.id] { return cached }
+        if let task = noteSummaryTasks[note.id] { return await task.value }
         let transcript = note.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else { return "" }
-        if transcript.count <= 80 { return transcript }
+        // Short transcripts (or empty) are their own summary — skip LLM.
+        if transcript.count <= 80 {
+            noteSummaryCache[note.id] = transcript
+            return transcript
+        }
+        let task = Task<String, Never> { [weak self] in
+            guard let self else { return Self.firstSentence(of: transcript) }
+            return await self.computeNoteSummary(
+                transcript: transcript, language: language
+            )
+        }
+        noteSummaryTasks[note.id] = task
+        let summary = await task.value
+        // Set cache before clearing task so a brand-new caller arriving
+        // in this window still finds either the cache or the task.
+        noteSummaryCache[note.id] = summary
+        noteSummaryTasks.removeValue(forKey: note.id)
+        return summary
+    }
+
+    /// The actual LLM round-trip + fallback. Pulled out so
+    /// `cachedNoteSummary` only contains the cache plumbing.
+    private func computeNoteSummary(
+        transcript: String,
+        language: OpenerLanguage
+    ) async -> String {
         let llm = DialogLLMResolver.current()
         if await llm.isAvailable {
             do {
@@ -2404,8 +2458,16 @@ public final class WalkthroughCoordinator {
             path: sanitize(sessionID),
             directoryHint: .isDirectory
         )
-        try FileManager.default.createDirectory(at: dir.appending(path: "segments"),
+        let segments = dir.appending(path: "segments", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: segments,
                                                 withIntermediateDirectories: true)
+        // iOS file protection is per-file, not inherited from the
+        // parent at directory-creation time, so we have to tag every
+        // new node we create. Without this the recording dies the
+        // moment the device locks: writes return -40 and the next
+        // segment open returns -54.
+        LocalStore.applyProtection(to: dir)
+        LocalStore.applyProtection(to: segments)
         sessionDir = dir
         self.sessionID = sessionID
     }
@@ -3082,6 +3144,53 @@ public final class WalkthroughCoordinator {
         prefetchOpener(stepIndex: 0, eventIndex: nil, language: language)
     }
 
+    /// Session-start full pre-generation. Fires `prefetchOpener` for
+    /// every position in the plan in one go — every event in every
+    /// calendar block, every general section intro, every voiceNote
+    /// closing prompt. Each prefetch task internally generates the
+    /// opener TEXT (LLM if available) + synthesises the audio, then
+    /// stashes both keyed by segment ID. By the time the briefing
+    /// intro finishes playing the first opener is usually ready; the
+    /// remaining openers continue resolving in the background while
+    /// the user reflects on the early events.
+    ///
+    /// Order matters: the actor serialises LLM calls, so the first
+    /// event opener — the one we need first — is enqueued first. If
+    /// the user backgrounds the app mid-prefetch, Gemma suspends and
+    /// any not-yet-generated opener falls through to Apple FM via
+    /// `ChainDialogLLM`. Already-generated openers are unaffected
+    /// because their text + audio are already cached.
+    private func prefetchAllOpeners(language: OpenerLanguage) {
+        for (stepIdx, step) in plan.enumerated() {
+            switch step {
+            case .calendar(let evts):
+                for evtIdx in 0..<evts.count {
+                    prefetchOpener(stepIndex: stepIdx, eventIndex: evtIdx, language: language)
+                }
+            case .general, .voiceNote:
+                prefetchOpener(stepIndex: stepIdx, eventIndex: nil, language: language)
+            }
+        }
+    }
+
+    /// Session-start pre-generation of every note summary. Notes are
+    /// captured earlier in the day, so their transcripts are already
+    /// on disk at session start — meaning `summarizeNote` is
+    /// deterministic from data we have. Pre-running it caches one
+    /// summary per note keyed by `VoiceNote.id`; the per-note review
+    /// later reads the cache instead of hitting the LLM mid-walkthrough.
+    private func prefetchAllNoteSummaries(language: OpenerLanguage) {
+        for step in plan {
+            if case .voiceNote(let notes) = step {
+                for note in notes {
+                    Task { [weak self] in
+                        _ = await self?.cachedNoteSummary(note, language: language)
+                    }
+                }
+            }
+        }
+    }
+
     /// Resolve a prefetched script for `segmentID`, awaiting the
     /// in-flight task if it hasn't completed yet (so a partial
     /// prefetch still delivers its head start). Removes the entry
@@ -3121,6 +3230,12 @@ public final class WalkthroughCoordinator {
         for (_, task) in openerTextTasks { task.cancel() }
         openerTextTasks.removeAll()
         openerScriptCache.removeAll()
+        // And the note summaries — they're keyed by note ID which is
+        // stable across sessions, but a new session may surface a
+        // different set of notes so a clean slate is the right default.
+        for (_, task) in noteSummaryTasks { task.cancel() }
+        noteSummaryTasks.removeAll()
+        noteSummaryCache.removeAll()
     }
 
     // MARK: - Opening intro -------------------------------------------
@@ -3329,7 +3444,16 @@ public final class WalkthroughCoordinator {
         // closes the loop without emitting an action.
         let (matchStream, matchContinuation) = AsyncStream<WakeWordDetector.Action>.makeStream()
         let detector = WakeWordDetector(phrases: phrases) { action, matched in
-            Diag.log("wake-word match: \(matched) → \(action.rawValue)")
+            // Piggy-back a resident-memory reading on the wake-word
+            // advance log. This is the cardinal per-event boundary in
+            // a walkthrough — printing memory here makes a slow-growth
+            // leak across multiple events visible in the console
+            // (e.g. "wake-word match … mem=412 MB" → "… mem=503 MB"
+            // → "… mem=611 MB" tells us roughly +100 MB per event,
+            // which is what tipped us into jetsam by the 5th meeting).
+            Diag.log(
+                "wake-word match: \(matched) → \(action.rawValue) mem=\(MemoryReport.formatted())"
+            )
             matchContinuation.yield(action)
             matchContinuation.finish()
         }
