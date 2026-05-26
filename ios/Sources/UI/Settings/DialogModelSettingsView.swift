@@ -23,6 +23,14 @@ public struct DialogModelSettingsView: View {
     @State private var loadState: LoadState = .idle
     /// Download fraction in [0, 1]. Only meaningful while `loadState == .loading`.
     @State private var progressFraction: Double = 0
+    /// Bytes downloaded so far, mirroring `Progress.completedUnitCount`. Used to
+    /// drive a visible byte counter — without it the bar can sit at 0 % for
+    /// minutes during the first big file and look frozen.
+    @State private var completedBytes: Int64 = 0
+    /// Total bytes the download expects, from `Progress.totalUnitCount`. Stays
+    /// at 0 during the initial `HubClient.listFiles` phase before file sizes
+    /// are known; transitioning above 0 is how we know listing succeeded.
+    @State private var totalBytes: Int64 = 0
 
     public init() {}
 
@@ -123,21 +131,23 @@ public struct DialogModelSettingsView: View {
                 }
                 .buttonStyle(DSButtonStyle(variant: .secondary, size: .md, fullWidth: true))
             case .loading:
-                // Determinate bar once we have a fraction; indeterminate
-                // spinner during the initial directory-listing phase
-                // before MLX knows the total byte count.
+                // Determinate bar + byte counter as soon as Hugging Face
+                // reports a total size — even if zero bytes have landed
+                // yet. The indeterminate spinner is reserved for the
+                // pre-listing phase when MLX hasn't yet enumerated the
+                // repo (no `Progress.totalUnitCount` available).
                 VStack(alignment: .leading, spacing: Theme.spacing.xs) {
-                    if progressFraction > 0 {
+                    if totalBytes > 0 {
                         ProgressView(value: progressFraction)
                             .progressViewStyle(.linear)
                             .tint(Theme.color.text.primary)
-                        Text("\(Int(progressFraction * 100)) % geladen")
+                        Text(progressCaption)
                             .font(Theme.font.monoCaption)
                             .foregroundStyle(Theme.color.text.subdued)
                     } else {
                         HStack(spacing: Theme.spacing.sm) {
                             ProgressView()
-                            Text("Verbinde…")
+                            Text("Modellliste wird geladen…")
                                 .font(Theme.font.body)
                                 .foregroundStyle(Theme.color.text.subdued)
                         }
@@ -209,6 +219,8 @@ public struct DialogModelSettingsView: View {
     private func preloadGemma() async {
         loadState = .loading
         progressFraction = 0
+        completedBytes = 0
+        totalBytes = 0
         do {
             try await GemmaDialogLLM.shared.preload { progress in
                 // MLX fires this from a downloader thread; hop to the
@@ -217,15 +229,33 @@ public struct DialogModelSettingsView: View {
                 // the bar doesn't flash artifacts.
                 let raw = progress.fractionCompleted
                 let fraction = raw.isFinite ? min(max(raw, 0), 1) : 0
+                let completed = progress.completedUnitCount
+                let total = progress.totalUnitCount
                 Task { @MainActor in
                     progressFraction = fraction
+                    completedBytes = completed
+                    totalBytes = total
                 }
             }
             loadState = .loaded
             progressFraction = 1
+            if totalBytes > 0 { completedBytes = totalBytes }
         } catch {
             loadState = .failed(String(describing: error))
         }
+    }
+
+    /// "120 MB von 5,0 GB geladen (2 %)". Uses `ByteCountFormatter`
+    /// directly so the locale-aware separator matches the rest of the
+    /// German UI without hardcoding strings.
+    private var progressCaption: String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB]
+        formatter.countStyle = .file
+        let done = formatter.string(fromByteCount: max(completedBytes, 0))
+        let total = formatter.string(fromByteCount: max(totalBytes, 0))
+        let percent = Int((progressFraction * 100).rounded())
+        return "\(done) von \(total) geladen (\(percent) %)"
     }
 
     // MARK: - Visual state
