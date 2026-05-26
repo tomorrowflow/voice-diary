@@ -21,6 +21,8 @@ public struct DialogModelSettingsView: View {
 
     @State private var preference: DialogLLMPreference = DialogLLMPreference.current
     @State private var loadState: LoadState = .idle
+    /// Download fraction in [0, 1]. Only meaningful while `loadState == .loading`.
+    @State private var progressFraction: Double = 0
 
     public init() {}
 
@@ -121,12 +123,25 @@ public struct DialogModelSettingsView: View {
                 }
                 .buttonStyle(DSButtonStyle(variant: .secondary, size: .md, fullWidth: true))
             case .loading:
-                HStack(spacing: Theme.spacing.sm) {
-                    ProgressView()
-                    Text("Lädt…")
-                        .font(Theme.font.body)
-                        .foregroundStyle(Theme.color.text.subdued)
-                    Spacer()
+                // Determinate bar once we have a fraction; indeterminate
+                // spinner during the initial directory-listing phase
+                // before MLX knows the total byte count.
+                VStack(alignment: .leading, spacing: Theme.spacing.xs) {
+                    if progressFraction > 0 {
+                        ProgressView(value: progressFraction)
+                            .progressViewStyle(.linear)
+                            .tint(Theme.color.text.primary)
+                        Text("\(Int(progressFraction * 100)) % geladen")
+                            .font(Theme.font.monoCaption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                    } else {
+                        HStack(spacing: Theme.spacing.sm) {
+                            ProgressView()
+                            Text("Verbinde…")
+                                .font(Theme.font.body)
+                                .foregroundStyle(Theme.color.text.subdued)
+                        }
+                    }
                 }
                 .padding(.vertical, Theme.spacing.xs)
             case .loaded:
@@ -193,9 +208,21 @@ public struct DialogModelSettingsView: View {
 
     private func preloadGemma() async {
         loadState = .loading
+        progressFraction = 0
         do {
-            try await GemmaDialogLLM.shared.preload()
+            try await GemmaDialogLLM.shared.preload { progress in
+                // MLX fires this from a downloader thread; hop to the
+                // MainActor for the @State write. Clamp NaN (which
+                // Progress returns until the total is known) to 0 so
+                // the bar doesn't flash artifacts.
+                let raw = progress.fractionCompleted
+                let fraction = raw.isFinite ? min(max(raw, 0), 1) : 0
+                Task { @MainActor in
+                    progressFraction = fraction
+                }
+            }
             loadState = .loaded
+            progressFraction = 1
         } catch {
             loadState = .failed(String(describing: error))
         }
