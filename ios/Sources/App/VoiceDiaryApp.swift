@@ -56,12 +56,52 @@ struct VoiceDiaryApp: App {
                             await IntentRouter.processPending(reason: "darwin")
                         }
                     }
+
+                    // Pre-warm Parakeet. The CoreML Encoder takes ~15 s
+                    // to specialise for the Neural Engine on each
+                    // launch (no download — the .mlmodelc is already
+                    // on disk; this is the JIT/ANE-link cost). Doing
+                    // it here as a detached background task means by
+                    // the time the user reaches the Abend / Aufnahme
+                    // CTAs, the model is typically `.ready` and they
+                    // never see the "Sprachmodell wird vorbereitet…"
+                    // placeholder. Idempotent: when the view's own
+                    // `.task` later calls `warmUp()`, it latches onto
+                    // the in-flight load instead of restarting it.
+                    Task.detached(priority: .userInitiated) {
+                        await ParakeetManager.shared.warmUp()
+                    }
                 }
                 .onChange(of: scenePhase) { _, newPhase in
-                    if newPhase == .active {
+                    switch newPhase {
+                    case .active:
                         Task { @MainActor in
                             await IntentRouter.processPending(reason: "scene_active")
                         }
+                        // Re-enable Gemma so the next opener (after
+                        // the user returns) can use the German-stronger
+                        // model again. No eager re-load here — it
+                        // happens lazily on first need.
+                        Task { await GemmaDialogLLM.shared.resume() }
+                    case .background:
+                        // Two reasons to suspend Gemma when backgrounded:
+                        // (1) iOS background memory caps are far tighter
+                        //     than our foreground increased-memory-limit,
+                        //     so 5 GB of resident weights gets the process
+                        //     jetsam'd within minutes.
+                        // (2) Reloading those weights inside a backgrounded
+                        //     process is itself unsafe — both because of
+                        //     the same memory cap and because Metal is
+                        //     restricted for backgrounded apps.
+                        // `suspend()` drops the weights AND blocks the
+                        // next `ensureLoaded` from kicking off, so the
+                        // `ChainDialogLLM` falls through to Apple FM for
+                        // any opener / follow-up that fires while we're
+                        // backgrounded (e.g. when the user says "weiter"
+                        // mid-walkthrough with the phone in their pocket).
+                        Task { await GemmaDialogLLM.shared.suspend() }
+                    default:
+                        break
                     }
                 }
         }

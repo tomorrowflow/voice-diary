@@ -37,3 +37,41 @@ public enum Diag {
         Log.app.notice("\(message, privacy: .public)")
     }
 }
+
+/// Lightweight resident-memory reader so cardinal-event Diag lines can
+/// piggy-back a snapshot of what jetsam is actually seeing. The number
+/// comes from `mach_task_basic_info.resident_size` — the same field the
+/// kernel weighs against the per-app memory cap. Reads are syscall-cheap
+/// (<1 µs) so it's safe to fire on every state-machine transition.
+///
+/// Used to diagnose slow-growth leaks across a long walkthrough (several
+/// events in one process lifetime) where the visible failure mode is a
+/// SIGKILL with no proximate cause line in the log.
+public enum MemoryReport {
+    public static func residentBytes() -> UInt64? {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info>.size / MemoryLayout<integer_t>.size
+        )
+        let kerr: kern_return_t = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(
+                    mach_task_self_,
+                    task_flavor_t(MACH_TASK_BASIC_INFO),
+                    $0,
+                    &count
+                )
+            }
+        }
+        guard kerr == KERN_SUCCESS else { return nil }
+        return info.resident_size
+    }
+
+    /// "412 MB" — terse enough to inline in a Diag line without
+    /// blowing past the console column wrap on Xcode's debug area.
+    public static func formatted() -> String {
+        guard let bytes = residentBytes() else { return "?" }
+        let mb = Double(bytes) / (1024.0 * 1024.0)
+        return String(format: "%.0f MB", mb)
+    }
+}

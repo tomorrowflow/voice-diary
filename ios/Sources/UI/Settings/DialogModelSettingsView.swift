@@ -209,6 +209,16 @@ public struct DialogModelSettingsView: View {
     private func refreshLoadState() async {
         if await GemmaDialogLLM.shared.isAvailable {
             loadState = .loaded
+        } else if await GemmaDialogLLM.shared.isLoading {
+            // A previous "Modell laden" tap is still downloading on
+            // the shared actor — typical when the user popped this
+            // view mid-download and now navigated back. Latch onto
+            // the in-flight load by calling `preloadGemma()` again:
+            // the broadcaster registers our fresh progress handler
+            // and immediately replays the latest known byte count,
+            // so the bar resumes from where it actually is instead
+            // of looking idle until the load finishes.
+            await preloadGemma()
         } else if case .loading = loadState {
             // keep the spinner — another path is still loading
         } else {

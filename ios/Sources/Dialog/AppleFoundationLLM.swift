@@ -46,7 +46,8 @@ public actor AppleFoundationLLM: DialogLLM {
                     userTranscript: userTranscript,
                     german: german
                 )
-            }
+            },
+            maxTokens: 80
         )
     }
 
@@ -66,7 +67,8 @@ public actor AppleFoundationLLM: DialogLLM {
                     userTranscript: userTranscript,
                     german: german
                 )
-            }
+            },
+            maxTokens: 80
         )
     }
 
@@ -80,6 +82,7 @@ public actor AppleFoundationLLM: DialogLLM {
             language: language,
             instructions: { LLMHelpers.openerInstructions(german: $0) },
             prompt: { LLMHelpers.openerPrompt(ctx: ctx, german: $0) },
+            maxTokens: 80,
             postProcess: { line in
                 if LLMHelpers.containsDigitalClock(line) {
                     throw LLMError.unavailable("clock_time_leak")
@@ -97,7 +100,8 @@ public actor AppleFoundationLLM: DialogLLM {
         try await runShortGeneration(
             language: language,
             instructions: { LLMHelpers.summaryInstructions(german: $0) },
-            prompt: { LLMHelpers.summaryPrompt(transcript: transcript, german: $0) }
+            prompt: { LLMHelpers.summaryPrompt(transcript: transcript, german: $0) },
+            maxTokens: 160
         )
     }
 
@@ -119,8 +123,11 @@ public actor AppleFoundationLLM: DialogLLM {
             instructions: LLMHelpers.implicitInstructions(german: isGerman)
         )
         let prompt = LLMHelpers.implicitPrompt(transcript: trimmed, german: isGerman)
+        // 200 tokens covers a short bulleted list of implicit todos
+        // without giving the model room to ramble into commentary.
+        let options = GenerationOptions(maximumResponseTokens: 200)
         do {
-            let response = try await session.respond(to: prompt)
+            let response = try await session.respond(to: prompt, options: options)
             let raw = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             return LLMHelpers.parseImplicitList(raw, transcript: trimmed)
         } catch {
@@ -142,6 +149,7 @@ public actor AppleFoundationLLM: DialogLLM {
         language: String,
         instructions buildInstructions: (Bool) -> String,
         prompt buildPrompt: (Bool) -> String,
+        maxTokens: Int = 120,
         postProcess: ((String) throws -> Void)? = nil
     ) async throws -> String {
         #if canImport(FoundationModels)
@@ -153,8 +161,18 @@ public actor AppleFoundationLLM: DialogLLM {
             model: SystemLanguageModel.default,
             instructions: buildInstructions(isGerman)
         )
+        // Cap response length so a runaway generation can't produce a
+        // 585-char "opener" that then has to be TTS'd in full. Apple's
+        // docs warn that strict caps can yield clipped output, but for
+        // these prompts (1-2 sentence openers, single follow-up
+        // questions) the worst case is acceptable and the upside is a
+        // hard ceiling on per-call cost — memory, time, audio size.
+        let options = GenerationOptions(maximumResponseTokens: maxTokens)
         do {
-            let response = try await session.respond(to: buildPrompt(isGerman))
+            let response = try await session.respond(
+                to: buildPrompt(isGerman),
+                options: options
+            )
             let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw LLMError.empty }
             let cleaned = LLMHelpers.cleanForSpeech(text)

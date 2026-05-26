@@ -120,6 +120,13 @@ public final class M4AWriter: @unchecked Sendable {
             commonFormat: .pcmFormatFloat32,
             interleaved: false
         )
+        // Tag the file with the app-wide protection class explicitly:
+        // CoreAudio's `ExtAudioFile` path doesn't always respect the
+        // parent directory's `NSFileProtectionKey`, which means writes
+        // and re-opens fail with -40 / -54 the moment the user locks
+        // the phone mid-walkthrough. Best-effort — protection is a
+        // hint, never a fatal path.
+        LocalStore.applyProtection(to: temp)
 
         try lock.withLockUnchecked { state -> Void in
             guard case .closed = state else {
@@ -187,6 +194,12 @@ public final class M4AWriter: @unchecked Sendable {
         guard let tempURL, let finalURL else { return nil }
         do {
             try FileManager.default.moveItem(at: tempURL, to: finalURL)
+            // Re-apply protection on the final URL: a move preserves
+            // the source file's class on iOS, but being explicit here
+            // means a future change to the staging path (e.g. moving
+            // between containers) can't silently regress to the OS
+            // default for the destination directory.
+            LocalStore.applyProtection(to: finalURL)
             return finalURL
         } catch {
             // moov was written above, but the rename failed (disk full,
