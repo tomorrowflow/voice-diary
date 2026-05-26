@@ -201,6 +201,11 @@ private struct MehrView: View {
                             MehrRow(label: "Stimmen", systemImage: "waveform")
                         }
                         NavigationLink {
+                            DialogModelSettingsView()
+                        } label: {
+                            MehrRow(label: "Dialog-Modell", systemImage: "brain")
+                        }
+                        NavigationLink {
                             PermissionsView()
                         } label: {
                             MehrRow(label: "Berechtigungen", systemImage: "lock.shield")

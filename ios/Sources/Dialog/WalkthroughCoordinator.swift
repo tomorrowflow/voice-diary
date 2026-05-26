@@ -962,7 +962,7 @@ public final class WalkthroughCoordinator {
         let transcript = note.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !transcript.isEmpty else { return "" }
         if transcript.count <= 80 { return transcript }
-        let llm = AppleFoundationLLM.shared
+        let llm = DialogLLMResolver.current()
         if await llm.isAvailable {
             do {
                 return try await llm.summarizeNote(
@@ -1442,7 +1442,7 @@ public final class WalkthroughCoordinator {
             )
         }
 
-        let llm = AppleFoundationLLM.shared
+        let llm = DialogLLMResolver.current()
         if isSubstantial, await llm.isAvailable {
             do {
                 let candidates = try await llm.extractImplicit(
@@ -1868,7 +1868,7 @@ public final class WalkthroughCoordinator {
         context: LullStepContext,
         language: OpenerLanguage
     ) async {
-        let llm = AppleFoundationLLM.shared
+        let llm = DialogLLMResolver.current()
         var line: String?
         if await llm.isAvailable {
             do {
@@ -1905,11 +1905,11 @@ public final class WalkthroughCoordinator {
     private func generateFollowUpLine(
         context: LullStepContext,
         language: OpenerLanguage,
-        llm: AppleFoundationLLM
+        llm: any DialogLLM
     ) async throws -> String {
         switch context {
         case .event(let eIdx, let evts):
-            guard eIdx < evts.count else { throw AppleFoundationLLM.LLMError.empty }
+            guard eIdx < evts.count else { throw LLMError.empty }
             let event = evts[eIdx]
             let attendeeNames = event.attendees.map(\.name).filter { !$0.isEmpty }
             let result = try await llm.generateFollowUp(
@@ -1935,7 +1935,7 @@ public final class WalkthroughCoordinator {
             // Note doesn't fire a follow-up (filtered upstream by
             // `wantsFollowUp`). If we got here something is off — return
             // empty so the template fallback path in the caller takes over.
-            throw AppleFoundationLLM.LLMError.empty
+            throw LLMError.empty
         }
     }
 
@@ -2319,7 +2319,7 @@ public final class WalkthroughCoordinator {
     }
 
     private func dedupeImplicit(
-        candidates: [AppleFoundationLLM.ImplicitCandidate],
+        candidates: [ImplicitCandidate],
         againstExplicit explicit: [Todo],
         forSegmentID segmentID: String,
         transcriptText: String,
@@ -2860,7 +2860,7 @@ public final class WalkthroughCoordinator {
             for: event,
             positionInDay: OpenerTemplates.position(of: index, count: total)
         )
-        let ctx = AppleFoundationLLM.EventOpenerContext(
+        let ctx = EventOpenerContext(
             title: event.subject,
             attendees: event.attendees.map(\.name),
             spokenTime: OpenerTemplates.spokenTime(event.startDate, language: language),
@@ -2875,7 +2875,7 @@ public final class WalkthroughCoordinator {
             slot: slot.rawValue
         )
         do {
-            let line = try await AppleFoundationLLM.shared.generateEventOpener(
+            let line = try await DialogLLMResolver.current().generateEventOpener(
                 context: ctx, language: language.rawValue
             )
             // Route the whole opener to the dominant language's voice. FM
