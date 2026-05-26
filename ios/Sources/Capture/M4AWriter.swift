@@ -111,15 +111,48 @@ public final class M4AWriter: @unchecked Sendable {
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
             AVEncoderBitRateKey: M4AWriter.bitrate,
         ]
+        // Pre-AVAudioFile diagnostic. Fires once per segment open, so
+        // the cost is negligible; the payoff is that any future -54 /
+        // -40 from `AVAudioFile(forWriting:)` lands in the console
+        // with everything we'd otherwise have to ask the user for:
+        // exact temp URL, whether the parent dir exists / is writable,
+        // the resolved sample rate, and whether a stale temp survived
+        // the `removeItem(at: temp)` above.
+        let fm = FileManager.default
+        let parent = temp.deletingLastPathComponent()
+        let parentExists = fm.fileExists(atPath: parent.path)
+        let parentWritable = fm.isWritableFile(atPath: parent.path)
+        let staleTemp = fm.fileExists(atPath: temp.path)
+        Diag.log(
+            "M4AWriter.open temp=\(temp.lastPathComponent) "
+            + "parentExists=\(parentExists) parentWritable=\(parentWritable) "
+            + "staleTemp=\(staleTemp) rate=\(Int(rate))"
+        )
+
         // Build the AVAudioFile *outside* the lock — its initializer
         // touches the filesystem and can take real time. Holding the
         // lock that long would stall the audio thread.
-        let avf = try AVAudioFile(
-            forWriting: temp,
-            settings: settings,
-            commonFormat: .pcmFormatFloat32,
-            interleaved: false
-        )
+        let avf: AVAudioFile
+        do {
+            avf = try AVAudioFile(
+                forWriting: temp,
+                settings: settings,
+                commonFormat: .pcmFormatFloat32,
+                interleaved: false
+            )
+        } catch {
+            // Log the failure with the same context the pre-call line
+            // captured plus the full NSError path/code, then re-throw
+            // so the caller's existing error UI still fires.
+            let ns = error as NSError
+            Diag.log(
+                "M4AWriter.open FAILED domain=\(ns.domain) code=\(ns.code) "
+                + "temp=\(temp.path) parentExists=\(parentExists) "
+                + "parentWritable=\(parentWritable) staleTemp=\(staleTemp) "
+                + "rate=\(Int(rate)) error=\(ns.localizedDescription)"
+            )
+            throw error
+        }
         // Tag the file with the app-wide protection class explicitly:
         // CoreAudio's `ExtAudioFile` path doesn't always respect the
         // parent directory's `NSFileProtectionKey`, which means writes
