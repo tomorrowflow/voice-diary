@@ -303,20 +303,14 @@ public final class WalkthroughCoordinator {
                 return
             }
             // Pre-generate every LLM-dependent line for the whole
-            // session up front: all event openers, every general
-            // section intro, every voiceNote closing prompt, and one
-            // summary per surfaced note. Each task generates text +
-            // synthesises audio in the background while the user is
-            // still hearing the briefing intro. By front-loading the
-            // LLM work we get Gemma's stronger German on everything
-            // it can finish before the first opener fires, and only
-            // the unfinished items fall through to Apple FM later —
-            // including the case where the user backgrounds the app
-            // mid-session and Gemma suspends, since already-cached
-            // openers replay from their pre-rendered audio without
-            // touching the model.
+            // session up front, two-tier: the *first* opener fires
+            // alone (so the briefing-then-event-0 transition feels
+            // instant), then a trampoline awaits its completion and
+            // fans out everything else — remaining event openers,
+            // general intros, voiceNote closings, and note summaries.
+            // See `prefetchAllOpeners` for the rationale (CPU sharing
+            // on `PiperTTS.prefetch` is the actual delay vector).
             prefetchAllOpeners(language: language)
-            prefetchAllNoteSummaries(language: language)
             // Opening intro: orient the user on the day + the rough
             // shape of what's coming. SPEC §6 calls for a "briefing"
             // before the per-event loop; this fills that slot with a
@@ -3144,23 +3138,70 @@ public final class WalkthroughCoordinator {
         prefetchOpener(stepIndex: 0, eventIndex: nil, language: language)
     }
 
-    /// Session-start full pre-generation. Fires `prefetchOpener` for
-    /// every position in the plan in one go — every event in every
-    /// calendar block, every general section intro, every voiceNote
-    /// closing prompt. Each prefetch task internally generates the
-    /// opener TEXT (LLM if available) + synthesises the audio, then
-    /// stashes both keyed by segment ID. By the time the briefing
-    /// intro finishes playing the first opener is usually ready; the
-    /// remaining openers continue resolving in the background while
-    /// the user reflects on the early events.
+    /// Session-start pre-generation, two-tier.
     ///
-    /// Order matters: the actor serialises LLM calls, so the first
-    /// event opener — the one we need first — is enqueued first. If
-    /// the user backgrounds the app mid-prefetch, Gemma suspends and
-    /// any not-yet-generated opener falls through to Apple FM via
-    /// `ChainDialogLLM`. Already-generated openers are unaffected
-    /// because their text + audio are already cached.
+    /// Tier 1 — fire the **very first** opener prefetch alone. While
+    /// the briefing intro plays the user is about to hear this one
+    /// next, so any delay here is the delay they perceive. The LLM
+    /// actor would process event 0 first anyway, but `PiperTTS.prefetch`
+    /// is direct (not serial-queued) and N concurrent synths share
+    /// CPU — meaning fanning out 5+ prefetches at once measurably
+    /// slows event 0's synth. Giving it exclusive CPU + LLM time
+    /// during the briefing closes that gap.
+    ///
+    /// Tier 2 — once event 0's text + audio are cached, fire every
+    /// other opener and every note summary. By the time the user has
+    /// finished the first event's reflection, the rest of the day's
+    /// LLM work has already happened in the background.
+    ///
+    /// If the user backgrounds the app mid-prefetch, `GemmaDialogLLM`
+    /// suspends and any not-yet-generated opener falls through to
+    /// Apple FM via `ChainDialogLLM`. Already-cached openers replay
+    /// from their pre-rendered audio without touching the model.
     private func prefetchAllOpeners(language: OpenerLanguage) {
+        guard !plan.isEmpty else { return }
+
+        // Tier 1: just the first opener.
+        prefetchOpener(stepIndex: 0, eventIndex: 0, language: language)
+
+        // Tier 2: trampoline that waits for the first prefetch to land,
+        // then fans out the rest. Spawned on the MainActor so it
+        // inherits this actor's isolation and can read the prefetch
+        // task map safely. `prefetchOpener` is internally dedup'd, so
+        // calling it again for event 0 inside the fan-out is a no-op.
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.waitForFirstPrefetch()
+            self.prefetchRemainingOpeners(language: language)
+            self.prefetchAllNoteSummaries(language: language)
+        }
+    }
+
+    /// Block on the first opener's prefetch task value. Both the
+    /// completed map and the in-flight task map are consulted; either
+    /// match returns. The caller doesn't *need* the script, just the
+    /// fact that the work is done so the rest can fire without
+    /// stealing CPU from it.
+    private func waitForFirstPrefetch() async {
+        guard !plan.isEmpty else { return }
+        let segID: String
+        switch plan[0] {
+        case .calendar(let evts):
+            guard !evts.isEmpty else { return }
+            segID = makeEventSegmentID(stepIndex: 0, eventIndex: 0)
+        case .general, .voiceNote:
+            segID = "s\(zeroPad(1))"
+        }
+        if prefetchedOpeners[segID] != nil { return }
+        if let task = prefetchTasks[segID] {
+            _ = await task.value
+        }
+    }
+
+    /// Fan-out for the deferred tier. `prefetchOpener`'s internal
+    /// dedup makes the first-opener call a no-op, so we don't need a
+    /// special case to skip it.
+    private func prefetchRemainingOpeners(language: OpenerLanguage) {
         for (stepIdx, step) in plan.enumerated() {
             switch step {
             case .calendar(let evts):
@@ -3179,6 +3220,8 @@ public final class WalkthroughCoordinator {
     /// deterministic from data we have. Pre-running it caches one
     /// summary per note keyed by `VoiceNote.id`; the per-note review
     /// later reads the cache instead of hitting the LLM mid-walkthrough.
+    /// Now deferred to the second tier so it doesn't compete with the
+    /// first opener's LLM call.
     private func prefetchAllNoteSummaries(language: OpenerLanguage) {
         for step in plan {
             if case .voiceNote(let notes) = step {
