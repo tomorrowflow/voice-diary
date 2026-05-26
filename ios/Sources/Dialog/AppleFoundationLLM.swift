@@ -1,41 +1,25 @@
 import Foundation
-import NaturalLanguage
 
 #if canImport(FoundationModels)
 import FoundationModels
 #endif
 
-// Thin wrapper around Apple's on-device Foundation Models framework
-// (iOS 26+). Used by the walkthrough for dynamic follow-up generation
-// (M6) and by the implicit-todo extractor (M8). Both call sites tolerate
-// `.unavailable` and fall back to deterministic templates / regex paths.
+// `DialogLLM` backend that runs against Apple's on-device Foundation
+// Models system model (iOS 26+). The default backend — always available
+// on a supported device, fast, no setup. German output is the weak
+// point: the model is ~3B distilled and English-first, so the resolver
+// can route to `GemmaDialogLLM` (Gemma 4 E4B via MLX) when the user
+// opts in and the weights are downloaded.
 //
-// We deliberately keep the public surface narrow so swapping in MLX Swift
-// + Gemma 4 E4B (the documented fallback if Apple FM disappoints) is a
-// single-file change.
+// All prompt assembly, language-guard, and speech sanitisation lives in
+// `LLMHelpers` so this backend and the Gemma backend stay word-for-word
+// equivalent on tone and validation.
 
-public actor AppleFoundationLLM {
+public actor AppleFoundationLLM: DialogLLM {
     public static let shared = AppleFoundationLLM()
-
-    public enum LLMError: Error, CustomStringConvertible {
-        case unavailable(String)
-        case empty
-        case underlying(any Error)
-
-        public var description: String {
-            switch self {
-            case .unavailable(let s): return "fm_unavailable: \(s)"
-            case .empty: return "fm_empty_response"
-            case .underlying(let e): return "fm_error: \(e)"
-            }
-        }
-    }
 
     public init() {}
 
-    /// Returns true when the on-device Foundation Models system model is
-    /// reachable on the current device. False on simulators or older
-    /// hardware where Apple Intelligence isn't enabled.
     public var isAvailable: Bool {
         #if canImport(FoundationModels)
         return SystemLanguageModel.default.isAvailable
@@ -44,249 +28,80 @@ public actor AppleFoundationLLM {
         #endif
     }
 
-    /// Generate a single conversational follow-up question (per SPEC
-    /// §11.4). The caller passes the event the user just reflected on
-    /// plus whatever transcript is available. Empty transcript is OK —
-    /// the model still produces a generic "anything else?" prompt.
+    // MARK: - Follow-ups
+
     public func generateFollowUp(
         eventTitle: String,
         attendees: [String],
         userTranscript: String,
         language: String
     ) async throws -> String {
-        #if canImport(FoundationModels)
-        guard SystemLanguageModel.default.isAvailable else {
-            throw LLMError.unavailable("system_model_not_ready")
-        }
-        let isGerman = language.hasPrefix("de")
-        let session = LanguageModelSession(
-            model: SystemLanguageModel.default,
-            instructions: Self.systemInstructions(german: isGerman)
-        )
-        let prompt = makeFollowUpPrompt(
-            eventTitle: eventTitle,
-            attendees: attendees,
-            userTranscript: userTranscript,
-            german: isGerman
-        )
-        do {
-            let response = try await session.respond(to: prompt)
-            let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { throw LLMError.empty }
-            let cleaned = cleanForSpeech(text)
-            // Validate language so a stray English answer doesn't end up
-            // being read aloud by the German Piper voice (M6 dogfood:
-            // every other follow-up came back in English even with a
-            // German prompt). Throwing `.unavailable` makes the caller
-            // fall back to the deterministic German rotation template.
-            try Self.assertLanguage(cleaned, expectedGerman: isGerman)
-            return cleaned
-        } catch let error as LLMError {
-            throw error
-        } catch {
-            throw LLMError.underlying(error)
-        }
-        #else
-        throw LLMError.unavailable("FoundationModels_not_compiled_in")
-        #endif
-    }
-
-    /// Metadata the opener generator weaves into a varied, day-aware
-    /// opening line. All time/duration fields arrive already rendered as
-    /// Voxtral-safe spoken strings (e.g. `"von 10 bis 11 Uhr"`,
-    /// `"eine Stunde"`) so the model can reuse them verbatim — it is
-    /// explicitly told never to invent a digital clock time.
-    public struct EventOpenerContext: Sendable {
-        public var title: String
-        public var attendees: [String]
-        public var spokenTime: String
-        public var spokenTimeRange: String
-        public var durationText: String
-        public var isRecurring: Bool
-        public var isExternal: Bool
-        public var agendaPreview: String
-        /// "first" | "last" | "middle" — drives tone (kick-off vs wrap-up).
-        public var position: String
-        /// The deterministic slot (`one_on_one`, `short_meeting`, …) as a
-        /// soft steer; the model may ignore it but it nudges the framing.
-        public var slot: String
-
-        public init(
-            title: String,
-            attendees: [String],
-            spokenTime: String,
-            spokenTimeRange: String,
-            durationText: String,
-            isRecurring: Bool,
-            isExternal: Bool,
-            agendaPreview: String,
-            position: String,
-            slot: String
-        ) {
-            self.title = title
-            self.attendees = attendees
-            self.spokenTime = spokenTime
-            self.spokenTimeRange = spokenTimeRange
-            self.durationText = durationText
-            self.isRecurring = isRecurring
-            self.isExternal = isExternal
-            self.agendaPreview = agendaPreview
-            self.position = position
-            self.slot = slot
-        }
-    }
-
-    /// Generate one varied, day-aware spoken opener for a calendar event
-    /// (SPEC §11). Replaces the fixed per-slot template at the *first*
-    /// step of the opener path; the caller keeps the deterministic
-    /// template as the fallback and uses it whenever this throws
-    /// (FM unavailable, wrong language, or a digital clock time leaked
-    /// into the output). The opener is one short statement that names the
-    /// event using whatever metadata is salient, then invites reflection
-    /// with a single short question.
-    public func generateEventOpener(
-        context ctx: EventOpenerContext,
-        language: String
-    ) async throws -> String {
-        #if canImport(FoundationModels)
-        guard SystemLanguageModel.default.isAvailable else {
-            throw LLMError.unavailable("system_model_not_ready")
-        }
-        let isGerman = language.hasPrefix("de")
-        let session = LanguageModelSession(
-            model: SystemLanguageModel.default,
-            instructions: Self.openerInstructions(german: isGerman)
-        )
-        let prompt = Self.makeOpenerPrompt(ctx: ctx, german: isGerman)
-        do {
-            let response = try await session.respond(to: prompt)
-            let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { throw LLMError.empty }
-            let cleaned = cleanForSpeech(text)
-            try Self.assertLanguage(cleaned, expectedGerman: isGerman)
-            // A digital clock time ("10:00") slipping through would glitch
-            // Voxtral — the whole reason we pre-spell the times. If the
-            // model emitted one anyway, reject so the caller falls back to
-            // the (already spoken-time) deterministic template.
-            if Self.containsDigitalClock(cleaned) {
-                throw LLMError.unavailable("clock_time_leak")
+        try await runShortGeneration(
+            language: language,
+            instructions: { LLMHelpers.followUpInstructions(german: $0) },
+            prompt: { german in
+                LLMHelpers.followUpPrompt(
+                    eventTitle: eventTitle,
+                    attendees: attendees,
+                    userTranscript: userTranscript,
+                    german: german
+                )
             }
-            return cleaned
-        } catch let error as LLMError {
-            throw error
-        } catch {
-            throw LLMError.underlying(error)
-        }
-        #else
-        throw LLMError.unavailable("FoundationModels_not_compiled_in")
-        #endif
-    }
-
-    /// Condense a note's transcript into one short spoken
-    /// sentence for the note-review prompt ("Du hast notiert: …"). Mirrors
-    /// the follow-up generators: on-device only, language-checked, and
-    /// speech-cleaned. Throws on unavailability / wrong language so the
-    /// caller can fall back to the raw transcript.
-    public func summarizeNote(
-        transcript: String,
-        language: String
-    ) async throws -> String {
-        #if canImport(FoundationModels)
-        guard SystemLanguageModel.default.isAvailable else {
-            throw LLMError.unavailable("system_model_not_ready")
-        }
-        let isGerman = language.hasPrefix("de")
-        let session = LanguageModelSession(
-            model: SystemLanguageModel.default,
-            instructions: Self.summaryInstructions(german: isGerman)
         )
-        let prompt = Self.makeSummaryPrompt(transcript: transcript, german: isGerman)
-        do {
-            let response = try await session.respond(to: prompt)
-            let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { throw LLMError.empty }
-            let cleaned = cleanForSpeech(text)
-            try Self.assertLanguage(cleaned, expectedGerman: isGerman)
-            return cleaned
-        } catch let error as LLMError {
-            throw error
-        } catch {
-            throw LLMError.underlying(error)
-        }
-        #else
-        throw LLMError.unavailable("FoundationModels_not_compiled_in")
-        #endif
     }
 
-    /// Follow-up question for a user-defined "general" section
-    /// (e.g. "Lernen", "Tagesabschluss"). Same shape as
-    /// `generateFollowUp` but seeded from the section's title +
-    /// intro text instead of a calendar event. Used by the
-    /// walkthrough's 6 s lull branch when the user has enabled
-    /// follow-ups for that section.
     public func generateGeneralFollowUp(
         sectionTitle: String,
         sectionIntro: String,
         userTranscript: String,
         language: String
     ) async throws -> String {
-        #if canImport(FoundationModels)
-        guard SystemLanguageModel.default.isAvailable else {
-            throw LLMError.unavailable("system_model_not_ready")
-        }
-        let isGerman = language.hasPrefix("de")
-        let session = LanguageModelSession(
-            model: SystemLanguageModel.default,
-            instructions: Self.systemInstructions(german: isGerman)
+        try await runShortGeneration(
+            language: language,
+            instructions: { LLMHelpers.followUpInstructions(german: $0) },
+            prompt: { german in
+                LLMHelpers.generalFollowUpPrompt(
+                    sectionTitle: sectionTitle,
+                    sectionIntro: sectionIntro,
+                    userTranscript: userTranscript,
+                    german: german
+                )
+            }
         )
-        let prompt = makeGeneralFollowUpPrompt(
-            sectionTitle: sectionTitle,
-            sectionIntro: sectionIntro,
-            userTranscript: userTranscript,
-            german: isGerman
-        )
-        do {
-            let response = try await session.respond(to: prompt)
-            let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { throw LLMError.empty }
-            let cleaned = cleanForSpeech(text)
-            try Self.assertLanguage(cleaned, expectedGerman: isGerman)
-            return cleaned
-        } catch let error as LLMError {
-            throw error
-        } catch {
-            throw LLMError.underlying(error)
-        }
-        #else
-        throw LLMError.unavailable("FoundationModels_not_compiled_in")
-        #endif
     }
 
-    /// Scan a free-form segment transcript for *implicit* todos —
-    /// commitments / next-actions the user spoke without an explicit
-    /// trigger phrase ("ich rufe morgen Stephan an", "wir machen das
-    /// nochmal"). Explicit todos are already captured by
-    /// `TodoExtractor.extractExplicit`; this pass surfaces the rest.
-    ///
-    /// SPEC §8: returns at most 5 candidates, one short sentence each,
-    /// always in the user's language. The caller dedupes against
-    /// already-detected explicit todos and confirms each via the
-    /// CLOSING confirmation flow before they reach the manifest.
-    /// One implicit-todo candidate produced by the on-device LLM.
-    /// `text` is the paraphrased imperative ("Stephan anrufen");
-    /// `sourceQuote` is a short verbatim phrase from the transcript that
-    /// justified it, when the model returned one. The confirmation UI
-    /// uses the quote to highlight the originating words inside the
-    /// surrounding 5-line excerpt; absence is tolerated and the UI falls
-    /// back to fuzzy match on the candidate text.
-    public struct ImplicitCandidate: Sendable, Equatable {
-        public let text: String
-        public let sourceQuote: String?
-        public init(text: String, sourceQuote: String? = nil) {
-            self.text = text
-            self.sourceQuote = sourceQuote
-        }
+    // MARK: - Opener (LLM-prepared, SPEC §11)
+
+    public func generateEventOpener(
+        context ctx: EventOpenerContext,
+        language: String
+    ) async throws -> String {
+        try await runShortGeneration(
+            language: language,
+            instructions: { LLMHelpers.openerInstructions(german: $0) },
+            prompt: { LLMHelpers.openerPrompt(ctx: ctx, german: $0) },
+            postProcess: { line in
+                if LLMHelpers.containsDigitalClock(line) {
+                    throw LLMError.unavailable("clock_time_leak")
+                }
+            }
+        )
     }
+
+    // MARK: - Note summary
+
+    public func summarizeNote(
+        transcript: String,
+        language: String
+    ) async throws -> String {
+        try await runShortGeneration(
+            language: language,
+            instructions: { LLMHelpers.summaryInstructions(german: $0) },
+            prompt: { LLMHelpers.summaryPrompt(transcript: transcript, german: $0) }
+        )
+    }
+
+    // MARK: - Implicit todos
 
     public func extractImplicit(
         transcript: String,
@@ -301,13 +116,13 @@ public actor AppleFoundationLLM {
         let isGerman = language.hasPrefix("de")
         let session = LanguageModelSession(
             model: SystemLanguageModel.default,
-            instructions: Self.implicitInstructions(german: isGerman)
+            instructions: LLMHelpers.implicitInstructions(german: isGerman)
         )
-        let prompt = Self.implicitPrompt(transcript: trimmed, german: isGerman)
+        let prompt = LLMHelpers.implicitPrompt(transcript: trimmed, german: isGerman)
         do {
             let response = try await session.respond(to: prompt)
             let raw = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            return Self.parseImplicitList(raw, transcript: trimmed)
+            return LLMHelpers.parseImplicitList(raw, transcript: trimmed)
         } catch {
             throw LLMError.underlying(error)
         }
@@ -316,453 +131,43 @@ public actor AppleFoundationLLM {
         #endif
     }
 
-    private static func implicitInstructions(german: Bool) -> String {
-        if german {
-            return """
-            Du analysierst die Reflexion einer Person zu einem Termin und
-            extrahierst NUR konkrete, in dieser Reflexion ausgesprochene
-            Vorhaben oder nächste Schritte (sogenannte implizite Aufgaben).
-            Beispiele: "Ich rufe morgen Stephan an", "Wir machen die
-            Nachbereitung am Dienstag", "Ich muss noch das Deck schicken".
-            Keine bereits erledigten Tätigkeiten. Keine Wünsche oder
-            Gefühle. Keine allgemeinen Beobachtungen.
+    // MARK: - Shared short-generation pipeline
+    //
+    // Every public method except `extractImplicit` is "build prompt →
+    // respond → language-check → clean → optional post-process". This
+    // helper folds that into one place; per-method extras (the
+    // digital-clock check for openers) plug in via `postProcess`.
 
-            Antworte AUSSCHLIESSLICH auf Deutsch. Gib eine Liste mit
-            maximal 5 Einträgen zurück. Jeder Eintrag besteht aus GENAU
-            zwei Zeilen:
-              - Erste Zeile beginnt mit "- " und enthält EINEN kurzen
-                Satz im Imperativ ("Stephan anrufen",
-                "Deck an Carsten schicken").
-              - Zweite Zeile beginnt mit ">> " und ist ein WÖRTLICHES
-                Zitat aus der Reflexion (10–120 Zeichen), das diese
-                Aufgabe begründet. Verwende NUR Worte, die exakt im
-                Transkript stehen — keine Umformulierung.
-
-            Wenn nichts Konkretes drin ist, antworte mit dem einzigen
-            Wort "KEINE".
-            """
-        } else {
-            return """
-            You analyse a user's reflection on one calendar event and
-            extract ONLY concrete commitments or next actions the user
-            stated within this reflection (so-called implicit todos).
-            Examples: "I'll call Stephan tomorrow", "We need to do the
-            follow-up on Tuesday", "I still have to send the deck".
-            No already-completed actions. No feelings or wishes. No
-            generic observations.
-
-            Reply ONLY in English. Return a list of at most 5 items.
-            Each item is EXACTLY two lines:
-              - First line starts with "- " and contains ONE short
-                imperative sentence ("Call Stephan",
-                "Send the deck to Carsten").
-              - Second line starts with ">> " and is a VERBATIM quote
-                from the reflection (10–120 characters) that justifies
-                this todo. Use ONLY words that appear exactly in the
-                transcript — no paraphrasing.
-
-            If nothing concrete is present, reply with the single word
-            "NONE".
-            """
+    private func runShortGeneration(
+        language: String,
+        instructions buildInstructions: (Bool) -> String,
+        prompt buildPrompt: (Bool) -> String,
+        postProcess: ((String) throws -> Void)? = nil
+    ) async throws -> String {
+        #if canImport(FoundationModels)
+        guard SystemLanguageModel.default.isAvailable else {
+            throw LLMError.unavailable("system_model_not_ready")
         }
-    }
-
-    private static func implicitPrompt(transcript: String, german: Bool) -> String {
-        if german {
-            return """
-            Reflexion:
-            \(transcript)
-
-            Extrahiere die impliziten Aufgaben gemäss den Anweisungen.
-            """
-        } else {
-            return """
-            Reflection:
-            \(transcript)
-
-            Extract the implicit todos following the instructions.
-            """
+        let isGerman = language.hasPrefix("de")
+        let session = LanguageModelSession(
+            model: SystemLanguageModel.default,
+            instructions: buildInstructions(isGerman)
+        )
+        do {
+            let response = try await session.respond(to: buildPrompt(isGerman))
+            let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw LLMError.empty }
+            let cleaned = LLMHelpers.cleanForSpeech(text)
+            try LLMHelpers.assertLanguage(cleaned, expectedGerman: isGerman)
+            try postProcess?(cleaned)
+            return cleaned
+        } catch let error as LLMError {
+            throw error
+        } catch {
+            throw LLMError.underlying(error)
         }
-    }
-
-    /// Parse the model's two-line-per-item format into candidates with
-    /// optional verbatim source quotes. Each item is expected as:
-    ///
-    ///   - Imperative sentence
-    ///   >> Verbatim quote from transcript
-    ///
-    /// Tolerant of older single-line outputs (no quote line), of bullet
-    /// variants (`*`, `•`, numbered), and of stray blank lines between
-    /// items. The quote is validated against the transcript: if the
-    /// model paraphrased instead of quoting verbatim, we drop the quote
-    /// and let the UI fall back to fuzzy matching on the candidate text.
-    private static func parseImplicitList(_ raw: String, transcript: String) -> [ImplicitCandidate] {
-        let normalised = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalised.isEmpty { return [] }
-        let upper = normalised.uppercased()
-        if upper == "KEINE" || upper == "NONE" || upper == "—" { return [] }
-
-        // Lower-cased transcript for case-insensitive verbatim check.
-        let transcriptLower = transcript.lowercased()
-
-        var items: [ImplicitCandidate] = []
-        var pendingText: String? = nil
-        var pendingQuote: String? = nil
-
-        func commit() {
-            if let text = pendingText {
-                let quote: String? = {
-                    guard let q = pendingQuote, !q.isEmpty else { return nil }
-                    return transcriptLower.contains(q.lowercased()) ? q : nil
-                }()
-                items.append(ImplicitCandidate(text: text, sourceQuote: quote))
-            }
-            pendingText = nil
-            pendingQuote = nil
-        }
-
-        // Strip surrounding straight or typographic quotes from a span —
-        // the model sometimes wraps both the imperative and the verbatim
-        // quote in quotation marks even though the prompt doesn't ask
-        // for them.
-        let quoteChars = CharacterSet(charactersIn: " \"'„“”«»")
-
-        for rawLine in normalised.split(separator: "\n", omittingEmptySubsequences: false) {
-            var line = rawLine.trimmingCharacters(in: .whitespaces)
-            if line.isEmpty { continue }
-
-            // Quote line — pairs with the most recent item.
-            if line.hasPrefix(">>") {
-                let q = String(line.dropFirst(2)).trimmingCharacters(in: quoteChars)
-                if pendingText != nil { pendingQuote = q.isEmpty ? nil : q }
-                continue
-            }
-
-            // Inline `>>`: the model collapsed the two-line item onto a
-            // single line ("imperative" >> "verbatim quote"). Split on
-            // the first `>>` so the imperative doesn't end up displaying
-            // the quote suffix too.
-            var inlineQuote: String? = nil
-            if let r = line.range(of: ">>") {
-                let after = line[r.upperBound...]
-                    .trimmingCharacters(in: quoteChars)
-                inlineQuote = after.isEmpty ? nil : after
-                line = String(line[..<r.lowerBound])
-                    .trimmingCharacters(in: .whitespaces)
-            }
-
-            // New item — flush any in-flight pair.
-            commit()
-
-            var head = line
-            while let first = head.first, "-•*0123456789.):".contains(first) {
-                head.removeFirst()
-                head = head.trimmingCharacters(in: .whitespaces)
-            }
-            while let last = head.last, ".,;".contains(last) {
-                head.removeLast()
-            }
-            // Drop quotation marks the model sometimes wraps around the
-            // imperative ("Deck an Carsten schicken").
-            head = head.trimmingCharacters(in: quoteChars)
-            let cleaned = head.trimmingCharacters(in: .whitespaces)
-            guard cleaned.count >= 4 else { continue }
-            if cleaned.uppercased() == "KEINE" || cleaned.uppercased() == "NONE" {
-                continue
-            }
-            pendingText = cleaned
-            if let q = inlineQuote { pendingQuote = q }
-
-            if items.count >= 5 { break }
-        }
-        commit()
-        if items.count > 5 { items = Array(items.prefix(5)) }
-        return items
-    }
-
-    private static func openerInstructions(german: Bool) -> String {
-        if german {
-            return """
-            Du bist die Stimme einer persönlichen Tagebuch-Assistenz und
-            eröffnest die abendliche Reflexion zu EINEM Kalendertermin.
-            Sprich die nutzende Person durchgehend mit "du" an (du, dich,
-            dir, dein) — NIEMALS mit "Sie". Formuliere EINEN kurzen,
-            natürlich gesprochenen Einstieg (maximal 25 Wörter):
-            zuerst ein knapper Bezug auf den Termin, dann GENAU EINE kurze,
-            offene Frage, die zum Erzählen einlädt.
-
-            Variiere die Formulierung — klinge nicht jeden Tag gleich.
-            Nutze die salientesten Angaben (Titel, Personen, Uhrzeit,
-            Wiederholung, Agenda), aber zähle sie nicht mechanisch auf.
-
-            Harte Regeln:
-            - Antworte AUSSCHLIESSLICH auf Deutsch.
-            - Verwende Uhrzeiten NUR in der vorgegebenen gesprochenen Form
-              (z. B. "um 10 Uhr", "von 10 bis 11 Uhr"). Schreibe NIEMALS
-              Ziffern-Uhrzeiten wie "10:00".
-            - Gib NUR den Einstieg zurück — keine Einleitung, keine
-              Anführungszeichen, keine Aufzählung.
-            """
-        } else {
-            return """
-            You are the voice of a personal diary assistant opening the
-            evening reflection on ONE calendar event. Address the user as
-            "you". Write ONE short, naturally spoken opener (max 25 words):
-            first a brief reference to the event, then EXACTLY ONE short,
-            open question that invites the user to talk.
-
-            Vary the phrasing — don't sound the same every day. Use the
-            most salient details (title, people, time, recurrence, agenda),
-            but don't list them mechanically.
-
-            Hard rules:
-            - Reply ONLY in English.
-            - Use times ONLY in the given spoken form (e.g. "at ten",
-              "from ten to eleven"). NEVER write a digital clock time like
-              "10:00".
-            - Output ONLY the opener — no preamble, no quotation marks, no
-              bullet list.
-            """
-        }
-    }
-
-    private static func makeOpenerPrompt(ctx: EventOpenerContext, german: Bool) -> String {
-        let title = ctx.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let agenda = ctx.agendaPreview
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .prefix(280)
-        let people = ctx.attendees.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
-        if german {
-            var lines: [String] = []
-            lines.append("Titel: \(title.isEmpty ? "(ohne Titel)" : title)")
-            lines.append(people.isEmpty
-                ? "Teilnehmende: (keine)"
-                : "Teilnehmende: \(people.joined(separator: ", "))")
-            if !ctx.spokenTime.isEmpty { lines.append("Beginn: \(ctx.spokenTime)") }
-            if !ctx.spokenTimeRange.isEmpty { lines.append("Zeitraum: \(ctx.spokenTimeRange)") }
-            if !ctx.durationText.isEmpty { lines.append("Dauer: \(ctx.durationText)") }
-            lines.append("Wiederkehrender Termin: \(ctx.isRecurring ? "ja" : "nein")")
-            lines.append("Externe Teilnehmende: \(ctx.isExternal ? "ja" : "nein")")
-            lines.append("Position im Tag: \(ctx.position)")
-            lines.append("Kategorie: \(ctx.slot)")
-            if !agenda.isEmpty { lines.append("Agenda/Notiz: \(agenda)") }
-            return """
-            Termin-Kontext:
-            \(lines.joined(separator: "\n"))
-
-            Schreibe den gesprochenen Einstieg gemäss den Anweisungen.
-            """
-        } else {
-            var lines: [String] = []
-            lines.append("Title: \(title.isEmpty ? "(no title)" : title)")
-            lines.append(people.isEmpty
-                ? "Attendees: (none)"
-                : "Attendees: \(people.joined(separator: ", "))")
-            if !ctx.spokenTime.isEmpty { lines.append("Start: \(ctx.spokenTime)") }
-            if !ctx.spokenTimeRange.isEmpty { lines.append("Time range: \(ctx.spokenTimeRange)") }
-            if !ctx.durationText.isEmpty { lines.append("Duration: \(ctx.durationText)") }
-            lines.append("Recurring: \(ctx.isRecurring ? "yes" : "no")")
-            lines.append("External attendees: \(ctx.isExternal ? "yes" : "no")")
-            lines.append("Position in day: \(ctx.position)")
-            lines.append("Category: \(ctx.slot)")
-            if !agenda.isEmpty { lines.append("Agenda/note: \(agenda)") }
-            return """
-            Event context:
-            \(lines.joined(separator: "\n"))
-
-            Write the spoken opener following the instructions.
-            """
-        }
-    }
-
-    /// True if the text contains a digital clock time like "10:00" or
-    /// "9:5" — the exact shape that glitches Voxtral. Used to reject an
-    /// opener that ignored the pre-spelled spoken time.
-    private static func containsDigitalClock(_ text: String) -> Bool {
-        guard let re = try? NSRegularExpression(pattern: #"\d{1,2}:\d{2}"#) else {
-            return false
-        }
-        let range = NSRange(text.startIndex..<text.endIndex, in: text)
-        return re.firstMatch(in: text, range: range) != nil
-    }
-
-    private static func systemInstructions(german: Bool) -> String {
-        if german {
-            return """
-            Du bist die Stimme einer persönlichen Tagebuch-Assistenz. Du
-            stellst eine einzige, kurze, gesprochene Folgefrage, die zum
-            Vertiefen einlädt. Antworte AUSSCHLIESSLICH auf Deutsch.
-            Sprich die nutzende Person durchgehend mit "du" an (du, dich,
-            dir, dein) — NIEMALS mit "Sie".
-            Gib NUR die Frage zurück — keine Einleitung, keine Erklärung,
-            maximal 12 Wörter. Wiederhole niemals die Worte der nutzenden
-            Person wörtlich.
-            """
-        } else {
-            return """
-            You are the voice of a personal diary assistant. You ask one
-            short, spoken follow-up question that invites the user to go
-            deeper. Reply ONLY in English. Output ONLY the question — no
-            preamble, no explanation, maximum 12 words. Never repeat the
-            user's own words verbatim.
-            """
-        }
-    }
-
-    private static func summaryInstructions(german: Bool) -> String {
-        if german {
-            return """
-            Du fasst eine kurze Sprachnotiz für ein Tagebuch zusammen. Gib
-            EINEN kurzen Aussagesatz zurück (maximal 14 Wörter), der den
-            Kern der Notiz wiedergibt. Antworte AUSSCHLIESSLICH auf
-            Deutsch. Falls die nutzende Person erwähnt wird, immer in der
-            Du-Form (du, dich, dir) — NIEMALS in der Sie-Form. Gib NUR
-            die Zusammenfassung zurück — keine Einleitung, keine Frage,
-            keine Anführungszeichen.
-            """
-        } else {
-            return """
-            You summarize a short voice note for a diary. Return ONE short
-            statement (max 14 words) capturing the gist of the note. Reply
-            ONLY in English. Output ONLY the summary — no preamble, no
-            question, no quotation marks.
-            """
-        }
-    }
-
-    private static func makeSummaryPrompt(transcript: String, german: Bool) -> String {
-        if german {
-            return """
-            Fasse diese Sprachnotiz in einem kurzen Satz zusammen:
-            \(transcript)
-            Gib nur die Zusammenfassung auf Deutsch zurück.
-            """
-        } else {
-            return """
-            Summarize this voice note in one short statement:
-            \(transcript)
-            Return only the summary in English.
-            """
-        }
-    }
-
-    private func makeFollowUpPrompt(
-        eventTitle: String,
-        attendees: [String],
-        userTranscript: String,
-        german: Bool
-    ) -> String {
-        let attendeeLine = attendees.isEmpty
-            ? (german ? "(keine Teilnehmenden)" : "(no attendees)")
-            : attendees.joined(separator: ", ")
-        let transcriptLine: String
-        if userTranscript.isEmpty {
-            transcriptLine = german
-                ? "(Transkript nicht verfügbar — stelle eine allgemein vertiefende Frage.)"
-                : "(transcript not available — ask a generic deepening question)"
-        } else {
-            transcriptLine = userTranscript
-        }
-        if german {
-            return """
-            Der Nutzer hat gerade über einen Kalendertermin reflektiert.
-            Titel: \(eventTitle).
-            Teilnehmende: \(attendeeLine).
-            Reaktion des Nutzers: \(transcriptLine)
-            Stelle EINE kurze Folgefrage (maximal 12 Wörter) AUF DEUTSCH.
-            Gib nur die Frage zurück.
-            """
-        } else {
-            return """
-            The user just reflected on a calendar event.
-            Title: \(eventTitle).
-            Attendees: \(attendeeLine).
-            User's response: \(transcriptLine)
-            Generate ONE short follow-up question (max 12 words) IN ENGLISH.
-            Return only the question.
-            """
-        }
-    }
-
-    private func makeGeneralFollowUpPrompt(
-        sectionTitle: String,
-        sectionIntro: String,
-        userTranscript: String,
-        german: Bool
-    ) -> String {
-        let trimmedIntro = sectionIntro.trimmingCharacters(in: .whitespacesAndNewlines)
-        let introLine: String
-        if trimmedIntro.isEmpty {
-            introLine = german
-                ? "(keine Einleitung vorhanden)"
-                : "(no intro provided)"
-        } else {
-            introLine = trimmedIntro
-        }
-        let transcriptLine: String
-        if userTranscript.isEmpty {
-            transcriptLine = german
-                ? "(Transkript nicht verfügbar — stelle eine zur Einleitung passende Vertiefung.)"
-                : "(transcript not available — ask a deepening question that fits the intro)"
-        } else {
-            transcriptLine = userTranscript
-        }
-        if german {
-            return """
-            Der Nutzer reflektiert gerade in einem benutzerdefinierten Tagebuch-Abschnitt.
-            Abschnittstitel: \(sectionTitle).
-            Einleitung des Abschnitts: \(introLine).
-            Bisherige Reaktion des Nutzers: \(transcriptLine)
-            Stelle EINE kurze Folgefrage (maximal 12 Wörter) AUF DEUTSCH,
-            die im Geist der Einleitung weiterführt. Gib nur die Frage zurück.
-            """
-        } else {
-            return """
-            The user is reflecting in a user-defined diary section.
-            Section title: \(sectionTitle).
-            Section intro: \(introLine).
-            User's response so far: \(transcriptLine)
-            Generate ONE short follow-up question (max 12 words) IN ENGLISH
-            that continues in the spirit of the intro. Return only the question.
-            """
-        }
-    }
-
-    /// Throws `.unavailable` if the response is in the wrong language.
-    /// `NLLanguageRecognizer` is fast (microseconds for short strings)
-    /// and effectively zero-cost vs the LLM call.
-    private static func assertLanguage(_ text: String, expectedGerman: Bool) throws {
-        let recognizer = NLLanguageRecognizer()
-        recognizer.processString(text)
-        guard let detected = recognizer.dominantLanguage else { return }
-        let isGerman = detected == .german
-        let isEnglish = detected == .english
-        if expectedGerman, !isGerman {
-            // Allow English if German wasn't recognised but the text is
-            // very short (1–3 words like "Was war schwer?") — recogniser
-            // can mis-flag short phrases. Otherwise reject.
-            if isEnglish || text.split(separator: " ").count > 3 {
-                throw LLMError.unavailable("language_mismatch_expected_de_got_\(detected.rawValue)")
-            }
-        } else if !expectedGerman, !isEnglish {
-            if isGerman || text.split(separator: " ").count > 3 {
-                throw LLMError.unavailable("language_mismatch_expected_en_got_\(detected.rawValue)")
-            }
-        }
-    }
-
-    private func cleanForSpeech(_ text: String) -> String {
-        // The model occasionally returns the prompt prefix or wraps the
-        // question in quotes. Strip those.
-        var s = text
-        s = s.replacingOccurrences(of: "**", with: "")
-        s = s.replacingOccurrences(of: "*", with: "")
-        if let first = s.first, ["'", "\"", "“", "‘"].contains(first) {
-            s.removeFirst()
-        }
-        if let last = s.last, ["'", "\"", "”", "’"].contains(last) {
-            s.removeLast()
-        }
-        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+        #else
+        throw LLMError.unavailable("FoundationModels_not_compiled_in")
+        #endif
     }
 }

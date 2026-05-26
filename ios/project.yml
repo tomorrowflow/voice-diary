@@ -39,6 +39,16 @@ packages:
   FluidAudio:
     url: https://github.com/FluidInference/FluidAudio
     from: 0.14.4
+  # MLX Swift LM: Apple's on-device LLM runtime. Used by
+  # `GemmaDialogLLM` to run Gemma 4 E4B (4-bit) on iPhone when the
+  # user opts in. Apple FM remains the default. See SPEC §11 +
+  # `Sources/Dialog/DialogLLM.swift`.
+  #
+  # The LLM libraries moved from `mlx-swift-examples` to this dedicated
+  # package; pin to the first stable line that ships `ChatSession`.
+  MLXSwiftLM:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    from: 3.31.3
 
 targets:
   VoiceDiary:
@@ -113,6 +123,10 @@ targets:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - package: FluidAudio
+      - package: MLXSwiftLM
+        product: MLXLLM
+      - package: MLXSwiftLM
+        product: MLXLMCommon
       - target: VoiceDiaryWidget
         embed: true
         codeSign: true

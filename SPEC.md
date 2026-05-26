@@ -751,7 +751,14 @@ All endpoints require a simple bearer token set during onboarding. No per-user O
 
 ## 11. Opener templates
 
-**Opener delivery (two layers).** The *slot selection* below is always deterministic (§11.1). The *spoken opener* for a calendar event is then **prepared by Apple Foundation Models** from the event's metadata (title, attendees, spoken time/range, duration, recurring/external flags, agenda preview, position-in-day, and the selected slot as a soft steer), so openers vary day-to-day and lean on what's actually salient instead of one fixed sentence per slot. The deterministic templates in §11.2 / §11.3 are the **fallback**: used verbatim whenever FM is unavailable, returns the wrong language, or leaks a digital clock time. The fallback path is also the only one that keeps per-span mixed-language voice routing for foreign titles; an FM opener is spoken in the user's language throughout. General (user-defined) section intros and the note/closing prompts are **not** FM-prepared — they're spoken as authored.
+**Opener delivery (two layers).** The *slot selection* below is always deterministic (§11.1). The *spoken opener* for a calendar event is then **prepared by an on-device LLM** from the event's metadata (title, attendees, spoken time/range, duration, recurring/external flags, agenda preview, position-in-day, and the selected slot as a soft steer), so openers vary day-to-day and lean on what's actually salient instead of one fixed sentence per slot. The deterministic templates in §11.2 / §11.3 are the **fallback**: used verbatim whenever the LLM is unavailable, returns the wrong language, or leaks a digital clock time. The fallback path is also the only one that keeps per-span mixed-language voice routing for foreign titles; an LLM opener is spoken in the user's language throughout. General (user-defined) section intros and the note/closing prompts are **not** LLM-prepared — they're spoken as authored.
+
+**Dialog-LLM resolver.** The LLM is selected at session start via `DialogLLMResolver`, driven by the user's Settings → Mehr → Dialog-Modell choice:
+
+- `apple_fm` (default) — Apple Foundation Models, iOS 26's ~3B distilled system model. Always available; weak on free-form German.
+- `gemma_e4b` — Gemma 4 E4B (4-bit) via MLX Swift (`mlx-community/gemma-4-e4b-it-4bit`). Stronger German; ~5 GB weights downloaded on first use; resident memory cost. Resolver wraps it in a `ChainDialogLLM(primary: Gemma, fallback: Apple FM)` so any `LLMError` falls through transparently — the walkthrough never breaks because the user's preferred model failed.
+
+All five LLM call shapes (event opener, event follow-up, general-section follow-up, note summary, implicit-todo extraction) route through the same `DialogLLM` protocol and share one set of prompt builders in `LLMHelpers`, so the two backends produce equivalent prompts and tone.
 
 **Tone.** German openers (and every other FM-generated German line — follow-ups, note summaries) address the user in the **du-form** (du, dich, dir, dein) — never Sie. The instruction is pinned in each FM system-prompt.
 
