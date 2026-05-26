@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 /// Local Verlauf — chronological list of recorded sessions (walkthrough
-/// + drive-by) grouped by day. Tapping a row opens the detail view.
+/// + note) grouped by day. Tapping a row opens the detail view.
 /// Swiping a row from the right reveals the iOS-typical destructive
 /// delete action (asks for confirmation via the .destructive role).
 @MainActor
@@ -96,7 +96,7 @@ public struct VerlaufView: View {
             Text("Noch keine Sitzungen")
                 .font(Theme.font.headline)
                 .foregroundStyle(Theme.color.text.primary)
-            Text("Walkthrough- und Drive-by-Aufnahmen erscheinen hier.")
+            Text("Walkthrough- und Notiz-Aufnahmen erscheinen hier.")
                 .font(Theme.font.callout)
                 .foregroundStyle(Theme.color.text.secondary)
                 .multilineTextAlignment(.center)
@@ -167,7 +167,7 @@ private struct VerlaufRow: View {
 
     var body: some View {
         HStack(spacing: Theme.spacing.sm) {
-            // Tinted icon disc — distinguishes walkthrough vs drive-by
+            // Tinted icon disc — distinguishes walkthrough vs note
             // at a glance without leaning on a glyph alone.
             ZStack {
                 Circle()
@@ -196,21 +196,21 @@ private struct VerlaufRow: View {
     private var icon: String {
         switch item {
         case .walkthrough: return "book.closed.fill"
-        case .driveBy:     return "mic.fill"
+        case .voiceNote:     return "mic.fill"
         }
     }
 
     private var iconBg: Color {
         switch item {
         case .walkthrough: return Theme.color.tint.link10
-        case .driveBy:     return Theme.color.tint.warning10
+        case .voiceNote:     return Theme.color.tint.warning10
         }
     }
 
     private var iconFg: Color {
         switch item {
         case .walkthrough: return Theme.color.text.link
-        case .driveBy:     return Theme.color.status.warning
+        case .voiceNote:     return Theme.color.status.warning
         }
     }
 
@@ -222,16 +222,16 @@ private struct VerlaufRow: View {
             case 1: return "Abend-Sitzung · 1 Termin"
             default: return "Abend-Sitzung · \(w.eventCount) Termine"
             }
-        case .driveBy(let d):
-            let preview = d.seed.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            return preview.isEmpty ? "Drive-by" : preview
+        case .voiceNote(let d):
+            let preview = d.note.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+            return preview.isEmpty ? "Notiz" : preview
         }
     }
 
     /// Subtitle is the **date the recording is for**. The list above is
     /// already grouped by capture day, so the row no longer restates
     /// when it was recorded — the second line is the *subject* day
-    /// (manifest.date for walkthrough, captured_at for drive-by) so a
+    /// (manifest.date for walkthrough, captured_at for note) so a
     /// session captured today *for* last Tuesday reads correctly.
     private var subtitle: String {
         switch item {
@@ -246,8 +246,8 @@ private struct VerlaufRow: View {
                 return w.capturedAt
             }()
             return "Für " + Self.relativeDay.string(from: base)
-        case .driveBy(let d):
-            return "Für " + Self.relativeDay.string(from: d.seed.captured_at)
+        case .voiceNote(let d):
+            return "Für " + Self.relativeDay.string(from: d.note.captured_at)
         }
     }
 
@@ -284,7 +284,11 @@ struct VerlaufDetailView: View {
     @State private var serverStatus: ServerClient.SessionStatusResponse?
     @State private var serverStatusFetched: Bool = false
     @State private var player = SegmentPlayer()
-    @State private var showDeleteConfirm: Bool = false
+    /// Segment ids swiped away in this view — filtered out of the list.
+    /// (Walkthrough detail; the underlying audio file is removed too.)
+    @State private var deletedSegmentIDs: Set<String> = []
+    /// Surfaced-note ids swiped away in this view.
+    @State private var deletedNoteIDs: Set<String> = []
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -293,44 +297,37 @@ struct VerlaufDetailView: View {
             VStack(spacing: 0) {
                 FlowHeader(title: title)
 
-                ScrollView {
-                    VStack(alignment: .leading, spacing: Theme.spacing.lg) {
-                        heroCard
-                        statsGrid
+                // List (not ScrollView) so each segment / note row gets a
+                // native swipe-to-delete — the same affordance as the
+                // Verlauf list and the Gefahrenzone. The hero + stats +
+                // footer ride along as chrome-free rows. Whole-entry
+                // deletion lives in the Verlauf list, so there's no
+                // destructive button here anymore.
+                List {
+                    clearRow { heroCard }
+                    clearRow { statsGrid }
 
-                        sectionsList
+                    segmentsSection
+                    notesSection
 
-                        notesList
-
-                        identifierFooter
-
-                        if let prepareError {
+                    clearRow { identifierFooter }
+                    if let prepareError {
+                        clearRow {
                             Text(prepareError)
                                 .font(Theme.font.caption)
                                 .foregroundStyle(Theme.color.status.destructive)
-                                .padding(.horizontal, Theme.spacing.md)
                         }
                     }
-                    .padding(.horizontal, Theme.spacing.md)
-                    .padding(.top, Theme.spacing.md)
-                    .padding(.bottom, 200)
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                // Keep the last rows clear of the floating share button.
+                .contentMargins(.bottom, 96, for: .scrollContent)
             }
 
             VStack {
                 Spacer()
                 BottomActionStack {
-                    // Secondary (top): delete this single entry. Lives
-                    // here so per-item deletion is reachable while
-                    // viewing the entry; the Gefahrenzone only does bulk.
-                    Button(role: .destructive) {
-                        showDeleteConfirm = true
-                    } label: {
-                        Label(deleteButtonTitle, systemImage: "trash")
-                    }
-                    .buttonStyle(.dsDestructive(size: .md, fullWidth: true))
-                    .disabled(isPreparing)
-
                     Button(action: prepareAndShare) {
                         if isPreparing {
                             HStack(spacing: Theme.spacing.xs) {
@@ -355,38 +352,108 @@ struct VerlaufDetailView: View {
                 ShareSheet(items: [url])
             }
         }
-        .confirmationDialog(
-            deleteButtonTitle,
-            isPresented: $showDeleteConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Endgültig löschen", role: .destructive) { deleteEntry() }
-            Button("Abbrechen", role: .cancel) {}
-        } message: {
-            Text("Diese Aufnahme wird vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden.")
-        }
         .task { await loadServerStatus() }
         .onDisappear { player.stop() }
     }
 
-    private var deleteButtonTitle: String {
-        switch item {
-        case .walkthrough: return "Sitzung löschen"
-        case .driveBy:     return "Notiz löschen"
+    // MARK: - List sections
+
+    /// Chrome-free list row for the hero / stats / footer cards: the card
+    /// keeps its own rounded background, the row itself stays transparent
+    /// and separator-free so it reads as floating chrome, not a list item.
+    @ViewBuilder
+    private func clearRow<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+            .listRowInsets(EdgeInsets(top: Theme.spacing.xs, leading: Theme.spacing.md,
+                                      bottom: Theme.spacing.xs, trailing: Theme.spacing.md))
+    }
+
+    private func sectionHeaderLabel(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.font.monoCaption)
+            .foregroundStyle(Theme.color.text.subdued)
+            .tracking(0.5)
+            .textCase(nil)
+    }
+
+    @ViewBuilder
+    private var segmentsSection: some View {
+        let segs = visibleSegments
+        if !segs.isEmpty {
+            Section {
+                ForEach(segs) { d in
+                    SegmentRow(descriptor: d, player: player)
+                        .listRowBackground(Theme.color.bg.surface)
+                        .listRowInsets(EdgeInsets(top: 8, leading: Theme.spacing.md,
+                                                  bottom: 8, trailing: Theme.spacing.md))
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) { deleteSegment(d) } label: {
+                                Label("Löschen", systemImage: "trash").labelStyle(.iconOnly)
+                            }
+                        }
+                }
+            } header: { sectionHeaderLabel("ABSCHNITTE") }
         }
     }
 
-    /// Delete this entry's on-disk artifacts, drop any orphaned upload,
-    /// stop playback, and pop back to the list (which re-scans onAppear).
-    private func deleteEntry() {
-        player.stop()
-        do {
-            try SessionHistoryStore.delete(item)
+    @ViewBuilder
+    private var notesSection: some View {
+        let notes = visibleNotes
+        if !notes.isEmpty {
+            Section {
+                ForEach(notes, id: \.note.seed_id) { e in
+                    NoteRow(entry: e, player: player)
+                        .listRowBackground(Theme.color.bg.surface)
+                        .listRowInsets(EdgeInsets(top: 8, leading: Theme.spacing.md,
+                                                  bottom: 8, trailing: Theme.spacing.md))
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button(role: .destructive) { deleteNote(e) } label: {
+                                Label("Löschen", systemImage: "trash").labelStyle(.iconOnly)
+                            }
+                        }
+                }
+            } header: { sectionHeaderLabel("NOTIZEN") }
+        }
+    }
+
+    private var visibleSegments: [SegmentDescriptor] {
+        sectionDescriptors().filter { !deletedSegmentIDs.contains($0.id) }
+    }
+    private var visibleNotes: [SurfacedNoteEntry] {
+        surfacedNoteEntries().filter { !deletedNoteIDs.contains($0.note.seed_id) }
+    }
+
+    // MARK: - Per-row deletion
+
+    /// Delete one segment. For a walkthrough that's the segment's audio
+    /// file (the session and its other segments stay). For a note detail
+    /// the single row *is* the whole note, so it deletes the note and
+    /// pops back. A removed source also drops any pending upload.
+    private func deleteSegment(_ d: SegmentDescriptor) {
+        switch item {
+        case .voiceNote:
+            player.stop()
+            try? SessionHistoryStore.delete(item)
             Task { _ = await SessionUploader.shared.purgeOrphans() }
             dismiss()
-        } catch {
-            prepareError = "Löschen fehlgeschlagen: \(error.localizedDescription)"
+        case .walkthrough:
+            if player.activeURL == d.audioURL { player.stop() }
+            if let url = d.audioURL { try? FileManager.default.removeItem(at: url) }
+            deletedSegmentIDs.insert(d.id)
+            Task { _ = await SessionUploader.shared.purgeOrphans() }
         }
+    }
+
+    /// Delete one surfaced note. A surfaced note is a standalone drive-by
+    /// recording living under `driveby_seeds/`, so this removes its whole
+    /// directory — it disappears from the Verlauf list too.
+    private func deleteNote(_ e: SurfacedNoteEntry) {
+        if player.activeURL == e.audioURL { player.stop() }
+        try? FileManager.default.removeItem(at: e.audioURL.deletingLastPathComponent())
+        deletedNoteIDs.insert(e.note.seed_id)
+        Task { _ = await SessionUploader.shared.purgeOrphans() }
     }
 
     private func loadServerStatus() async {
@@ -395,7 +462,7 @@ struct VerlaufDetailView: View {
         let sessionID: String
         switch item {
         case .walkthrough(let w): sessionID = w.sessionID
-        case .driveBy:            return  // drive-by seeds upload as part of a session, no per-seed status
+        case .voiceNote:            return  // notes upload as part of a session, no per-note status
         }
         do {
             serverStatus = try await ServerClient.shared.sessionStatus(sessionID: sessionID)
@@ -408,7 +475,7 @@ struct VerlaufDetailView: View {
     private var title: String {
         switch item {
         case .walkthrough: return "Abend"
-        case .driveBy:     return "Drive-by"
+        case .voiceNote:     return "Notiz"
         }
     }
 
@@ -416,7 +483,7 @@ struct VerlaufDetailView: View {
 
     /// Hero header: tinted icon disc + "aufgenommen: <date>, <time>"
     /// beside it. Walkthroughs add a "Tagebucheintrag:" block below.
-    /// The session type (Abend / Drive-by) already lives in the page
+    /// The session type (Abend / Note) already lives in the page
     /// title, so no headline duplicates it here.
     private var heroCard: some View {
         let icon: String
@@ -431,11 +498,11 @@ struct VerlaufDetailView: View {
             iconFg = Theme.color.text.link
             captured = w.capturedAt
             diaryDate = w.diaryDate
-        case .driveBy(let d):
+        case .voiceNote(let d):
             icon = "mic.fill"
             iconBg = Theme.color.tint.warning10
             iconFg = Theme.color.status.warning
-            captured = d.seed.captured_at
+            captured = d.note.captured_at
             diaryDate = nil
         }
         let recordedLine = Self.heroDayShort.string(from: captured)
@@ -494,14 +561,14 @@ struct VerlaufDetailView: View {
                 .init(value: "\(w.segmentURLs.count)", label: "Segmente"),
                 .init(value: String(format: "%.1f MB", totalMB), label: "Größe"),
             ]
-        case .driveBy(let d):
+        case .voiceNote(let d):
             let bytes = (try? d.directory.appending(path: "audio.m4a")
                 .resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
             let kb = Double(bytes) / 1_000
             tiles = [
-                .init(value: String(format: "%.0f", d.seed.duration_seconds.rounded()) + " s",
+                .init(value: String(format: "%.0f", d.note.duration_seconds.rounded()) + " s",
                       label: "Dauer"),
-                .init(value: d.seed.language.uppercased(), label: "Sprache"),
+                .init(value: d.note.language.uppercased(), label: "Sprache"),
                 .init(value: String(format: "%.0f KB", kb), label: "Größe"),
             ]
         }
@@ -523,9 +590,9 @@ struct VerlaufDetailView: View {
         case .walkthrough(let w):
             label = "SESSION-ID"
             value = w.sessionID
-        case .driveBy(let d):
+        case .voiceNote(let d):
             label = "SEED-ID"
-            value = d.seed.id
+            value = d.note.id
         }
         return VStack(alignment: .leading, spacing: 4) {
             Text(label)
@@ -588,82 +655,33 @@ struct VerlaufDetailView: View {
         return f
     }()
 
-    // MARK: - Notes list
+    // MARK: - Notes data
 
-    /// Drive-by seeds folded into this walkthrough. Driven by
-    /// `manifest.drive_by_seeds_surfaced`, joined against the live list
-    /// of seed directories on disk. Renders nothing for drive-by detail
-    /// pages or when no seeds were folded in.
-    @ViewBuilder
-    private var notesList: some View {
-        let entries = surfacedNoteEntries()
-        if entries.isEmpty {
-            EmptyView()
-        } else {
-            VStack(alignment: .leading, spacing: Theme.spacing.sm) {
-                Text("NOTIZEN")
-                    .font(Theme.font.monoCaption)
-                    .foregroundStyle(Theme.color.text.subdued)
-                    .tracking(0.5)
-                    .padding(.horizontal, Theme.spacing.xs)
-
-                VStack(spacing: Theme.spacing.sm) {
-                    ForEach(entries, id: \.seed.seed_id) { e in
-                        NoteRow(entry: e, player: player)
-                    }
-                }
-            }
-        }
-    }
-
+    /// Notes folded into this walkthrough. Driven by
+    /// `manifest.drive_by_seeds_surfaced`, joined against the live list of
+    /// note directories on disk. Rendered by `notesSection`.
     private func surfacedNoteEntries() -> [SurfacedNoteEntry] {
         guard case .walkthrough(let w) = item,
               let manifest = w.manifest,
               !manifest.drive_by_seeds_surfaced.isEmpty
         else { return [] }
         let order = manifest.drive_by_seeds_surfaced
-        let allSeeds = SessionHistoryStore.loadDriveBys()
+        let allSeeds = SessionHistoryStore.loadVoiceNotes()
         let bySeedID = Dictionary(uniqueKeysWithValues: allSeeds.map {
-            ($0.seed.seed_id, $0)
+            ($0.note.seed_id, $0)
         })
-        return order.compactMap { seedID -> SurfacedNoteEntry? in
-            guard let entry = bySeedID[seedID] else { return nil }
+        return order.compactMap { noteID -> SurfacedNoteEntry? in
+            guard let entry = bySeedID[noteID] else { return nil }
             let url = entry.directory.appending(path: "audio.m4a")
-            return SurfacedNoteEntry(seed: entry.seed, audioURL: url)
+            return SurfacedNoteEntry(note: entry.note, audioURL: url)
         }
     }
 
-    // MARK: - Sections list
-
-    /// Per-segment list with play button, duration, first two transcript
-    /// lines, and the server-side processing status. For walkthrough
-    /// sessions we walk the manifest's segments so the labels carry the
-    /// calendar-event titles. For drive-by we render a single row.
-    @ViewBuilder
-    private var sectionsList: some View {
-        let descriptors = sectionDescriptors()
-        if descriptors.isEmpty {
-            EmptyView()
-        } else {
-            VStack(alignment: .leading, spacing: Theme.spacing.sm) {
-                Text("ABSCHNITTE")
-                    .font(Theme.font.monoCaption)
-                    .foregroundStyle(Theme.color.text.subdued)
-                    .tracking(0.5)
-                    .padding(.horizontal, Theme.spacing.xs)
-
-                VStack(spacing: Theme.spacing.sm) {
-                    ForEach(descriptors) { d in
-                        SegmentRow(descriptor: d, player: player)
-                    }
-                }
-            }
-        }
-    }
+    // MARK: - Sections data
 
     /// Build the descriptors driving the sections list. Walkthrough:
     /// one descriptor per manifest segment, with the per-segment server
-    /// status when available. Drive-by: single descriptor.
+    /// status when available. Note: single descriptor.
     private func sectionDescriptors() -> [SegmentDescriptor] {
         switch item {
         case .walkthrough(let w):
@@ -710,8 +728,8 @@ struct VerlaufDetailView: View {
                     subtitle = nil
                     transcript = fr.transcript
                     language = fr.language
-                case .driveBy(let db):
-                    title = "Drive-by"
+                case .voiceNote(let db):
+                    title = "Notiz"
                     subtitle = nil
                     transcript = db.transcript
                     language = db.language
@@ -738,16 +756,17 @@ struct VerlaufDetailView: View {
                         : nil
                 )
             }
-        case .driveBy(let d):
+        case .voiceNote(let d):
             let url = d.directory.appending(path: "audio.m4a")
             return [SegmentDescriptor(
-                id: d.seed.id,
-                title: "Drive-by-Aufnahme",
+                id: d.note.id,
+                title: "Notiz-Aufnahme",
                 subtitle: nil,
-                transcript: d.seed.transcript,
-                language: d.seed.language,
+                transcript: d.note.transcript,
+                language: d.note.language,
                 audioURL: url,
-                serverStatus: nil
+                serverStatus: nil,
+                durationSeconds: d.note.duration_seconds
             )]
         }
     }
@@ -755,7 +774,7 @@ struct VerlaufDetailView: View {
     private func segmentIDFor(segment: Segment) -> String {
         switch segment {
         case .calendarEvent(let v):  return v.segment_id
-        case .driveBy(let v):        return v.segment_id
+        case .voiceNote(let v):        return v.segment_id
         case .freeReflection(let v): return v.segment_id
         case .emptyBlock(let v):     return v.segment_id
         case .generalSection(let v): return v.segment_id
@@ -781,8 +800,8 @@ struct VerlaufDetailView: View {
         Task {
             do {
                 switch item {
-                case .driveBy(let d):
-                    // Drive-by audio sits in Application Support under a
+                case .voiceNote(let d):
+                    // Note audio sits in Application Support under a
                     // directory whose name is an ISO timestamp with
                     // colons — both of which break iOS's share sheet
                     // (LaunchServices error -10814, "no file-provider
@@ -791,7 +810,7 @@ struct VerlaufDetailView: View {
                     let src = d.directory.appending(path: "audio.m4a")
                     shareURL = try Self.stageInTempForSharing(
                         sourceURL: src,
-                        baseName: "voicediary-driveby-\(Self.sanitize(d.seed.id))"
+                        baseName: "voicediary-note-\(Self.sanitize(d.note.id))"
                     )
                 case .walkthrough(let w):
                     // Combine all segments into one m4a in tmp/.
@@ -801,11 +820,25 @@ struct VerlaufDetailView: View {
                     // never hits the mic). Titles are pulled from the
                     // manifest snapshot; older sessions without a
                     // manifest fall back to plain concatenation.
-                    let titles = Self.titlesForSegments(in: w)
                     let language = w.manifest?.locale_primary ?? "de-DE"
+                    // A segment may have been swiped away in this view, so
+                    // merge only files that still exist. Titles align 1:1
+                    // with the full segment list — once any are missing we
+                    // drop them and fall back to plain concatenation.
+                    let existing = w.segmentURLs.filter {
+                        FileManager.default.fileExists(atPath: $0.path)
+                    }
+                    guard !existing.isEmpty else {
+                        prepareError = "Keine Audiodateien mehr vorhanden."
+                        isPreparing = false
+                        return
+                    }
+                    let titles = existing.count == w.segmentURLs.count
+                        ? Self.titlesForSegments(in: w)
+                        : nil
                     let merged = try await AudioMerger.mergedTempFile(
                         for: w.sessionID,
-                        segments: w.segmentURLs,
+                        segments: existing,
                         titles: titles,
                         titleLanguage: language
                     )
@@ -1000,8 +1033,12 @@ struct SegmentDescriptor: Identifiable {
     /// Server-side processing status: "processed" / "failed" /
     /// "pending_analysis" / "unknown" (server returned 404, so the
     /// in-memory status was lost). `nil` while the lookup is in flight
-    /// or doesn't apply (drive-by detail).
+    /// or doesn't apply (note detail).
     let serverStatus: String?
+    /// Audio length when it's known without decoding — notes carry
+    /// `duration_seconds` in their metadata. `nil` for walkthrough
+    /// segments, which the row loads lazily from the file instead.
+    var durationSeconds: TimeInterval? = nil
 }
 
 private struct SegmentRow: View {
@@ -1015,6 +1052,21 @@ private struct SegmentRow: View {
     }
     private var isPlaying: Bool { isActive && player.isPlaying }
 
+    /// "09:00 – 09:30 · 1:24 · DE" — time range · audio length · language,
+    /// each part included only when available. Length comes from the
+    /// descriptor when known (notes), else from the lazily-loaded value.
+    private var metaText: String {
+        var parts: [String] = []
+        if let s = descriptor.subtitle, !s.isEmpty { parts.append(s) }
+        if let d = descriptor.durationSeconds ?? duration, d > 0 {
+            parts.append(SegmentPlayer.formatDuration(d))
+        }
+        if let l = descriptor.language, !l.isEmpty {
+            parts.append(String(l.prefix(2)).uppercased())
+        }
+        return parts.joined(separator: " · ")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.sm) {
             HStack(alignment: .top, spacing: Theme.spacing.sm) {
@@ -1025,26 +1077,15 @@ private struct SegmentRow: View {
                         .font(Theme.font.body.weight(.medium))
                         .foregroundStyle(Theme.color.text.primary)
                         .lineLimit(2)
-                    // The active row's scrubber already shows the
-                    // current/total time, so the static duration would
-                    // be redundant there — drop it while active.
-                    HStack(spacing: Theme.spacing.xs) {
-                        if let subtitle = descriptor.subtitle {
-                            Text(subtitle)
-                                .font(Theme.font.caption)
-                                .foregroundStyle(Theme.color.text.subdued)
-                        }
-                        if !isActive, descriptor.subtitle != nil, duration != nil {
-                            Text("·")
-                                .font(Theme.font.caption)
-                                .foregroundStyle(Theme.color.text.subdued)
-                        }
-                        if !isActive, let duration {
-                            Text(SegmentPlayer.formatDuration(duration))
-                                .font(Theme.font.caption)
-                                .foregroundStyle(Theme.color.text.subdued)
-                                .monospacedDigit()
-                        }
+                    // Metadata line — time range · audio length · language.
+                    // Length stays visible even while playing (it's the
+                    // clip length the user wants at a glance); the
+                    // scrubber's total just mirrors it.
+                    if !metaText.isEmpty {
+                        Text(metaText)
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.text.subdued)
+                            .monospacedDigit()
                     }
                 }
 
@@ -1068,17 +1109,11 @@ private struct SegmentRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(Theme.spacing.md)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
         .task(id: descriptor.audioURL?.path) {
-            guard let url = descriptor.audioURL else { return }
+            // Notes already carry their length in the descriptor; only
+            // walkthrough segments need the lazy probe from the file.
+            guard descriptor.durationSeconds == nil,
+                  let url = descriptor.audioURL else { return }
             duration = await SegmentPlayer.duration(of: url)
         }
     }
@@ -1154,22 +1189,31 @@ private struct SegmentRow: View {
 // MARK: - Note row
 
 struct SurfacedNoteEntry: Sendable {
-    let seed: DriveBySeed
+    let note: VoiceNote
     let audioURL: URL
 }
 
-/// One drive-by seed surfaced into a walkthrough. Visually mirrors
+/// One note surfaced into a walkthrough. Visually mirrors
 /// `SegmentRow` (play button + meta + transcript preview) but sourced
-/// from a `DriveBySeed` rather than a manifest segment, and labelled
-/// with the seed's capture time instead of an event title.
+/// from a `VoiceNote` rather than a manifest segment, and labelled
+/// with the note's capture time instead of an event title.
 private struct NoteRow: View {
     let entry: SurfacedNoteEntry
     let player: SegmentPlayer
 
-    @State private var duration: TimeInterval?
-
     private var isActive: Bool { player.activeURL == entry.audioURL }
     private var isPlaying: Bool { isActive && player.isPlaying }
+
+    /// "1:24 · DE" — audio length · language. Length comes straight from
+    /// the note's stored `duration_seconds` (no file probe needed).
+    private var metaText: String {
+        var parts: [String] = []
+        let dur = entry.note.duration_seconds
+        if dur > 0 { parts.append(SegmentPlayer.formatDuration(dur)) }
+        let l = entry.note.language
+        if !l.isEmpty { parts.append(String(l.prefix(2)).uppercased()) }
+        return parts.joined(separator: " · ")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.sm) {
@@ -1194,10 +1238,9 @@ private struct NoteRow: View {
                         .font(Theme.font.body.weight(.medium))
                         .foregroundStyle(Theme.color.text.primary)
                         .monospacedDigit()
-                    // Hide the static duration on the active row — the
-                    // scrubber below carries current/total time instead.
-                    if !isActive, let duration {
-                        Text(SegmentPlayer.formatDuration(duration))
+                    // Audio length · language, always shown.
+                    if !metaText.isEmpty {
+                        Text(metaText)
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                             .monospacedDigit()
@@ -1211,8 +1254,8 @@ private struct NoteRow: View {
                 PlaybackScrubber(player: player, tint: Theme.color.status.warning)
             }
 
-            if !entry.seed.transcript.isEmpty {
-                Text(entry.seed.transcript)
+            if !entry.note.transcript.isEmpty {
+                Text(entry.note.transcript)
                     .font(Theme.font.callout)
                     .foregroundStyle(Theme.color.text.secondary)
                     .lineLimit(3)
@@ -1220,25 +1263,13 @@ private struct NoteRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(Theme.spacing.md)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
-        .task(id: entry.audioURL.path) {
-            duration = await SegmentPlayer.duration(of: entry.audioURL)
-        }
     }
 
     private var timeText: String {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm"
-        return f.string(from: entry.seed.captured_at)
+        return f.string(from: entry.note.captured_at)
     }
 }
 

@@ -11,7 +11,7 @@ public struct CaptureActivityAttributes: ActivityAttributes, Sendable {
     /// to make the island THE anchor for "is the mic open / who's
     /// talking?").
     public enum Kind: String, Codable, Hashable, Sendable {
-        case recording  // drive-by capture
+        case recording  // note capture
         case speaking   // editor TTS playback
         case listening  // walkthrough waiting on the user
     }

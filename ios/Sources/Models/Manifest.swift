@@ -116,7 +116,7 @@ public struct TimeRange: Codable, Sendable {
 
 public enum Segment: Codable, Sendable {
     case calendarEvent(CalendarEventSegment)
-    case driveBy(DriveBySegment)
+    case voiceNote(VoiceNoteSegment)
     case freeReflection(FreeReflectionSegment)
     case emptyBlock(EmptyBlockSegment)
     case generalSection(GeneralSectionSegment)
@@ -129,7 +129,7 @@ public enum Segment: Codable, Sendable {
         let single = try decoder.singleValueContainer()
         switch kind {
         case "calendar_event":  self = .calendarEvent(try single.decode(CalendarEventSegment.self))
-        case "drive_by":        self = .driveBy(try single.decode(DriveBySegment.self))
+        case "drive_by":        self = .voiceNote(try single.decode(VoiceNoteSegment.self))
         case "free_reflection": self = .freeReflection(try single.decode(FreeReflectionSegment.self))
         case "empty_block":     self = .emptyBlock(try single.decode(EmptyBlockSegment.self))
         case "general_section": self = .generalSection(try single.decode(GeneralSectionSegment.self))
@@ -146,7 +146,7 @@ public enum Segment: Codable, Sendable {
         var single = encoder.singleValueContainer()
         switch self {
         case .calendarEvent(let v):   try single.encode(v)
-        case .driveBy(let v):         try single.encode(v)
+        case .voiceNote(let v):         try single.encode(v)
         case .freeReflection(let v):  try single.encode(v)
         case .emptyBlock(let v):      try single.encode(v)
         case .generalSection(let v):  try single.encode(v)
@@ -156,7 +156,7 @@ public enum Segment: Codable, Sendable {
     public var audioFile: String {
         switch self {
         case .calendarEvent(let v):  return v.audio_file
-        case .driveBy(let v):        return v.audio_file
+        case .voiceNote(let v):        return v.audio_file
         case .freeReflection(let v): return v.audio_file
         case .emptyBlock(let v):     return v.audio_file
         case .generalSection(let v): return v.audio_file
@@ -193,7 +193,7 @@ public struct CalendarEventSegment: Codable, Sendable {
     }
 }
 
-public struct DriveBySegment: Codable, Sendable {
+public struct VoiceNoteSegment: Codable, Sendable {
     public let segment_type: String = "drive_by"
     public var segment_id: String
     public var captured_at: String
@@ -312,7 +312,7 @@ public struct Manifest: Codable, Sendable {
     public var segments: [Segment]
     public var todos_implicit_confirmed: [Todo]
     public var todos_implicit_rejected: [TodoRejected]
-    /// Seed ids reviewed during the drive-by section of this session.
+    /// Seed ids reviewed during the note section of this session.
     /// Server treats these as "consumed" — they won't be re-surfaced.
     public var drive_by_seeds_surfaced: [String]
     /// Seed ids the user explicitly skipped (or that aged out of the

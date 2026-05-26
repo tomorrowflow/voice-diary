@@ -1,9 +1,9 @@
 import Foundation
 
-// On-disk record for a single drive-by capture (M2). Surfaced in the
+// On-disk record for a single note capture (M2). Surfaced in the
 // evening walkthrough at the matching event time (M10).
 
-public struct DriveBySeed: Codable, Sendable, Identifiable {
+public struct VoiceNote: Codable, Sendable, Identifiable {
     public var seed_id: String
     public var captured_at: Date
     public var duration_seconds: Double

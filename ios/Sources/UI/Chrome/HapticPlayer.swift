@@ -9,7 +9,7 @@ import os
 /// modifier on top of it) silently no-ops on iOS while the app is
 /// actively recording — the system mutes the generator-driven Taptic
 /// Engine so the haptic motor's vibration doesn't bleed into the
-/// microphone. Drive-by start works because the haptic fires *before*
+/// microphone. Note start works because the haptic fires *before*
 /// `engine.start()`; the walkthrough's Weiter button fires *while*
 /// AVAudioEngine is mid-segment, which is exactly when the mute kicks
 /// in.

@@ -37,13 +37,13 @@ public final class WakeWordDetector: @unchecked Sendable {
     public enum Action: String, Sendable, Hashable {
         case advance        // "weiter" / "next" / "continue"
         // End the current section (calendar block, general section, or
-        // drive-by). Coordinator advances to the next plan step rather
+        // note). Coordinator advances to the next plan step rather
         // than ingesting the whole walkthrough — saying "fertig" inside
         // meeting 2 of 5 should move you to meeting 3, not finish
         // everything. The X button is still the full-cancel path.
         case finishSection  // "fertig" / "Abschluss" / "done" / "finish section"
 
-        // Note-review-only intents (drive-by recap step). The base
+        // Note-review-only intents (note recap step). The base
         // phrase tables don't include these — the coordinator hands
         // the extended `*NoteReview` tables to the detector when
         // state == .noteReview so a "später" mid-meeting doesn't get

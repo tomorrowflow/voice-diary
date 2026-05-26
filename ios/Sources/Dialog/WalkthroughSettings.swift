@@ -6,9 +6,9 @@ import Foundation
 //      (Defaults: only accepted, timed events; matches SPEC §6.)
 //   2. Section plan — the ordered list of walkthrough sections.
 //      Three section kinds: user-defined `general` openers, the singleton
-//      `calendarEvents` block (per-event loop), and the singleton `driveBy`
-//      block (closing free reflection + surfaced drive-by seeds).
-//      Default order = [calendarEvents, driveBy], i.e. the original
+//      `calendarEvents` block (per-event loop), and the singleton `voiceNote`
+//      block (closing free reflection + surfaced notes).
+//      Default order = [calendarEvents, voiceNote], i.e. the original
 //      behaviour with no general sections defined.
 //
 // Both layers persist via `UserDefaults` and are read fresh on every
@@ -96,13 +96,13 @@ public struct GeneralSection: Codable, Sendable, Identifiable, Equatable {
 public enum WalkthroughSection: Codable, Sendable, Equatable, Identifiable {
     case general(id: String)
     case calendarEvents
-    case driveBy
+    case voiceNote
 
     public var id: String {
         switch self {
         case .general(let id):  return "general:\(id)"
         case .calendarEvents:   return "system:calendarEvents"
-        case .driveBy:          return "system:driveBy"
+        case .voiceNote:          return "system:voiceNote"
         }
     }
 
@@ -120,7 +120,7 @@ public enum WalkthroughSection: Codable, Sendable, Equatable, Identifiable {
         case "calendar_events":
             self = .calendarEvents
         case "drive_by":
-            self = .driveBy
+            self = .voiceNote
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .kind, in: c,
@@ -137,7 +137,7 @@ public enum WalkthroughSection: Codable, Sendable, Equatable, Identifiable {
             try c.encode(id, forKey: .id)
         case .calendarEvents:
             try c.encode("calendar_events", forKey: .kind)
-        case .driveBy:
+        case .voiceNote:
             try c.encode("drive_by", forKey: .kind)
         }
     }
@@ -215,14 +215,14 @@ public enum WalkthroughSettingsStore {
         let pruned = order.filter { section in
             switch section {
             case .general(let id): return validIDs.contains(id)
-            case .calendarEvents, .driveBy: return true
+            case .calendarEvents, .voiceNote: return true
             }
         }
         saveOrder(pruned)
     }
 
     /// Convenience: insert/update a single general section. New ones land
-    /// at the end of the order, just before driveBy if present.
+    /// at the end of the order, just before voiceNote if present.
     public static func upsertGeneral(_ section: GeneralSection) {
         var current = generals
         if let i = current.firstIndex(where: { $0.id == section.id }) {
@@ -231,7 +231,7 @@ public enum WalkthroughSettingsStore {
         } else {
             current.append(section)
             saveGenerals(current)
-            insertGeneralIntoOrderBeforeDriveBy(section.id)
+            insertGeneralIntoOrderBeforeVoiceNote(section.id)
         }
     }
 
@@ -243,7 +243,7 @@ public enum WalkthroughSettingsStore {
 
     /// The persisted plan, repaired against the current `generals` list:
     ///   * any `.general` whose body has been deleted is dropped;
-    ///   * `.calendarEvents` / `.driveBy` are guaranteed to appear once
+    ///   * `.calendarEvents` / `.voiceNote` are guaranteed to appear once
     ///     each (appended in default order if missing) so the user can
     ///     never lock themselves out of either system block.
     public static var order: [WalkthroughSection] {
@@ -251,7 +251,7 @@ public enum WalkthroughSettingsStore {
         let generalIDs = Set(generals.map(\.id))
         var out: [WalkthroughSection] = []
         var seenCalendar = false
-        var seenDriveBy = false
+        var seenVoiceNote = false
         for s in stored {
             switch s {
             case .general(let id):
@@ -261,14 +261,14 @@ public enum WalkthroughSettingsStore {
                 guard !seenCalendar else { continue }
                 seenCalendar = true
                 out.append(s)
-            case .driveBy:
-                guard !seenDriveBy else { continue }
-                seenDriveBy = true
+            case .voiceNote:
+                guard !seenVoiceNote else { continue }
+                seenVoiceNote = true
                 out.append(s)
             }
         }
         if !seenCalendar { out.append(.calendarEvents) }
-        if !seenDriveBy  { out.append(.driveBy) }
+        if !seenVoiceNote  { out.append(.voiceNote) }
         return out
     }
 
@@ -285,16 +285,16 @@ public enum WalkthroughSettingsStore {
         else {
             // First launch / migration: existing behaviour is calendar
             // first, then closing free reflection.
-            return [.calendarEvents, .driveBy]
+            return [.calendarEvents, .voiceNote]
         }
         return decoded
     }
 
-    private static func insertGeneralIntoOrderBeforeDriveBy(_ id: String) {
+    private static func insertGeneralIntoOrderBeforeVoiceNote(_ id: String) {
         var current = order
         let entry: WalkthroughSection = .general(id: id)
-        if let driveByIdx = current.firstIndex(of: .driveBy) {
-            current.insert(entry, at: driveByIdx)
+        if let voiceNoteIdx = current.firstIndex(of: .voiceNote) {
+            current.insert(entry, at: voiceNoteIdx)
         } else {
             current.append(entry)
         }

@@ -198,5 +198,5 @@ public struct CaptureView: View {
 // share `dsPrimary` / `dsDestructive` shapes with the rest of the
 // app (Walkthrough, TodoConfirm) for visual consistency.
 
-// SeedSummaryCard removed — last-seed playback + metadata now lives
+// SeedSummaryCard removed — last-note playback + metadata now lives
 // in the Verlauf tab so the recording screen stays single-purpose.

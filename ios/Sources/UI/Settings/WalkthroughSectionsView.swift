@@ -81,7 +81,7 @@ public struct WalkthroughSectionsView: View {
                         )
                         SystemSectionRow(
                             iconName: "mic.fill",
-                            title: "Drive-by-Notizen",
+                            title: "Notizen",
                             subtitle: "Holt Notizen aus dem Tag ab und fragt nach offenem Restbedarf."
                         )
                     } header: {

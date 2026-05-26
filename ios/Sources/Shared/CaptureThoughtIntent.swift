@@ -1,14 +1,14 @@
 import AppIntents
 import Foundation
 
-// Drive-by capture toggle exposed both as the Action Button binding
-// ("Voice Diary — Gedanke aufnehmen") and as the tap target of the
+// Note capture toggle exposed both as the Action Button binding
+// ("Voice Diary — Notiz aufnehmen") and as the tap target of the
 // lock-screen accessory widget. Living in `Sources/Shared` lets the
 // widget extension reference the intent directly — that's what gives
 // the lock-screen tap its haptic feedback (a `Link(URL)` doesn't
 // trigger one; an App Intent button does).
 //
-// Behavior: each invocation toggles drive-by capture. First press opens
+// Behavior: each invocation toggles note capture. First press opens
 // the app and starts a recording; second press (while recording)
 // stops it. We *open the app on run* so AVAudioEngine has a foreground
 // audio session — starting capture from a true background context is
@@ -20,9 +20,9 @@ import Foundation
 // shortcut.
 
 public struct CaptureThoughtIntent: AppIntent {
-    public static let title: LocalizedStringResource = "Gedanke aufnehmen"
+    public static let title: LocalizedStringResource = "Notiz aufnehmen"
     public static let description = IntentDescription(
-        "Startet (oder beendet) eine Drive-by-Aufnahme. Lege diesen Intent auf den Action Button.",
+        "Startet (oder beendet) eine Notiz-Aufnahme. Lege diesen Intent auf den Action Button.",
         categoryName: "Capture"
     )
 

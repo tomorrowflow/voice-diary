@@ -44,7 +44,7 @@ private final class WakeSinkBox: @unchecked Sendable {
 // `start(outputURL:)` installs the writer tap on an already-running
 // engine; `stop()` removes the tap and finalises the file but leaves
 // the engine alive. `shutdown()` is the explicit teardown call (used
-// at end-of-walkthrough or end-of-drive-by).
+// at end-of-walkthrough or end-of-note).
 //
 // IMPORTANT — wake-word sink concurrency. The audio tap callback runs
 // on CoreAudio's high-priority thread; it can't `await` actor state
@@ -209,7 +209,7 @@ public actor AudioEngine {
     }
 
     /// Tear the engine down completely. Use at the very end of a
-    /// walkthrough or one-shot drive-by capture, when no further
+    /// walkthrough or one-shot note capture, when no further
     /// segments are coming. Idempotent.
     public func shutdown() async {
         if capturing {
@@ -243,7 +243,7 @@ public actor AudioEngine {
         // node's hardware format is only reliable *post*-start, and the
         // no-op tap builds its wake-word downsampler from that format.
         // Without this, a wake-word window opened before any segment
-        // recording — note review as the very first step (drive-by
+        // recording — note review as the very first step (note
         // notes, zero calendar events) — would carry a downsampler made
         // from a possibly-stale pre-start format and silently drop every
         // buffer. Swapping taps on a live engine is safe (it's exactly

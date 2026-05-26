@@ -205,7 +205,7 @@ public struct WalkthroughView: View {
             return 120
         case .briefing, .eventOpener, .eventListening,
              .generalOpener, .generalListening,
-             .driveByOpener, .driveByListening,
+             .voiceNoteOpener, .voiceNoteListening,
              .confirmingTodos:
             // Action stack (~190) + pinned timer (80 slot + 12 padding) +
             // breathing room — keeps the section card above both.
@@ -281,7 +281,7 @@ public struct WalkthroughView: View {
         case .briefing where currentEvent != nil,
              .eventOpener, .eventListening:    return currentEvent?.subject ?? "Termin"
         case .noteReview, .generalOpener, .generalListening,
-             .driveByOpener, .driveByListening:
+             .voiceNoteOpener, .voiceNoteListening:
             return coordinator.currentSectionTitle ?? "Abend"
         default:                               return "Abend"
         }
@@ -297,10 +297,10 @@ public struct WalkthroughView: View {
             // Notes + the closing-question step, so the dot row reads
             // "1 of N+1 ... N of N+1" across the per-note review and
             // "N+1 of N+1" once the closing card opens. Picking the
-            // total off `currentNoteSeed` so we don't reach into the
+            // total off `currentNote` so we don't reach into the
             // private plan from here.
-            return (coordinator.currentNoteSeed?.total ?? 0) + 1
-        case .driveByOpener, .driveByListening:
+            return (coordinator.currentNote?.total ?? 0) + 1
+        case .voiceNoteOpener, .voiceNoteListening:
             // Final step in the same breadcrumb sequence as the notes
             // — show the total only when at least one note preceded
             // it, otherwise the row would just be a single dot.
@@ -318,8 +318,8 @@ public struct WalkthroughView: View {
         case .confirmingTodos:
             return (coordinator.todoCandidateProgress?.index ?? 0) + 1
         case .noteReview:
-            return coordinator.currentNoteSeed?.index ?? 0
-        case .driveByOpener, .driveByListening:
+            return coordinator.currentNote?.index ?? 0
+        case .voiceNoteOpener, .voiceNoteListening:
             // Closing question = last dot in the breadcrumb row.
             let plannedNotes = coordinator.plannedNoteCount
             return plannedNotes > 0 ? plannedNotes + 1 : 0
@@ -446,7 +446,7 @@ private struct EventCard: View {
     }
 }
 
-/// Walkthrough listening counter. Matches the drive-by Aufnahme counter
+/// Walkthrough listening counter. Matches the note Aufnahme counter
 /// (`CaptureView.recordingBody`) on font size, weight, and slot height so
 /// both screens read as the same component at the same vertical position.
 private struct ListeningTimer: View {
@@ -1013,7 +1013,7 @@ private struct UploadingCard: View {
 }
 
 /// One step of the per-note review pass that runs at the start of the
-/// drive-by section. Renders a single drive-by seed full-screen — time,
+/// note section. Renders a single note full-screen — time,
 /// optional "older" badge for orphan notes, transcript body, and an
 /// optional play button. Visual only; no recording happens here. The
 /// breadcrumb dot row in the FlowHeader carries the "i of N+1" position
@@ -1031,26 +1031,26 @@ private struct NoteReviewCard: View {
     private var player: SegmentPlayer { coordinator.notePlayer }
 
     var body: some View {
-        let snapshot = coordinator.currentNoteSeed
+        let snapshot = coordinator.currentNote
         return VStack(alignment: .leading, spacing: Theme.spacing.md) {
-            if let seed = snapshot?.seed {
+            if let note = snapshot?.note {
                 // Player header: round play/pause disc + capture time and
                 // duration on the left, optional "older" badge on the
                 // right. Mirrors the Verlauf history row (`NoteRow`) so
                 // the manual replay here and the history playback read as
                 // one component — disc on the left, then a voice-memo
-                // scrubber once this seed is the active file.
+                // scrubber once this note is the active file.
                 HStack(alignment: .center, spacing: Theme.spacing.sm) {
-                    playButton(seed: seed)
+                    playButton(note: note)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(timeText(seed.captured_at))
+                        Text(timeText(note.captured_at))
                             .font(Theme.font.body.weight(.medium))
                             .foregroundStyle(Theme.color.text.primary)
                             .monospacedDigit()
                         // The active row's scrubber already carries
                         // current/total time, so the static duration is
                         // redundant there — only show it while inactive.
-                        if !isActive(seed: seed), let duration {
+                        if !isActive(note: note), let duration {
                             Text(SegmentPlayer.formatDuration(duration))
                                 .font(Theme.font.caption)
                                 .foregroundStyle(Theme.color.text.subdued)
@@ -1058,8 +1058,8 @@ private struct NoteReviewCard: View {
                         }
                     }
                     Spacer(minLength: Theme.spacing.xs)
-                    if isOrphan(seed: seed) {
-                        Text(orphanBadgeText(seed: seed))
+                    if isOrphan(note: note) {
+                        Text(orphanBadgeText(note: note))
                             .font(Theme.font.caption2.weight(.medium))
                             .foregroundStyle(Theme.color.status.warning)
                             .padding(.horizontal, Theme.spacing.sm)
@@ -1070,19 +1070,19 @@ private struct NoteReviewCard: View {
                     }
                 }
 
-                if isActive(seed: seed) {
+                if isActive(note: note) {
                     PlaybackScrubber(player: player, tint: Theme.color.status.warning)
                 }
             }
 
-            Text(snapshot?.seed.transcript.isEmpty == false
-                 ? snapshot!.seed.transcript
+            Text(snapshot?.note.transcript.isEmpty == false
+                 ? snapshot!.note.transcript
                  : (coordinator.confirmationLanguage == .de
                     ? "(kein Transkript verfügbar)"
                     : "(no transcript available)"))
                 .font(Theme.font.body)
                 .foregroundStyle(
-                    snapshot?.seed.transcript.isEmpty == false
+                    snapshot?.note.transcript.isEmpty == false
                         ? Theme.color.text.primary
                         : Theme.color.text.subdued
                 )
@@ -1091,7 +1091,7 @@ private struct NoteReviewCard: View {
 
             // "Für später" stays an icon-only escape hatch, bottom-right,
             // on orphan notes only — the card itself is voice-driven.
-            if let seed = snapshot?.seed, isOrphan(seed: seed) {
+            if let note = snapshot?.note, isOrphan(note: note) {
                 HStack(spacing: Theme.spacing.sm) {
                     Spacer(minLength: 0)
                     deferIconButton
@@ -1105,16 +1105,16 @@ private struct NoteReviewCard: View {
                 .fill(Theme.color.bg.containerInset)
         )
         // Static-duration fallback for the brief window before the
-        // coordinator's auto-play makes this seed the active file. The
+        // coordinator's auto-play makes this note the active file. The
         // player itself is driven by the coordinator (auto-play +
         // advance/drop teardown), so the card doesn't stop it on change.
-        .task(id: snapshot?.seed.audio_file_url.path) {
-            guard let url = snapshot?.seed.audio_file_url else { return }
+        .task(id: snapshot?.note.audio_file_url.path) {
+            guard let url = snapshot?.note.audio_file_url else { return }
             duration = await SegmentPlayer.duration(of: url)
         }
     }
 
-    /// "Für später" — only relevant on orphan seeds. Icon-only so the
+    /// "Für später" — only relevant on orphan notes. Icon-only so the
     /// primary surface stays calm; the spoken equivalent is
     /// `später` / `save for later` via the wake-word.
     private var deferIconButton: some View {
@@ -1133,51 +1133,51 @@ private struct NoteReviewCard: View {
 
     /// Round play/pause disc on the left of the card — same shape and
     /// tint as the Verlauf history note row's button. Tapping toggles
-    /// play/pause in place; the scrubber below appears while this seed is
+    /// play/pause in place; the scrubber below appears while this note is
     /// the player's active file. The primary interaction model is still
     /// voice (`nochmal` / `replay`); this is the manual escape hatch.
-    private func playButton(seed: DriveBySeed) -> some View {
+    private func playButton(note: VoiceNote) -> some View {
         Button {
-            player.toggle(url: seed.audio_file_url)
+            player.toggle(url: note.audio_file_url)
         } label: {
             ZStack {
                 Circle()
                     .fill(Theme.color.tint.warning10)
                     .frame(width: 36, height: 36)
-                Image(systemName: isPlaying(seed: seed) ? "pause.fill" : "play.fill")
+                Image(systemName: isPlaying(note: note) ? "pause.fill" : "play.fill")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Theme.color.status.warning)
                     // Optically centre the play glyph inside the disc.
-                    .offset(x: isPlaying(seed: seed) ? 0 : 1)
+                    .offset(x: isPlaying(note: note) ? 0 : 1)
             }
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            isPlaying(seed: seed)
+            isPlaying(note: note)
                 ? (coordinator.confirmationLanguage == .de ? "Pause" : "Pause")
                 : (coordinator.confirmationLanguage == .de ? "Anhören" : "Listen")
         )
     }
 
-    private func isActive(seed: DriveBySeed) -> Bool {
-        player.activeURL == seed.audio_file_url
+    private func isActive(note: VoiceNote) -> Bool {
+        player.activeURL == note.audio_file_url
     }
 
-    private func isPlaying(seed: DriveBySeed) -> Bool {
-        isActive(seed: seed) && player.isPlaying
+    private func isPlaying(note: VoiceNote) -> Bool {
+        isActive(note: note) && player.isPlaying
     }
 
-    private func isOrphan(seed: DriveBySeed) -> Bool {
+    private func isOrphan(note: VoiceNote) -> Bool {
         let cal = Calendar.current
-        return !cal.isDate(seed.captured_at, inSameDayAs: coordinator.selectedDate)
+        return !cal.isDate(note.captured_at, inSameDayAs: coordinator.selectedDate)
     }
 
-    private func orphanBadgeText(seed: DriveBySeed) -> String {
+    private func orphanBadgeText(note: VoiceNote) -> String {
         let f = DateFormatter()
         f.locale = Locale(identifier: coordinator.confirmationLanguage == .de ? "de_DE" : "en_US")
         f.dateFormat = "d. MMM"
         return (coordinator.confirmationLanguage == .de ? "Älter — " : "Older — ")
-            + f.string(from: seed.captured_at)
+            + f.string(from: note.captured_at)
     }
 
     private func timeText(_ date: Date?) -> String {

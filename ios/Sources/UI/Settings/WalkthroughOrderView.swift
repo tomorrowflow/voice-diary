@@ -81,7 +81,7 @@ private struct OrderRow: View {
         switch entry {
         case .general:        return "text.bubble"
         case .calendarEvents: return "calendar"
-        case .driveBy:        return "mic.fill"
+        case .voiceNote:        return "mic.fill"
         }
     }
 
@@ -91,8 +91,8 @@ private struct OrderRow: View {
             return generals.first { $0.id == id }?.title ?? "(unbekannt)"
         case .calendarEvents:
             return "Termine"
-        case .driveBy:
-            return "Drive-by-Notizen"
+        case .voiceNote:
+            return "Notizen"
         }
     }
 
@@ -102,7 +102,7 @@ private struct OrderRow: View {
             return generals.first { $0.id == id }?.introText
         case .calendarEvents:
             return "Per-Termin-Schleife mit Openern + Listen-Phase."
-        case .driveBy:
+        case .voiceNote:
             return "Holt offene Notizen ab und fragt nach freier Reflexion."
         }
     }

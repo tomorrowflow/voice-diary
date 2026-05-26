@@ -1,7 +1,7 @@
 import Foundation
 import UserNotifications
 
-// Transient local notification fired when a drive-by capture completes.
+// Transient local notification fired when a note capture completes.
 // Per SPEC §5.1 this is informational + auto-dismissed by the user (no
 // push, no APNs, no third-party services).
 

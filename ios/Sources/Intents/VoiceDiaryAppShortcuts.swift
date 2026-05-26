@@ -18,7 +18,7 @@ public struct VoiceDiaryAppShortcuts: AppShortcutsProvider {
                 "Capture with \(.applicationName)",
                 "Hey \(.applicationName), Notiz aufnehmen",
             ],
-            shortTitle: "Gedanke aufnehmen",
+            shortTitle: "Notiz aufnehmen",
             systemImageName: "mic.circle.fill"
         )
     }
