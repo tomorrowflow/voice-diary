@@ -75,6 +75,25 @@ public actor GemmaDialogLLM: DialogLLM {
         _ = try await ensureLoaded(progressHandler: progressHandler)
     }
 
+    /// Release the resident model so iOS can reclaim ~5 GB. Called from
+    /// scenePhase `.background` because iOS background memory limits
+    /// are far tighter than the increased-memory-limit foreground cap
+    /// — without this the app gets jetsam'd a few minutes after going
+    /// dark. The next opener triggers a re-load from the on-disk
+    /// HuggingFace cache (no network), which takes ~10-30 s on iPhone
+    /// 17 Pro depending on storage IO.
+    ///
+    /// In-flight loads are left alone deliberately: backgrounding
+    /// during a fresh download isn't user-initiated cancellation, and
+    /// `URLSession` already pauses itself when the app suspends.
+    public func unload() {
+        #if canImport(MLXLLM) && canImport(MLXLMCommon)
+        guard container != nil else { return }
+        container = nil
+        Diag.log("Gemma: unloaded")
+        #endif
+    }
+
     // MARK: - DialogLLM
 
     public func generateFollowUp(
@@ -226,32 +245,57 @@ public actor GemmaDialogLLM: DialogLLM {
             do { return try await task.value }
             catch { throw LLMError.unavailable("gemma_load_in_flight_failed") }
         }
-        // Hand `progressHandler` to the task closure as a local let so
-        // the @Sendable capture is explicit; the macro picks the
-        // matching variant at compile time.
-        let progress = progressHandler
+        // Wrap the caller's progress handler so we can also emit a
+        // single "totals known" diagnostic the moment the repo's file
+        // list resolves. The initial `HubClient.listFiles` phase fires
+        // no progress callbacks at all, so without this the developer
+        // console looks identical between "still listing" and "hung".
+        let userHandler = progressHandler
+        let firstTotalLogger = GemmaFirstTotalLogger()
+        let progress: @Sendable (Progress) -> Void = { p in
+            firstTotalLogger.logIfFirst(p)
+            userHandler?(p)
+        }
+        Diag.log("Gemma: starting load of \(Self.modelID)")
         let task = Task<ModelContainer, Error> {
             let configuration = ModelConfiguration(id: Self.modelID)
-            if let progress {
-                return try await #huggingFaceLoadModelContainer(
-                    configuration: configuration,
-                    progressHandler: progress
-                )
-            } else {
-                return try await #huggingFaceLoadModelContainer(
-                    configuration: configuration
-                )
-            }
+            return try await #huggingFaceLoadModelContainer(
+                configuration: configuration,
+                progressHandler: progress
+            )
         }
         loadTask = task
         do {
             let loaded = try await task.value
             container = loaded
             loadTask = nil
+            Diag.log("Gemma: load complete")
             return loaded
         } catch {
             loadTask = nil
+            Diag.log("Gemma: load failed: \(error)")
             throw LLMError.unavailable("gemma_load_failed: \(error)")
+        }
+    }
+
+    /// One-shot diagnostic for the first progress callback that has a
+    /// known `totalUnitCount` — i.e. the moment HuggingFace finishes
+    /// listing files and the parent `Progress` knows what's coming.
+    /// Class + lock because the @Sendable handler is called from the
+    /// HubClient's downloader thread, not the loading actor.
+    private final class GemmaFirstTotalLogger: @unchecked Sendable {
+        private let lock = NSLock()
+        private var didLog = false
+
+        func logIfFirst(_ progress: Progress) {
+            let total = progress.totalUnitCount
+            guard total > 1 else { return }
+            lock.lock()
+            let firing = !didLog
+            if firing { didLog = true }
+            lock.unlock()
+            guard firing else { return }
+            Diag.log("Gemma: file list resolved, \(total) bytes to download")
         }
     }
     #else
