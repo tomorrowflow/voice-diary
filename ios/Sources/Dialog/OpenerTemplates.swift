@@ -63,9 +63,9 @@ public enum OpenerTemplates {
         var s = template
         let title = event.subject.isEmpty ? defaultTitle(language) : event.subject
         s = s.replacingOccurrences(of: "{title}", with: title)
-        s = s.replacingOccurrences(of: "{time}", with: timeString(event.startDate))
-        s = s.replacingOccurrences(of: "{time_range}", with: timeRange(event.startDate, event.endDate))
-        s = s.replacingOccurrences(of: "{duration}", with: durationString(event.durationMinutes, language: language))
+        s = s.replacingOccurrences(of: "{time}", with: spokenTime(event.startDate, language: language))
+        s = s.replacingOccurrences(of: "{time_range}", with: spokenTimeRange(event.startDate, event.endDate, language: language))
+        s = s.replacingOccurrences(of: "{duration}", with: spokenDuration(event.durationMinutes, language: language))
         s = s.replacingOccurrences(of: "{who}", with: event.primaryAttendeeName)
         return s
     }
@@ -79,7 +79,7 @@ public enum OpenerTemplates {
         let tpl = templates(language)[.emptyBlock] ?? fallback(language)
         return tpl.replacingOccurrences(
             of: "{time_range}",
-            with: timeRange(startTime, endTime)
+            with: spokenTimeRange(startTime, endTime, language: language)
         )
     }
 
@@ -91,11 +91,11 @@ public enum OpenerTemplates {
         .groupMeeting:    "{title} um {time} — etwas Erwähnenswertes aus der Runde?",
         .recurringRitual: "{title} heute — was Besonderes?",
         .deepWorkBlock:   "Von {time_range} hattest du einen Block für {title}. Bist du vorangekommen?",
-        .shortMeeting:    "Kurzer Termin {time} mit {who} — relevant für den Tag?",
+        .shortMeeting:    "Kurzer Termin um {time} mit {who} — relevant für den Tag?",
         .longMeeting:     "{title} ging {duration} — was kam dabei raus?",
         .external:        "{title} mit {who} — wie war der Eindruck?",
         .lastEvent:       "{title} war dein letzter Termin — was nimmst du mit?",
-        .emptyBlock:      "Zwischen {time_range} hattest du keinen Termin — irgendwas Wichtiges in der Zeit?",
+        .emptyBlock:      "Von {time_range} hattest du keinen Termin — irgendwas Wichtiges in der Zeit?",
     ]
 
     public static let englishTemplates: [OpenerSlot: String] = [
@@ -108,7 +108,7 @@ public enum OpenerTemplates {
         .longMeeting:     "{title} ran {duration} — what came out of it?",
         .external:        "{title} with {who} — what was your read?",
         .lastEvent:       "{title} was your last meeting — what are you taking away?",
-        .emptyBlock:      "You had nothing scheduled between {time_range} — anything worth capturing from that?",
+        .emptyBlock:      "From {time_range} you had nothing scheduled — anything worth capturing from that?",
     ]
 
     private static func templates(_ lang: OpenerLanguage) -> [OpenerSlot: String] {
@@ -123,30 +123,87 @@ public enum OpenerTemplates {
         lang == .de ? "ein Termin" : "a meeting"
     }
 
-    // MARK: - Formatting helpers
+    // MARK: - Spoken-time formatting (Voxtral-safe)
+    //
+    // A digital clock time like "10:00" makes Voxtral glitch — the colon
+    // and zero-padded digits read as garbage. We never emit that form.
+    // Instead we speak the time the way a person would say it:
+    //   DE point : "10 Uhr"        / "10 Uhr 30"
+    //   DE range : "10 bis 11 Uhr" / "10 Uhr 15 bis 11 Uhr 45"
+    //   EN point : "ten"           / "ten thirty" / "ten oh five"
+    //   EN range : "ten to eleven"
+    // The range is deliberately *bare* (no leading "von"/"from"): the
+    // templates already supply the preposition ("Von {time_range}",
+    // "Zwischen {time_range}"), so embedding one here would double it up.
+    // These helpers are public so the dialog LLM opener prompt can be
+    // seeded with the exact spoken string, guaranteeing the model has a
+    // glitch-free time to reuse verbatim.
 
-    private static func timeString(_ d: Date?) -> String {
+    public static func spokenTime(_ d: Date?, language: OpenerLanguage = .de) -> String {
         guard let d else { return "" }
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
-        f.dateFormat = "HH:mm"
-        return f.string(from: d)
-    }
-
-    private static func timeRange(_ start: Date?, _ end: Date?) -> String {
-        guard let start, let end else { return "" }
-        return "\(timeString(start))–\(timeString(end)) Uhr"
-    }
-
-    private static func durationString(_ minutes: Int, language: OpenerLanguage) -> String {
+        let (h, m) = hourMinute(d)
         switch language {
         case .de:
-            if minutes >= 60 { return "\(minutes / 60) Stunden" }
-            return "\(minutes) Minuten"
+            return m == 0 ? "\(h) Uhr" : "\(h) Uhr \(m)"
         case .en:
-            if minutes >= 60 { return "\(minutes / 60) hours" }
-            return "\(minutes) minutes"
+            let hw = spelledOut(h, language: "en")
+            if m == 0 { return hw }
+            if m < 10 { return "\(hw) oh \(spelledOut(m, language: "en"))" }
+            return "\(hw) \(spelledOut(m, language: "en"))"
         }
+    }
+
+    public static func spokenTimeRange(
+        _ start: Date?,
+        _ end: Date?,
+        language: OpenerLanguage = .de
+    ) -> String {
+        guard let start, let end else { return "" }
+        let (_, m1) = hourMinute(start)
+        let (_, m2) = hourMinute(end)
+        switch language {
+        case .de:
+            // "10 bis 11 Uhr" reads cleanly only when both ends land on
+            // the hour; otherwise spell each side fully so the minutes
+            // don't get orphaned ("10 Uhr 15 bis 11 Uhr 45").
+            if m1 == 0 && m2 == 0 {
+                let (h1, _) = hourMinute(start)
+                let (h2, _) = hourMinute(end)
+                return "\(h1) bis \(h2) Uhr"
+            }
+            return "\(spokenTime(start, language: .de)) bis \(spokenTime(end, language: .de))"
+        case .en:
+            return "\(spokenTime(start, language: .en)) to \(spokenTime(end, language: .en))"
+        }
+    }
+
+    public static func spokenDuration(_ minutes: Int, language: OpenerLanguage) -> String {
+        let h = minutes / 60
+        let m = minutes % 60
+        switch language {
+        case .de:
+            if h == 0 { return "\(m) Minuten" }
+            let hours = h == 1 ? "eine Stunde" : "\(h) Stunden"
+            return m == 0 ? hours : "\(hours) \(m) Minuten"
+        case .en:
+            if h == 0 { return "\(m) minutes" }
+            let hours = h == 1 ? "one hour" : "\(h) hours"
+            return m == 0 ? hours : "\(hours) \(m) minutes"
+        }
+    }
+
+    // MARK: - Formatting helpers
+
+    private static func hourMinute(_ d: Date) -> (Int, Int) {
+        let c = Calendar.current.dateComponents([.hour, .minute], from: d)
+        return (c.hour ?? 0, c.minute ?? 0)
+    }
+
+    private static func spelledOut(_ n: Int, language: String) -> String {
+        let f = NumberFormatter()
+        f.numberStyle = .spellOut
+        f.locale = Locale(identifier: language == "en" ? "en_US" : "de_DE")
+        return f.string(from: NSNumber(value: n)) ?? "\(n)"
     }
 
     /// Convenience round-trip used by the state machine.
@@ -183,9 +240,9 @@ public enum OpenerTemplates {
         // first — these never trigger a voice switch, so doing them up
         // front leaves only {title}/{who} as potential split points.
         var pre = template
-        pre = pre.replacingOccurrences(of: "{time}", with: timeString(event.startDate))
-        pre = pre.replacingOccurrences(of: "{time_range}", with: timeRange(event.startDate, event.endDate))
-        pre = pre.replacingOccurrences(of: "{duration}", with: durationString(event.durationMinutes, language: language))
+        pre = pre.replacingOccurrences(of: "{time}", with: spokenTime(event.startDate, language: language))
+        pre = pre.replacingOccurrences(of: "{time_range}", with: spokenTimeRange(event.startDate, event.endDate, language: language))
+        pre = pre.replacingOccurrences(of: "{duration}", with: spokenDuration(event.durationMinutes, language: language))
 
         let title = event.subject.isEmpty ? defaultTitle(language) : event.subject
         let who = event.primaryAttendeeName

@@ -91,7 +91,98 @@ public actor AppleFoundationLLM {
         #endif
     }
 
-    /// Condense a drive-by note's transcript into one short spoken
+    /// Metadata the opener generator weaves into a varied, day-aware
+    /// opening line. All time/duration fields arrive already rendered as
+    /// Voxtral-safe spoken strings (e.g. `"von 10 bis 11 Uhr"`,
+    /// `"eine Stunde"`) so the model can reuse them verbatim — it is
+    /// explicitly told never to invent a digital clock time.
+    public struct EventOpenerContext: Sendable {
+        public var title: String
+        public var attendees: [String]
+        public var spokenTime: String
+        public var spokenTimeRange: String
+        public var durationText: String
+        public var isRecurring: Bool
+        public var isExternal: Bool
+        public var agendaPreview: String
+        /// "first" | "last" | "middle" — drives tone (kick-off vs wrap-up).
+        public var position: String
+        /// The deterministic slot (`one_on_one`, `short_meeting`, …) as a
+        /// soft steer; the model may ignore it but it nudges the framing.
+        public var slot: String
+
+        public init(
+            title: String,
+            attendees: [String],
+            spokenTime: String,
+            spokenTimeRange: String,
+            durationText: String,
+            isRecurring: Bool,
+            isExternal: Bool,
+            agendaPreview: String,
+            position: String,
+            slot: String
+        ) {
+            self.title = title
+            self.attendees = attendees
+            self.spokenTime = spokenTime
+            self.spokenTimeRange = spokenTimeRange
+            self.durationText = durationText
+            self.isRecurring = isRecurring
+            self.isExternal = isExternal
+            self.agendaPreview = agendaPreview
+            self.position = position
+            self.slot = slot
+        }
+    }
+
+    /// Generate one varied, day-aware spoken opener for a calendar event
+    /// (SPEC §11). Replaces the fixed per-slot template at the *first*
+    /// step of the opener path; the caller keeps the deterministic
+    /// template as the fallback and uses it whenever this throws
+    /// (FM unavailable, wrong language, or a digital clock time leaked
+    /// into the output). The opener is one short statement that names the
+    /// event using whatever metadata is salient, then invites reflection
+    /// with a single short question.
+    public func generateEventOpener(
+        context ctx: EventOpenerContext,
+        language: String
+    ) async throws -> String {
+        #if canImport(FoundationModels)
+        guard SystemLanguageModel.default.isAvailable else {
+            throw LLMError.unavailable("system_model_not_ready")
+        }
+        let isGerman = language.hasPrefix("de")
+        let session = LanguageModelSession(
+            model: SystemLanguageModel.default,
+            instructions: Self.openerInstructions(german: isGerman)
+        )
+        let prompt = Self.makeOpenerPrompt(ctx: ctx, german: isGerman)
+        do {
+            let response = try await session.respond(to: prompt)
+            let text = response.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw LLMError.empty }
+            let cleaned = cleanForSpeech(text)
+            try Self.assertLanguage(cleaned, expectedGerman: isGerman)
+            // A digital clock time ("10:00") slipping through would glitch
+            // Voxtral — the whole reason we pre-spell the times. If the
+            // model emitted one anyway, reject so the caller falls back to
+            // the (already spoken-time) deterministic template.
+            if Self.containsDigitalClock(cleaned) {
+                throw LLMError.unavailable("clock_time_leak")
+            }
+            return cleaned
+        } catch let error as LLMError {
+            throw error
+        } catch {
+            throw LLMError.underlying(error)
+        }
+        #else
+        throw LLMError.unavailable("FoundationModels_not_compiled_in")
+        #endif
+    }
+
+    /// Condense a note's transcript into one short spoken
     /// sentence for the note-review prompt ("Du hast notiert: …"). Mirrors
     /// the follow-up generators: on-device only, language-checked, and
     /// speech-cleaned. Throws on unavailability / wrong language so the
@@ -389,12 +480,120 @@ public actor AppleFoundationLLM {
         return items
     }
 
+    private static func openerInstructions(german: Bool) -> String {
+        if german {
+            return """
+            Du bist die Stimme einer persönlichen Tagebuch-Assistenz und
+            eröffnest die abendliche Reflexion zu EINEM Kalendertermin.
+            Sprich die nutzende Person durchgehend mit "du" an (du, dich,
+            dir, dein) — NIEMALS mit "Sie". Formuliere EINEN kurzen,
+            natürlich gesprochenen Einstieg (maximal 25 Wörter):
+            zuerst ein knapper Bezug auf den Termin, dann GENAU EINE kurze,
+            offene Frage, die zum Erzählen einlädt.
+
+            Variiere die Formulierung — klinge nicht jeden Tag gleich.
+            Nutze die salientesten Angaben (Titel, Personen, Uhrzeit,
+            Wiederholung, Agenda), aber zähle sie nicht mechanisch auf.
+
+            Harte Regeln:
+            - Antworte AUSSCHLIESSLICH auf Deutsch.
+            - Verwende Uhrzeiten NUR in der vorgegebenen gesprochenen Form
+              (z. B. "um 10 Uhr", "von 10 bis 11 Uhr"). Schreibe NIEMALS
+              Ziffern-Uhrzeiten wie "10:00".
+            - Gib NUR den Einstieg zurück — keine Einleitung, keine
+              Anführungszeichen, keine Aufzählung.
+            """
+        } else {
+            return """
+            You are the voice of a personal diary assistant opening the
+            evening reflection on ONE calendar event. Address the user as
+            "you". Write ONE short, naturally spoken opener (max 25 words):
+            first a brief reference to the event, then EXACTLY ONE short,
+            open question that invites the user to talk.
+
+            Vary the phrasing — don't sound the same every day. Use the
+            most salient details (title, people, time, recurrence, agenda),
+            but don't list them mechanically.
+
+            Hard rules:
+            - Reply ONLY in English.
+            - Use times ONLY in the given spoken form (e.g. "at ten",
+              "from ten to eleven"). NEVER write a digital clock time like
+              "10:00".
+            - Output ONLY the opener — no preamble, no quotation marks, no
+              bullet list.
+            """
+        }
+    }
+
+    private static func makeOpenerPrompt(ctx: EventOpenerContext, german: Bool) -> String {
+        let title = ctx.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let agenda = ctx.agendaPreview
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix(280)
+        let people = ctx.attendees.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        if german {
+            var lines: [String] = []
+            lines.append("Titel: \(title.isEmpty ? "(ohne Titel)" : title)")
+            lines.append(people.isEmpty
+                ? "Teilnehmende: (keine)"
+                : "Teilnehmende: \(people.joined(separator: ", "))")
+            if !ctx.spokenTime.isEmpty { lines.append("Beginn: \(ctx.spokenTime)") }
+            if !ctx.spokenTimeRange.isEmpty { lines.append("Zeitraum: \(ctx.spokenTimeRange)") }
+            if !ctx.durationText.isEmpty { lines.append("Dauer: \(ctx.durationText)") }
+            lines.append("Wiederkehrender Termin: \(ctx.isRecurring ? "ja" : "nein")")
+            lines.append("Externe Teilnehmende: \(ctx.isExternal ? "ja" : "nein")")
+            lines.append("Position im Tag: \(ctx.position)")
+            lines.append("Kategorie: \(ctx.slot)")
+            if !agenda.isEmpty { lines.append("Agenda/Notiz: \(agenda)") }
+            return """
+            Termin-Kontext:
+            \(lines.joined(separator: "\n"))
+
+            Schreibe den gesprochenen Einstieg gemäss den Anweisungen.
+            """
+        } else {
+            var lines: [String] = []
+            lines.append("Title: \(title.isEmpty ? "(no title)" : title)")
+            lines.append(people.isEmpty
+                ? "Attendees: (none)"
+                : "Attendees: \(people.joined(separator: ", "))")
+            if !ctx.spokenTime.isEmpty { lines.append("Start: \(ctx.spokenTime)") }
+            if !ctx.spokenTimeRange.isEmpty { lines.append("Time range: \(ctx.spokenTimeRange)") }
+            if !ctx.durationText.isEmpty { lines.append("Duration: \(ctx.durationText)") }
+            lines.append("Recurring: \(ctx.isRecurring ? "yes" : "no")")
+            lines.append("External attendees: \(ctx.isExternal ? "yes" : "no")")
+            lines.append("Position in day: \(ctx.position)")
+            lines.append("Category: \(ctx.slot)")
+            if !agenda.isEmpty { lines.append("Agenda/note: \(agenda)") }
+            return """
+            Event context:
+            \(lines.joined(separator: "\n"))
+
+            Write the spoken opener following the instructions.
+            """
+        }
+    }
+
+    /// True if the text contains a digital clock time like "10:00" or
+    /// "9:5" — the exact shape that glitches Voxtral. Used to reject an
+    /// opener that ignored the pre-spelled spoken time.
+    private static func containsDigitalClock(_ text: String) -> Bool {
+        guard let re = try? NSRegularExpression(pattern: #"\d{1,2}:\d{2}"#) else {
+            return false
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return re.firstMatch(in: text, range: range) != nil
+    }
+
     private static func systemInstructions(german: Bool) -> String {
         if german {
             return """
             Du bist die Stimme einer persönlichen Tagebuch-Assistenz. Du
             stellst eine einzige, kurze, gesprochene Folgefrage, die zum
             Vertiefen einlädt. Antworte AUSSCHLIESSLICH auf Deutsch.
+            Sprich die nutzende Person durchgehend mit "du" an (du, dich,
+            dir, dein) — NIEMALS mit "Sie".
             Gib NUR die Frage zurück — keine Einleitung, keine Erklärung,
             maximal 12 Wörter. Wiederhole niemals die Worte der nutzenden
             Person wörtlich.
@@ -416,8 +615,10 @@ public actor AppleFoundationLLM {
             Du fasst eine kurze Sprachnotiz für ein Tagebuch zusammen. Gib
             EINEN kurzen Aussagesatz zurück (maximal 14 Wörter), der den
             Kern der Notiz wiedergibt. Antworte AUSSCHLIESSLICH auf
-            Deutsch. Gib NUR die Zusammenfassung zurück — keine Einleitung,
-            keine Frage, keine Anführungszeichen.
+            Deutsch. Falls die nutzende Person erwähnt wird, immer in der
+            Du-Form (du, dich, dir) — NIEMALS in der Sie-Form. Gib NUR
+            die Zusammenfassung zurück — keine Einleitung, keine Frage,
+            keine Anführungszeichen.
             """
         } else {
             return """
