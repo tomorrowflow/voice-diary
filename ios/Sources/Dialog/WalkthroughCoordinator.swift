@@ -11,14 +11,14 @@ import os
 //
 //   * `general` — user-defined opener with title + intro. One segment.
 //   * `calendarEvents` — the per-event loop; one segment per event.
-//   * `driveBy` — surfaces today's drive-by seeds (each becomes a
+//   * `voiceNote` — surfaces today's notes (each becomes a
 //                 `drive_by` segment) and captures one closing
 //                 free-reflection segment.
 //
 // The plan is built in `begin()` from `WalkthroughSettingsStore.order` plus
-// the filtered calendar events plus the unsurfaced seed list. Empty
+// the filtered calendar events plus the unsurfaced note list. Empty
 // sections are skipped so users with no general sections + an empty
-// calendar still flow into the drive-by closer.
+// calendar still flow into the note closer.
 
 @MainActor
 @Observable
@@ -82,8 +82,8 @@ public final class WalkthroughCoordinator {
     private var aiPrompts: [AiPrompt] = []
     private var timer: Timer?
     /// Keyed by the listening segment's unique ID (e.g. `s01e02` for an
-    /// event, `s02` for a general/drive-by step). Was previously keyed by
-    /// `eventIndex`, which collided once general + drive-by sections grew
+    /// event, `s02` for a general/note step). Was previously keyed by
+    /// `eventIndex`, which collided once general + note sections grew
     /// their own follow-up loops. Reset in `begin()`.
     private var followUpUsed: [String: Bool] = [:]
     private var followUpRotation: Int = 0
@@ -146,32 +146,32 @@ public final class WalkthroughCoordinator {
     /// Re-entrancy guard for `advance` / `skip` / `finishCurrentSection`. Without
     /// it, two rapid Weiter taps both pattern-match the same listening
     /// state, both await `stopSegmentCapture()` (which doesn't mutate
-    /// state), and both call into `runEvent`/`runGeneral`/`runDriveBy`
+    /// state), and both call into `runEvent`/`runGeneral`/`runVoiceNotes`
     /// with identical indices — leading to a double `speak()` of the
     /// next opener and a `File exists` collision on the next segment's
     /// `.m4a.tmp`. Set at the top of each transition method, cleared in
     /// `defer`. `@MainActor` makes the read/set atomic across Tasks.
     private var transitionInFlight: Bool = false
 
-    /// Built in `begin()` from settings.order + events + seeds. Each entry
+    /// Built in `begin()` from settings.order + events + notes. Each entry
     /// drives exactly one opener+listen cycle, except `.calendar` which
     /// owns the inner event loop.
     private var plan: [PlanStep] = []
-    /// Surfaced drive-by seeds for the current session (mirror of the
-    /// drive-by step's payload). Used to write the index file at upload.
-    private var surfacedSeedIDs: [String] = []
+    /// Surfaced notes for the current session (mirror of the
+    /// note step's payload). Used to write the index file at upload.
+    private var surfacedNoteIDs: [String] = []
     /// Seed ids the user said "Für später" on during the per-note
-    /// review. Excluded from `startDriveByCapture`'s segment attach +
-    /// from `surfacedSeedIDs`, so the next walkthrough picks them up
+    /// review. Excluded from `startVoiceNoteCapture`'s segment attach +
+    /// from `surfacedNoteIDs`, so the next walkthrough picks them up
     /// again. Reset in `begin()`.
-    private var deferredSeedIDs: Set<String> = []
+    private var deferredNoteIDs: Set<String> = []
 
     /// Seed ids the user said "verwerfen" / "discard" on during the
     /// per-note review. Excluded from this session's manifest (not
     /// folded into the diary entry) but still marked surfaced in
     /// `LocalStore` so they don't reappear on the next walkthrough —
     /// the audio file on disk is preserved. Reset in `begin()`.
-    private var droppedSeedIDs: Set<String> = []
+    private var droppedNoteIDs: Set<String> = []
 
     /// Single in-walkthrough player that reads a note's original
     /// recording back before the wake-word window opens. The *same*
@@ -206,6 +206,18 @@ public final class WalkthroughCoordinator {
     /// its head start instead of being thrown away.
     private var prefetchTasks: [String: Task<PrefetchedScript?, Never>] = [:]
 
+    /// Composed opener *text* (spans), keyed by segment ID. The event
+    /// opener is now LLM-prepared (SPEC §11): the text is generated once
+    /// — usually during prefetch — and reused by `runEvent` so the
+    /// recorded `ai_prompt` and `lastSpoken` exactly match the audio that
+    /// actually plays. Without this cache the prefetch (LLM) and the live
+    /// record path would each call the model and could diverge.
+    private var openerScriptCache: [String: [SpokenSpan]] = [:]
+    /// In-flight opener-text generations, keyed by segment ID. Dedupes a
+    /// concurrent prefetch + live request for the same opener onto one FM
+    /// call. Stored value is `nil`-safe: callers await `.value`.
+    private var openerTextTasks: [String: Task<[SpokenSpan], Never>] = [:]
+
     private var liveActivity: Any?
     private var liveActivityStartedAt: Date?
 
@@ -220,7 +232,7 @@ public final class WalkthroughCoordinator {
     private enum PlanStep: Sendable {
         case general(GeneralSection)
         case calendar(events: [ServerCalendarEvent])
-        case driveBy(seeds: [DriveBySeed])
+        case voiceNote(notes: [VoiceNote])
     }
 
     // MARK: - Public commands -----------------------------------------
@@ -255,9 +267,9 @@ public final class WalkthroughCoordinator {
         confirmationLanguage = language
         liveActivityStartedAt = Date()
         plan = []
-        surfacedSeedIDs = []
-        deferredSeedIDs = []
-        droppedSeedIDs = []
+        surfacedNoteIDs = []
+        deferredNoteIDs = []
+        droppedNoteIDs = []
         clearPrefetchedOpeners()
         syncLiveActivity()
         Task { await ParakeetManager.shared.warmUp() }
@@ -361,7 +373,7 @@ public final class WalkthroughCoordinator {
     /// Advance to the next plan step (or the next event inside the
     /// calendar block).
     public func advance(language: OpenerLanguage = .de) async {
-        // Coalesce rapid Weiter taps. The runEvent/runGeneral/runDriveBy
+        // Coalesce rapid Weiter taps. The runEvent/runGeneral/runVoiceNotes
         // chains are not idempotent — re-entering with the same captured
         // step/event indices double-starts the next segment's audio file
         // and double-queues the opener TTS. Drop the second tap here.
@@ -394,14 +406,14 @@ public final class WalkthroughCoordinator {
             interruptInFlight = true
             await cancelTTS()
             await runStep(at: stepIdx + 1, language: language)
-        case .driveByListening(let stepIdx):
+        case .voiceNoteListening(let stepIdx):
             await stopSegmentCapture()
             await runStep(at: stepIdx + 1, language: language)
-        case .driveByOpener(let stepIdx):
+        case .voiceNoteOpener(let stepIdx):
             interruptInFlight = true
             await cancelTTS()
             await runStep(at: stepIdx + 1, language: language)
-        case .noteReview(let stepIdx, let seedIdx):
+        case .noteReview(let stepIdx, let noteIdx):
             // Advance to the next note, or to the closing-question
             // phase if this was the last one. Cancel any TTS still in
             // flight from the intro line + any in-flight note audio
@@ -411,16 +423,16 @@ public final class WalkthroughCoordinator {
             await cancelTTS()
             stopNotePlayback()
             guard stepIdx >= 0, stepIdx < plan.count,
-                  case .driveBy(let seeds) = plan[stepIdx] else {
+                  case .voiceNote(let notes) = plan[stepIdx] else {
                 await runStep(at: stepIdx + 1, language: language)
                 return
             }
-            let next = seedIdx + 1
-            if next < seeds.count {
-                await runNoteReview(stepIndex: stepIdx, seedIndex: next,
-                                    seeds: seeds, language: language)
+            let next = noteIdx + 1
+            if next < notes.count {
+                await runNoteReview(stepIndex: stepIdx, noteIndex: next,
+                                    notes: notes, language: language)
             } else {
-                await runDriveByClosing(stepIndex: stepIdx, seeds: seeds, language: language)
+                await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
             }
         case .confirmingTodos:
             // Tapping Weiter on a todo candidate skips it (matches the
@@ -459,24 +471,24 @@ public final class WalkthroughCoordinator {
             interruptInFlight = true
             await cancelTTS()
             await runStep(at: stepIdx + 1, language: language)
-        case .driveByListening(let stepIdx):
+        case .voiceNoteListening(let stepIdx):
             await dropStagedSegment(forStepIndex: stepIdx, eventIndex: nil)
-            // Don't mark seeds as surfaced if user skipped the closing.
-            surfacedSeedIDs = []
+            // Don't mark notes as surfaced if user skipped the closing.
+            surfacedNoteIDs = []
             await runStep(at: stepIdx + 1, language: language)
-        case .driveByOpener(let stepIdx):
+        case .voiceNoteOpener(let stepIdx):
             interruptInFlight = true
             await cancelTTS()
-            surfacedSeedIDs = []
+            surfacedNoteIDs = []
             await runStep(at: stepIdx + 1, language: language)
         case .noteReview(let stepIdx, _):
             // Skip from the per-note review = bypass the rest of the
-            // notes AND the closing reflection. Don't mark seeds as
+            // notes AND the closing reflection. Don't mark notes as
             // surfaced — they should remain visible the next time the
             // user runs a walkthrough.
             interruptInFlight = true
             await cancelTTS()
-            surfacedSeedIDs = []
+            surfacedNoteIDs = []
             await runStep(at: stepIdx + 1, language: language)
         default:
             return
@@ -487,7 +499,7 @@ public final class WalkthroughCoordinator {
     /// Backs the wake-word "fertig" / "Abschluss" / "done" / "finish"
     /// triggers: inside meeting 2 of 5 it moves you to meeting 3, not
     /// to ingest. The X button is still the full-abort path
-    /// (`cancel()`); there is no other UI entry point. For drive-by /
+    /// (`cancel()`); there is no other UI entry point. For note /
     /// note-review / closing — which is already the last section —
     /// "next step" naturally falls through to `ingestAndUpload`.
     public func finishCurrentSection(language: OpenerLanguage = .de) async {
@@ -506,8 +518,8 @@ public final class WalkthroughCoordinator {
         case .generalListening(let stepIdx, _):
             await stopSegmentCapture()
             await runStep(at: stepIdx + 1, language: language)
-        case .driveByListening(let stepIdx):
-            // Drive-by is the last section; advancing past it ends the
+        case .voiceNoteListening(let stepIdx):
+            // Note is the last section; advancing past it ends the
             // walkthrough by falling off the plan into ingestAndUpload.
             await stopSegmentCapture()
             await runStep(at: stepIdx + 1, language: language)
@@ -519,15 +531,15 @@ public final class WalkthroughCoordinator {
             interruptInFlight = true
             await cancelTTS()
             await runStep(at: stepIdx + 1, language: language)
-        case .driveByOpener(let stepIdx):
+        case .voiceNoteOpener(let stepIdx):
             interruptInFlight = true
             await cancelTTS()
-            surfacedSeedIDs = []
+            surfacedNoteIDs = []
             await runStep(at: stepIdx + 1, language: language)
         case .noteReview(let stepIdx, _):
             interruptInFlight = true
             await cancelTTS()
-            surfacedSeedIDs = []
+            surfacedNoteIDs = []
             await runStep(at: stepIdx + 1, language: language)
         case .briefing:
             // No section is active yet; "fertig" during briefing is
@@ -542,7 +554,7 @@ public final class WalkthroughCoordinator {
 
     public func cancel() async {
         // Set the abort flag FIRST, before any await. The runEvent /
-        // runGeneral / runDriveBy chains all check `interruptInFlight`
+        // runGeneral / runVoiceNotes chains all check `interruptInFlight`
         // after each `await speak(...)` — without setting it here, a
         // suspended chain would resume after `cancelTTS()` returns and
         // happily call `startEventCapture()` + `state = .eventListening`
@@ -610,9 +622,9 @@ public final class WalkthroughCoordinator {
                 if !events.isEmpty {
                     steps.append(.calendar(events: events))
                 }
-            case .driveBy:
-                let seeds = await loadUnsurfacedSeeds(forDate: target)
-                steps.append(.driveBy(seeds: seeds))
+            case .voiceNote:
+                let notes = await loadUnsurfacedSeeds(forDate: target)
+                steps.append(.voiceNote(notes: notes))
             }
         }
         return steps
@@ -620,13 +632,13 @@ public final class WalkthroughCoordinator {
 
     /// Seeds captured on or before the session's target day that haven't
     /// been surfaced in a prior session yet.
-    private func loadUnsurfacedSeeds(forDate target: Date) async -> [DriveBySeed] {
-        let surfaced = LocalStore.surfacedSeedIDs()
+    private func loadUnsurfacedSeeds(forDate target: Date) async -> [VoiceNote] {
+        let surfaced = LocalStore.surfacedNoteIDs()
         let cutoff = Calendar.current.date(
             byAdding: .day, value: 1,
             to: Calendar.current.startOfDay(for: target)
         ) ?? target
-        return SessionHistoryStore.unsurfacedDriveBys(before: cutoff, surfaced: surfaced)
+        return SessionHistoryStore.unsurfacedNotes(before: cutoff, surfaced: surfaced)
     }
 
     // MARK: - Step dispatch --------------------------------------------
@@ -643,8 +655,8 @@ public final class WalkthroughCoordinator {
             // First event in this calendar block.
             await runEvent(stepIndex: index, eventIndex: 0,
                            events: evts, language: language)
-        case .driveBy(let seeds):
-            await runDriveBy(stepIndex: index, seeds: seeds, language: language)
+        case .voiceNote(let notes):
+            await runVoiceNotes(stepIndex: index, notes: notes, language: language)
         }
     }
 
@@ -679,15 +691,26 @@ public final class WalkthroughCoordinator {
         interruptInFlight = false
         state = .eventOpener(stepIndex: stepIndex, eventIndex: eventIndex)
         statusHint = ""
-        let spans = OpenerTemplates.scriptLine(
-            for: evts[eventIndex],
+        let segID = makeEventSegmentID(stepIndex: stepIndex, eventIndex: eventIndex)
+        // LLM-prepared opener (SPEC §11), with the deterministic template
+        // as fallback. Usually a cache hit from the prefetch that ran
+        // during the previous reflection; only a missed prefetch awaits
+        // the model here.
+        let spans = await eventOpenerSpans(
+            event: evts[eventIndex],
             index: eventIndex,
-            of: evts.count,
+            total: evts.count,
+            segmentID: segID,
             language: language
         )
+        // Composing can await the model; if the user tapped Weiter during
+        // that hop a newer runEvent already owns the flow — bail before we
+        // record a prompt or speak over it.
+        guard case .eventOpener(let liveStep0, let liveEvt0) = state,
+              liveStep0 == stepIndex, liveEvt0 == eventIndex else { return }
+        if interruptInFlight { return }
         let line = spans.flatten()
         lastSpoken = line
-        let segID = makeEventSegmentID(stepIndex: stepIndex, eventIndex: eventIndex)
         recordAiPrompt(role: "opener", segmentID: segID, text: line)
         await speakOpenerScript(segmentID: segID, fallbackSpans: spans)
         // State-tuple guard: if the user tapped Weiter mid-opener and
@@ -721,7 +744,7 @@ public final class WalkthroughCoordinator {
             // Prefetch the next opener while the user reflects. Either
             // the next event in this calendar block, or — if this was
             // the last event — the first opener of the next plan step
-            // (general / drive-by / next calendar block).
+            // (general / note / next calendar block).
             prefetchNextOpener(
                 afterStep: stepIndex,
                 eventIndex: eventIndex,
@@ -788,34 +811,34 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    // MARK: - Drive-by section step ------------------------------------
+    // MARK: - Note section step ------------------------------------
 
-    /// Drive-by step entry. If the user has unsurfaced seeds for the
+    /// Note step entry. If the user has unsurfaced notes for the
     /// diary day, walks through them one-at-a-time as breadcrumbed
     /// `noteReview` cards (silent visual, no per-note TTS) before
-    /// handing off to the closing-question phase. With zero seeds the
+    /// handing off to the closing-question phase. With zero notes the
     /// flow drops straight into the closing question.
-    private func runDriveBy(
+    private func runVoiceNotes(
         stepIndex: Int,
-        seeds: [DriveBySeed],
+        notes: [VoiceNote],
         language: OpenerLanguage
     ) async {
         interruptInFlight = false
         statusHint = ""
         confirmationLanguage = language
 
-        if seeds.isEmpty {
-            await runDriveByClosing(stepIndex: stepIndex, seeds: seeds, language: language)
+        if notes.isEmpty {
+            await runVoiceNoteClosing(stepIndex: stepIndex, notes: notes, language: language)
         } else {
-            await runNoteReview(stepIndex: stepIndex, seedIndex: 0,
-                                seeds: seeds, language: language)
+            await runNoteReview(stepIndex: stepIndex, noteIndex: 0,
+                                notes: notes, language: language)
         }
     }
 
     /// One step of the per-note breadcrumbed review. Voice-first flow:
     ///   1. Speak the "Du hast heute X Notizen aufgenommen…" intro
     ///      (first note only).
-    ///   2. Play the seed's original audio recording (`AVAudioPlayer`
+    ///   2. Play the note's original audio recording (`AVAudioPlayer`
     ///      under the existing `.playAndRecord` session).
     ///   3. Open a wake-word window with the extended note-review
     ///      phrase table — the user can say
@@ -824,23 +847,23 @@ public final class WalkthroughCoordinator {
     ///
     /// The Weiter button still works as a manual override (calls
     /// `advance()` which lands back here with the next index, or
-    /// runs `runDriveByClosing` once the last note is past).
+    /// runs `runVoiceNoteClosing` once the last note is past).
     private func runNoteReview(
         stepIndex: Int,
-        seedIndex: Int,
-        seeds: [DriveBySeed],
+        noteIndex: Int,
+        notes: [VoiceNote],
         language: OpenerLanguage
     ) async {
-        guard seedIndex >= 0, seedIndex < seeds.count else {
-            await runDriveByClosing(stepIndex: stepIndex, seeds: seeds, language: language)
+        guard noteIndex >= 0, noteIndex < notes.count else {
+            await runVoiceNoteClosing(stepIndex: stepIndex, notes: notes, language: language)
             return
         }
         interruptInFlight = false
-        state = .noteReview(stepIndex: stepIndex, seedIndex: seedIndex)
+        state = .noteReview(stepIndex: stepIndex, noteIndex: noteIndex)
 
-        if seedIndex == 0 {
+        if noteIndex == 0 {
             let segID = "s\(zeroPad(stepIndex + 1))"
-            let intro = composeDriveByIntro(seeds: seeds, language: language)
+            let intro = composeNotesIntro(notes: notes, language: language)
             if !intro.isEmpty {
                 recordAiPrompt(role: "drive_by_recap", segmentID: segID, text: intro)
                 lastSpoken = intro
@@ -852,12 +875,12 @@ public final class WalkthroughCoordinator {
         // speaking — `cancelTTS` resets state and we don't want to
         // play the audio over the next event's opener.
         guard case .noteReview(let liveStep, let liveSeed) = state,
-              liveStep == stepIndex, liveSeed == seedIndex else { return }
+              liveStep == stepIndex, liveSeed == noteIndex else { return }
 
         await summariseAndListen(
-            seed: seeds[seedIndex],
-            index: seedIndex,
-            total: seeds.count,
+            note: notes[noteIndex],
+            index: noteIndex,
+            total: notes.count,
             language: language
         )
     }
@@ -869,13 +892,13 @@ public final class WalkthroughCoordinator {
     /// saying "nochmal". This gives every note the same spoken guidance
     /// the todo confirmation has (previously only the first note had any).
     private func summariseAndListen(
-        seed: DriveBySeed,
+        note: VoiceNote,
         index: Int,
         total: Int,
         language: OpenerLanguage
     ) async {
         guard case .noteReview(let stepIndex, _) = state else { return }
-        let summary = await noteSummary(seed: seed, language: language)
+        let summary = await noteSummary(note: note, language: language)
         guard case .noteReview = state else { return }
         let prompt = composeNotePrompt(
             index: index, total: total, summary: summary, language: language
@@ -888,21 +911,21 @@ public final class WalkthroughCoordinator {
         await openNoteWakeWindow(language: language)
     }
 
-    /// Play the seed's raw recording, then open the wake-word window.
+    /// Play the note's raw recording, then open the wake-word window.
     /// Used by the "nochmal" / play-disc replay path so the user can
     /// re-hear the original after the spoken summary.
     private func playNoteAndListen(
-        seed: DriveBySeed,
+        note: VoiceNote,
         language: OpenerLanguage
     ) async {
-        await playNoteAudio(seed: seed)
+        await playNoteAudio(note: note)
         guard case .noteReview = state else { return }
         await openNoteWakeWindow(language: language)
     }
 
     /// Open the note-review wake-word window and route its outcome.
     /// Shared by the summary pass and the raw-audio replay. Timeout
-    /// (silence) keeps the note — drive-by ideas default to included —
+    /// (silence) keeps the note — note ideas default to included —
     /// and advances; a matched command was already dispatched inside the
     /// window; `.skipped` leaves the card for manual control.
     private func openNoteWakeWindow(language: OpenerLanguage) async {
@@ -935,8 +958,8 @@ public final class WalkthroughCoordinator {
     /// One-sentence summary of a note for the spoken prompt. Uses the
     /// on-device LLM for longer transcripts; short transcripts are their
     /// own summary, and an LLM failure falls back to the first sentence.
-    private func noteSummary(seed: DriveBySeed, language: OpenerLanguage) async -> String {
-        let transcript = seed.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+    private func noteSummary(note: VoiceNote, language: OpenerLanguage) async -> String {
+        let transcript = note.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !transcript.isEmpty else { return "" }
         if transcript.count <= 80 { return transcript }
         let llm = AppleFoundationLLM.shared
@@ -995,7 +1018,7 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    /// Play the seed's original .m4a through the shared `notePlayer`.
+    /// Play the note's original .m4a through the shared `notePlayer`.
     /// Runs under the existing `.playAndRecord` session (the player has
     /// `managesSession: false`) so the walkthrough's mic graph isn't
     /// disturbed. Returns once playback finishes naturally (or fails to
@@ -1003,22 +1026,22 @@ public final class WalkthroughCoordinator {
     /// same player the `NoteReviewCard` renders, the user can pause /
     /// resume / scrub this read-aloud; the wake-word window only opens
     /// once it plays through to the end.
-    private func playNoteAudio(seed: DriveBySeed) async {
+    private func playNoteAudio(note: VoiceNote) async {
         stopNotePlayback()
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             notePlaybackContinuation = cont
             notePlayer.onNaturalFinish = { [weak self] in
                 self?.finishNotePlayback()
             }
-            notePlayer.toggle(url: seed.audio_file_url)
+            notePlayer.toggle(url: note.audio_file_url)
             // `toggle` loads + plays synchronously; if the file failed to
             // open it resets `activeURL` to nil. Resume right away so the
             // caller doesn't hang waiting for audio that never started.
-            if notePlayer.activeURL != seed.audio_file_url {
-                Diag.log("note playback start FAILED seed=\(seed.seed_id)")
+            if notePlayer.activeURL != note.audio_file_url {
+                Diag.log("note playback start FAILED note=\(note.seed_id)")
                 finishNotePlayback()
             } else {
-                Diag.log("note playback start seed=\(seed.seed_id) dur=\(notePlayer.duration)s")
+                Diag.log("note playback start note=\(note.seed_id) dur=\(notePlayer.duration)s")
             }
         }
     }
@@ -1048,17 +1071,17 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    /// Closing question for the drive-by step: speaks "Willst du noch
+    /// Closing question for the note step: speaks "Willst du noch
     /// etwas zum ganzen Tag sagen?" and opens the free-reflection
-    /// capture. Pulled out of `runDriveBy` so the per-note review can
+    /// capture. Pulled out of `runVoiceNotes` so the per-note review can
     /// share it once the user has stepped through all notes.
-    private func runDriveByClosing(
+    private func runVoiceNoteClosing(
         stepIndex: Int,
-        seeds: [DriveBySeed],
+        notes: [VoiceNote],
         language: OpenerLanguage
     ) async {
         interruptInFlight = false
-        state = .driveByOpener(stepIndex: stepIndex)
+        state = .voiceNoteOpener(stepIndex: stepIndex)
         statusHint = ""
         confirmationLanguage = language
 
@@ -1072,18 +1095,18 @@ public final class WalkthroughCoordinator {
             segmentID: segID,
             fallbackSpans: [SpokenSpan(text: closing, language: language.rawValue)]
         )
-        guard case .driveByOpener(let liveStep) = state,
+        guard case .voiceNoteOpener(let liveStep) = state,
               liveStep == stepIndex else { return }
         if interruptInFlight { return }
 
         do {
-            try await startDriveByCapture(segmentID: segID, seeds: seeds)
-            guard case .driveByOpener(let liveStep2) = state,
+            try await startVoiceNoteCapture(segmentID: segID, notes: notes)
+            guard case .voiceNoteOpener(let liveStep2) = state,
                   liveStep2 == stepIndex else { return }
-            state = .driveByListening(stepIndex: stepIndex)
+            state = .voiceNoteListening(stepIndex: stepIndex)
             startTimer()
             startLullDetection(
-                context: .driveBy,
+                context: .voiceNote,
                 step: stepIndex,
                 language: language
             )
@@ -1093,12 +1116,12 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    private func composeDriveByIntro(
-        seeds: [DriveBySeed],
+    private func composeNotesIntro(
+        notes: [VoiceNote],
         language: OpenerLanguage
     ) -> String {
-        guard !seeds.isEmpty else { return "" }
-        let count = seeds.count
+        guard !notes.isEmpty else { return "" }
+        let count = notes.count
         // Phrased as "we'll go through these now" rather than "I'll fold
         // them into the entry" — the per-note review now lets the user
         // drop / defer / re-record each one, so promising up-front that
@@ -1160,7 +1183,7 @@ public final class WalkthroughCoordinator {
         switch state {
         case .eventListening(let s, let e):
             return makeEventSegmentID(stepIndex: s, eventIndex: e)
-        case .generalListening(let s, _), .driveByListening(let s):
+        case .generalListening(let s, _), .voiceNoteListening(let s):
             return "s\(zeroPad(s + 1))"
         default:
             return nil
@@ -1234,9 +1257,9 @@ public final class WalkthroughCoordinator {
         segmentByID[segmentID] = segments.count - 1
     }
 
-    private func startDriveByCapture(
+    private func startVoiceNoteCapture(
         segmentID: String,
-        seeds: [DriveBySeed]
+        notes: [VoiceNote]
     ) async throws {
         guard let sessionDir else { throw NSError(domain: "Walkthrough", code: 1) }
         let path = mediaPath(for: segmentID)
@@ -1260,39 +1283,39 @@ public final class WalkthroughCoordinator {
         segments.append(.freeReflection(seg))
         segmentByID[segmentID] = segments.count - 1
 
-        // Attach each surfaced seed as its own `drive_by` segment so the
+        // Attach each surfaced note as its own `drive_by` segment so the
         // server has the audio + transcript already available. Files are
         // copied into the session dir to keep the upload bundle
         // self-contained. Seeds the user said "Für später" on during
         // per-note review are skipped here so they stay in the
         // unsurfaced pool for the next walkthrough.
         var surfaced: [String] = []
-        for seed in seeds where !deferredSeedIDs.contains(seed.seed_id)
-                             && !droppedSeedIDs.contains(seed.seed_id) {
-            let copyName = "seed_\(sanitize(seed.seed_id)).m4a"
+        for note in notes where !deferredNoteIDs.contains(note.seed_id)
+                             && !droppedNoteIDs.contains(note.seed_id) {
+            let copyName = "seed_\(sanitize(note.seed_id)).m4a"
             let copyPath = "segments/\(copyName)"
             let copyURL = sessionDir.appending(path: copyPath)
             do {
-                try FileManager.default.copyItem(at: seed.audio_file_url, to: copyURL)
+                try FileManager.default.copyItem(at: note.audio_file_url, to: copyURL)
             } catch {
                 Log.app.warning(
-                    "drive-by seed copy failed (\(seed.seed_id, privacy: .public)): \(String(describing: error), privacy: .public)"
+                    "note copy failed (\(note.seed_id, privacy: .public)): \(String(describing: error), privacy: .public)"
                 )
                 continue
             }
             segmentURLs[copyPath] = copyURL
-            let dbSeg = DriveBySegment(
-                segment_id: "db_\(sanitize(seed.seed_id))",
-                captured_at: ISO8601DateFormatter().string(from: seed.captured_at),
+            let dbSeg = VoiceNoteSegment(
+                segment_id: "db_\(sanitize(note.seed_id))",
+                captured_at: ISO8601DateFormatter().string(from: note.captured_at),
                 audio_file: copyPath,
-                transcript: seed.transcript,
-                language: seed.language,
-                seed_id: seed.seed_id
+                transcript: note.transcript,
+                language: note.language,
+                seed_id: note.seed_id
             )
-            segments.append(.driveBy(dbSeg))
-            surfaced.append(seed.seed_id)
+            segments.append(.voiceNote(dbSeg))
+            surfaced.append(note.seed_id)
         }
-        surfacedSeedIDs = surfaced
+        surfacedNoteIDs = surfaced
     }
 
     private func dropStagedSegment(forStepIndex stepIdx: Int, eventIndex: Int?) async {
@@ -1313,7 +1336,7 @@ public final class WalkthroughCoordinator {
             case .calendarEvent(let v):  return v.segment_id == segID
             case .freeReflection(let v): return v.segment_id == segID
             case .generalSection(let v): return v.segment_id == segID
-            case .driveBy, .emptyBlock:  return false
+            case .voiceNote, .emptyBlock:  return false
             }
         }
     }
@@ -1510,14 +1533,14 @@ public final class WalkthroughCoordinator {
             do { try LocalStore.writeManifest(manifest, to: dir) }
             catch { Log.app.warning("manifest snapshot failed: \(String(describing: error), privacy: .public)") }
         }
-        // Mark surfaced seeds *now* so a successful enqueue doesn't leave
+        // Mark surfaced notes *now* so a successful enqueue doesn't leave
         // them in the unsurfaced pool — the upload itself retries with
         // exponential backoff and we don't want to re-surface across
-        // retries. Dropped seeds (user said "verwerfen") are merged in
+        // retries. Dropped notes (user said "verwerfen") are merged in
         // here too: the manifest excludes them from the entry, but
         // marking them surfaced stops them from reappearing on the
         // next walkthrough. Their audio files stay on disk.
-        let toMarkSurfaced = Array(Set(surfacedSeedIDs).union(droppedSeedIDs))
+        let toMarkSurfaced = Array(Set(surfacedNoteIDs).union(droppedNoteIDs))
         if !toMarkSurfaced.isEmpty {
             LocalStore.markSeedsSurfaced(ids: toMarkSurfaced)
         }
@@ -1540,12 +1563,12 @@ public final class WalkthroughCoordinator {
     /// What the lull loop is running on top of. Drives the per-step state
     /// guard inside the threshold callback and the per-context branch in
     /// the 6 s case (events use generated event-aware questions, generals
-    /// use section-aware questions when the user opted in, drive-by stays
+    /// use section-aware questions when the user opted in, note stays
     /// quiet — its closing prompt was already broad).
     private enum LullStepContext: Sendable {
         case event(eventIndex: Int, evts: [ServerCalendarEvent])
         case general(GeneralSection)
-        case driveBy
+        case voiceNote
     }
 
     private func startLullDetection(
@@ -1596,7 +1619,7 @@ public final class WalkthroughCoordinator {
             return s == step && e == eIdx
         case let (.general(section), .generalListening(s, id)):
             return s == step && id == section.id
-        case (.driveBy, .driveByListening(let s)):
+        case (.voiceNote, .voiceNoteListening(let s)):
             return s == step
         default:
             return false
@@ -1610,7 +1633,7 @@ public final class WalkthroughCoordinator {
         switch context {
         case .event(let eIdx, _):
             return makeEventSegmentID(stepIndex: step, eventIndex: eIdx)
-        case .general, .driveBy:
+        case .general, .voiceNote:
             return "s\(zeroPad(step + 1))"
         }
     }
@@ -1636,7 +1659,7 @@ public final class WalkthroughCoordinator {
     }
 
     /// Per-silence-run loop, identical shape for every listening segment
-    /// (events, generals, drive-by closer):
+    /// (events, generals, note closer):
     ///
     /// Two sub-loops depending on whether the user has spoken yet
     /// (`lullDetector.hasHeardSpeech`). `firePreSpeech` makes the timer
@@ -1726,7 +1749,7 @@ public final class WalkthroughCoordinator {
             // user can interrupt the AI's follow-up question with
             // "weiter" / "fertig". On the built-in speaker the
             // speaker→mic feedback is dangerous so we close it. When
-            // the context doesn't fire an AI follow-up at all (drive-by,
+            // the context doesn't fire an AI follow-up at all (note,
             // or a general section with follow-up disabled), there's no
             // TTS to ride out — close the window unconditionally.
             let willFireFollowUp = wantsFollowUp(for: context)
@@ -1831,13 +1854,13 @@ public final class WalkthroughCoordinator {
 
     /// True when the lull's 6 s branch should generate + speak a follow-up
     /// question. Calendar events always do; user-defined general sections
-    /// only when the user toggled `followUpEnabled` on; drive-by stays
+    /// only when the user toggled `followUpEnabled` on; note stays
     /// quiet (its closing prompt was already broad).
     private func wantsFollowUp(for context: LullStepContext) -> Bool {
         switch context {
         case .event:                  return true
         case .general(let section):   return section.followUpEnabled
-        case .driveBy:                return false
+        case .voiceNote:                return false
         }
     }
 
@@ -1908,8 +1931,8 @@ public final class WalkthroughCoordinator {
             Log.app.info("follow-up via FoundationModels for general section \(section.id, privacy: .public)")
             return result
 
-        case .driveBy:
-            // Drive-by doesn't fire a follow-up (filtered upstream by
+        case .voiceNote:
+            // Note doesn't fire a follow-up (filtered upstream by
             // `wantsFollowUp`). If we got here something is off — return
             // empty so the template fallback path in the caller takes over.
             throw AppleFoundationLLM.LLMError.empty
@@ -2412,7 +2435,7 @@ public final class WalkthroughCoordinator {
             segments: segments,
             todos_implicit_confirmed: confirmedImplicit,
             todos_implicit_rejected: rejectedImplicit,
-            drive_by_seeds_surfaced: surfacedSeedIDs,
+            drive_by_seeds_surfaced: surfacedNoteIDs,
             ai_prompts: aiPrompts,
             response_language_setting: "match_input"
         )
@@ -2441,7 +2464,7 @@ public final class WalkthroughCoordinator {
 
     /// Title shown in the page header for the current state. The view
     /// previously poked into `events[currentIndex]` directly; that still
-    /// works for calendar events, but generals + drive-by need their own
+    /// works for calendar events, but generals + note need their own
     /// labels. Falls back to the generic "Abend".
     public var currentSectionTitle: String? {
         switch state {
@@ -2449,29 +2472,29 @@ public final class WalkthroughCoordinator {
             return WalkthroughSettingsStore.generals.first { $0.id == id }?.title
         case .noteReview:
             return confirmationLanguage == .de ? "Notizen" : "Notes"
-        case .driveByOpener, .driveByListening:
+        case .voiceNoteOpener, .voiceNoteListening:
             return confirmationLanguage == .de ? "Tagesabschluss" : "Day close"
         default:
             return nil
         }
     }
 
-    /// The seed currently rendered by `NoteReviewCard`, plus its
+    /// The note currently rendered by `NoteReviewCard`, plus its
     /// 1-based index and total. `nil` outside `.noteReview`.
-    public var currentNoteSeed: (seed: DriveBySeed, index: Int, total: Int)? {
-        guard case .noteReview(let stepIdx, let seedIdx) = state,
+    public var currentNote: (note: VoiceNote, index: Int, total: Int)? {
+        guard case .noteReview(let stepIdx, let noteIdx) = state,
               stepIdx >= 0, stepIdx < plan.count,
-              case .driveBy(let seeds) = plan[stepIdx],
-              seedIdx >= 0, seedIdx < seeds.count
+              case .voiceNote(let notes) = plan[stepIdx],
+              noteIdx >= 0, noteIdx < notes.count
         else { return nil }
-        return (seeds[seedIdx], seedIdx + 1, seeds.count)
+        return (notes[noteIdx], noteIdx + 1, notes.count)
     }
 
     /// "Verwerfen" wake-word on the per-note review step. Drops the
-    /// current seed from this session's manifest AND marks it surfaced
+    /// current note from this session's manifest AND marks it surfaced
     /// so it doesn't re-appear in the next walkthrough. The audio file
     /// itself is kept on disk — the user's recording isn't deleted by
-    /// a stray voice command. Advances to the next seed (or the
+    /// a stray voice command. Advances to the next note (or the
     /// closing question) on completion.
     public func dropCurrentNote(language: OpenerLanguage = .de) async {
         guard !transitionInFlight else { return }
@@ -2482,14 +2505,14 @@ public final class WalkthroughCoordinator {
         followUpTask?.cancel(); followUpTask = nil
         stopNotePlayback()
 
-        guard case .noteReview(let stepIdx, let seedIdx) = state,
+        guard case .noteReview(let stepIdx, let noteIdx) = state,
               stepIdx >= 0, stepIdx < plan.count,
-              case .driveBy(let seeds) = plan[stepIdx],
-              seedIdx >= 0, seedIdx < seeds.count
+              case .voiceNote(let notes) = plan[stepIdx],
+              noteIdx >= 0, noteIdx < notes.count
         else { return }
 
-        let dropped = seeds[seedIdx]
-        droppedSeedIDs.insert(dropped.seed_id)
+        let dropped = notes[noteIdx]
+        droppedNoteIDs.insert(dropped.seed_id)
         Log.app.info("note dropped: \(dropped.seed_id, privacy: .public)")
         recordAiPrompt(role: "note_dropped",
                        segmentID: "s\(zeroPad(stepIdx + 1))",
@@ -2497,39 +2520,39 @@ public final class WalkthroughCoordinator {
 
         interruptInFlight = true
         await cancelTTS()
-        let next = seedIdx + 1
-        if next < seeds.count {
-            await runNoteReview(stepIndex: stepIdx, seedIndex: next,
-                                seeds: seeds, language: language)
+        let next = noteIdx + 1
+        if next < notes.count {
+            await runNoteReview(stepIndex: stepIdx, noteIndex: next,
+                                notes: notes, language: language)
         } else {
-            await runDriveByClosing(stepIndex: stepIdx, seeds: seeds, language: language)
+            await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
         }
     }
 
     /// "Nochmal" / "Replay" wake-word on the per-note review step.
-    /// Re-plays the current seed's audio and re-opens the wake-word
+    /// Re-plays the current note's audio and re-opens the wake-word
     /// window once playback completes. Same code path the AI runs the
     /// first time a note is surfaced — kept as one method so the
     /// timing logic stays in one place.
     public func replayCurrentNote(language: OpenerLanguage = .de) async {
         wakeWordTask?.cancel(); wakeWordTask = nil
         isWakeListening = false
-        guard case .noteReview(let stepIdx, let seedIdx) = state,
+        guard case .noteReview(let stepIdx, let noteIdx) = state,
               stepIdx >= 0, stepIdx < plan.count,
-              case .driveBy(let seeds) = plan[stepIdx],
-              seedIdx >= 0, seedIdx < seeds.count
+              case .voiceNote(let notes) = plan[stepIdx],
+              noteIdx >= 0, noteIdx < notes.count
         else { return }
-        await playNoteAndListen(seed: seeds[seedIdx], language: language)
+        await playNoteAndListen(note: notes[noteIdx], language: language)
     }
 
     /// "Ändern" / "Rerecord" wake-word on the per-note review step.
-    /// MVP: drops the original seed (so the user isn't stuck with an
+    /// MVP: drops the original note (so the user isn't stuck with an
     /// outcome they explicitly rejected) and speaks a short hint
     /// telling them to use the Aufnahme tab for the replacement. The
     /// original audio file stays on disk, matching the `verwerfen`
     /// "keep audio" semantics — so the user can always recover it.
     /// In-walkthrough re-recording (start a fresh segment capture,
-    /// transcribe inline, splice the new seed back into the entry) is
+    /// transcribe inline, splice the new note back into the entry) is
     /// out of scope here and tracked as a follow-up slice.
     public func rerecordCurrentNote(language: OpenerLanguage = .de) async {
         guard !transitionInFlight else { return }
@@ -2540,15 +2563,15 @@ public final class WalkthroughCoordinator {
         followUpTask?.cancel(); followUpTask = nil
         stopNotePlayback()
 
-        guard case .noteReview(let stepIdx, let seedIdx) = state,
+        guard case .noteReview(let stepIdx, let noteIdx) = state,
               stepIdx >= 0, stepIdx < plan.count,
-              case .driveBy(let seeds) = plan[stepIdx],
-              seedIdx >= 0, seedIdx < seeds.count
+              case .voiceNote(let notes) = plan[stepIdx],
+              noteIdx >= 0, noteIdx < notes.count
         else { return }
 
-        let dropped = seeds[seedIdx]
-        droppedSeedIDs.insert(dropped.seed_id)
-        Log.app.info("note rerecord requested → seed \(dropped.seed_id, privacy: .public) dropped, user redirected to Aufnahme tab")
+        let dropped = notes[noteIdx]
+        droppedNoteIDs.insert(dropped.seed_id)
+        Log.app.info("note rerecord requested → note \(dropped.seed_id, privacy: .public) dropped, user redirected to Aufnahme tab")
         recordAiPrompt(role: "note_rerecord_requested",
                        segmentID: "s\(zeroPad(stepIdx + 1))",
                        text: dropped.transcript)
@@ -2564,21 +2587,21 @@ public final class WalkthroughCoordinator {
         // a parallel X tap or auto-advance during the TTS could have
         // moved us already.
         guard case .noteReview = state else { return }
-        let next = seedIdx + 1
-        if next < seeds.count {
-            await runNoteReview(stepIndex: stepIdx, seedIndex: next,
-                                seeds: seeds, language: language)
+        let next = noteIdx + 1
+        if next < notes.count {
+            await runNoteReview(stepIndex: stepIdx, noteIndex: next,
+                                notes: notes, language: language)
         } else {
-            await runDriveByClosing(stepIndex: stepIdx, seeds: seeds, language: language)
+            await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
         }
     }
 
     /// "Für später aufheben" on the per-note review card. Marks the
-    /// current seed as deferred — it won't be attached to this
+    /// current note as deferred — it won't be attached to this
     /// walkthrough's manifest and won't be flagged surfaced, so the
     /// next walkthrough re-offers it. Then advances to the next note
     /// (or to the closing question when this was the last). Used only
-    /// on orphan seeds (older than the diary day); same-day seeds
+    /// on orphan notes (older than the diary day); same-day notes
     /// always fold into the session via the regular Weiter path.
     public func saveCurrentNoteForLater(language: OpenerLanguage = .de) async {
         guard !transitionInFlight else { return }
@@ -2589,22 +2612,22 @@ public final class WalkthroughCoordinator {
         followUpTask?.cancel(); followUpTask = nil
         stopNotePlayback()
 
-        guard case .noteReview(let stepIdx, let seedIdx) = state,
+        guard case .noteReview(let stepIdx, let noteIdx) = state,
               stepIdx >= 0, stepIdx < plan.count,
-              case .driveBy(let seeds) = plan[stepIdx],
-              seedIdx >= 0, seedIdx < seeds.count
+              case .voiceNote(let notes) = plan[stepIdx],
+              noteIdx >= 0, noteIdx < notes.count
         else { return }
 
-        deferredSeedIDs.insert(seeds[seedIdx].seed_id)
+        deferredNoteIDs.insert(notes[noteIdx].seed_id)
 
         interruptInFlight = true
         await cancelTTS()
-        let next = seedIdx + 1
-        if next < seeds.count {
-            await runNoteReview(stepIndex: stepIdx, seedIndex: next,
-                                seeds: seeds, language: language)
+        let next = noteIdx + 1
+        if next < notes.count {
+            await runNoteReview(stepIndex: stepIdx, noteIndex: next,
+                                notes: notes, language: language)
         } else {
-            await runDriveByClosing(stepIndex: stepIdx, seeds: seeds, language: language)
+            await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
         }
     }
 
@@ -2618,7 +2641,7 @@ public final class WalkthroughCoordinator {
         let text: String
         switch segments[idx] {
         case .calendarEvent(let s):   text = s.transcript
-        case .driveBy(let s):         text = s.transcript
+        case .voiceNote(let s):         text = s.transcript
         case .freeReflection(let s):  text = s.transcript
         case .emptyBlock(let s):      text = s.transcript
         case .generalSection(let s):  text = s.transcript
@@ -2626,7 +2649,7 @@ public final class WalkthroughCoordinator {
         return text.isEmpty ? nil : text
     }
 
-    /// Number of unsurfaced seeds the current drive-by step will (or
+    /// Number of unsurfaced notes the current note step will (or
     /// did) walk the user through. Read by the WalkthroughView header
     /// to keep the breadcrumb dot count consistent across the per-note
     /// review steps and the closing question step that follows.
@@ -2634,16 +2657,16 @@ public final class WalkthroughCoordinator {
         let stepIdx: Int? = {
             switch state {
             case .noteReview(let s, _),
-                 .driveByOpener(let s),
-                 .driveByListening(let s):
+                 .voiceNoteOpener(let s),
+                 .voiceNoteListening(let s):
                 return s
             default:
                 return nil
             }
         }()
         guard let i = stepIdx, i >= 0, i < plan.count,
-              case .driveBy(let seeds) = plan[i] else { return 0 }
-        return seeds.count
+              case .voiceNote(let notes) = plan[i] else { return 0 }
+        return notes.count
     }
 
 
@@ -2673,10 +2696,10 @@ public final class WalkthroughCoordinator {
 
     private var liveActivityKind: CaptureActivityAttributes.Kind? {
         switch state {
-        case .briefing, .eventOpener, .generalOpener, .driveByOpener: return .speaking
-        case .eventListening, .generalListening, .driveByListening:   return .listening
+        case .briefing, .eventOpener, .generalOpener, .voiceNoteOpener: return .speaking
+        case .eventListening, .generalListening, .voiceNoteListening:   return .listening
         case .confirmingTodos:                                        return .listening
-        // Note review is silent visual; the seed's intro line plays
+        // Note review is silent visual; the note's intro line plays
         // briefly on the first card and Live Activity tracks the
         // walkthrough as a whole, so .speaking matches the rest.
         case .noteReview:                                             return .speaking
@@ -2789,6 +2812,94 @@ public final class WalkthroughCoordinator {
         }
     }
 
+    // MARK: - Opener composition (LLM-prepared, SPEC §11) --------------
+
+    /// Compose the spoken opener for one calendar event, caching the
+    /// result per segment so the prefetch synth and the live
+    /// record/`lastSpoken` path use byte-identical text. Concurrent
+    /// callers for the same segment dedupe onto a single FM call.
+    private func eventOpenerSpans(
+        event: ServerCalendarEvent,
+        index: Int,
+        total: Int,
+        segmentID: String,
+        language: OpenerLanguage
+    ) async -> [SpokenSpan] {
+        // The cache check and the task lookup run with no `await` between
+        // them, so on the MainActor they're atomic w.r.t. other tasks.
+        if let cached = openerScriptCache[segmentID] { return cached }
+        if let task = openerTextTasks[segmentID] { return await task.value }
+        let task = Task<[SpokenSpan], Never> { [weak self] in
+            guard let self else { return [] }
+            return await self.generateEventOpenerSpans(
+                event: event, index: index, total: total, language: language
+            )
+        }
+        openerTextTasks[segmentID] = task
+        let spans = await task.value
+        // Set cache *before* clearing the task so a brand-new caller that
+        // arrives in this window still finds either the cache or the task.
+        openerScriptCache[segmentID] = spans
+        openerTextTasks.removeValue(forKey: segmentID)
+        return spans
+    }
+
+    /// Try Apple FM for a varied, day-aware opener; fall back to the
+    /// deterministic template (already spoken-time safe, and the only
+    /// path that keeps mixed-language title voice routing) on any failure.
+    private func generateEventOpenerSpans(
+        event: ServerCalendarEvent,
+        index: Int,
+        total: Int,
+        language: OpenerLanguage
+    ) async -> [SpokenSpan] {
+        let fallback = OpenerTemplates.scriptLine(
+            for: event, index: index, of: total, language: language
+        )
+        let slot = OpenerTemplates.slot(
+            for: event,
+            positionInDay: OpenerTemplates.position(of: index, count: total)
+        )
+        let ctx = AppleFoundationLLM.EventOpenerContext(
+            title: event.subject,
+            attendees: event.attendees.map(\.name),
+            spokenTime: OpenerTemplates.spokenTime(event.startDate, language: language),
+            spokenTimeRange: OpenerTemplates.spokenTimeRange(
+                event.startDate, event.endDate, language: language
+            ),
+            durationText: OpenerTemplates.spokenDuration(event.durationMinutes, language: language),
+            isRecurring: event.is_recurring,
+            isExternal: event.hasExternalAttendee,
+            agendaPreview: event.body_preview,
+            position: Self.positionString(index: index, total: total),
+            slot: slot.rawValue
+        )
+        do {
+            let line = try await AppleFoundationLLM.shared.generateEventOpener(
+                context: ctx, language: language.rawValue
+            )
+            // Route the whole opener to the dominant language's voice. FM
+            // answers in `language` (assertLanguage-enforced), so this is
+            // normally the base voice; an embedded foreign title is read
+            // by that same voice — the accepted trade-off for LLM openers
+            // vs the template's per-span routing.
+            let voice = LanguageDetector.detect(line) ?? language.rawValue
+            Diag.log("eventOpener: FM line ok (\(line.count) chars)")
+            return [SpokenSpan(text: line, language: voice)]
+        } catch {
+            Diag.log("eventOpener: FM fallback → template (\(error))")
+            return fallback
+        }
+    }
+
+    private static func positionString(index: Int, total: Int) -> String {
+        switch OpenerTemplates.position(of: index, count: total) {
+        case .first:  return "first"
+        case .last:   return "last"
+        case .middle: return "middle"
+        }
+    }
+
     // MARK: - Opener prefetch -----------------------------------------
 
     /// Speak the opener for `segmentID`. Uses the cached prefetched
@@ -2829,75 +2940,82 @@ public final class WalkthroughCoordinator {
         await speak(script: fallbackSpans)
     }
 
-    /// Look up the opener script for a given plan position. Returns
-    /// `nil` if the position is out of range or has no spoken opener
-    /// (e.g. a general section whose intro text is empty). The
-    /// returned segment ID matches the keys used in `runEvent` /
-    /// `runGeneral` / `runDriveBy` so prefetch + consume share the
-    /// same map.
+    /// Resolve the segment ID + a span provider for a given plan
+    /// position. Returns `nil` if the position is out of range or has no
+    /// spoken opener (e.g. a general section whose intro text is empty).
+    /// The segment ID matches the keys used in `runEvent` / `runGeneral`
+    /// / `runVoiceNotes` so prefetch + consume share the same map.
+    ///
+    /// Calendar openers are now LLM-prepared, so the provider is `async`
+    /// and routes through `eventOpenerSpans` (shared cache → identical
+    /// text on the live path). General / note openers are fixed strings,
+    /// so their provider just returns them.
     ///
     /// `eventIndex == nil` for non-calendar steps (general /
-    /// drive-by) means "the step's single opener". For calendar
+    /// note) means "the step's single opener". For calendar
     /// steps, `nil` means "the first event in the block".
-    private func openerSpansForPrefetch(
+    private func openerProviderForPrefetch(
         stepIndex: Int,
         eventIndex: Int?,
         language: OpenerLanguage
-    ) -> (segmentID: String, spans: [SpokenSpan])? {
+    ) -> (segmentID: String, provider: @MainActor () async -> [SpokenSpan])? {
         guard stepIndex >= 0, stepIndex < plan.count else { return nil }
         switch plan[stepIndex] {
         case .calendar(let evts):
             let i = eventIndex ?? 0
             guard i < evts.count else { return nil }
             let segID = makeEventSegmentID(stepIndex: stepIndex, eventIndex: i)
-            let spans = OpenerTemplates.scriptLine(
-                for: evts[i],
-                index: i,
-                of: evts.count,
-                language: language
-            )
-            return (segID, spans)
+            let evt = evts[i]
+            let total = evts.count
+            let provider: @MainActor () async -> [SpokenSpan] = { [weak self] in
+                await self?.eventOpenerSpans(
+                    event: evt, index: i, total: total,
+                    segmentID: segID, language: language
+                ) ?? []
+            }
+            return (segID, provider)
         case .general(let section):
             let line = section.introText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !line.isEmpty else { return nil }
             let segID = "s\(zeroPad(stepIndex + 1))"
-            return (segID, [SpokenSpan(text: line, language: language.rawValue)])
-        case .driveBy:
+            return (segID, { [SpokenSpan(text: line, language: language.rawValue)] })
+        case .voiceNote:
             // Prefetch only the closing prompt. The per-note recap
             // intro ("Du hast heute N Notizen…") is spoken directly in
-            // `runNoteReview` at seed 0 via `speak()`; bundling it here
-            // too made `runDriveByClosing` replay it after the notes.
+            // `runNoteReview` at note 0 via `speak()`; bundling it here
+            // too made `runVoiceNoteClosing` replay it after the notes.
             let segID = "s\(zeroPad(stepIndex + 1))"
             let closing = language == .de
                 ? "Willst du noch etwas zum ganzen Tag sagen?"
                 : "Anything else you want to say about the day overall?"
-            return (segID, [SpokenSpan(text: closing, language: language.rawValue)])
+            return (segID, { [SpokenSpan(text: closing, language: language.rawValue)] })
         }
     }
 
     /// Spawn a background prefetch task for a specific upcoming
     /// opener. No-op when a prefetch (in-flight or completed) already
     /// exists for this segment, or when the position has no opener
-    /// to speak. The Task synthesises each span via the appropriate
-    /// engine's `prefetch(_:language:)`; same-language adjacent
-    /// spans coalesce upstream so the Piper synth runs once per
-    /// language bucket.
+    /// to speak. The Task first resolves the opener text (FM for calendar
+    /// events), then synthesises each span via the appropriate engine's
+    /// `prefetch(_:language:)`; same-language adjacent spans coalesce so
+    /// the synth runs once per language bucket. Running on the MainActor
+    /// is fine: both the FM call and the synth `await` off-actor.
     private func prefetchOpener(
         stepIndex: Int,
         eventIndex: Int?,
         language: OpenerLanguage
     ) {
-        guard let (segmentID, spans) = openerSpansForPrefetch(
+        guard let (segmentID, provider) = openerProviderForPrefetch(
             stepIndex: stepIndex,
             eventIndex: eventIndex,
             language: language
         ) else { return }
         guard prefetchedOpeners[segmentID] == nil,
               prefetchTasks[segmentID] == nil else { return }
-        let coalesced = spans.coalesced()
-        guard !coalesced.isEmpty else { return }
-        Diag.log("prefetchOpener: queued \(segmentID) (\(coalesced.count) span(s))")
-        let task: Task<PrefetchedScript?, Never> = Task { [coalesced] in
+        Diag.log("prefetchOpener: queued \(segmentID)")
+        let task: Task<PrefetchedScript?, Never> = Task { @MainActor in
+            let coalesced = (await provider()).coalesced()
+            if coalesced.isEmpty || Task.isCancelled { return nil }
             var utts: [PrefetchedUtterance] = []
             for span in coalesced {
                 if Task.isCancelled { return nil }
@@ -2998,6 +3116,11 @@ public final class WalkthroughCoordinator {
             }
         }
         prefetchedOpeners.removeAll()
+        // Drop composed opener text too — a restarted session re-fetches
+        // the calendar and must regenerate openers from scratch.
+        for (_, task) in openerTextTasks { task.cancel() }
+        openerTextTasks.removeAll()
+        openerScriptCache.removeAll()
     }
 
     // MARK: - Opening intro -------------------------------------------
@@ -3013,7 +3136,10 @@ public final class WalkthroughCoordinator {
         switch language {
         case .de:
             formatter.locale = Locale(identifier: "de_DE")
-            formatter.dateFormat = "EEEE, dd. MMMM"
+            // "d." not "dd." — Voxtral reads the leading-zero form ("04.")
+            // as "null vier" instead of "vierter". Without the pad, "4. Mai"
+            // is voiced naturally as "vierter Mai".
+            formatter.dateFormat = "EEEE, d. MMMM"
             let dateStr = formatter.string(from: date)
             switch events.count {
             case 0: return "Heute ist \(dateStr). Lass uns kurz auf den Tag schauen."
@@ -3359,7 +3485,7 @@ public final class WalkthroughCoordinator {
     /// the lull callback fired.
     private var isInListeningState: Bool {
         switch state {
-        case .eventListening, .generalListening, .driveByListening,
+        case .eventListening, .generalListening, .voiceNoteListening,
              .confirmingTodos, .noteReview:
             return true
         default:

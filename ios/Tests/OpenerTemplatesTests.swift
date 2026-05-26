@@ -68,7 +68,65 @@ struct OpenerTemplatesTests {
         )
         let line = OpenerTemplates.line(for: event, index: 1, of: 4, language: .de)
         #expect(line.contains("Sync mit Monica"))
-        #expect(line.contains("10:00"))
+        // Spoken time, never a digital clock (Voxtral glitches on "10:00").
+        #expect(line.contains("10 Uhr"))
+        #expect(!line.contains("10:00"))
+        #expect(!line.contains(":"))
+    }
+
+    // MARK: - Spoken time (Voxtral-safe, no digital clock)
+    //
+    // spokenTime renders in Calendar.current's timezone (matching the
+    // old timeString), so these build wall-clock dates via local
+    // components — deterministic regardless of the test runner's TZ.
+
+    @Test("spokenTime renders hour + Uhr, never a colon")
+    func spokenTimeDE() {
+        #expect(OpenerTemplates.spokenTime(localDate(10), language: .de) == "10 Uhr")
+        #expect(OpenerTemplates.spokenTime(localDate(14, 30), language: .de) == "14 Uhr 30")
+        #expect(!OpenerTemplates.spokenTime(localDate(14, 30), language: .de).contains(":"))
+    }
+
+    @Test("spokenTimeRange is bare (no leading von/from) so templates own the preposition")
+    func spokenTimeRangeBare() {
+        let de = OpenerTemplates.spokenTimeRange(localDate(10), localDate(11), language: .de)
+        #expect(de == "10 bis 11 Uhr")
+        #expect(!de.hasPrefix("von"))
+        let en = OpenerTemplates.spokenTimeRange(localDate(10), localDate(11), language: .en)
+        #expect(en == "ten to eleven")
+        #expect(!en.contains(":"))
+    }
+
+    @Test("deep_work_block template does not double the preposition")
+    func deepWorkNoDoubleVon() {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        let event = ServerCalendarEvent(
+            graph_event_id: "id",
+            subject: "Reporting",
+            start: f.string(from: localDate(14)),
+            end: f.string(from: localDate(16)),
+            is_all_day: false,
+            show_as: "busy",
+            rsvp_status: "accepted",
+            organizer: ServerAttendee(name: "Florian", email: "florian@example.com"),
+            attendees: [],
+            body_preview: "",
+            is_recurring: false,
+            web_link: ""
+        )
+        let line = OpenerTemplates.render(slot: .deepWorkBlock, event: event, language: .de)
+        #expect(line.contains("Von 14 bis 16 Uhr"))
+        #expect(!line.lowercased().contains("von von"))
+    }
+
+    /// A Date at `hour:minute` wall-clock on a fixed day in the current
+    /// calendar, so spokenTime's TZ-local rendering is deterministic.
+    private func localDate(_ hour: Int, _ minute: Int = 0) -> Date {
+        var c = DateComponents()
+        c.year = 2026; c.month = 4; c.day = 28
+        c.hour = hour; c.minute = minute
+        return Calendar.current.date(from: c)!
     }
 
     // MARK: - Continue prompt (silent-path 15s)

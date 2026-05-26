@@ -751,6 +751,12 @@ All endpoints require a simple bearer token set during onboarding. No per-user O
 
 ## 11. Opener templates
 
+**Opener delivery (two layers).** The *slot selection* below is always deterministic (§11.1). The *spoken opener* for a calendar event is then **prepared by Apple Foundation Models** from the event's metadata (title, attendees, spoken time/range, duration, recurring/external flags, agenda preview, position-in-day, and the selected slot as a soft steer), so openers vary day-to-day and lean on what's actually salient instead of one fixed sentence per slot. The deterministic templates in §11.2 / §11.3 are the **fallback**: used verbatim whenever FM is unavailable, returns the wrong language, or leaks a digital clock time. The fallback path is also the only one that keeps per-span mixed-language voice routing for foreign titles; an FM opener is spoken in the user's language throughout. General (user-defined) section intros and the note/closing prompts are **not** FM-prepared — they're spoken as authored.
+
+**Tone.** German openers (and every other FM-generated German line — follow-ups, note summaries) address the user in the **du-form** (du, dich, dir, dein) — never Sie. The instruction is pinned in each FM system-prompt.
+
+**Spoken time, never digital.** No opener (FM or template) ever emits a digital clock time like `10:00` — it glitches Voxtral. Times are pre-rendered as spoken strings on-device (`OpenerTemplates.spokenTime` / `spokenTimeRange` / `spokenDuration`): DE `"10 Uhr"`, `"10 Uhr 30"`, `"von 10 bis 11 Uhr"`; EN `"ten"`, `"ten thirty"`, `"from ten to eleven"`. The FM prompt is seeded with these exact strings and instructed to reuse them; an opener containing `\d{1,2}:\d{2}` is rejected to the fallback.
+
 ### 11.1 Selection rule (deterministic, on-device, no LLM)
 
 ```
@@ -765,9 +771,9 @@ elif has_external_attendee           → external
 else                                 → one_on_one
 ```
 
-Template selection is pure logic. Only the **follow-up** question (at 6s lull) uses Apple FM.
+Template selection is pure logic. The selected slot seeds the FM opener prompt and picks the fallback template. (Apple FM is used for the opener wording, the 6s-lull follow-up, the note summary, and implicit-todo extraction — never for slot selection.)
 
-### 11.2 German templates
+### 11.2 German templates (fallback)
 
 | Slot | Template |
 |---|---|
@@ -776,13 +782,13 @@ Template selection is pure logic. Only the **follow-up** question (at 6s lull) u
 | group_meeting | "{title} um {time} — etwas Erwähnenswertes aus der Runde?" |
 | recurring_ritual | "{title} heute — was Besonderes?" |
 | deep_work_block | "Von {time_range} hattest du einen Block für {title}. Bist du vorangekommen?" |
-| short_meeting | "Kurzer Termin {time} mit {who} — relevant für den Tag?" |
+| short_meeting | "Kurzer Termin um {time} mit {who} — relevant für den Tag?" |
 | long_meeting | "{title} ging {duration} — was kam dabei raus?" |
 | external | "{title} mit {who} — wie war der Eindruck?" |
 | last_event | "{title} war dein letzter Termin — was nimmst du mit?" |
-| empty_block | "Zwischen {time_range} hattest du keinen Termin — irgendwas Wichtiges in der Zeit?" |
+| empty_block | "Von {time_range} hattest du keinen Termin — irgendwas Wichtiges in der Zeit?" |
 
-### 11.3 English templates
+### 11.3 English templates (fallback)
 
 | Slot | Template |
 |---|---|
@@ -795,7 +801,7 @@ Template selection is pure logic. Only the **follow-up** question (at 6s lull) u
 | long_meeting | "{title} ran {duration} — what came out of it?" |
 | external | "{title} with {who} — what was your read?" |
 | last_event | "{title} was your last meeting — what are you taking away?" |
-| empty_block | "You had nothing scheduled between {time_range} — anything worth capturing from that?" |
+| empty_block | "From {time_range} you had nothing scheduled — anything worth capturing from that?" |
 
 ### 11.4 Follow-up templates
 
