@@ -119,6 +119,19 @@ public actor AudioEngine {
 
         let input = engine.inputNode
         let inputFormat = input.outputFormat(forBus: 0)
+        // One-line context so an M4AWriter -54 / -40 has a paired
+        // "what did the engine think the mic looked like" entry. Useful
+        // when input format is 0 Hz / 0 channels (engine not actually
+        // up) or the AVAudioSession route flipped between prepare and
+        // start.
+        let session = AVAudioSession.sharedInstance()
+        Diag.log(
+            "AudioEngine.start inputFormat=\(Int(inputFormat.sampleRate))Hz "
+            + "channels=\(inputFormat.channelCount) "
+            + "sessionCategory=\(session.category.rawValue) "
+            + "sessionMode=\(session.mode.rawValue) "
+            + "engineRunning=\(engine.isRunning)"
+        )
         try writer.open(at: outputURL, inputSampleRate: inputFormat.sampleRate)
         streamingSink = streaming
 
