@@ -4,6 +4,11 @@ import Foundation
 import MLXLLM
 import MLXLMCommon
 #endif
+#if canImport(MLXHuggingFace) && canImport(HuggingFace) && canImport(Tokenizers)
+import MLXHuggingFace
+import HuggingFace
+import Tokenizers
+#endif
 
 // `DialogLLM` backend that runs Gemma 4 E4B (4-bit) on-device via MLX
 // Swift. CLAUDE.md calls this out as the documented escape hatch for
@@ -11,9 +16,18 @@ import MLXLMCommon
 // note at `dialog-llm-german-ceiling-and-gemma-fallback`.
 //
 // Model: `mlx-community/gemma-4-e4b-it-4bit` (~2-5 GB on disk).
-// First call triggers download via MLX's HuggingFace cache;
-// subsequent calls reuse the loaded `ModelContainer` for the lifetime
-// of the actor.
+// Loading goes through `#huggingFaceLoadModelContainer` from the
+// `MLXHuggingFace` package, which wraps `HuggingFace.HubClient` as a
+// `Downloader` and `Tokenizers.AutoTokenizer` as a `TokenizerLoader`.
+// First call downloads to the system HuggingFace cache; subsequent
+// calls reuse the loaded `ModelContainer` for the lifetime of the
+// actor. Settings → Mehr → Dialog-Modell exposes a "Modell laden"
+// button so the user can pre-warm on Wi-Fi instead of waiting on the
+// first opener.
+//
+// Build note: the `MLXHuggingFaceMacros` plugin requires trust on
+// first build. In Xcode UI the user accepts once via the trust prompt;
+// for `xcodebuild` builds pass `-skipMacroValidation`.
 //
 // Memory: the loaded model stays resident. On a 12 GB iPhone 17 Pro
 // with Parakeet + Piper + Voxtral fallback also in memory this is
@@ -185,28 +199,44 @@ public actor GemmaDialogLLM: DialogLLM {
 
     // MARK: - Model loading
 
-    #if canImport(MLXLLM) && canImport(MLXLMCommon)
+    #if canImport(MLXLLM) && canImport(MLXLMCommon) && canImport(MLXHuggingFace) && canImport(HuggingFace) && canImport(Tokenizers)
     /// Returns a loaded `ModelContainer`, kicking off a download on the
     /// first call. Concurrent callers share one load task so we never
     /// double-download. Throws `.unavailable` on any load failure so the
     /// resolver falls through to Apple FM cleanly.
     ///
-    /// TODO (follow-up commit): wire the real loader. `mlx-swift-lm`'s
-    /// `loadModelContainer(from:using:configuration:)` needs concrete
-    /// `Downloader` + `TokenizerLoader` instances. The canonical path is
-    /// the `#huggingFaceLoadModelContainer` macro from `MLXHuggingFace`,
-    /// which requires adding three more SwiftPM packages:
-    ///   - `MLXHuggingFace` (product, already in mlx-swift-lm)
-    ///   - `https://github.com/huggingface/swift-huggingface` (HubClient)
-    ///   - `https://github.com/huggingface/swift-transformers` (Tokenizers)
-    /// …plus accepting the package macros' trust prompt on first build.
-    /// Doing it here would have ballooned this PR — splitting it out
-    /// keeps the abstraction landable and reviewable on its own. Until
-    /// then this stub throws `.unavailable`, so `ChainDialogLLM` simply
-    /// falls back to Apple FM and the walkthrough keeps working.
+    /// The macro `#huggingFaceLoadModelContainer` expands to wrap
+    /// `HuggingFace.HubClient` as a `MLXLMCommon.Downloader` and
+    /// `Tokenizers.AutoTokenizer` as a `MLXLMCommon.TokenizerLoader`,
+    /// then calls `loadModelContainer(from:using:configuration:)`.
+    /// First call downloads ~5 GB of weights to the HuggingFace cache
+    /// under `Library/Caches/huggingface/`; later calls reuse it.
     private func ensureLoaded() async throws -> ModelContainer {
         if let container { return container }
-        throw LLMError.unavailable("gemma_loader_not_yet_wired")
+        if let task = loadTask {
+            do { return try await task.value }
+            catch { throw LLMError.unavailable("gemma_load_in_flight_failed") }
+        }
+        let task = Task<ModelContainer, Error> {
+            let configuration = ModelConfiguration(id: Self.modelID)
+            return try await #huggingFaceLoadModelContainer(configuration: configuration)
+        }
+        loadTask = task
+        do {
+            let loaded = try await task.value
+            container = loaded
+            loadTask = nil
+            return loaded
+        } catch {
+            loadTask = nil
+            throw LLMError.unavailable("gemma_load_failed: \(error)")
+        }
+    }
+    #else
+    /// MLX + HuggingFace deps not linked into this build — stub keeps
+    /// the type protocol-conformant so `DialogLLMResolver` compiles.
+    private func ensureLoaded() async throws -> Never {
+        throw LLMError.unavailable("gemma_mlx_not_compiled_in")
     }
     #endif
 }

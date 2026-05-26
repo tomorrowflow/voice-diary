@@ -49,6 +49,18 @@ packages:
   MLXSwiftLM:
     url: https://github.com/ml-explore/mlx-swift-lm
     from: 3.31.3
+  # HuggingFace Hub client + tokenizers — required by the MLXHuggingFace
+  # `#huggingFaceLoadModelContainer` macro that GemmaDialogLLM uses to
+  # download + load the Gemma 4 E4B 4-bit weights from
+  # `mlx-community/gemma-4-e4b-it-4bit`. The macro expansion references
+  # `HuggingFace.HubClient` and `Tokenizers.AutoTokenizer` directly, so
+  # both must be available to the consumer target.
+  HuggingFace:
+    url: https://github.com/huggingface/swift-huggingface
+    from: 0.9.0
+  Tokenizers:
+    url: https://github.com/huggingface/swift-transformers
+    from: 1.3.3
 
 targets:
   VoiceDiary:
@@ -127,6 +139,12 @@ targets:
         product: MLXLLM
       - package: MLXSwiftLM
         product: MLXLMCommon
+      - package: MLXSwiftLM
+        product: MLXHuggingFace
+      - package: HuggingFace
+        product: HuggingFace
+      - package: Tokenizers
+        product: Tokenizers
       - target: VoiceDiaryWidget
         embed: true
         codeSign: true
