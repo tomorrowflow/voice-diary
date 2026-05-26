@@ -64,8 +64,15 @@ public actor GemmaDialogLLM: DialogLLM {
     /// Trigger model load explicitly so the resolver / Settings screen
     /// can warm the cache outside an opener critical path. Safe to call
     /// repeatedly — concurrent calls share one load task.
-    public func preload() async throws {
-        _ = try await ensureLoaded()
+    ///
+    /// `progressHandler` fires from MLX's downloader thread; callers
+    /// that update SwiftUI state should hop to the MainActor inside
+    /// the closure. The `Progress.fractionCompleted` is in [0, 1] (or
+    /// NaN until the total is known).
+    public func preload(
+        progressHandler: (@Sendable (Progress) -> Void)? = nil
+    ) async throws {
+        _ = try await ensureLoaded(progressHandler: progressHandler)
     }
 
     // MARK: - DialogLLM
@@ -211,15 +218,30 @@ public actor GemmaDialogLLM: DialogLLM {
     /// then calls `loadModelContainer(from:using:configuration:)`.
     /// First call downloads ~5 GB of weights to the HuggingFace cache
     /// under `Library/Caches/huggingface/`; later calls reuse it.
-    private func ensureLoaded() async throws -> ModelContainer {
+    private func ensureLoaded(
+        progressHandler: (@Sendable (Progress) -> Void)? = nil
+    ) async throws -> ModelContainer {
         if let container { return container }
         if let task = loadTask {
             do { return try await task.value }
             catch { throw LLMError.unavailable("gemma_load_in_flight_failed") }
         }
+        // Hand `progressHandler` to the task closure as a local let so
+        // the @Sendable capture is explicit; the macro picks the
+        // matching variant at compile time.
+        let progress = progressHandler
         let task = Task<ModelContainer, Error> {
             let configuration = ModelConfiguration(id: Self.modelID)
-            return try await #huggingFaceLoadModelContainer(configuration: configuration)
+            if let progress {
+                return try await #huggingFaceLoadModelContainer(
+                    configuration: configuration,
+                    progressHandler: progress
+                )
+            } else {
+                return try await #huggingFaceLoadModelContainer(
+                    configuration: configuration
+                )
+            }
         }
         loadTask = task
         do {
@@ -235,7 +257,9 @@ public actor GemmaDialogLLM: DialogLLM {
     #else
     /// MLX + HuggingFace deps not linked into this build — stub keeps
     /// the type protocol-conformant so `DialogLLMResolver` compiles.
-    private func ensureLoaded() async throws -> Never {
+    private func ensureLoaded(
+        progressHandler: (@Sendable (Progress) -> Void)? = nil
+    ) async throws -> Never {
         throw LLMError.unavailable("gemma_mlx_not_compiled_in")
     }
     #endif
