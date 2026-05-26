@@ -762,6 +762,8 @@ All five LLM call shapes (event opener, event follow-up, general-section follow-
 
 **Tone.** German openers (and every other FM-generated German line — follow-ups, note summaries) address the user in the **du-form** (du, dich, dir, dein) — never Sie. The instruction is pinned in each FM system-prompt.
 
+**Tense — past, always.** The walkthrough is an *evening* review of the day. Every calendar event has already happened by the time we open it. Openers and follow-ups are written in the past tense (DE: Präteritum / Perfekt — "du hattest", "der Termin lief", "die Runde war"; EN: simple past — "you had", "the meeting ran", "the room was"). Anticipatory phrasing ("gleich", "demnächst", "wirst du", "about to", "coming up", "you'll") is explicitly forbidden in the FM system-prompts. The deterministic templates in §11.2 / §11.3 follow the same rule.
+
 **Spoken time, never digital.** No opener (FM or template) ever emits a digital clock time like `10:00` — it glitches Voxtral. Times are pre-rendered as spoken strings on-device (`OpenerTemplates.spokenTime` / `spokenTimeRange` / `spokenDuration`): DE `"10 Uhr"`, `"10 Uhr 30"`, `"von 10 bis 11 Uhr"`; EN `"ten"`, `"ten thirty"`, `"from ten to eleven"`. The FM prompt is seeded with these exact strings and instructed to reuse them; an opener containing `\d{1,2}:\d{2}` is rejected to the fallback.
 
 ### 11.1 Selection rule (deterministic, on-device, no LLM)
@@ -787,7 +789,7 @@ Template selection is pure logic. The selected slot seeds the FM opener prompt a
 | first_event | "Heute früh hattest du {title}. Wie ist der Tag gestartet?" |
 | one_on_one | "Um {time} hattest du {title} mit {who}. Wie ist das gelaufen?" |
 | group_meeting | "{title} um {time} — etwas Erwähnenswertes aus der Runde?" |
-| recurring_ritual | "{title} heute — was Besonderes?" |
+| recurring_ritual | "{title} heute — war etwas Besonderes dabei?" |
 | deep_work_block | "Von {time_range} hattest du einen Block für {title}. Bist du vorangekommen?" |
 | short_meeting | "Kurzer Termin um {time} mit {who} — relevant für den Tag?" |
 | long_meeting | "{title} ging {duration} — was kam dabei raus?" |
@@ -802,7 +804,7 @@ Template selection is pure logic. The selected slot seeds the FM opener prompt a
 | first_event | "You kicked off the day with {title}. How did it get going?" |
 | one_on_one | "At {time} you had {title} with {who}. How did it go?" |
 | group_meeting | "{title} at {time} — anything worth noting from the room?" |
-| recurring_ritual | "{title} today — anything unusual?" |
+| recurring_ritual | "{title} today — anything unusual about it?" |
 | deep_work_block | "You had {time_range} blocked for {title}. Did you get somewhere?" |
 | short_meeting | "Short one at {time} with {who} — relevant to the day?" |
 | long_meeting | "{title} ran {duration} — what came out of it?" |
