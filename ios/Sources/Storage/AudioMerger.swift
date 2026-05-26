@@ -6,7 +6,7 @@ import Foundation
 ///
 /// Used by Verlauf to give the user a single shareable audio file for a
 /// walkthrough session (each event recorded a separate segment so they
-/// can't be downloaded individually in a useful way). The drive-by side
+/// can't be downloaded individually in a useful way). The note side
 /// already produces a single file — no merging needed.
 public enum AudioMerger {
 

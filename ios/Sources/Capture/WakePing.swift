@@ -23,6 +23,7 @@ public final class WakePing {
 
     private let listenOpenData: Data
     private let matchData: Data
+    private let captureStartData: Data
     /// Strong reference so the player survives until playback ends.
     /// AVAudioPlayer doesn't retain itself; without this, ARC would
     /// drop the player mid-tone.
@@ -40,6 +41,14 @@ public final class WakePing {
             .init(frequency: 900,   durationS: 0.07),
             .init(frequency: 1_600, durationS: 0.10),
         ])
+        // Capture-start: a warm rising perfect-fifth in the mid register
+        // (D5 → A5) that reads as "go / now recording". Deliberately
+        // lower and rounder than the match pip (which peaks at 1.6 kHz)
+        // so the note-capture cue isn't confused with a wake-word match.
+        self.captureStartData = Self.synthesisedWAV(segments: [
+            .init(frequency: 587, durationS: 0.10),
+            .init(frequency: 880, durationS: 0.13),
+        ])
     }
 
     /// Fire-and-forget. Caller doesn't `await`; playback completes on
@@ -54,6 +63,15 @@ public final class WakePing {
     /// transition kicks in. Audible confirmation for hands-off use.
     public func playMatch() {
         play(data: matchData)
+    }
+
+    /// Fire-and-forget. Plays the "recording started" chime — call the
+    /// instant a note capture begins (app button, Action Button, or
+    /// lock screen) so the user gets an audible confirmation even when
+    /// the screen is off. Sits at the very head of the recording (~0.2 s),
+    /// which the transcriber ignores.
+    public func playCaptureStart() {
+        play(data: captureStartData)
     }
 
     private func play(data: Data) {

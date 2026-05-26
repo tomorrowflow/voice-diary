@@ -7,7 +7,7 @@ import Foundation
 ///     containing `manifest.json` (snapshot persisted by
 ///     `WalkthroughCoordinator.finishUpload`) plus per-segment `.m4a` files
 ///     under `segments/`.
-///   * drive-by seeds — `Application Support/VoiceDiary/driveby_seeds/{iso}/`
+///   * notes — `Application Support/VoiceDiary/driveby_seeds/{iso}/`
 ///     containing `audio.m4a` + `metadata.json` written by
 ///     `CaptureCoordinator.stop`.
 ///
@@ -17,12 +17,12 @@ public enum SessionHistoryStore {
 
     public enum Item: Identifiable, Sendable {
         case walkthrough(WalkthroughEntry)
-        case driveBy(DriveByEntry)
+        case voiceNote(VoiceNoteEntry)
 
         public var id: String {
             switch self {
             case .walkthrough(let w): return "wt:" + w.sessionID
-            case .driveBy(let d):     return "db:" + d.seed.id
+            case .voiceNote(let d):     return "db:" + d.note.id
             }
         }
 
@@ -31,7 +31,7 @@ public enum SessionHistoryStore {
         public var sortDate: Date {
             switch self {
             case .walkthrough(let w): return w.capturedAt
-            case .driveBy(let d):     return d.seed.captured_at
+            case .voiceNote(let d):     return d.note.captured_at
             }
         }
     }
@@ -80,8 +80,8 @@ public enum SessionHistoryStore {
         }()
     }
 
-    public struct DriveByEntry: Sendable {
-        public let seed: DriveBySeed
+    public struct VoiceNoteEntry: Sendable {
+        public let note: VoiceNote
         public let directory: URL
     }
 
@@ -90,34 +90,34 @@ public enum SessionHistoryStore {
     public static func load() -> [Item] {
         var items: [Item] = []
         items.append(contentsOf: loadWalkthroughs().map(Item.walkthrough))
-        items.append(contentsOf: loadDriveBys().map(Item.driveBy))
+        items.append(contentsOf: loadVoiceNotes().map(Item.voiceNote))
         return items.sorted { $0.sortDate > $1.sortDate }
     }
 
-    /// Drive-by seeds captured before `cutoff` (typically end-of-day for the
+    /// Notes captured before `cutoff` (typically end-of-day for the
     /// walkthrough's target date) that haven't been surfaced in a prior
     /// session. Sorted oldest-first so the closing TTS lists them in the
     /// order they were captured.
-    public static func unsurfacedDriveBys(
+    public static func unsurfacedNotes(
         before cutoff: Date,
         surfaced: Set<String>
-    ) -> [DriveBySeed] {
-        loadDriveBys()
-            .map(\.seed)
+    ) -> [VoiceNote] {
+        loadVoiceNotes()
+            .map(\.note)
             .filter { $0.captured_at < cutoff && !surfaced.contains($0.seed_id) }
             .sorted { $0.captured_at < $1.captured_at }
     }
 
     /// Permanently remove a session's on-disk artifacts. Walkthrough:
     /// the entire `sessions/{slug}/` directory (manifest + all
-    /// segments). Drive-by: the entire `driveby_seeds/{ts}/` directory
+    /// segments). Note: the entire `driveby_seeds/{ts}/` directory
     /// (audio + metadata). The matching upload-queue entry is purged
     /// in a follow-up since the queue actor lives elsewhere.
     public static func delete(_ item: Item) throws {
         let url: URL
         switch item {
         case .walkthrough(let w): url = w.directory
-        case .driveBy(let d):     url = d.directory
+        case .voiceNote(let d):     url = d.directory
         }
         try FileManager.default.removeItem(at: url)
     }
@@ -187,13 +187,13 @@ public enum SessionHistoryStore {
         }
     }
 
-    // MARK: - Drive-by enumeration
+    // MARK: - Note enumeration
 
     /// Public so the Verlauf detail screen can join a walkthrough's
-    /// `manifest.drive_by_seeds_surfaced` against the on-disk seed
+    /// `manifest.drive_by_seeds_surfaced` against the on-disk note
     /// directories without round-tripping through `load()`.
-    public static func loadDriveBys() -> [DriveByEntry] {
-        guard let root = try? LocalStore.driveBySeedsDir(),
+    public static func loadVoiceNotes() -> [VoiceNoteEntry] {
+        guard let root = try? LocalStore.voiceNotesDir(),
               let names = try? FileManager.default.contentsOfDirectory(atPath: root.path)
         else { return [] }
 
@@ -203,7 +203,7 @@ public enum SessionHistoryStore {
             return d
         }()
 
-        return names.compactMap { name -> DriveByEntry? in
+        return names.compactMap { name -> VoiceNoteEntry? in
             let dir = root.appending(path: name, directoryHint: .isDirectory)
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir),
@@ -211,10 +211,10 @@ public enum SessionHistoryStore {
 
             let metaURL = dir.appending(path: "metadata.json")
             guard let data = try? Data(contentsOf: metaURL),
-                  let seed = try? decoder.decode(DriveBySeed.self, from: data)
+                  let note = try? decoder.decode(VoiceNote.self, from: data)
             else { return nil }
 
-            return DriveByEntry(seed: seed, directory: dir)
+            return VoiceNoteEntry(note: note, directory: dir)
         }
     }
 
@@ -239,17 +239,17 @@ public enum SessionHistoryStore {
     /// without scanning the file system on every redraw.
     public struct StorageSnapshot: Sendable {
         public let walkthroughs: CategoryStats
-        public let driveBys: CategoryStats
+        public let voiceNotes: CategoryStats
         public let queueBytes: Int64
         public let queueCount: Int
 
-        /// Sessions + seeds older than `cutoff`. Used to drive the
+        /// Sessions + notes older than `cutoff`. Used to drive the
         /// "Älter als 30 Tage entfernen" button label so the user knows
         /// in advance how much will be removed.
         public let olderThanCutoff: CategoryStats
 
         public var totalBytes: Int64 {
-            walkthroughs.totalBytes + driveBys.totalBytes + queueBytes
+            walkthroughs.totalBytes + voiceNotes.totalBytes + queueBytes
         }
     }
 
@@ -259,10 +259,10 @@ public enum SessionHistoryStore {
     /// Settings → Storage reports.
     public static func storageSnapshot(olderThan cutoff: Date) -> StorageSnapshot {
         let walkthroughs = scanWalkthroughs()
-        let driveBys = scanDriveBys()
+        let voiceNotes = scanVoiceNotes()
         let (queueCount, queueBytes) = scanUploadQueue()
 
-        // "Older than cutoff" = sessions + seeds whose capture date is
+        // "Older than cutoff" = sessions + notes whose capture date is
         // before the cutoff. Queue entries are intentionally excluded —
         // they're still active uploads and shouldn't be wiped from
         // under the uploader actor.
@@ -272,14 +272,14 @@ public enum SessionHistoryStore {
             staleCount += 1
             staleBytes += directorySize(at: w.directory)
         }
-        for d in loadDriveBys() where d.seed.captured_at < cutoff {
+        for d in loadVoiceNotes() where d.note.captured_at < cutoff {
             staleCount += 1
             staleBytes += directorySize(at: d.directory)
         }
 
         return StorageSnapshot(
             walkthroughs: walkthroughs,
-            driveBys: driveBys,
+            voiceNotes: voiceNotes,
             queueBytes: queueBytes,
             queueCount: queueCount,
             olderThanCutoff: CategoryStats(
@@ -290,8 +290,8 @@ public enum SessionHistoryStore {
         )
     }
 
-    /// Remove every locally-stored audio session, seed, the
-    /// surfaced-seed index, and the upload-queue JSON. The Danger Zone
+    /// Remove every locally-stored audio session, note, the
+    /// surfaced-note index, and the upload-queue JSON. The Danger Zone
     /// caller is expected to call `SessionUploader.clear()` immediately
     /// before this so the actor's in-memory queue doesn't get
     /// re-persisted after we unlink the file. Returns bytes freed.
@@ -302,7 +302,7 @@ public enum SessionHistoryStore {
             freed += directorySize(at: root)
             try? FileManager.default.removeItem(at: root)
         }
-        if let root = try? LocalStore.driveBySeedsDir() {
+        if let root = try? LocalStore.voiceNotesDir() {
             freed += directorySize(at: root)
             try? FileManager.default.removeItem(at: root)
         }
@@ -318,7 +318,7 @@ public enum SessionHistoryStore {
     }
 
     /// Remove every walkthrough session directory (manifest + segments),
-    /// leaving drive-by seeds and the upload-queue file alone. Backs the
+    /// leaving notes and the upload-queue file alone. Backs the
     /// danger-zone "delete all sessions" swipe. Returns bytes freed; the
     /// caller is expected to `purgeOrphans()` the upload queue afterwards.
     @discardableResult
@@ -331,20 +331,20 @@ public enum SessionHistoryStore {
         return freed
     }
 
-    /// Remove every drive-by seed directory (audio + metadata), leaving
+    /// Remove every note directory (audio + metadata), leaving
     /// walkthrough sessions and the upload-queue file alone. Backs the
     /// danger-zone "delete all notes" swipe. Returns bytes freed.
     @discardableResult
-    public static func deleteAllDriveBys() -> Int64 {
+    public static func deleteAllVoiceNotes() -> Int64 {
         var freed: Int64 = 0
-        for d in loadDriveBys() {
+        for d in loadVoiceNotes() {
             freed += directorySize(at: d.directory)
             try? FileManager.default.removeItem(at: d.directory)
         }
         return freed
     }
 
-    /// Remove sessions + seeds older than `cutoff`. Queued sessions are
+    /// Remove sessions + notes older than `cutoff`. Queued sessions are
     /// skipped — deleting their audio would orphan the upload entry.
     /// Returns the number of bytes freed.
     @discardableResult
@@ -358,7 +358,7 @@ public enum SessionHistoryStore {
             freed += directorySize(at: w.directory)
             try? FileManager.default.removeItem(at: w.directory)
         }
-        for d in loadDriveBys() where d.seed.captured_at < cutoff {
+        for d in loadVoiceNotes() where d.note.captured_at < cutoff {
             freed += directorySize(at: d.directory)
             try? FileManager.default.removeItem(at: d.directory)
         }
@@ -373,10 +373,10 @@ public enum SessionHistoryStore {
         return CategoryStats(label: "walkthroughs", count: entries.count, totalBytes: bytes)
     }
 
-    private static func scanDriveBys() -> CategoryStats {
-        let entries = loadDriveBys()
+    private static func scanVoiceNotes() -> CategoryStats {
+        let entries = loadVoiceNotes()
         let bytes = entries.reduce(Int64(0)) { $0 + directorySize(at: $1.directory) }
-        return CategoryStats(label: "driveBys", count: entries.count, totalBytes: bytes)
+        return CategoryStats(label: "voiceNotes", count: entries.count, totalBytes: bytes)
     }
 
     private static func scanUploadQueue() -> (count: Int, bytes: Int64) {

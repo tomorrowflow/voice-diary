@@ -22,7 +22,7 @@ public enum LocalStore {
         return dir
     }
 
-    public static func driveBySeedsDir() throws -> URL {
+    public static func voiceNotesDir() throws -> URL {
         let dir = try appSupport().appending(path: "driveby_seeds", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
@@ -51,11 +51,11 @@ public enum LocalStore {
         try data.write(to: url, options: [.atomic, .completeFileProtection])
     }
 
-    // MARK: - Surfaced drive-by seed index ---------------------------
+    // MARK: - Surfaced note index ---------------------------
 
     /// Filename for the JSON sidecar listing every seed_id that's been
-    /// surfaced in a walkthrough session. Used to filter out seeds that
-    /// have already been folded into a diary entry so the drive-by
+    /// surfaced in a walkthrough session. Used to filter out notes that
+    /// have already been folded into a diary entry so the note
     /// section never re-surfaces them.
     public static let surfacedSeedsFilename = "surfaced_seed_ids.json"
 
@@ -63,7 +63,7 @@ public enum LocalStore {
         try appSupport().appending(path: surfacedSeedsFilename)
     }
 
-    public static func surfacedSeedIDs() -> Set<String> {
+    public static func surfacedNoteIDs() -> Set<String> {
         guard let url = try? surfacedSeedsURL(),
               let data = try? Data(contentsOf: url),
               let ids = try? JSONDecoder().decode([String].self, from: data)
@@ -73,7 +73,7 @@ public enum LocalStore {
 
     public static func markSeedsSurfaced(ids: [String]) {
         guard !ids.isEmpty else { return }
-        var current = surfacedSeedIDs()
+        var current = surfacedNoteIDs()
         current.formUnion(ids)
         guard let url = try? surfacedSeedsURL() else { return }
         let encoder = JSONEncoder()

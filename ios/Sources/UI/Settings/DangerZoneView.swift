@@ -6,11 +6,11 @@ import SwiftUI
 ///   * **Per-category swipe** — swipe a storage row left to delete *all*
 ///     sessions, *all* notes, or the *entire* upload queue at once. Each
 ///     swipe asks for confirmation first.
-///   * **Älter als 30 Tage entfernen** — removes sessions + seeds whose
+///   * **Älter als 30 Tage entfernen** — removes sessions + notes whose
 ///     capture date is before the cutoff. Queued sessions are skipped so
 ///     an in-flight upload isn't orphaned.
 ///   * **Alle lokalen Daten löschen** — wipes both audio directories, the
-///     surfaced-seed index, and the upload queue.
+///     surfaced-note index, and the upload queue.
 ///
 /// Server-side data (LightRAG, Postgres, the diary entries themselves)
 /// is **not** touched by anything on this screen.
@@ -38,14 +38,14 @@ private enum Category: String, Identifiable {
     func count(_ s: SessionHistoryStore.StorageSnapshot) -> Int {
         switch self {
         case .sessions: return s.walkthroughs.count
-        case .notes:    return s.driveBys.count
+        case .notes:    return s.voiceNotes.count
         case .queue:    return s.queueCount
         }
     }
     func bytes(_ s: SessionHistoryStore.StorageSnapshot) -> Int64 {
         switch self {
         case .sessions: return s.walkthroughs.totalBytes
-        case .notes:    return s.driveBys.totalBytes
+        case .notes:    return s.voiceNotes.totalBytes
         case .queue:    return s.queueBytes
         }
     }
@@ -430,7 +430,7 @@ public struct DangerZoneView: View {
             infoMessage = "\(byteFormatter.string(fromByteCount: freed)) wurden freigegeben."
         case .notes:
             let freed = await Task.detached(priority: .userInitiated) {
-                SessionHistoryStore.deleteAllDriveBys()
+                SessionHistoryStore.deleteAllVoiceNotes()
             }.value
             _ = await SessionUploader.shared.purgeOrphans()
             infoMessage = "\(byteFormatter.string(fromByteCount: freed)) wurden freigegeben."
@@ -477,7 +477,7 @@ public struct DangerZoneView: View {
 
     private var allEmpty: Bool {
         guard let snap = snapshot else { return true }
-        return snap.walkthroughs.count == 0 && snap.driveBys.count == 0
+        return snap.walkthroughs.count == 0 && snap.voiceNotes.count == 0
     }
 
     private var partialDescription: String {

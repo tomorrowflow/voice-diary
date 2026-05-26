@@ -9,7 +9,7 @@ import os
 // The model is ~1.2 GB. We download it lazily on first use and cache via
 // FluidAudio's default model registry. Subsequent launches load instantly.
 //
-// For M2 (drive-by capture) we transcribe in **batch** mode: hand the
+// For M2 (note capture) we transcribe in **batch** mode: hand the
 // finished M4A to `transcribe(audioURL:)` and get text back. Streaming /
 // wake-word detection lands in M7 (Parakeet EOU, English-only) on top of
 // this baseline.

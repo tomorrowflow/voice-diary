@@ -43,7 +43,7 @@ final class SegmentPlayer {
 
     /// Fired once on *natural* playback completion — not on pause, stop,
     /// or loading another file. The walkthrough's note review sets this to
-    /// open the wake-word window only after the seed has played through.
+    /// open the wake-word window only after the note has played through.
     @ObservationIgnored var onNaturalFinish: (@MainActor () -> Void)?
 
     init(managesSession: Bool = true) {
@@ -187,14 +187,20 @@ final class SegmentPlayer {
     /// One-shot duration probe for an .m4a on disk. Cheap (~ms) — pulls
     /// the duration atom from the file header without decoding samples.
     static func duration(of url: URL) async -> TimeInterval? {
+        // Primary: pull the duration atom from the header.
         let asset = AVURLAsset(url: url)
-        do {
-            let cm = try await asset.load(.duration)
+        if let cm = try? await asset.load(.duration) {
             let seconds = CMTimeGetSeconds(cm)
-            return seconds.isFinite ? seconds : nil
-        } catch {
-            return nil
+            if seconds.isFinite, seconds > 0 { return seconds }
         }
+        // Fallback: AVAsset sometimes reports 0 / indefinite for the AAC
+        // m4a we record (header quirks). AVAudioPlayer decodes the same
+        // length reliably and cheaply — no playback, just the header.
+        if let player = try? AVAudioPlayer(contentsOf: url) {
+            let seconds = player.duration
+            if seconds.isFinite, seconds > 0 { return seconds }
+        }
+        return nil
     }
 
     /// "0:42" / "12:03" / "1:02:34" formatter for compact rows.

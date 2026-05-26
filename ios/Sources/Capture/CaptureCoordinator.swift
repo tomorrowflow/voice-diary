@@ -4,7 +4,7 @@ import Foundation
 import SwiftUI
 import UIKit
 
-// Single source of truth for "is a drive-by recording in progress?"
+// Single source of truth for "is a note recording in progress?"
 //
 // The widget extension and the App Intent both need to observe and mutate
 // this state. We use:
@@ -28,7 +28,7 @@ public final class CaptureCoordinator {
     public private(set) var startedAt: Date?
     public private(set) var elapsedSeconds: Int = 0
     public private(set) var statusLine: String = ""
-    public private(set) var lastSeed: DriveBySeed?
+    public private(set) var lastNote: VoiceNote?
     public private(set) var lastError: String?
 
     private let engine = AudioEngine()
@@ -59,13 +59,13 @@ public final class CaptureCoordinator {
         lastError = nil
         statusLine = ""
         do {
-            let dir = try LocalStore.driveBySeedsDir()
+            let dir = try LocalStore.voiceNotesDir()
                 .appending(path: ISO8601DateFormatter().string(from: Date()),
                            directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             let audio = dir.appending(path: "audio.m4a")
             // Pre-arm the AVAudioSession before `engine.start()`. When
-            // the drive-by trigger originates from the lock-screen widget
+            // the note trigger originates from the lock-screen widget
             // / Action Button, `start()` runs as the app is just being
             // foregrounded — calling `setCategory(.playAndRecord)` on a
             // not-yet-fully-active scene reliably hits
@@ -82,6 +82,11 @@ public final class CaptureCoordinator {
             persistRecordingState(active: true, startedAt: now)
             startLiveActivity(at: now)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            // Audible "recording started" cue so the user gets confirmation
+            // even hands-off / screen-off (Action Button, lock screen). All
+            // capture triggers funnel through this single start(), so one
+            // call covers every entry point.
+            WakePing.shared.playCaptureStart()
         } catch {
             lastError = "\(error)"
             persistRecordingState(active: false, startedAt: nil)
@@ -95,7 +100,7 @@ public final class CaptureCoordinator {
         statusLine = "Transkribiere …"
         do {
             let captured = try await engine.stop()
-            // Drive-by is one-shot — once the segment is finalised, tear
+            // Note is one-shot — once the segment is finalised, tear
             // the engine fully down. We pre-armed it in `start()` to
             // cope with the lock-screen / Action-Button trigger path,
             // so it's running until we explicitly shutdown here.
@@ -121,24 +126,24 @@ public final class CaptureCoordinator {
                 )
             }
 
-            let seed = DriveBySeed(
-                seed_id: "seed-" + ISO8601DateFormatter().string(from: started),
+            let note = VoiceNote(
+                seed_id: "note-" + ISO8601DateFormatter().string(from: started),
                 captured_at: started,
                 duration_seconds: duration,
                 language: transcript?.language ?? "de",
                 transcript: transcript?.text ?? "",
                 audio_file_url: url
             )
-            try writeMetadata(seed: seed, alongside: url)
-            lastSeed = seed
-            persistLastSeed(seed)
+            try writeMetadata(note: note, alongside: url)
+            lastNote = note
+            persistLastSeed(note)
             statusLine = transcript == nil
                 ? "Aufnahme gespeichert. Transkript folgt beim Server-Upload."
                 : "Aufnahme + Transkript gespeichert."
             await endLiveActivity()
             await CaptureNotifications.shared.fireCaptureComplete(
                 duration: duration,
-                transcriptPreview: seed.transcript.isEmpty ? nil : seed.transcript
+                transcriptPreview: note.transcript.isEmpty ? nil : note.transcript
             )
         } catch {
             lastError = "\(error)"
@@ -162,12 +167,12 @@ public final class CaptureCoordinator {
         }
     }
 
-    private func writeMetadata(seed: DriveBySeed, alongside audio: URL) throws {
+    private func writeMetadata(note: VoiceNote, alongside audio: URL) throws {
         let json = audio.deletingLastPathComponent().appending(path: "metadata.json")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
-        let data = try encoder.encode(seed)
+        let data = try encoder.encode(note)
         try data.write(to: json, options: [.atomic, .completeFileProtection])
     }
 
@@ -182,10 +187,10 @@ public final class CaptureCoordinator {
         }
     }
 
-    private func persistLastSeed(_ seed: DriveBySeed) {
+    private func persistLastSeed(_ note: VoiceNote) {
         guard let defaults = UserDefaults(suiteName: AppGroup.identifier) else { return }
-        defaults.set(seed.transcript, forKey: AppGroup.lastSeedTranscriptKey)
-        defaults.set(seed.duration_seconds, forKey: AppGroup.lastSeedDurationKey)
+        defaults.set(note.transcript, forKey: AppGroup.lastSeedTranscriptKey)
+        defaults.set(note.duration_seconds, forKey: AppGroup.lastSeedDurationKey)
     }
 
     // --- Live Activity --------------------------------------------------

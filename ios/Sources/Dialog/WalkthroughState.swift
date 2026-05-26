@@ -5,7 +5,7 @@ import Foundation
 // the data model so views and tests can pattern-match without pulling in
 // AVFoundation.
 //
-// Every event-loop / general / drive-by listening state carries the index
+// Every event-loop / general / note listening state carries the index
 // of the current `PlanStep` in the coordinator's plan so the UI can use
 // one progress counter for the whole session regardless of section type.
 
@@ -16,9 +16,9 @@ public enum WalkthroughState: Sendable, Equatable {
     case eventListening(stepIndex: Int, eventIndex: Int)     // mic open, recording the user's reflection
     case generalOpener(stepIndex: Int, sectionID: String)    // AI speaking the user-defined intro
     case generalListening(stepIndex: Int, sectionID: String) // mic open, recording the section answer
-    case noteReview(stepIndex: Int, seedIndex: Int)          // visual review of one drive-by seed
-    case driveByOpener(stepIndex: Int)                       // AI speaking the closing prompt
-    case driveByListening(stepIndex: Int)                    // mic open, recording the closing reflection
+    case noteReview(stepIndex: Int, noteIndex: Int)          // visual review of one note
+    case voiceNoteOpener(stepIndex: Int)                       // AI speaking the closing prompt
+    case voiceNoteListening(stepIndex: Int)                    // mic open, recording the closing reflection
     case confirmingTodos(index: Int)                         // post-CLOSING per-candidate ja/nein/anders pass
     case ingesting                                           // building manifest + handing to SessionUploader
     case done
@@ -28,14 +28,14 @@ public enum WalkthroughState: Sendable, Equatable {
 public extension WalkthroughState {
     var isListening: Bool {
         switch self {
-        case .eventListening, .generalListening, .driveByListening: return true
+        case .eventListening, .generalListening, .voiceNoteListening: return true
         default: return false
         }
     }
 
     var isSpeaking: Bool {
         switch self {
-        case .briefing, .eventOpener, .generalOpener, .driveByOpener: return true
+        case .briefing, .eventOpener, .generalOpener, .voiceNoteOpener: return true
         default: return false
         }
     }
@@ -51,7 +51,7 @@ public extension WalkthroughState {
              .eventOpener, .eventListening,
              .generalOpener, .generalListening,
              .noteReview,
-             .driveByOpener, .driveByListening,
+             .voiceNoteOpener, .voiceNoteListening,
              .confirmingTodos:
             return true
         default:
@@ -68,8 +68,8 @@ public extension WalkthroughState {
         case .generalOpener:              return "Abschnitt — Opener"
         case .generalListening:           return "Abschnitt — Hören"
         case .noteReview(_, let i):       return "Notiz \(i + 1)"
-        case .driveByOpener:              return "Drive-by"
-        case .driveByListening:           return "Drive-by — Hören"
+        case .voiceNoteOpener:              return "Notizen"
+        case .voiceNoteListening:           return "Notizen — Hören"
         case .confirmingTodos:            return "Aufgaben prüfen"
         case .ingesting:                  return "Lade hoch"
         case .done:                       return "Fertig"
