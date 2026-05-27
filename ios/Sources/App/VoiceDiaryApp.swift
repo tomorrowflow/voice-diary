@@ -42,6 +42,19 @@ struct VoiceDiaryApp: App {
                         }
                     }
 
+                    // Re-tag every existing file/dir under VoiceDiary
+                    // with the current protection class. iOS keeps a
+                    // node's protection class for its lifetime —
+                    // upgrading the constant in `LocalStore` doesn't
+                    // touch dirs/files that already exist from earlier
+                    // testing. Without this sweep, legacy `.complete`
+                    // nodes left over from prior builds keep tripping
+                    // CoreAudio's -54 even after the constant is
+                    // relaxed. Cheap (a few hundred items, microseconds
+                    // each) and idempotent.
+                    let retagged = LocalStore.migrateProtectionClass()
+                    Diag.log("LocalStore.migrateProtectionClass touched=\(retagged)")
+
                     // Notifications first (transient capture-complete
                     // toasts). Then mic + speech-recognition prompts
                     // up-front — see `Permissions.swift` for why we
