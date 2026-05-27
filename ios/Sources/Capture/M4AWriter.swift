@@ -96,12 +96,30 @@ public final class M4AWriter: @unchecked Sendable {
     /// writer is already mid-segment.
     public func open(at finalURL: URL, inputSampleRate: Double) throws {
         let temp = Self.tempURL(for: finalURL)
-        // Belt-and-suspenders: drop any leftover temp from a previous
-        // run with this exact final URL. `cleanupOrphans` also sweeps
-        // the whole tree at launch, but a same-URL collision (e.g. a
-        // re-run that hits the same s01.m4a path) is the most common
-        // single-segment recurrence and worth handling locally.
-        try? FileManager.default.removeItem(at: temp)
+        let fm = FileManager.default
+        let parent = temp.deletingLastPathComponent()
+
+        // Re-tag the parent directory before doing anything else. iOS
+        // doesn't retroactively change a directory's protection class
+        // when we bump `LocalStore.protectionClass`, so a legacy
+        // `.complete` dir from earlier testing would silently stay
+        // strict otherwise — and CoreAudio returns -54 trying to
+        // create a file inside one.
+        LocalStore.applyProtection(to: parent)
+
+        // Drop any leftover temp. If the existing temp was tagged
+        // with the legacy `.complete` class, the OS may refuse to
+        // remove it; track explicitly and surface in the diagnostic.
+        let priorTempProtection = LocalStore.currentProtection(of: temp)
+        let removeError: Error? = {
+            guard fm.fileExists(atPath: temp.path) else { return nil }
+            do {
+                try fm.removeItem(at: temp)
+                return nil
+            } catch {
+                return error
+            }
+        }()
 
         let rate = inputSampleRate > 0 ? inputSampleRate : 44_100
         let settings: [String: Any] = [
@@ -111,22 +129,48 @@ public final class M4AWriter: @unchecked Sendable {
             AVEncoderAudioQualityKey: AVAudioQuality.medium.rawValue,
             AVEncoderBitRateKey: M4AWriter.bitrate,
         ]
-        // Pre-AVAudioFile diagnostic. Fires once per segment open, so
-        // the cost is negligible; the payoff is that any future -54 /
-        // -40 from `AVAudioFile(forWriting:)` lands in the console
-        // with everything we'd otherwise have to ask the user for:
-        // exact temp URL, whether the parent dir exists / is writable,
-        // the resolved sample rate, and whether a stale temp survived
-        // the `removeItem(at: temp)` above.
-        let fm = FileManager.default
-        let parent = temp.deletingLastPathComponent()
+
+        // Pre-create the temp file with an explicit protection class.
+        // `AVAudioFile(forWriting:)` calls `ExtAudioFileCreateWithURL`
+        // with `kAudioFileFlags_EraseFile`, which deletes any existing
+        // file at the URL before creating a fresh one. If we leave the
+        // creation entirely to CoreAudio, the new file inherits the
+        // app's default protection class — which on some legacy
+        // installs (where the parent dir was already `.complete`)
+        // ends up being whatever class iOS picks for files in that
+        // parent, and CoreAudio then trips on it. Pre-creating with
+        // `.completeUntilFirstUserAuthentication` and immediately
+        // re-tagging keeps the class deterministic at the moment of
+        // open.
+        let preCreateOK: Bool
+        do {
+            preCreateOK = fm.createFile(
+                atPath: temp.path,
+                contents: Data(),
+                attributes: [
+                    .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication,
+                ]
+            )
+        }
+        LocalStore.applyProtection(to: temp)
+
+        // Pre-AVAudioFile diagnostic. Once per segment open; payoff is
+        // that any future -54 / -40 lands in the console with the
+        // exact protection classes (parent + temp), the removal
+        // outcome, and the sample-rate / writable status.
+        let parentProtection = LocalStore.currentProtection(of: parent)
+        let postTempProtection = LocalStore.currentProtection(of: temp)
         let parentExists = fm.fileExists(atPath: parent.path)
         let parentWritable = fm.isWritableFile(atPath: parent.path)
-        let staleTemp = fm.fileExists(atPath: temp.path)
         Diag.log(
             "M4AWriter.open temp=\(temp.lastPathComponent) "
             + "parentExists=\(parentExists) parentWritable=\(parentWritable) "
-            + "staleTemp=\(staleTemp) rate=\(Int(rate))"
+            + "parentProt=\(parentProtection?.rawValue ?? "nil") "
+            + "priorTempProt=\(priorTempProtection?.rawValue ?? "absent") "
+            + "removeErr=\(String(describing: removeError)) "
+            + "preCreateOK=\(preCreateOK) "
+            + "postTempProt=\(postTempProtection?.rawValue ?? "nil") "
+            + "rate=\(Int(rate))"
         )
 
         // Build the AVAudioFile *outside* the lock — its initializer
@@ -148,9 +192,16 @@ public final class M4AWriter: @unchecked Sendable {
             Diag.log(
                 "M4AWriter.open FAILED domain=\(ns.domain) code=\(ns.code) "
                 + "temp=\(temp.path) parentExists=\(parentExists) "
-                + "parentWritable=\(parentWritable) staleTemp=\(staleTemp) "
-                + "rate=\(Int(rate)) error=\(ns.localizedDescription)"
+                + "parentWritable=\(parentWritable) "
+                + "parentProt=\(parentProtection?.rawValue ?? "nil") "
+                + "postTempProt=\(postTempProtection?.rawValue ?? "nil") "
+                + "preCreateOK=\(preCreateOK) rate=\(Int(rate)) "
+                + "error=\(ns.localizedDescription)"
             )
+            // Best-effort cleanup so a failed open doesn't leave a
+            // zero-byte temp behind that the next attempt would have
+            // to deal with.
+            try? fm.removeItem(at: temp)
             throw error
         }
         // Tag the file with the app-wide protection class explicitly:

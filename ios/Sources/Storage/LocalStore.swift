@@ -33,6 +33,62 @@ public enum LocalStore {
         )
     }
 
+    /// Read the current `URLFileProtection` resource value of `url`, or
+    /// `nil` when it can't be queried (URL doesn't exist, key not set,
+    /// volume doesn't support per-file protection). Used by the audio
+    /// pipeline's `-54` diagnostic so we can see at fault time whether
+    /// a parent directory or stale temp file is still tagged with the
+    /// old `.complete` class.
+    public static func currentProtection(of url: URL) -> URLFileProtection? {
+        do {
+            let values = try url.resourceValues(forKeys: [.fileProtectionKey])
+            return values.fileProtection
+        } catch {
+            return nil
+        }
+    }
+
+    /// One-time migration that walks every file and directory under the
+    /// app's Application Support root and re-applies the current
+    /// `protectionClass` to each node. Idempotent — running it on every
+    /// launch is cheap (a few hundred items, each `setResourceValue`
+    /// call is microseconds). Returns the number of nodes touched.
+    ///
+    /// **Why this exists:** the protection class for audio paths used
+    /// to be `URLFileProtection.complete`. CoreAudio's `ExtAudioFile`
+    /// path returns `-54` (`kAudioFilePermissionsError`) on files /
+    /// directories tagged that way even when the device is unlocked.
+    /// Switching `protectionClass` to
+    /// `completeUntilFirstUserAuthentication` only affects newly
+    /// created nodes; pre-existing nodes from earlier testing keep
+    /// their original `.complete` class until something explicitly
+    /// re-tags them. This sweep does that on every launch.
+    @discardableResult
+    public static func migrateProtectionClass() -> Int {
+        guard let root = try? appSupport() else { return 0 }
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.fileProtectionKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return 0
+        }
+        var retagged = 0
+        // Tag the root itself too — the enumerator yields only
+        // children, not the root URL.
+        applyProtection(to: root)
+        retagged += 1
+        for case let url as URL in enumerator {
+            let before = currentProtection(of: url)
+            if before != protectionClass {
+                applyProtection(to: url)
+                retagged += 1
+            }
+        }
+        return retagged
+    }
+
     public static func appSupport() throws -> URL {
         let fm = FileManager.default
         let dir = try fm.url(
