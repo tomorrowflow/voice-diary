@@ -93,7 +93,12 @@ public final class WalkthroughCoordinator {
     private var confirmedImplicit: [Todo] = []
     public var confirmedImplicitCount: Int { confirmedImplicit.count }
     private var rejectedImplicit: [TodoRejected] = []
-    public private(set) var confirmationLanguage: OpenerLanguage = .de
+    // Seeded from the app-language preference (`Mehr → Sprache`), then
+    // updated per opener as the per-utterance LanguageDetector picks
+    // German or English from the event title. The initial value matters
+    // for the first read of `noteSummaryHeader` etc. *before* any opener
+    // has fired.
+    public private(set) var confirmationLanguage: OpenerLanguage = .current
     public private(set) var isAwaitingTodoAnswer: Bool = false
     private var todoAnswerTask: Task<Void, Never>?
     /// Tracks the in-flight 6 s follow-up so we can abort it when the
@@ -247,7 +252,7 @@ public final class WalkthroughCoordinator {
 
     // MARK: - Public commands -----------------------------------------
 
-    public func begin(today: Date? = nil, language: OpenerLanguage = .de) async {
+    public func begin(today: Date? = nil, language: OpenerLanguage = .current) async {
         guard case .idle = state else { return }
         let targetDate = today ?? selectedDate
         state = .briefing
@@ -384,7 +389,7 @@ public final class WalkthroughCoordinator {
 
     /// Advance to the next plan step (or the next event inside the
     /// calendar block).
-    public func advance(language: OpenerLanguage = .de) async {
+    public func advance(language: OpenerLanguage = .current) async {
         // Coalesce rapid Weiter taps. The runEvent/runGeneral/runVoiceNotes
         // chains are not idempotent — re-entering with the same captured
         // step/event indices double-starts the next segment's audio file
@@ -461,7 +466,7 @@ public final class WalkthroughCoordinator {
     }
 
     /// Skip the current step's segment without recording it.
-    public func skip(language: OpenerLanguage = .de) async {
+    public func skip(language: OpenerLanguage = .current) async {
         guard !transitionInFlight else { return }
         transitionInFlight = true
         defer { transitionInFlight = false }
@@ -514,7 +519,7 @@ public final class WalkthroughCoordinator {
     /// (`cancel()`); there is no other UI entry point. For note /
     /// note-review / closing — which is already the last section —
     /// "next step" naturally falls through to `ingestAndUpload`.
-    public func finishCurrentSection(language: OpenerLanguage = .de) async {
+    public func finishCurrentSection(language: OpenerLanguage = .current) async {
         guard !transitionInFlight else { return }
         transitionInFlight = true
         defer { transitionInFlight = false }
@@ -1192,7 +1197,7 @@ public final class WalkthroughCoordinator {
 
     public func askEnrichment(
         query: String,
-        language: OpenerLanguage = .de
+        language: OpenerLanguage = .current
     ) async {
         guard !isEnriching else { return }
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2527,9 +2532,15 @@ public final class WalkthroughCoordinator {
         case .generalOpener(_, let id), .generalListening(_, let id):
             return WalkthroughSettingsStore.generals.first { $0.id == id }?.title
         case .noteReview:
-            return confirmationLanguage == .de ? "Notizen" : "Notes"
+            // `confirmationLanguage` mirrors the per-utterance language
+            // detection during a live session; outside of that the
+            // section header should match the *app* language, not
+            // whichever language the last opener happened to be in. We
+            // therefore route through `String(localized:)` so the
+            // catalog answers based on AppLanguage.
+            return String(localized: "Notes")
         case .voiceNoteOpener, .voiceNoteListening:
-            return confirmationLanguage == .de ? "Tagesabschluss" : "Day close"
+            return String(localized: "Day close")
         default:
             return nil
         }
@@ -2552,7 +2563,7 @@ public final class WalkthroughCoordinator {
     /// itself is kept on disk — the user's recording isn't deleted by
     /// a stray voice command. Advances to the next note (or the
     /// closing question) on completion.
-    public func dropCurrentNote(language: OpenerLanguage = .de) async {
+    public func dropCurrentNote(language: OpenerLanguage = .current) async {
         guard !transitionInFlight else { return }
         transitionInFlight = true
         defer { transitionInFlight = false }
@@ -2590,7 +2601,7 @@ public final class WalkthroughCoordinator {
     /// window once playback completes. Same code path the AI runs the
     /// first time a note is surfaced — kept as one method so the
     /// timing logic stays in one place.
-    public func replayCurrentNote(language: OpenerLanguage = .de) async {
+    public func replayCurrentNote(language: OpenerLanguage = .current) async {
         wakeWordTask?.cancel(); wakeWordTask = nil
         isWakeListening = false
         guard case .noteReview(let stepIdx, let noteIdx) = state,
@@ -2610,7 +2621,7 @@ public final class WalkthroughCoordinator {
     /// In-walkthrough re-recording (start a fresh segment capture,
     /// transcribe inline, splice the new note back into the entry) is
     /// out of scope here and tracked as a follow-up slice.
-    public func rerecordCurrentNote(language: OpenerLanguage = .de) async {
+    public func rerecordCurrentNote(language: OpenerLanguage = .current) async {
         guard !transitionInFlight else { return }
         transitionInFlight = true
         defer { transitionInFlight = false }
@@ -2659,7 +2670,7 @@ public final class WalkthroughCoordinator {
     /// (or to the closing question when this was the last). Used only
     /// on orphan notes (older than the diary day); same-day notes
     /// always fold into the session via the regular Weiter path.
-    public func saveCurrentNoteForLater(language: OpenerLanguage = .de) async {
+    public func saveCurrentNoteForLater(language: OpenerLanguage = .current) async {
         guard !transitionInFlight else { return }
         transitionInFlight = true
         defer { transitionInFlight = false }

@@ -47,7 +47,7 @@ public struct VoiceSettingsView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Stimmen")
+                FlowHeader(title: "Voices")
 
                 Form {
                     voxtralReachabilitySection
@@ -68,7 +68,7 @@ public struct VoiceSettingsView: View {
                                 voxtralRow(voice: voice, language: lang.code, sample: lang.sample)
                             }
                             if appleVoices.isEmpty && piperVoices.isEmpty && voxtralVoices.isEmpty {
-                                Text("Keine Stimmen verfügbar. Premium-Stimme über iOS-Einstellungen → Bedienungshilfen → Gesprochene Inhalte → Stimmen laden, oder `ios/scripts/fetch_piper_voices.sh` ausführen, oder Voxtral-Server in den Server-Einstellungen prüfen.")
+                                Text("No voices available. Download a Premium voice via iOS Settings → Accessibility → Spoken Content → Voices, run `ios/scripts/fetch_piper_voices.sh`, or check the Voxtral server in Server settings.")
                                     .font(Theme.font.caption)
                                     .foregroundStyle(Theme.color.text.subdued)
                             }
@@ -81,13 +81,13 @@ public struct VoiceSettingsView: View {
 
                     if let catalogError = voiceCatalog.lastError {
                         Section {
-                            Text("Voxtral-Stimmen konnten nicht geladen werden: \(catalogError)")
+                            Text("Voxtral voices could not be loaded: \(catalogError)")
                                 .font(Theme.font.caption)
                                 .foregroundStyle(Theme.color.text.subdued)
                             Button {
                                 Task { await voiceCatalog.refresh() }
                             } label: {
-                                Label("Erneut versuchen", systemImage: "arrow.clockwise")
+                                Label("Try again", systemImage: "arrow.clockwise")
                             }
                             .buttonStyle(.plain)
                             .foregroundStyle(Theme.color.text.link)
@@ -108,21 +108,21 @@ public struct VoiceSettingsView: View {
                             }
                         )) {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text("Sprache pro Termin erkennen")
+                                Text("Detect language per event")
                                     .font(Theme.font.body)
-                                Text("Englisch betitelte Termine werden mit der englischen Stimme gelesen, der deutsche Rahmen bleibt deutsch.")
+                                Text("Events with English titles are read with the English voice; the surrounding German frame stays German.")
                                     .font(Theme.font.caption)
                                     .foregroundStyle(Theme.color.text.subdued)
                             }
                         }
                     } header: {
-                        Text("Sprachausgabe")
+                        Text("Voice output")
                             .font(Theme.font.subheadline)
                             .foregroundStyle(Theme.color.text.secondary)
                     }
 
                     Section {
-                        Text("Apple-Premium-Stimmen müssen einmalig in den iOS-Einstellungen geladen werden. Piper-Stimmen werden mit der App ausgeliefert (≈ 110 MB pro Stimme) und spielen direkt auf dem Gerät. Voxtral-Stimmen kommen aus deinem Server über Tailscale — höhere Qualität, aber benötigen eine Verbindung.")
+                        Text("Apple Premium voices need a one-time download in iOS Settings. Piper voices ship with the app (≈ 110 MB each) and play fully on-device. Voxtral voices come from your server over Tailscale — higher quality, but need a connection.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
@@ -201,14 +201,14 @@ public struct VoiceSettingsView: View {
 
     private var voxtralReachabilityLabel: String {
         switch voxtralUpstreamValue {
-        case "ok":      return "Verbunden"
-        case "down":    return "Nicht erreichbar"
-        case "skipped": return "Nicht konfiguriert"
+        case "ok":      return String(localized: "Connected")
+        case "down":    return String(localized: "Unreachable")
+        case "skipped": return String(localized: "Not configured")
         default:
             switch reachability.status {
-            case .authInvalid: return "Bearer ungültig"
-            case .down:        return "Server nicht erreichbar"
-            default:           return "Status unbekannt"
+            case .authInvalid: return String(localized: "Bearer invalid")
+            case .down:        return String(localized: "Server unreachable")
+            default:           return String(localized: "Status unknown")
             }
         }
     }
@@ -216,13 +216,13 @@ public struct VoiceSettingsView: View {
     private var voxtralReachabilityDetail: String {
         switch voxtralUpstreamValue {
         case "ok":
-            return "Voxtral-Stimmen sind verfügbar. Fällt bei Hiccups automatisch auf Piper/Apple zurück."
+            return String(localized: "Voxtral voices are available. Falls back to Piper/Apple automatically on hiccups.")
         case "down":
-            return "Voxtral-Sidecar antwortet nicht. Voxtral-Stimmen fallen auf deine Piper- oder Apple-Stimme zurück, der Walkthrough läuft weiter."
+            return String(localized: "Voxtral sidecar is not responding. Voxtral voices fall back to your Piper or Apple voice; the walkthrough keeps running.")
         case "skipped":
-            return "VOXTRAL_BASE_URL ist auf dem Server nicht gesetzt — keine Voxtral-Stimmen verfügbar."
+            return String(localized: "VOXTRAL_BASE_URL is not set on the server — no Voxtral voices available.")
         default:
-            return "Reachability wird beim Öffnen der Einstellungen geprüft. Tippe ↻ zum erneuten Prüfen."
+            return String(localized: "Reachability is checked when you open Settings. Tap ↻ to re-check.")
         }
     }
 
@@ -288,7 +288,7 @@ public struct VoiceSettingsView: View {
                             .foregroundStyle(available ? Theme.color.text.primary : Theme.color.text.subdued)
                         Text(available
                              ? voice.accent
-                             : "\(voice.accent) — Modelle nicht installiert")
+                             : String(localized: "\(voice.accent) — models not installed"))
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }

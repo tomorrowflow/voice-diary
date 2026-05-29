@@ -16,7 +16,7 @@ public struct CaptureView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Aufnahme")
+                FlowHeader(title: "Recording")
 
                 ScrollView {
                     VStack(spacing: Theme.spacing.xl) {
@@ -66,10 +66,10 @@ public struct CaptureView: View {
                         Button {
                             Task { await coordinator.toggle() }
                         } label: {
-                            Label("Stopp", systemImage: "stop.fill")
+                            Label("Stop", systemImage: "stop.fill")
                         }
                         .buttonStyle(.dsDestructive(size: .lg, fullWidth: true))
-                        .accessibilityLabel("Aufnahme beenden")
+                        .accessibilityLabel(Text("End recording"))
                     } else {
                         // Idle CTA — disabled until Parakeet finished
                         // loading, exactly like the walkthrough's
@@ -82,7 +82,7 @@ public struct CaptureView: View {
                         }
                         .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
                         .disabled(!isModelReady)
-                        .accessibilityLabel("Aufnahme starten")
+                        .accessibilityLabel(Text("Start recording"))
                     }
                 }
             }
@@ -106,23 +106,26 @@ public struct CaptureView: View {
     private var startCtaLabel: some View {
         switch modelState {
         case .ready:
-            Label("Aufnahme starten", systemImage: "mic.fill")
+            Label("Start recording", systemImage: "mic.fill")
         case .idle:
             HStack(spacing: Theme.spacing.xs) {
                 ProgressView()
                     .progressViewStyle(.circular)
                     .tint(Theme.color.text.inverse)
-                Text("Sprachmodell wird vorbereitet…")
+                Text("Preparing speech model…")
             }
         case .loading:
             HStack(spacing: Theme.spacing.xs) {
                 ProgressView()
                     .progressViewStyle(.circular)
                     .tint(Theme.color.text.inverse)
-                Text("Lade Sprachmodell — ~1,2 GB")
+                Text("Loading speech model — ~1.2 GB")
             }
         case .failed(let msg):
-            Label("Sprachmodell-Fehler: \(msg.prefix(40))",
+            // `\(String(...))` so the formatted prefix passes through as
+            // a String argument to the LocalizedStringKey, which we want
+            // — otherwise `msg.prefix(...)` would block catalog lookup.
+            Label("Speech model error: \(String(msg.prefix(40)))",
                   systemImage: "exclamationmark.triangle.fill")
         }
     }
@@ -138,10 +141,10 @@ public struct CaptureView: View {
                     .foregroundStyle(Theme.color.text.primary)
             }
             VStack(spacing: 8) {
-                Text("Schnell festhalten")
+                Text("Quick capture")
                     .font(.system(size: 24, weight: .semibold))
                     .foregroundStyle(Theme.color.text.primary)
-                Text("Halte einen Gedanken fest. Er taucht abends im Walkthrough wieder auf.")
+                Text("Catch a thought now. It resurfaces during this evening's walkthrough.")
                     .font(Theme.font.body)
                     .foregroundStyle(Theme.color.text.secondary)
                     .multilineTextAlignment(.center)
@@ -176,14 +179,22 @@ public struct CaptureView: View {
     }
 
     private var captureHint: AttributedString {
-        var hint = AttributedString(coordinator.isRecording
-                                    ? "Sage „hey voice diary“ um eine Frage zu stellen."
-                                    : "Oder drücke den Action-Knopf.")
+        // Plain `String(localized:)` so we can post-process the
+        // AttributedString (styling the wake-word + Action button
+        // mention). Uses `Bundle.main` which is already isa-swapped to
+        // `LocalizedMainBundle` by `AppLanguage`, so the active
+        // language is honoured.
+        let raw: String = coordinator.isRecording
+            ? String(localized: "Say \u{201C}hey voice diary\u{201D} to ask a question.")
+            : String(localized: "Or press the Action button.")
+        var hint = AttributedString(raw)
         if let range = hint.range(of: "hey voice diary") {
             hint[range].font = Theme.font.monoCaption
             hint[range].foregroundColor = Theme.color.text.secondary
         }
-        if let range = hint.range(of: "Action-Knopf") {
+        // Match either localized variant — German renders "Action-Knopf".
+        let actionMarker = AppLanguage.shared.isGerman ? "Action-Knopf" : "Action button"
+        if let range = hint.range(of: actionMarker) {
             hint[range].foregroundColor = Theme.color.text.secondary
         }
         return hint

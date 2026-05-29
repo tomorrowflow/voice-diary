@@ -3,6 +3,11 @@ import SwiftUI
 @main
 struct VoiceDiaryApp: App {
     @Environment(\.scenePhase) private var scenePhase
+    // Subscribe to the language singleton at the App level so a toggle in
+    // settings instantly re-renders every SwiftUI view rooted in
+    // RootView() against the new Bundle.main lproj. Without `@State` here
+    // the root would still be tied to the old bundle until next launch.
+    @State private var appLanguage = AppLanguage.shared
 
     init() {
         Log.app.info("Voice Diary ready")
@@ -13,6 +18,12 @@ struct VoiceDiaryApp: App {
             RootView()
                 .tint(Theme.color.text.link)
                 .background(Theme.color.bg.surface.ignoresSafeArea())
+                // Locale drives date / number formatting + AttributedString
+                // language matching for `Text(date:)`. Bundle.main swap +
+                // `.id(bundleVersion)` together force LocalizedStringKey
+                // re-lookups for every Text in the tree on each toggle.
+                .environment(\.locale, appLanguage.locale)
+                .id(appLanguage.bundleVersion)
                 .onOpenURL { url in
                     Log.app.info("deep link: \(url.absoluteString, privacy: .public)")
                     IntentRouter.handleDeepLink(url)
@@ -199,19 +210,19 @@ struct RootView: View {
             set: { router.selectedTab = $0 }
         )) {
             WalkthroughView()
-                .tabItem { Label("Abend", systemImage: "book.closed") }
+                .tabItem { Label("Evening", systemImage: "book.closed") }
                 .tag(AppTab.abend)
 
             CaptureView()
-                .tabItem { Label("Aufnahme", systemImage: "mic.fill") }
+                .tabItem { Label("Recording", systemImage: "mic.fill") }
                 .tag(AppTab.aufnahme)
 
             NavigationStack { VerlaufView() }
-                .tabItem { Label("Verlauf", systemImage: "list.bullet") }
+                .tabItem { Label("History", systemImage: "list.bullet") }
                 .tag(AppTab.verlauf)
 
             NavigationStack { MehrView() }
-                .tabItem { Label("Mehr", systemImage: "ellipsis.circle") }
+                .tabItem { Label("More", systemImage: "ellipsis.circle") }
                 .tag(AppTab.mehr)
         }
         .font(Theme.font.body)
@@ -229,44 +240,49 @@ private struct MehrView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Mehr")
+                FlowHeader(title: "More")
 
                 List {
                     Section {
                         NavigationLink {
                             WalkthroughSectionsView()
                         } label: {
-                            MehrRow(label: "Abschnitte", systemImage: "text.bubble")
+                            MehrRow(label: "Sections", systemImage: "text.bubble")
                         }
                         NavigationLink {
                             WalkthroughOrderView()
                         } label: {
-                            MehrRow(label: "Reihenfolge", systemImage: "arrow.up.arrow.down")
+                            MehrRow(label: "Order", systemImage: "arrow.up.arrow.down")
                         }
                         NavigationLink {
                             WalkthroughSettingsView()
                         } label: {
-                            MehrRow(label: "Termin-Filter", systemImage: "calendar")
+                            MehrRow(label: "Event filter", systemImage: "calendar")
                         }
                         NavigationLink {
                             VoiceSettingsView()
                         } label: {
-                            MehrRow(label: "Stimmen", systemImage: "waveform")
+                            MehrRow(label: "Voices", systemImage: "waveform")
                         }
                         NavigationLink {
                             DialogModelSettingsView()
                         } label: {
-                            MehrRow(label: "Dialog-Modell", systemImage: "brain")
+                            MehrRow(label: "Dialog model", systemImage: "brain")
+                        }
+                        NavigationLink {
+                            LanguageSettingsView()
+                        } label: {
+                            MehrRow(label: "Language", systemImage: "globe")
                         }
                         NavigationLink {
                             PermissionsView()
                         } label: {
-                            MehrRow(label: "Berechtigungen", systemImage: "lock.shield")
+                            MehrRow(label: "Permissions", systemImage: "lock.shield")
                         }
                         NavigationLink {
                             WakeWordSettingsView()
                         } label: {
-                            MehrRow(label: "Wake-Word", systemImage: "waveform.and.mic")
+                            MehrRow(label: "Wake word", systemImage: "waveform.and.mic")
                         }
                         NavigationLink {
                             DebugSettingsView()
@@ -276,7 +292,7 @@ private struct MehrView: View {
                         NavigationLink {
                             DangerZoneView()
                         } label: {
-                            MehrRow(label: "Gefahrenzone", systemImage: "exclamationmark.triangle")
+                            MehrRow(label: "Danger zone", systemImage: "exclamationmark.triangle")
                         }
                     }
                 }
@@ -288,7 +304,12 @@ private struct MehrView: View {
 }
 
 private struct MehrRow: View {
-    let label: String
+    // `LocalizedStringKey` so the caller-side string literal flows
+    // through Bundle.main's `Localizable.xcstrings` lookup instead of
+    // being treated as a verbatim `String`. Caller writes
+    // `MehrRow(label: "Sections", ...)`; the key "Sections" is what
+    // Xcode extracts into the catalog and what `AppLanguage` swaps.
+    let label: LocalizedStringKey
     let systemImage: String
     var body: some View {
         Label(label, systemImage: systemImage)

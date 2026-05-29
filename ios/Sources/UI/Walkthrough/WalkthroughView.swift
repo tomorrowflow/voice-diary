@@ -30,12 +30,26 @@ public struct WalkthroughView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(
-                    title: headerTitle,
-                    total: headerTotal,
-                    current: headerCurrent,
-                    onClose: headerCloseAction
-                )
+                // Header title splits two ways: literal phrases that go
+                // through the catalog ("Evening", "Almost there"…) vs
+                // user / calendar data we never translate (an event
+                // subject, a user-defined section name). `headerTitle`
+                // returns an enum so the FlowHeader picks the right
+                // init for either path.
+                Group {
+                    switch headerTitle {
+                    case .localized(let key):
+                        FlowHeader(title: key,
+                                   total: headerTotal,
+                                   current: headerCurrent,
+                                   onClose: headerCloseAction)
+                    case .verbatim(let str):
+                        FlowHeader(verbatim: str,
+                                   total: headerTotal,
+                                   current: headerCurrent,
+                                   onClose: headerCloseAction)
+                    }
+                }
 
                 VoxtralPreflightBanner(message: coordinator.voxtralPreflightWarning)
                     .animation(.easeInOut(duration: 0.25),
@@ -161,7 +175,7 @@ public struct WalkthroughView: View {
                             haptics.tap()
                             Task { await coordinator.advance() }
                         } label: {
-                            Label("Weiter", systemImage: "arrow.right.circle.fill")
+                            Label("Next", systemImage: "arrow.right.circle.fill")
                         }
                         .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
                     }
@@ -215,17 +229,21 @@ public struct WalkthroughView: View {
         }
     }
 
-    /// Caption above the Weiter button. Phrased per state so the affordance
-    /// reads correctly: in a normal listening loop "Weiter = next event",
-    /// in todo confirmation "Weiter = skip this candidate".
+    /// Caption above the Next button. Phrased per state so the affordance
+    /// reads correctly: in a normal listening loop "Next = next event",
+    /// in todo confirmation "Next = skip this candidate".
+    ///
+    /// Uses `String(localized:)` to flatten the LocalizedStringKey into
+    /// a String now — the caller hands the result to `Text(_ verbatim:)`
+    /// via the property type so further localization passes are no-ops.
     private var bottomHintText: String {
         if case .confirmingTodos = coordinator.state {
-            return "Sag Ja, Nein oder formuliere die Aufgabe um. Weiter überspringt diese Aufgabe."
+            return String(localized: "Say yes, no, or rephrase the task. Next skips this candidate.")
         }
         if case .noteReview = coordinator.state {
-            return "Tippe Weiter, um zur nächsten Notiz zu gehen."
+            return String(localized: "Tap Next to move to the next note.")
         }
-        return "Sprich frei. Tippe Weiter, wenn du zum nächsten Termin willst."
+        return String(localized: "Speak freely. Tap Next when you want the next event.")
     }
 
     private var isModelReady: Bool {
@@ -243,26 +261,27 @@ public struct WalkthroughView: View {
         case .ready:
             let count = coordinator.previewEvents.count
             switch count {
-            case 0: Label("Sitzung starten", systemImage: "play.fill")
-            case 1: Label("Sitzung starten (1 Termin)", systemImage: "play.fill")
-            default: Label("Sitzung starten (\(count) Termine)", systemImage: "play.fill")
+            case 0: Label("Start session", systemImage: "play.fill")
+            case 1: Label("Start session (1 event)", systemImage: "play.fill")
+            default: Label("Start session (\(count) events)", systemImage: "play.fill")
             }
         case .idle:
             HStack(spacing: Theme.spacing.xs) {
                 ProgressView()
                     .progressViewStyle(.circular)
                     .tint(Theme.color.text.inverse)
-                Text("Sprachmodell wird vorbereitet…")
+                Text("Preparing speech model…")
             }
         case .loading:
             HStack(spacing: Theme.spacing.xs) {
                 ProgressView()
                     .progressViewStyle(.circular)
                     .tint(Theme.color.text.inverse)
-                Text("Lade Sprachmodell — ~1,2 GB")
+                Text("Loading speech model — ~1.2 GB")
             }
         case .failed(let msg):
-            Label("Sprachmodell-Fehler: \(msg.prefix(40))", systemImage: "exclamationmark.triangle.fill")
+            Label("Speech model error: \(String(msg.prefix(40)))",
+                  systemImage: "exclamationmark.triangle.fill")
         }
     }
 
@@ -271,19 +290,30 @@ public struct WalkthroughView: View {
     /// During the per-event walkthrough we promote the event subject as the
     /// page title — this matches the design's "the title IS the H1" rule
     /// and lets the progress segments carry the step counter.
-    private var headerTitle: String {
+    /// Bisected so calendar event titles + user-defined section names
+    /// stay verbatim while the state-machine's own phrases ("Evening",
+    /// "Almost there", …) run through the catalog.
+    private enum HeaderTitle {
+        case localized(LocalizedStringKey)
+        case verbatim(String)
+    }
+
+    private var headerTitle: HeaderTitle {
         switch coordinator.state {
-        case .idle:                            return "Abend"
-        case .confirmingTodos:                 return "Eine Sache noch"
-        case .ingesting:                       return "Lade hoch"
-        case .done:                            return "Sitzung abgeschlossen"
-        case .failed:                          return "Fehler"
+        case .idle:                            return .localized("Evening")
+        case .confirmingTodos:                 return .localized("One more thing")
+        case .ingesting:                       return .localized("Uploading")
+        case .done:                            return .localized("Session complete")
+        case .failed:                          return .localized("Error")
         case .briefing where currentEvent != nil,
-             .eventOpener, .eventListening:    return currentEvent?.subject ?? "Termin"
+             .eventOpener, .eventListening:
+            return .verbatim(currentEvent?.subject
+                             ?? String(localized: "Event"))
         case .noteReview, .generalOpener, .generalListening,
              .voiceNoteOpener, .voiceNoteListening:
-            return coordinator.currentSectionTitle ?? "Abend"
-        default:                               return "Abend"
+            return .verbatim(coordinator.currentSectionTitle
+                             ?? String(localized: "Evening"))
+        default:                               return .localized("Evening")
         }
     }
 
@@ -378,7 +408,13 @@ private struct EventCard: View {
                 HStack(spacing: 4) {
                     Image(systemName: "person.2")
                         .font(.system(size: 12))
-                    Text("\(event.attendeeCount) \(event.attendeeCount == 1 ? "Teilnehmer" : "Teilnehmende")")
+                    // Two flat keys instead of stringsdict plurals so
+                    // the catalog stays trivial JSON. "1 attendee" /
+                    // "%lld attendees" — both translate to German via
+                    // their localizations entry.
+                    Text(event.attendeeCount == 1
+                         ? "1 attendee"
+                         : "\(event.attendeeCount) attendees")
                         .font(Theme.font.caption)
                 }
                 .foregroundStyle(Theme.color.text.secondary)
@@ -517,7 +553,7 @@ private struct StatusIndicator: View {
         HStack(spacing: Theme.spacing.xs) {
             if isSpeaking {
                 ProgressView().controlSize(.small)
-                Text("Stimme spricht …")
+                Text("Voice speaking…")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
             } else if isWakeListening {
@@ -528,7 +564,7 @@ private struct StatusIndicator: View {
                 Image(systemName: "waveform.badge.mic")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.link)
-                Text("Höre auf „Weiter\" …")
+                Text("Listening for \u{201C}Next\u{201D}…")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.link)
             } else if silenceLevel >= 6 {
@@ -541,7 +577,7 @@ private struct StatusIndicator: View {
                 Image(systemName: "ear.badge.waveform")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
-                Text("Stille seit \(silenceLevel)s")
+                Text("Silent for \(silenceLevel)s")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
             }
@@ -563,10 +599,10 @@ private struct StartCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.md) {
-            Text("Bereit für die Abend-Reflexion?")
+            Text("Ready for the evening reflection?")
                 .font(Theme.font.headline)
                 .foregroundStyle(Theme.color.text.primary)
-            Text("Wir gehen die zugesagten Termine des Tages chronologisch durch.")
+            Text("We'll walk through the day's accepted events in order.")
                 .font(Theme.font.callout)
                 .foregroundStyle(Theme.color.text.secondary)
 
@@ -627,7 +663,7 @@ private struct StartCard: View {
                 )
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("Tag wählen")
+            .accessibilityLabel(Text("Pick day"))
             .sheet(isPresented: $showPicker) {
                 RecordingDatePickerSheet(
                     selectedDate: $selectedDate,
@@ -668,7 +704,7 @@ private struct StartCard: View {
                 Circle()
                     .fill(Theme.color.status.success)
                     .frame(width: 8, height: 8)
-                Text("Aufnahme bereits vorhanden")
+                Text("Recording already exists")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
             }
@@ -704,17 +740,21 @@ private struct StartCard: View {
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
-        .accessibilityLabel(direction < 0 ? "Vorheriger Tag" : "Nächster Tag")
+        .accessibilityLabel(Text(direction < 0 ? "Previous day" : "Next day"))
     }
 
-    private static let dateLabel: (Date) -> String = {
+    /// Date label uses the current `AppLanguage` locale so "Today / Yesterday"
+    /// vs "Heute / Gestern" picks the right relative form. Recomputed on
+    /// each call (cheap; DateFormatter alloc is microseconds) so a settings
+    /// flip mid-app shows the new locale without re-entering this screen.
+    private static func dateLabel(_ date: Date) -> String {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
-        f.doesRelativeDateFormatting = true   // "Heute" / "Gestern" when applicable
-        f.dateStyle = .medium                  // e.g. "30. Apr. 2026"
+        f.locale = AppLanguage.shared.locale
+        f.doesRelativeDateFormatting = true
+        f.dateStyle = .medium
         f.timeStyle = .none
-        return { f.string(from: $0) }
-    }()
+        return f.string(from: date)
+    }
 
 }
 
@@ -744,7 +784,7 @@ private struct DayOverview: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.sm) {
             HStack(spacing: Theme.spacing.xs) {
-                Text("Tagesübersicht")
+                Text("Day overview")
                     .font(Theme.font.subheadline)
                     .foregroundStyle(Theme.color.text.secondary)
                 Spacer()
@@ -759,7 +799,7 @@ private struct DayOverview: View {
                     onOpenSettings: onOpenSettings
                 )
             } else if events.isEmpty && !isLoading {
-                Text("Keine zugesagten Termine.")
+                Text("No accepted events.")
                     .font(Theme.font.callout)
                     .foregroundStyle(Theme.color.text.subdued)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -820,7 +860,7 @@ private struct ConnectionErrorCard: View {
                     HStack(spacing: 4) {
                         Image(systemName: detailExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
-                        Text(detailExpanded ? "Technische Details ausblenden" : "Technische Details")
+                        Text(detailExpanded ? "Hide technical details" : "Technical details")
                             .font(Theme.font.caption2)
                     }
                     .foregroundStyle(Theme.color.text.subdued)
@@ -861,7 +901,7 @@ private struct ConnectionErrorCard: View {
             Button {
                 onOpenSettings()
             } label: {
-                Label("Einstellungen öffnen", systemImage: "gearshape.fill")
+                Label("Open settings", systemImage: "gearshape.fill")
             }
             .buttonStyle(.dsPrimary(fullWidth: true))
         default:
@@ -872,10 +912,10 @@ private struct ConnectionErrorCard: View {
                     HStack(spacing: Theme.spacing.xs) {
                         ProgressView().controlSize(.small)
                             .tint(Theme.color.text.inverse)
-                        Text("Lade …")
+                        Text("Loading…")
                     }
                 } else {
-                    Label("Tagesübersicht erneut laden", systemImage: "arrow.clockwise")
+                    Label("Reload day overview", systemImage: "arrow.clockwise")
                 }
             }
             .buttonStyle(.dsPrimary(fullWidth: true))
@@ -889,7 +929,7 @@ private struct AllDaySection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
-            Text("Ganztägig")
+            Text("All day")
                 .font(Theme.font.caption)
                 .foregroundStyle(Theme.color.text.subdued)
                 .padding(.horizontal, Theme.spacing.xs)
@@ -898,7 +938,7 @@ private struct AllDaySection: View {
                     Image(systemName: "sun.horizon.fill")
                         .font(.caption)
                         .foregroundStyle(Theme.color.text.subdued)
-                    Text(event.subject.isEmpty ? "(ohne Titel)" : event.subject)
+                    Text(event.subject.isEmpty ? String(localized: "(no title)") : event.subject)
                         .font(Theme.font.callout)
                         .foregroundStyle(Theme.color.text.primary)
                         .lineLimit(1)
@@ -937,7 +977,7 @@ private struct EventRow: View {
                 .frame(width: 3)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(event.subject.isEmpty ? "(ohne Titel)" : event.subject)
+                Text(event.subject.isEmpty ? String(localized: "(no title)") : event.subject)
                     .font(Theme.font.callout.weight(.medium))
                     .foregroundStyle(Theme.color.text.primary)
                     .lineLimit(2)
@@ -945,7 +985,9 @@ private struct EventRow: View {
                     HStack(spacing: 4) {
                         Image(systemName: "person.2")
                             .font(.caption2)
-                        Text("\(event.attendeeCount) Teilnehmende")
+                        Text(event.attendeeCount == 1
+                             ? "1 attendee"
+                             : "\(event.attendeeCount) attendees")
                             .font(Theme.font.caption2)
                     }
                     .foregroundStyle(Theme.color.text.subdued)
@@ -974,9 +1016,10 @@ private struct EventRow: View {
         }
     }
 
+    // HH:mm uses fixed digits, no language difference — locale-agnostic.
     private static let hhmm: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm"
         return f
     }()
@@ -999,7 +1042,7 @@ private struct UploadingCard: View {
     var body: some View {
         HStack(spacing: Theme.spacing.sm) {
             ProgressView()
-            Text("Lade Sitzung hoch …")
+            Text("Uploading session…")
                 .font(Theme.font.callout)
                 .foregroundStyle(Theme.color.text.secondary)
         }
@@ -1077,9 +1120,7 @@ private struct NoteReviewCard: View {
 
             Text(snapshot?.note.transcript.isEmpty == false
                  ? snapshot!.note.transcript
-                 : (coordinator.confirmationLanguage == .de
-                    ? "(kein Transkript verfügbar)"
-                    : "(no transcript available)"))
+                 : String(localized: "(no transcript available)"))
                 .font(Theme.font.body)
                 .foregroundStyle(
                     snapshot?.note.transcript.isEmpty == false
@@ -1126,9 +1167,11 @@ private struct NoteReviewCard: View {
                 .foregroundStyle(Theme.color.text.subdued)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(
-            coordinator.confirmationLanguage == .de ? "Für später" : "Save for later"
-        )
+        // confirmationLanguage previously branched the German/English
+        // copy here. We now use String(localized:) so the catalog
+        // routes to the user's app-language setting — independent of
+        // the per-utterance language detected mid-session.
+        .accessibilityLabel(Text("Save for later"))
     }
 
     /// Round play/pause disc on the left of the card — same shape and
@@ -1153,9 +1196,7 @@ private struct NoteReviewCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            isPlaying(note: note)
-                ? (coordinator.confirmationLanguage == .de ? "Pause" : "Pause")
-                : (coordinator.confirmationLanguage == .de ? "Anhören" : "Listen")
+            isPlaying(note: note) ? Text("Pause") : Text("Listen")
         )
     }
 
@@ -1173,11 +1214,13 @@ private struct NoteReviewCard: View {
     }
 
     private func orphanBadgeText(note: VoiceNote) -> String {
+        // Locale tracks AppLanguage so "Apr. 24" vs "24. Apr." matches
+        // the UI language regardless of what language the user is
+        // currently speaking inside the walkthrough.
         let f = DateFormatter()
-        f.locale = Locale(identifier: coordinator.confirmationLanguage == .de ? "de_DE" : "en_US")
+        f.locale = AppLanguage.shared.locale
         f.dateFormat = "d. MMM"
-        return (coordinator.confirmationLanguage == .de ? "Älter — " : "Older — ")
-            + f.string(from: note.captured_at)
+        return String(localized: "Older — ") + f.string(from: note.captured_at)
     }
 
     private func timeText(_ date: Date?) -> String {
@@ -1289,23 +1332,26 @@ private struct TodoConfirmationCard: View {
     }
 
     /// Render the excerpt with the matched span tinted, wrapped in
-    /// German low/high guillemets so the body reads as a quotation.
-    /// Falls back to plain text when no highlight range is set.
+    /// language-appropriate quotation marks. German uses low/high
+    /// guillemets („…"), English uses curly quotes ("…").
     private func excerptText(_ ex: Excerpt) -> Text {
-        let openQuote = Text("„")
-        let closeQuote = Text("\u{201C}") // “
+        let (open, close) = AppLanguage.shared.isGerman
+            ? ("\u{201E}", "\u{201C}")   // „ … "
+            : ("\u{201C}", "\u{201D}")   // “ … ”
+        let openQuote = Text(verbatim: open)
+        let closeQuote = Text(verbatim: close)
         guard let range = ex.highlightRange else {
-            return openQuote + Text(ex.text) + closeQuote
+            return openQuote + Text(verbatim: ex.text) + closeQuote
         }
         let prefix = String(ex.text[..<range.lowerBound])
         let match  = String(ex.text[range])
         let suffix = String(ex.text[range.upperBound...])
         return openQuote
-            + Text(prefix)
-            + Text(match)
+            + Text(verbatim: prefix)
+            + Text(verbatim: match)
                 .foregroundColor(Theme.color.text.primary)
                 .fontWeight(.semibold)
-            + Text(suffix)
+            + Text(verbatim: suffix)
             + closeQuote
     }
 
@@ -1378,7 +1424,7 @@ private struct DoneCard: View {
                 }
             }
 
-            Button("Neue Sitzung") {
+            Button("New session") {
                 Task { await coordinator.cancel() }
             }
             .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
@@ -1392,9 +1438,14 @@ private struct DoneCard: View {
         let events = coordinator.events.count
         let todos  = coordinator.confirmedImplicitCount
         switch (events, todos) {
-        case (0, _):  return "Sitzung gespeichert."
-        case (_, 0):  return "\(events) Termine durchgegangen."
-        default:      return "\(events) Termine durchgegangen, \(todos) Aufgaben übernommen."
+        case (0, _):  return String(localized: "Session saved.")
+        case (_, 0):
+            return events == 1
+                ? String(localized: "Walked through 1 event.")
+                : String(localized: "Walked through \(events) events.")
+        default:
+            return String(localized:
+                "Walked through \(events) events, captured \(todos) tasks.")
         }
     }
 }
@@ -1412,7 +1463,7 @@ private struct ErrorCard: View {
                 .font(Theme.font.callout)
                 .foregroundStyle(Theme.color.text.primary)
                 .multilineTextAlignment(.center)
-            Button("Erneut versuchen") {
+            Button("Try again") {
                 Task { await coordinator.cancel() }
             }
             .buttonStyle(.dsSecondary(fullWidth: true))
@@ -1440,14 +1491,14 @@ private struct EnrichmentSheet: View {
             ZStack {
                 Theme.color.bg.surface.ignoresSafeArea()
                 VStack(alignment: .leading, spacing: Theme.spacing.md) {
-                    Text("Was möchtest du wissen?")
+                    Text("What do you want to know?")
                         .font(Theme.font.headline)
                         .foregroundStyle(Theme.color.text.primary)
-                    Text("Beispiele: „Was hat Christian gestern geschrieben?“ · „Was haben wir letzte Woche zur Migration gemacht?“")
+                    Text("Examples: \u{201C}What did Christian write yesterday?\u{201D} · \u{201C}What did we do last week on the migration?\u{201D}")
                         .font(Theme.font.callout)
                         .foregroundStyle(Theme.color.text.secondary)
                     TextField(
-                        "Frage eingeben",
+                        "Enter question",
                         text: $query,
                         axis: .vertical
                     )
@@ -1470,18 +1521,18 @@ private struct EnrichmentSheet: View {
                         isPresented = false
                         Task { await coordinator.askEnrichment(query: q) }
                     } label: {
-                        Label("Senden", systemImage: "paperplane.fill")
+                        Label("Send", systemImage: "paperplane.fill")
                     }
                     .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
                     .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .padding(Theme.spacing.md)
             }
-            .navigationTitle("Frage stellen")
+            .navigationTitle("Ask a question")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Abbrechen") { isPresented = false }
+                    Button("Cancel") { isPresented = false }
                 }
             }
             .onAppear { fieldFocused = true }
@@ -1509,24 +1560,27 @@ private struct RecordingDatePickerSheet: View {
         return f
     }()
 
-    private static let monthLabel: DateFormatter = {
+    /// Localized month header ("Mai 2026" / "May 2026"). Recomputed
+    /// per access so AppLanguage flips immediately on the same screen.
+    private static func monthLabelString(_ d: Date) -> String {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
+        f.locale = AppLanguage.shared.locale
         f.dateFormat = "LLLL yyyy"
-        return f
-    }()
+        return f.string(from: d)
+    }
 
     private var calendar: Calendar {
         var c = Calendar(identifier: .iso8601)
-        c.locale = Locale(identifier: "de_DE")
-        c.firstWeekday = 2 // Monday
+        c.locale = AppLanguage.shared.locale
+        c.firstWeekday = 2 // Monday — ISO + still the right default for
+                           // both EN and DE users on iOS.
         return c
     }
 
     var body: some View {
         NavigationStack {
             VStack(spacing: Theme.spacing.md) {
-                Text("Der gewählte Tag ist der Tag, für den der Tagebuch-Eintrag aufgenommen wird.")
+                Text("The selected day is the day the diary entry is recorded for.")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
                     .multilineTextAlignment(.center)
@@ -1539,7 +1593,7 @@ private struct RecordingDatePickerSheet: View {
             .padding(.horizontal, Theme.spacing.md)
             .padding(.top, Theme.spacing.xxs)
             .padding(.bottom, Theme.spacing.md)
-            .navigationTitle("Tag wählen")
+            .navigationTitle("Pick day")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 visibleMonth = calendar.date(
@@ -1563,7 +1617,7 @@ private struct RecordingDatePickerSheet: View {
             }
             .buttonStyle(.plain)
             Spacer()
-            Text(Self.monthLabel.string(from: visibleMonth).capitalized)
+            Text(Self.monthLabelString(visibleMonth).capitalized)
                 .font(Theme.font.headline)
                 .foregroundStyle(Theme.color.text.primary)
             Spacer()
@@ -1652,7 +1706,7 @@ private struct RecordingDatePickerSheet: View {
         HStack(spacing: Theme.spacing.sm) {
             HStack(spacing: 6) {
                 Circle().fill(Theme.color.status.success).frame(width: 6, height: 6)
-                Text("Aufnahme vorhanden")
+                Text("Recording exists")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
             }
