@@ -23,9 +23,9 @@ private enum Category: String, Identifiable {
 
     var title: String {
         switch self {
-        case .sessions: return "Sitzungen"
-        case .notes:    return "Notizen"
-        case .queue:    return "Upload-Queue"
+        case .sessions: return String(localized: "Sessions")
+        case .notes:    return String(localized: "Notes")
+        case .queue:    return String(localized: "Upload queue")
         }
     }
     var icon: String {
@@ -51,19 +51,19 @@ private enum Category: String, Identifiable {
     }
     var confirmTitle: String {
         switch self {
-        case .sessions: return "Alle Sitzungen löschen?"
-        case .notes:    return "Alle Notizen löschen?"
-        case .queue:    return "Upload-Queue leeren?"
+        case .sessions: return String(localized: "Delete all sessions?")
+        case .notes:    return String(localized: "Delete all notes?")
+        case .queue:    return String(localized: "Clear upload queue?")
         }
     }
     func confirmMessage(count: Int) -> String {
         switch self {
         case .sessions:
-            return "\(count) Sitzung(en) werden vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden."
+            return String(localized: "\(count) session(s) will be removed from the device. Server data is untouched. This can’t be undone.")
         case .notes:
-            return "\(count) Notiz(en) werden vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden."
+            return String(localized: "\(count) note(s) will be removed from the device. Server data is untouched. This can’t be undone.")
         case .queue:
-            return "\(count) ausstehende(r) Upload(s) werden abgebrochen. Die zugehörigen Aufnahmen bleiben unter Sitzungen / Notizen erhalten."
+            return String(localized: "\(count) pending upload(s) will be cancelled. The underlying recordings stay under Sessions / Notes.")
         }
     }
 }
@@ -108,7 +108,7 @@ public struct DangerZoneView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Gefahrenzone")
+                FlowHeader(title: "Danger zone")
 
                 List {
                     cardRow { scopeCard }
@@ -119,7 +119,7 @@ public struct DangerZoneView: View {
                         }
                         totalRow
                     } header: {
-                        Text("Speicher · nach links wischen zum Löschen")
+                        Text("Storage · swipe left to delete")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                             .textCase(nil)
@@ -148,10 +148,10 @@ public struct DangerZoneView: View {
             isPresented: alertIsPresentedBinding,
             presenting: pendingDeletion
         ) { action in
-            Button("Abbrechen", role: .cancel) {
+            Button("Cancel", role: .cancel) {
                 pendingDeletion = nil
             }
-            Button("Endgültig löschen", role: .destructive) {
+            Button("Delete permanently", role: .destructive) {
                 Task {
                     switch action {
                     case .category(let c): await runCategory(c)
@@ -183,8 +183,8 @@ public struct DangerZoneView: View {
     private var alertTitle: String {
         switch pendingDeletion {
         case .category(let c): return c.confirmTitle
-        case .partial:         return "Älter als 30 Tage entfernen?"
-        case .nuke:            return "Alle lokalen Daten löschen?"
+        case .partial:         return String(localized: "Remove older than 30 days?")
+        case .nuke:            return String(localized: "Delete all local data?")
         case .none:            return ""
         }
     }
@@ -198,9 +198,9 @@ public struct DangerZoneView: View {
             return partialAlertMessage
         case .nuke:
             if queueCount > 0 {
-                return "Sitzungen, Notizen, der Surfaced-Index und \(queueCount) Upload-Queue-Eintrag/-Einträge werden vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden."
+                return String(localized: "Sessions, notes, the surfaced index, and \(queueCount) upload-queue entry/entries will be removed from the device. Server data is untouched. This can’t be undone.")
             }
-            return "Sitzungen, Notizen und der Surfaced-Index werden vom Gerät entfernt. Server-Daten bleiben unberührt. Diese Aktion kann nicht rückgängig gemacht werden."
+            return String(localized: "Sessions, notes, and the surfaced index will be removed from the device. Server data is untouched. This can’t be undone.")
         }
     }
 
@@ -250,7 +250,7 @@ public struct DangerZoneView: View {
                 Button(role: .destructive) {
                     pendingDeletion = .category(cat)
                 } label: {
-                    Label("Alle löschen", systemImage: "trash")
+                    Label("Delete all", systemImage: "trash")
                 }
             }
         }
@@ -258,7 +258,7 @@ public struct DangerZoneView: View {
 
     private var totalRow: some View {
         HStack {
-            Text("Gesamt")
+            Text("Total")
                 .font(Theme.font.body.weight(.semibold))
                 .foregroundStyle(Theme.color.text.primary)
             Spacer()
@@ -281,12 +281,12 @@ public struct DangerZoneView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.status.warning)
                     .frame(width: 28)
-                Text("Lokale Daten")
+                Text("Local data")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
             }
-            Text("Diese Aktionen entfernen ausschließlich Daten auf diesem iPhone (Audio-Aufnahmen, Notizen, Upload-Queue). Tagebucheinträge auf deinem Server bleiben erhalten. Einzelne Einträge löschst du im Verlauf.")
+            Text("These actions only remove data on this iPhone (audio recordings, notes, upload queue). Diary entries on your server are kept. Delete individual entries from History.")
                 .font(Theme.font.caption)
                 .foregroundStyle(Theme.color.text.subdued)
                 .fixedSize(horizontal: false, vertical: true)
@@ -310,7 +310,7 @@ public struct DangerZoneView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.status.warning)
                     .frame(width: 28)
-                Text("Älter als 30 Tage")
+                Text("Older than 30 days")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
@@ -323,7 +323,7 @@ public struct DangerZoneView: View {
             Button {
                 pendingDeletion = .partial
             } label: {
-                Label("Älter als 30 Tage entfernen", systemImage: "trash")
+                Label("Remove older than 30 days", systemImage: "trash")
             }
             .buttonStyle(.dsDestructive(size: .md, fullWidth: true))
             .disabled(isWorking || partialIsEmpty)
@@ -347,7 +347,7 @@ public struct DangerZoneView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.status.destructive)
                     .frame(width: 28)
-                Text("Alle lokalen Daten")
+                Text("All local data")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
@@ -360,7 +360,7 @@ public struct DangerZoneView: View {
             Button {
                 pendingDeletion = .nuke
             } label: {
-                Label("Alle lokalen Daten löschen", systemImage: "trash.fill")
+                Label("Delete all local data", systemImage: "trash.fill")
             }
             .buttonStyle(.dsDestructive(size: .md, fullWidth: true))
             .disabled(isWorking || allEmpty)
@@ -379,9 +379,9 @@ public struct DangerZoneView: View {
 
     private var nukeDescription: String {
         if queueCount > 0 {
-            return "Entfernt alle Sitzungen, Notizen, den Surfaced-Index und \(queueCount) Eintrag/Einträge aus der Upload-Queue. Server-Daten bleiben unberührt."
+            return String(localized: "Removes all sessions, notes, the surfaced index, and \(queueCount) entry/entries from the upload queue. Server data is untouched.")
         }
-        return "Entfernt alle Sitzungen, Notizen und den Surfaced-Index vom Gerät. Server-Daten bleiben unberührt."
+        return String(localized: "Removes all sessions, notes, and the surfaced index from the device. Server data is untouched.")
     }
 
     private func infoCard(_ message: String) -> some View {
@@ -427,16 +427,16 @@ public struct DangerZoneView: View {
                 SessionHistoryStore.deleteAllWalkthroughs()
             }.value
             _ = await SessionUploader.shared.purgeOrphans()
-            infoMessage = "\(byteFormatter.string(fromByteCount: freed)) wurden freigegeben."
+            infoMessage = String(localized: "\(byteFormatter.string(fromByteCount: freed)) freed.")
         case .notes:
             let freed = await Task.detached(priority: .userInitiated) {
                 SessionHistoryStore.deleteAllVoiceNotes()
             }.value
             _ = await SessionUploader.shared.purgeOrphans()
-            infoMessage = "\(byteFormatter.string(fromByteCount: freed)) wurden freigegeben."
+            infoMessage = String(localized: "\(byteFormatter.string(fromByteCount: freed)) freed.")
         case .queue:
             await SessionUploader.shared.clear()
-            infoMessage = "Upload-Queue geleert."
+            infoMessage = String(localized: "Upload queue cleared.")
         }
         await refresh()
     }
@@ -450,7 +450,7 @@ public struct DangerZoneView: View {
             SessionHistoryStore.deleteOlderThan(cutoffSnapshot, queuedSessionIDs: queuedIDs)
         }.value
         _ = await SessionUploader.shared.purgeOrphans()
-        infoMessage = "\(byteFormatter.string(fromByteCount: freed)) wurden freigegeben."
+        infoMessage = String(localized: "\(byteFormatter.string(fromByteCount: freed)) freed.")
         await refresh()
     }
 
@@ -465,7 +465,7 @@ public struct DangerZoneView: View {
         let freed = await Task.detached(priority: .userInitiated) {
             SessionHistoryStore.deleteAllLocalAudio()
         }.value
-        infoMessage = "\(byteFormatter.string(fromByteCount: freed)) wurden freigegeben."
+        infoMessage = String(localized: "\(byteFormatter.string(fromByteCount: freed)) freed.")
         await refresh()
     }
 
@@ -482,30 +482,30 @@ public struct DangerZoneView: View {
 
     private var partialDescription: String {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
-        f.dateFormat = "d. MMM yyyy"
+        f.locale = AppLanguage.shared.locale
+        f.dateFormat = "d MMM yyyy"
         let cutoffLabel = f.string(from: cutoff)
         guard let snap = snapshot else {
-            return "Entfernt Sitzungen und Notizen, die vor dem \(cutoffLabel) aufgenommen wurden. Einträge in der Upload-Queue werden übersprungen."
+            return String(localized: "Removes sessions and notes recorded before \(cutoffLabel). Entries in the upload queue are skipped.")
         }
         let count = snap.olderThanCutoff.count
         let bytes = byteFormatter.string(fromByteCount: snap.olderThanCutoff.totalBytes)
         if count == 0 {
-            return "Nichts älter als der \(cutoffLabel) auf dem Gerät."
+            return String(localized: "Nothing older than \(cutoffLabel) on the device.")
         }
-        return "\(count) Eintrag/Einträge vor dem \(cutoffLabel) · \(bytes) werden entfernt. Einträge in der Upload-Queue werden übersprungen."
+        return String(localized: "\(count) entry/entries before \(cutoffLabel) · \(bytes) will be removed. Entries in the upload queue are skipped.")
     }
 
     private var partialAlertMessage: String {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
-        f.dateFormat = "d. MMM yyyy"
+        f.locale = AppLanguage.shared.locale
+        f.dateFormat = "d MMM yyyy"
         let cutoffLabel = f.string(from: cutoff)
         guard let snap = snapshot, snap.olderThanCutoff.count > 0 else {
-            return "Aktion abgebrochen — nichts älter als der \(cutoffLabel) vorhanden."
+            return String(localized: "Action cancelled — nothing older than \(cutoffLabel).")
         }
         let bytes = byteFormatter.string(fromByteCount: snap.olderThanCutoff.totalBytes)
-        return "\(snap.olderThanCutoff.count) Eintrag/Einträge vor dem \(cutoffLabel) (\(bytes)) werden entfernt. Diese Aktion kann nicht rückgängig gemacht werden."
+        return String(localized: "\(snap.olderThanCutoff.count) entry/entries before \(cutoffLabel) (\(bytes)) will be removed. This can’t be undone.")
     }
 
     private let byteFormatter: ByteCountFormatter = {

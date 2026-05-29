@@ -36,12 +36,12 @@ public struct WalkthroughSectionsView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Abschnitte")
+                FlowHeader(title: "Sections")
 
                 List {
                     Section {
                         if generals.isEmpty {
-                            Text("Noch keine eigenen Abschnitte. Tippe auf „Abschnitt hinzufügen“, um einen Opener mit Titel und Einleitung anzulegen.")
+                            Text("No custom sections yet. Tap “Add section” to create an opener with a title and intro.")
                                 .font(Theme.font.callout)
                                 .foregroundStyle(Theme.color.text.subdued)
                                 .padding(.vertical, Theme.spacing.sm)
@@ -60,15 +60,15 @@ public struct WalkthroughSectionsView: View {
                         Button {
                             editorTarget = .add
                         } label: {
-                            Label("Abschnitt hinzufügen", systemImage: "plus")
+                            Label("Add section", systemImage: "plus")
                                 .foregroundStyle(Theme.color.text.link)
                         }
                     } header: {
-                        Text("Eigene Abschnitte")
+                        Text("Custom sections")
                             .font(Theme.font.subheadline)
                             .foregroundStyle(Theme.color.text.secondary)
                     } footer: {
-                        Text("Jeder Abschnitt hat einen Titel und einen Einleitungssatz, den der Walkthrough als Opener vorliest.")
+                        Text("Each section has a title and an intro sentence that the walkthrough reads aloud as the opener.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
@@ -76,20 +76,20 @@ public struct WalkthroughSectionsView: View {
                     Section {
                         SystemSectionRow(
                             iconName: "calendar",
-                            title: "Termine",
-                            subtitle: "Geht die zugesagten Termine des Tages chronologisch durch."
+                            title: String(localized: "Events"),
+                            subtitle: String(localized: "Walks through the day’s accepted events in chronological order.")
                         )
                         SystemSectionRow(
                             iconName: "mic.fill",
-                            title: "Notizen",
-                            subtitle: "Holt Notizen aus dem Tag ab und fragt nach offenem Restbedarf."
+                            title: String(localized: "Notes"),
+                            subtitle: String(localized: "Picks up notes from the day and asks what’s still open.")
                         )
                     } header: {
-                        Text("System-Abschnitte")
+                        Text("System sections")
                             .font(Theme.font.subheadline)
                             .foregroundStyle(Theme.color.text.secondary)
                     } footer: {
-                        Text("Diese beiden Abschnitte sind fest verdrahtet, lassen sich aber unter „Reihenfolge“ frei verschieben.")
+                        Text("These two sections are fixed, but can be reordered freely under “Order”.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
@@ -193,60 +193,60 @@ private struct GeneralEditorSheet: View {
                 Theme.color.bg.surface.ignoresSafeArea()
                 Form {
                     Section {
-                        TextField("z. B. Morgenroutine", text: $title)
+                        TextField("e.g. Morning routine", text: $title)
                             .focused($titleFocused)
                             .font(Theme.font.body)
                     } header: {
-                        Text("Titel")
+                        Text("Title")
                             .font(Theme.font.subheadline)
                             .foregroundStyle(Theme.color.text.secondary)
                     } footer: {
-                        Text("Erscheint im Walkthrough-Header während dieses Abschnitts.")
+                        Text("Appears in the walkthrough header during this section.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
 
                     Section {
                         TextField(
-                            "z. B. Wie ist dein Morgen heute angekommen?",
+                            "e.g. How did your morning land today?",
                             text: $introText,
                             axis: .vertical
                         )
                         .lineLimit(3...6)
                         .font(Theme.font.body)
                     } header: {
-                        Text("Einleitung")
+                        Text("Intro")
                             .font(Theme.font.subheadline)
                             .foregroundStyle(Theme.color.text.secondary)
                     } footer: {
-                        Text("Wird per TTS als Opener vorgelesen, bevor das Mikrofon öffnet.")
+                        Text("Spoken via TTS as the opener before the mic opens.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
 
                     Section {
-                        Toggle("Nachfrage bei Stille", isOn: $followUpEnabled)
+                        Toggle("Ask follow-up on silence", isOn: $followUpEnabled)
                             .font(Theme.font.body)
                     } header: {
-                        Text("Vertiefung")
+                        Text("Follow-up")
                             .font(Theme.font.subheadline)
                             .foregroundStyle(Theme.color.text.secondary)
                     } footer: {
-                        Text("Stellt nach 6 Sekunden Stille eine kurze, zur Einleitung passende Folgefrage. Ohne Aktivierung bleibt der Abschnitt still und wartet einfach.")
+                        Text("After 6 seconds of silence, asks one short follow-up that matches the intro. If off, the section stays silent and waits.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
                 }
                 .scrollContentBackground(.hidden)
             }
-            .navigationTitle(initial == nil ? "Neuer Abschnitt" : "Abschnitt bearbeiten")
+            .navigationTitle(initial == nil ? "New section" : "Edit section")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Abbrechen") { onCancel() }
+                    Button("Cancel") { onCancel() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Speichern") {
+                    Button("Save") {
                         let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                         let trimmedIntro = introText.trimmingCharacters(in: .whitespacesAndNewlines)
                         let section = GeneralSection(

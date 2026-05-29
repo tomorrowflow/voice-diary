@@ -17,7 +17,7 @@ public struct VerlaufView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Verlauf")
+                FlowHeader(title: "History")
 
                 if items.isEmpty {
                     emptyState
@@ -81,7 +81,7 @@ public struct VerlaufView: View {
             Button(role: .destructive) {
                 delete(item)
             } label: {
-                Label("Löschen", systemImage: "trash")
+                Label("Delete", systemImage: "trash")
                     .labelStyle(.iconOnly)
             }
         }
@@ -93,10 +93,10 @@ public struct VerlaufView: View {
             Image(systemName: "tray")
                 .font(.system(size: 36))
                 .foregroundStyle(Theme.color.text.subdued)
-            Text("Noch keine Sitzungen")
+            Text("No sessions yet")
                 .font(Theme.font.headline)
                 .foregroundStyle(Theme.color.text.primary)
-            Text("Walkthrough- und Notiz-Aufnahmen erscheinen hier.")
+            Text("Walkthrough and note recordings show up here.")
                 .font(Theme.font.callout)
                 .foregroundStyle(Theme.color.text.secondary)
                 .multilineTextAlignment(.center)
@@ -119,7 +119,8 @@ public struct VerlaufView: View {
             // we don't keep retrying an upload whose source is gone.
             Task { _ = await SessionUploader.shared.purgeOrphans() }
         } catch {
-            deleteError = "Löschen fehlgeschlagen: \(error.localizedDescription)"
+            deleteError = String(localized:
+                "Delete failed: \(error.localizedDescription)")
         }
     }
 
@@ -147,17 +148,24 @@ public struct VerlaufView: View {
 
     private static func dayLabel(_ day: Date) -> String {
         let cal = Calendar.current
-        if cal.isDateInToday(day) { return "Heute" }
-        if cal.isDateInYesterday(day) { return "Gestern" }
-        return Self.dayFormatter.string(from: day)
+        if cal.isDateInToday(day) { return String(localized: "Today") }
+        if cal.isDateInYesterday(day) { return String(localized: "Yesterday") }
+        return Self.dayFormatter().string(from: day)
     }
 
-    private static let dayFormatter: DateFormatter = {
+    // DateFormatter is sensitive to AppLanguage at call time. The pattern
+    // works for both German ("Montag, 12. Mai") and English ("Monday,
+    // May 12") because DateFormatter localises `EEEE / MMMM` per locale
+    // and reorders the components according to the locale's own
+    // dateFormat template logic. We rebuild on each call rather than
+    // mutating a cached instance so toggle is single-render-tick visible.
+    private static func dayFormatter() -> DateFormatter {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
-        f.dateFormat = "EEEE, d. MMMM"
+        f.locale = AppLanguage.shared.locale
+        let template = AppLanguage.shared.isGerman ? "EEEE, d. MMMM" : "EEEE, MMMM d"
+        f.dateFormat = template
         return f
-    }()
+    }
 }
 
 // MARK: - Row
@@ -218,13 +226,13 @@ private struct VerlaufRow: View {
         switch item {
         case .walkthrough(let w):
             switch w.eventCount {
-            case 0: return "Abend-Sitzung"
-            case 1: return "Abend-Sitzung · 1 Termin"
-            default: return "Abend-Sitzung · \(w.eventCount) Termine"
+            case 0: return String(localized: "Evening session")
+            case 1: return String(localized: "Evening session · 1 event")
+            default: return String(localized: "Evening session · \(w.eventCount) events")
             }
         case .voiceNote(let d):
             let preview = d.note.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-            return preview.isEmpty ? "Notiz" : preview
+            return preview.isEmpty ? String(localized: "Note") : preview
         }
     }
 
@@ -245,9 +253,10 @@ private struct VerlaufRow: View {
                 }
                 return w.capturedAt
             }()
-            return "Für " + Self.relativeDay.string(from: base)
+            return String(localized: "For \(Self.relativeDay().string(from: base))")
         case .voiceNote(let d):
-            return "Für " + Self.relativeDay.string(from: d.note.captured_at)
+            return String(localized:
+                "For \(Self.relativeDay().string(from: d.note.captured_at))")
         }
     }
 
@@ -259,15 +268,16 @@ private struct VerlaufRow: View {
         return f
     }()
 
-    /// "Heute" / "Gestern" / "Mittwoch, 30. April".
-    static let relativeDay: DateFormatter = {
+    /// "Today" / "Yesterday" / "Wednesday, April 30" — or the German
+    /// equivalents. Locale picked at call time from AppLanguage.
+    static func relativeDay() -> DateFormatter {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
+        f.locale = AppLanguage.shared.locale
         f.dateStyle = .full
         f.timeStyle = .none
         f.doesRelativeDateFormatting = true
         return f
-    }()
+    }
 }
 
 // MARK: - Detail
@@ -295,7 +305,11 @@ struct VerlaufDetailView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: title)
+                // `title` is built from runtime data + `String(localized:)`,
+                // so it's already in the user's language. Use the
+                // verbatim init to avoid running it back through the
+                // catalog as a key.
+                FlowHeader(verbatim: title)
 
                 // List (not ScrollView) so each segment / note row gets a
                 // native swipe-to-delete — the same affordance as the
@@ -334,10 +348,10 @@ struct VerlaufDetailView: View {
                                 ProgressView()
                                     .progressViewStyle(.circular)
                                     .tint(Theme.color.text.inverse)
-                                Text("Audio wird vorbereitet…")
+                                Text("Preparing audio…")
                             }
                         } else {
-                            Label("Audio teilen", systemImage: "square.and.arrow.up")
+                            Label("Share audio", systemImage: "square.and.arrow.up")
                         }
                     }
                     .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
@@ -390,11 +404,11 @@ struct VerlaufDetailView: View {
                                                   bottom: 8, trailing: Theme.spacing.md))
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) { deleteSegment(d) } label: {
-                                Label("Löschen", systemImage: "trash").labelStyle(.iconOnly)
+                                Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
                             }
                         }
                 }
-            } header: { sectionHeaderLabel("ABSCHNITTE") }
+            } header: { sectionHeaderLabel(String(localized: "SECTIONS")) }
         }
     }
 
@@ -410,11 +424,11 @@ struct VerlaufDetailView: View {
                                                   bottom: 8, trailing: Theme.spacing.md))
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             Button(role: .destructive) { deleteNote(e) } label: {
-                                Label("Löschen", systemImage: "trash").labelStyle(.iconOnly)
+                                Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
                             }
                         }
                 }
-            } header: { sectionHeaderLabel("NOTIZEN") }
+            } header: { sectionHeaderLabel(String(localized: "NOTES")) }
         }
     }
 
@@ -474,8 +488,8 @@ struct VerlaufDetailView: View {
 
     private var title: String {
         switch item {
-        case .walkthrough: return "Abend"
-        case .voiceNote:     return "Notiz"
+        case .walkthrough: return String(localized: "Evening")
+        case .voiceNote:   return String(localized: "Note")
         }
     }
 
@@ -505,7 +519,7 @@ struct VerlaufDetailView: View {
             captured = d.note.captured_at
             diaryDate = nil
         }
-        let recordedLine = Self.heroDayShort.string(from: captured)
+        let recordedLine = Self.heroDayShort().string(from: captured)
             + " · "
             + Self.heroTime.string(from: captured)
 
@@ -528,10 +542,10 @@ struct VerlaufDetailView: View {
 
             if let diaryDate {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Tagebucheintrag:")
+                    Text("Diary entry:")
                         .font(Theme.font.caption)
                         .foregroundStyle(Theme.color.text.subdued)
-                    Text(Self.diaryDay.string(from: diaryDate))
+                    Text(Self.diaryDay().string(from: diaryDate))
                         .font(Theme.font.subheadline.weight(.semibold))
                         .foregroundStyle(Theme.color.text.primary)
                 }
@@ -557,9 +571,12 @@ struct VerlaufDetailView: View {
         case .walkthrough(let w):
             let totalMB = Double(w.totalBytes) / 1_000_000
             tiles = [
-                .init(value: "\(w.eventCount)",      label: "Termine"),
-                .init(value: "\(w.segmentURLs.count)", label: "Segmente"),
-                .init(value: String(format: "%.1f MB", totalMB), label: "Größe"),
+                .init(value: "\(w.eventCount)",
+                      label: String(localized: "Events")),
+                .init(value: "\(w.segmentURLs.count)",
+                      label: String(localized: "Segments")),
+                .init(value: String(format: "%.1f MB", totalMB),
+                      label: String(localized: "Size")),
             ]
         case .voiceNote(let d):
             let bytes = (try? d.directory.appending(path: "audio.m4a")
@@ -567,9 +584,11 @@ struct VerlaufDetailView: View {
             let kb = Double(bytes) / 1_000
             tiles = [
                 .init(value: String(format: "%.0f", d.note.duration_seconds.rounded()) + " s",
-                      label: "Dauer"),
-                .init(value: d.note.language.uppercased(), label: "Sprache"),
-                .init(value: String(format: "%.0f KB", kb), label: "Größe"),
+                      label: String(localized: "Duration")),
+                .init(value: d.note.language.uppercased(),
+                      label: String(localized: "Language")),
+                .init(value: String(format: "%.0f KB", kb),
+                      label: String(localized: "Size")),
             ]
         }
         return LazyVGrid(
@@ -610,50 +629,44 @@ struct VerlaufDetailView: View {
         .padding(.horizontal, Theme.spacing.sm)
     }
 
-    static let heroDate: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
-        f.dateStyle = .full
-        f.timeStyle = .short
-        return f
-    }()
+    // All hero-related DateFormatters rebuild per call so AppLanguage
+    // flips on the same screen. Using `setLocalizedDateFormatFromTemplate`
+    // lets DateFormatter reorder fields per locale (German keeps
+    // "Freitag, 1. Mai 2026"; English emits "Friday, May 1, 2026").
 
-    /// "Freitag, 1. Mai 2026" — full date, no time, no relative
-    /// shortcuts ("Heute"). Kept distinct from the section list's
-    /// time-of-day formatting so it reads as a calendar marker.
-    static let heroDay: DateFormatter = {
+    static func heroDay() -> DateFormatter {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
+        f.locale = AppLanguage.shared.locale
         f.setLocalizedDateFormatFromTemplate("EEEE, d. MMMM yyyy")
         return f
-    }()
+    }
 
-    /// "3. Mai 2026" — no weekday, used for the recorded line in the
-    /// hero card so the row stays compact next to the icon.
-    static let heroDayShort: DateFormatter = {
+    /// Short date for the recorded-line in the hero card. Compact —
+    /// drops the weekday so the row stays one line beside the icon.
+    static func heroDayShort() -> DateFormatter {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
+        f.locale = AppLanguage.shared.locale
         f.setLocalizedDateFormatFromTemplate("d. MMMM yyyy")
         return f
-    }()
+    }
 
-    /// "21:14" — bare HH:mm.
+    /// "21:14" — bare 24h HH:mm. Locale-agnostic.
     static let heroTime: DateFormatter = {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm"
         return f
     }()
 
-    /// Diary-day formatter for the hero card. Same shape as `heroDay` —
-    /// the user explicitly asked for "Freitag, 1. Mai 2026" with no
-    /// relative shortcut so the diary day always reads in absolute terms.
-    static let diaryDay: DateFormatter = {
+    /// Diary-day formatter — same shape as `heroDay`. Spelled out fully
+    /// so the diary date always reads in absolute terms ("Today" /
+    /// "Heute" would be ambiguous on the hero card).
+    static func diaryDay() -> DateFormatter {
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
+        f.locale = AppLanguage.shared.locale
         f.setLocalizedDateFormatFromTemplate("EEEE, d. MMMM yyyy")
         return f
-    }()
+    }
 
     // MARK: - Notes data
 
@@ -691,7 +704,7 @@ struct VerlaufDetailView: View {
                 return w.segmentURLs.enumerated().map { idx, url in
                     SegmentDescriptor(
                         id: url.lastPathComponent,
-                        title: "Abschnitt \(idx + 1)",
+                        title: String(localized: "Section \(idx + 1)"),
                         subtitle: nil,
                         transcript: "",
                         language: nil,
@@ -719,27 +732,29 @@ struct VerlaufDetailView: View {
                 let language: String?
                 switch seg {
                 case .calendarEvent(let ce):
-                    title = ce.calendar_ref.title.isEmpty ? "Termin" : ce.calendar_ref.title
+                    title = ce.calendar_ref.title.isEmpty
+                          ? String(localized: "Event")
+                          : ce.calendar_ref.title
                     subtitle = Self.formatTimeRange(start: ce.calendar_ref.start, end: ce.calendar_ref.end)
                     transcript = ce.transcript
                     language = ce.language
                 case .freeReflection(let fr):
-                    title = "Freie Reflexion"
+                    title = String(localized: "Free reflection")
                     subtitle = nil
                     transcript = fr.transcript
                     language = fr.language
                 case .voiceNote(let db):
-                    title = "Notiz"
+                    title = String(localized: "Note")
                     subtitle = nil
                     transcript = db.transcript
                     language = db.language
                 case .emptyBlock(let eb):
-                    title = "Leerer Block"
+                    title = String(localized: "Empty block")
                     subtitle = Self.formatTimeRange(start: eb.time_range.start, end: eb.time_range.end)
                     transcript = eb.transcript
                     language = eb.language
                 case .generalSection(let gs):
-                    title = gs.title.isEmpty ? "Abschnitt" : gs.title
+                    title = gs.title.isEmpty ? String(localized: "Section") : gs.title
                     subtitle = gs.prompt_text.isEmpty ? nil : gs.prompt_text
                     transcript = gs.transcript
                     language = gs.language
@@ -760,7 +775,7 @@ struct VerlaufDetailView: View {
             let url = d.directory.appending(path: "audio.m4a")
             return [SegmentDescriptor(
                 id: d.note.id,
-                title: "Notiz-Aufnahme",
+                title: String(localized: "Note recording"),
                 subtitle: nil,
                 transcript: d.note.transcript,
                 language: d.note.language,
@@ -788,8 +803,10 @@ struct VerlaufDetailView: View {
               let e = ISO8601DateFormatter().date(from: end) else {
             return nil
         }
+        // HH:mm is locale-agnostic; using POSIX avoids the German
+        // formatter forcing 24h on an EN system anyway.
         let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm"
         return "\(f.string(from: s)) – \(f.string(from: e))"
     }

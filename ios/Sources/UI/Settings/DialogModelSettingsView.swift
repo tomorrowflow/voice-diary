@@ -39,7 +39,7 @@ public struct DialogModelSettingsView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Dialog-Modell")
+                FlowHeader(title: "Dialog model")
 
                 ScrollView {
                     VStack(spacing: Theme.spacing.md) {
@@ -65,13 +65,13 @@ public struct DialogModelSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.text.primary)
                     .frame(width: 28)
-                Text("Modell")
+                Text("Model")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
             }
 
-            Picker("Modell", selection: $preference) {
+            Picker("Model", selection: $preference) {
                 ForEach(DialogLLMPreference.allCases, id: \.self) { p in
                     Text(p.displayName).tag(p)
                 }
@@ -111,7 +111,7 @@ public struct DialogModelSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(loadIconColor)
                     .frame(width: 28)
-                Text("Gemma-Modell")
+                Text("Gemma model")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
@@ -127,7 +127,7 @@ public struct DialogModelSettingsView: View {
                 Button {
                     Task { await preloadGemma() }
                 } label: {
-                    Label("Modell laden (~5 GB)", systemImage: "arrow.down.circle")
+                    Label("Load model (~5 GB)", systemImage: "arrow.down.circle")
                 }
                 .buttonStyle(DSButtonStyle(variant: .secondary, size: .md, fullWidth: true))
             case .loading:
@@ -147,7 +147,7 @@ public struct DialogModelSettingsView: View {
                     } else {
                         HStack(spacing: Theme.spacing.sm) {
                             ProgressView()
-                            Text("Modellliste wird geladen…")
+                            Text("Loading model list…")
                                 .font(Theme.font.body)
                                 .foregroundStyle(Theme.color.text.subdued)
                         }
@@ -177,16 +177,16 @@ public struct DialogModelSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.text.primary)
                     .frame(width: 28)
-                Text("Hinweis")
+                Text("Note")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
             }
             Text("""
-            Bei Fehlern (Modell nicht geladen, falsche Sprache, \
-            Modellgröße zu groß) springt der Walkthrough automatisch \
-            auf Apple Foundation Models zurück. Du verlierst also nie \
-            den Termin, falls Gemma streikt.
+            On failures (model not loaded, wrong language, \
+            model too large) the walkthrough falls back to Apple \
+            Foundation Models automatically. You never lose the \
+            event if Gemma misbehaves.
             """)
                 .font(Theme.font.caption)
                 .foregroundStyle(Theme.color.text.subdued)
@@ -255,9 +255,9 @@ public struct DialogModelSettingsView: View {
         }
     }
 
-    /// "120 MB von 5,0 GB geladen (2 %)". Uses `ByteCountFormatter`
+    /// "120 MB of 5.0 GB downloaded (2 %)". Uses `ByteCountFormatter`
     /// directly so the locale-aware separator matches the rest of the
-    /// German UI without hardcoding strings.
+    /// UI without hardcoding strings.
     private var progressCaption: String {
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useMB, .useGB]
@@ -265,7 +265,7 @@ public struct DialogModelSettingsView: View {
         let done = formatter.string(fromByteCount: max(completedBytes, 0))
         let total = formatter.string(fromByteCount: max(totalBytes, 0))
         let percent = Int((progressFraction * 100).rounded())
-        return "\(done) von \(total) geladen (\(percent) %)"
+        return String(localized: "\(done) of \(total) downloaded (\(percent) %)")
     }
 
     // MARK: - Visual state
@@ -291,13 +291,13 @@ public struct DialogModelSettingsView: View {
     private var loadStatusText: String {
         switch loadState {
         case .idle:
-            return "Noch nicht geladen. Tippe auf den Button — danach läuft Gemma komplett lokal."
+            return String(localized: "Not loaded yet. Tap the button — after that, Gemma runs fully on-device.")
         case .loading:
-            return "Lade ~5 GB von Hugging Face. Bei WLAN ein paar Minuten, bei Mobilfunk mehr."
+            return String(localized: "Downloading ~5 GB from Hugging Face. A few minutes on Wi-Fi, longer on cellular.")
         case .loaded:
-            return "Gemma ist geladen und für den nächsten Walkthrough bereit."
+            return String(localized: "Gemma is loaded and ready for the next walkthrough.")
         case .failed(let reason):
-            return "Laden fehlgeschlagen: \(reason). Apple FM übernimmt heute."
+            return String(localized: "Load failed: \(reason). Apple FM will take over today.")
         }
     }
 
@@ -312,9 +312,9 @@ public struct DialogModelSettingsView: View {
     private func blurb(for p: DialogLLMPreference) -> String {
         switch p {
         case .appleFoundation:
-            return "Apples System-Modell (iOS 26). Immer verfügbar, schnell, ~3 Mrd. Parameter — Deutsch funktioniert, ist aber begrenzt."
+            return String(localized: "Apple’s system model (iOS 26). Always available, fast, ~3 B parameters — German works but is limited.")
         case .gemmaE4B:
-            return "Gemma 4 E4B (4-bit) via MLX. Stärkeres Deutsch als Apple FM. Beim ersten Mal werden ~5 GB Modell aus dem Netz geladen — danach läuft alles lokal."
+            return String(localized: "Gemma 4 E4B (4-bit) via MLX. Stronger German than Apple FM. First use downloads ~5 GB of weights — after that everything runs locally.")
         }
     }
 }

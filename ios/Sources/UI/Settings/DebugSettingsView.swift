@@ -54,7 +54,7 @@ public struct DebugSettingsView: View {
             }
 
             VStack(alignment: .leading, spacing: Theme.spacing.xs) {
-                Text("Server-URL")
+                Text("Server URL")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
                 TextField("http://my-server.tailnet.ts.net:8000", text: $serverURL)
@@ -95,7 +95,7 @@ public struct DebugSettingsView: View {
             Button {
                 save()
             } label: {
-                Label("Speichern", systemImage: "checkmark")
+                Label("Save", systemImage: "checkmark")
             }
             .buttonStyle(DSButtonStyle(variant: .primary, size: .md, fullWidth: true))
         }
@@ -118,7 +118,7 @@ public struct DebugSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.text.primary)
                     .frame(width: 28)
-                Text("Verbindung")
+                Text("Connection")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
@@ -138,7 +138,7 @@ public struct DebugSettingsView: View {
             Button {
                 Task { await refresh() }
             } label: {
-                Label("Server prüfen", systemImage: "arrow.clockwise")
+                Label("Check server", systemImage: "arrow.clockwise")
             }
             .buttonStyle(DSButtonStyle(variant: .secondary, size: .md, fullWidth: true))
         }
@@ -166,20 +166,24 @@ public struct DebugSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.text.primary)
                     .frame(width: 28)
-                Text("Voxtral testen")
+                Text("Test Voxtral")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
             }
 
-            Text("Synthese über Server → \(VoxtralTTS.fallbackVoice) · DE")
+            Text("Synthesis via server → \(VoxtralTTS.fallbackVoice) · DE")
                 .font(Theme.font.caption)
                 .foregroundStyle(Theme.color.text.subdued)
 
             Button {
                 Task { await runVoxtralTest() }
             } label: {
-                Label(voxtralBusy ? "Spielt ab…" : "Probe abspielen", systemImage: "play.circle")
+                if voxtralBusy {
+                    Label("Playing…", systemImage: "play.circle")
+                } else {
+                    Label("Play sample", systemImage: "play.circle")
+                }
             }
             .buttonStyle(DSButtonStyle(variant: .secondary, size: .md, fullWidth: true))
             .disabled(voxtralBusy)
@@ -203,7 +207,7 @@ public struct DebugSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.status.destructive)
                     .frame(width: 28)
-                Text("Fehler")
+                Text("Error")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
@@ -247,21 +251,21 @@ public struct DebugSettingsView: View {
     private func describe(_ error: VoxtralError) -> String {
         switch error {
         case .notConfigured:
-            return "Kein Server-URL oder Bearer im Keychain. Oben eintragen + Speichern."
+            return String(localized: "No server URL or bearer in Keychain. Enter them above and tap Save.")
         case .unauthorized:
-            return "401 — Bearer stimmt nicht mit IOS_BEARER_TOKEN überein."
+            return String(localized: "401 — bearer doesn’t match IOS_BEARER_TOKEN.")
         case .unknownVoice(let detail):
-            return "Voxtral kennt diese Stimme nicht: \(detail)"
+            return String(localized: "Voxtral doesn’t recognise this voice: \(detail)")
         case .unavailable(let detail):
-            return "Voxtral-Sidecar nicht erreichbar: \(detail)"
+            return String(localized: "Voxtral sidecar unreachable: \(detail)")
         case .timeout(let detail):
-            return "Timeout vom Server: \(detail)"
+            return String(localized: "Server timeout: \(detail)")
         case .serverError(let status, let detail):
-            return "Server \(status): \(detail)"
+            return String(localized: "Server \(status): \(detail)")
         case .transport(let underlying):
-            return "Netzwerk-Fehler: \(underlying.localizedDescription)"
+            return String(localized: "Network error: \(underlying.localizedDescription)")
         case .decodeFailed(let reason):
-            return "Antwort konnte nicht gelesen werden: \(reason)"
+            return String(localized: "Couldn’t read response: \(reason)")
         }
     }
 
@@ -282,7 +286,7 @@ public struct DebugSettingsView: View {
     private func applyStatusSideEffects(_ status: Reachability.Status) {
         switch status {
         case .authInvalid:
-            lastError = "401 vom Server. Bearer in der App stimmt nicht mit IOS_BEARER_TOKEN in server/.env überein. Wert neu einfügen und Speichern tippen."
+            lastError = String(localized: "401 from server. Bearer in the app doesn’t match IOS_BEARER_TOKEN in server/.env. Paste the value again and tap Save.")
         case .down(let reason):
             lastError = reason
         case .ok, .degraded, .unknown:
@@ -295,7 +299,7 @@ public struct DebugSettingsView: View {
     /// full secret.
     private var bearerSummary: String {
         let stored = KeychainStore.read(.bearerToken) ?? ""
-        if stored.isEmpty { return "(leer)" }
+        if stored.isEmpty { return String(localized: "(empty)") }
         let suffix = String(stored.suffix(4))
         return "len=\(stored.count) · …\(suffix)"
     }
@@ -306,9 +310,9 @@ public struct DebugSettingsView: View {
         switch reachability.status {
         case .unknown:                       return "—"
         case .ok:                            return "OK"
-        case .degraded:                      return "degraded"
-        case .authInvalid:                   return "Bearer ungültig"
-        case .down:                          return "down"
+        case .degraded:                      return String(localized: "degraded")
+        case .authInvalid:                   return String(localized: "Bearer invalid")
+        case .down:                          return String(localized: "down")
         }
     }
 

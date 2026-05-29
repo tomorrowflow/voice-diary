@@ -21,7 +21,19 @@ options:
   bundleIdPrefix: com.tomorrowflow
   deploymentTarget:
     iOS: "26.0"
-  developmentLanguage: de
+  # English is the development / Base language: every `Text("…")` in
+  # source uses the English string as its lookup key. German lives in
+  # Resources/Localizable.xcstrings as a translated localization, and
+  # the `AppLanguage` singleton flips Bundle.main at runtime between the
+  # two. CFBundleDevelopmentRegion derives from this.
+  developmentLanguage: en
+  # Declare the localizations we ship so iOS treats the bundle as a
+  # localized app (without this, `Bundle.main.preferredLocalizations`
+  # collapses to just the dev language).
+  knownRegions:
+    - en
+    - de
+    - Base
   defaultConfig: Debug
 
 settings:
@@ -76,6 +88,19 @@ targets:
         buildPhase: resources
       - path: Resources/Assets.xcassets
         buildPhase: resources
+      # String Catalog — English source + German translations. Xcode
+      # compiles this into `de.lproj/Localizable.strings` and
+      # `en.lproj/Localizable.strings` at build time. `AppLanguage`
+      # picks the right lproj at runtime via Bundle.main swap.
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
+      # Translations for Info.plist keys (mic + speech-recognition
+      # usage descriptions). iOS resolves these against the *system*
+      # locale at permission-prompt time, BEFORE our AppLanguage
+      # bundle swap can take effect, so English on EN devices and
+      # German on DE devices is the right behaviour here.
+      - path: Resources/InfoPlist.xcstrings
+        buildPhase: resources
       - path: Resources/Models
         buildPhase: resources
         optional: true
@@ -98,14 +123,18 @@ targets:
           - UIInterfaceOrientationPortrait
         UIBackgroundModes:
           - audio
-        NSMicrophoneUsageDescription: "Voice Diary nimmt deine Sprache auf, um den Tag chronologisch zu reflektieren. (Voice Diary records your speech to walk through your day chronologically.)"
+        # Usage strings are English in the plist itself; the German
+        # translation lives in Resources/InfoPlist.xcstrings and is
+        # picked by iOS based on the *system* language (the permission
+        # prompt fires before our AppLanguage override has any say).
+        NSMicrophoneUsageDescription: "Voice Diary records your speech so you can reflect on the day chronologically."
         # Speech recognition is used for the German wake-word path
         # ("weiter / nächstes / fertig") via SFSpeechRecognizer with
         # `requiresOnDeviceRecognition = true`. No audio leaves the
         # device — the system permission prompt still fires regardless.
         # English wake words run through FluidAudio's on-device
         # streaming Parakeet model and don't trigger this prompt.
-        NSSpeechRecognitionUsageDescription: 'Voice Diary erkennt Befehle wie „weiter" oder „fertig" lokal auf dem Gerät, damit du den Walkthrough auch bei gesperrtem Bildschirm steuern kannst. (On-device only; nothing is sent to Apple.)'
+        NSSpeechRecognitionUsageDescription: "Voice Diary recognises commands like \"next\" or \"done\" on-device so you can steer the walkthrough even with the screen locked. Nothing is sent to Apple."
         ITSAppUsesNonExemptEncryption: false
         UIAppFonts:
           - "Geist-Variable.ttf"

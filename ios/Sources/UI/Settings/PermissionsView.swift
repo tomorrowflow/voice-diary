@@ -26,16 +26,16 @@ public struct PermissionsView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Berechtigungen")
+                FlowHeader(title: "Permissions")
 
                 ScrollView {
                     VStack(spacing: Theme.spacing.md) {
                         permissionCard(
                             icon: "mic.fill",
-                            title: "Mikrofon",
+                            title: String(localized: "Microphone"),
                             statusText: micStatusText,
                             statusColor: micStatusColor,
-                            description: "Voice Diary nimmt deine Sprache auf, um den Tag chronologisch zu reflektieren. Ohne diese Erlaubnis kann kein Termin aufgenommen werden.",
+                            description: String(localized: "Voice Diary records your speech to reflect on the day chronologically. Without this, no event can be recorded."),
                             actionLabel: actionLabel(for: micActionState),
                             actionState: micActionState,
                             isBusy: isRequestingMic,
@@ -44,10 +44,10 @@ public struct PermissionsView: View {
 
                         permissionCard(
                             icon: "waveform.badge.mic",
-                            title: "Spracherkennung",
+                            title: String(localized: "Speech recognition"),
                             statusText: speechStatusText,
                             statusColor: speechStatusColor,
-                            description: "Erkennt Befehle wie „weiter\" oder „fertig\" lokal auf dem Gerät, damit du den Walkthrough auch bei gesperrtem Bildschirm steuern kannst. Ohne diese Erlaubnis ist die Wake-Word-Erkennung im Walkthrough deaktiviert; tippen funktioniert weiterhin.",
+                            description: String(localized: "Recognises commands like “next” or “done” on-device so you can steer the walkthrough even with the screen locked. Without this, wake-word detection in the walkthrough is off; tapping still works."),
                             actionLabel: actionLabel(for: speechActionState),
                             actionState: speechActionState,
                             isBusy: isRequestingSpeech,
@@ -61,7 +61,7 @@ public struct PermissionsView: View {
                             HStack(spacing: Theme.spacing.xs) {
                                 Image(systemName: "gear")
                                     .font(Theme.font.caption)
-                                Text("Falls keine Abfrage erscheint: in iOS-Einstellungen ändern")
+                                Text("If no prompt appears: change in iOS Settings")
                                     .font(Theme.font.caption)
                                     .multilineTextAlignment(.center)
                             }
@@ -113,9 +113,9 @@ public struct PermissionsView: View {
 
     private func actionLabel(for state: ActionState) -> String {
         switch state {
-        case .canRequest:     return "Zugriff anfragen"
-        case .alreadyGranted: return "Bereits erlaubt"
-        case .openSettings:   return "In iOS-Einstellungen ändern"
+        case .canRequest:     return String(localized: "Request access")
+        case .alreadyGranted: return String(localized: "Already granted")
+        case .openSettings:   return String(localized: "Change in iOS Settings")
         }
     }
 
@@ -222,9 +222,9 @@ public struct PermissionsView: View {
 
     private var micStatusText: String {
         switch micStatus {
-        case .granted: return "Erlaubt"
-        case .denied: return "Nicht erlaubt"
-        default: return "Noch nicht angefragt"
+        case .granted: return String(localized: "Allowed")
+        case .denied: return String(localized: "Denied")
+        default: return String(localized: "Not requested yet")
         }
     }
 
@@ -258,10 +258,10 @@ public struct PermissionsView: View {
 
     private var speechStatusText: String {
         switch speechStatus {
-        case .authorized: return "Erlaubt"
-        case .denied:     return "Nicht erlaubt"
-        case .restricted: return "Eingeschränkt"
-        default:          return "Noch nicht angefragt"
+        case .authorized: return String(localized: "Allowed")
+        case .denied:     return String(localized: "Denied")
+        case .restricted: return String(localized: "Restricted")
+        default:          return String(localized: "Not requested yet")
         }
     }
 

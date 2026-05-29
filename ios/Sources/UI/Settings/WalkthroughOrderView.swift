@@ -16,7 +16,7 @@ public struct WalkthroughOrderView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Reihenfolge")
+                FlowHeader(title: "Order")
 
                 List {
                     Section {
@@ -26,11 +26,11 @@ public struct WalkthroughOrderView: View {
                         }
                         .onMove(perform: move)
                     } header: {
-                        Text("Abend-Reihenfolge")
+                        Text("Evening order")
                             .font(Theme.font.subheadline)
                             .foregroundStyle(Theme.color.text.secondary)
                     } footer: {
-                        Text("Halte einen Eintrag gedrückt und ziehe ihn an die gewünschte Position. Der Walkthrough läuft die Liste von oben nach unten ab.")
+                        Text("Press and hold an entry, then drag it into position. The walkthrough runs the list top to bottom.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
@@ -88,11 +88,11 @@ private struct OrderRow: View {
     private var title: String {
         switch entry {
         case .general(let id):
-            return generals.first { $0.id == id }?.title ?? "(unbekannt)"
+            return generals.first { $0.id == id }?.title ?? String(localized: "(unknown)")
         case .calendarEvents:
-            return "Termine"
+            return String(localized: "Events")
         case .voiceNote:
-            return "Notizen"
+            return String(localized: "Notes")
         }
     }
 
@@ -101,9 +101,9 @@ private struct OrderRow: View {
         case .general(let id):
             return generals.first { $0.id == id }?.introText
         case .calendarEvents:
-            return "Per-Termin-Schleife mit Openern + Listen-Phase."
+            return String(localized: "Per-event loop with openers + listen phase.")
         case .voiceNote:
-            return "Holt offene Notizen ab und fragt nach freier Reflexion."
+            return String(localized: "Picks up open notes and asks for free reflection.")
         }
     }
 }

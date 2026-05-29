@@ -30,7 +30,7 @@ public struct WakeWordSettingsView: View {
             Theme.color.bg.surface.ignoresSafeArea()
 
             VStack(spacing: 0) {
-                FlowHeader(title: "Wake-Word")
+                FlowHeader(title: "Wake word")
 
                 ScrollView {
                     VStack(spacing: Theme.spacing.md) {
@@ -62,7 +62,7 @@ public struct WakeWordSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.text.primary)
                     .frame(width: 28)
-                Text("Wake-Word aktivieren")
+                Text("Enable wake word")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
@@ -105,17 +105,17 @@ public struct WakeWordSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.text.primary)
                     .frame(width: 28)
-                Text("On-Device-Erkennung")
+                Text("On-device recognition")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
             }
 
-            languageRow(label: "Deutsch (de-DE)", supported: deSupported)
+            languageRow(label: String(localized: "German (de-DE)"), supported: deSupported)
             Divider().background(Theme.color.border.subdued)
-            languageRow(label: "English (en-US)", supported: enSupported)
+            languageRow(label: String(localized: "English (en-US)"), supported: enSupported)
 
-            Text("Voice Diary nutzt Apples Diktat-Asset für die Wake-Word-Erkennung. Solange das Asset für eine Sprache fehlt, ist das Wake-Word in dieser Sprache deaktiviert — Tippen funktioniert weiterhin, und alle Stille-Zeiten (3 / 6 / 15 / 20 s) feuern unverändert.")
+            Text("Voice Diary uses Apple’s dictation asset for wake-word recognition. While a language’s asset is missing, the wake word is off in that language — tapping still works, and all silence timers (3 / 6 / 15 / 20 s) fire unchanged.")
                 .font(Theme.font.caption)
                 .foregroundStyle(Theme.color.text.subdued)
                 .fixedSize(horizontal: false, vertical: true)
@@ -139,7 +139,7 @@ public struct WakeWordSettingsView: View {
                 .foregroundStyle(Theme.color.text.primary)
             Spacer()
             StatusPill(
-                text: supported ? "Installiert" : "Wird geladen",
+                text: supported ? String(localized: "Installed") : String(localized: "Downloading"),
                 color: supported ? Theme.color.status.success : Theme.color.status.warning
             )
         }
@@ -155,17 +155,17 @@ public struct WakeWordSettingsView: View {
                     .font(.title3)
                     .foregroundStyle(Theme.color.text.primary)
                     .frame(width: 28)
-                Text("Asset herunterladen")
+                Text("Download asset")
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
             }
 
-            instructionRow(number: "1", text: "iOS-Einstellungen → Allgemein → Tastatur → Diktat aktivieren.")
-            instructionRow(number: "2", text: "In derselben Ansicht „Diktat-Sprachen“ öffnen und Deutsch (Deutschland) hinzufügen.")
-            instructionRow(number: "3", text: "Mit dem WLAN verbinden und das Gerät idealerweise an den Strom anschließen.")
-            instructionRow(number: "4", text: "Tastatur einmal öffnen, das Mikrofon-Symbol antippen und kurz auf Deutsch diktieren — das stößt den Download in iOS an.")
-            instructionRow(number: "5", text: "Warten (manchmal Minuten, manchmal Stunden), dann unten auf „Erneut prüfen“ tippen.")
+            instructionRow(number: "1", text: String(localized: "iOS Settings → General → Keyboard → enable Dictation."))
+            instructionRow(number: "2", text: String(localized: "In the same screen, open “Dictation Languages” and add German (Germany)."))
+            instructionRow(number: "3", text: String(localized: "Connect to Wi-Fi and ideally plug in the device."))
+            instructionRow(number: "4", text: String(localized: "Open the keyboard once, tap the microphone icon, and briefly dictate in German — that nudges iOS to start the download."))
+            instructionRow(number: "5", text: String(localized: "Wait (sometimes minutes, sometimes hours), then tap “Re-check” below."))
         }
         .padding(Theme.spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -196,7 +196,7 @@ public struct WakeWordSettingsView: View {
         Button {
             recheck()
         } label: {
-            Label("Erneut prüfen", systemImage: "arrow.clockwise")
+            Label("Re-check", systemImage: "arrow.clockwise")
         }
         .buttonStyle(DSButtonStyle(variant: .primary, size: .md, fullWidth: true))
     }
@@ -205,7 +205,7 @@ public struct WakeWordSettingsView: View {
         Button {
             openSystemSettings()
         } label: {
-            Label("iOS-Einstellungen öffnen", systemImage: "gear")
+            Label("Open iOS Settings", systemImage: "gear")
         }
         .buttonStyle(DSButtonStyle(variant: .outline, size: .md, fullWidth: true))
     }
@@ -216,12 +216,12 @@ public struct WakeWordSettingsView: View {
 
     private var toggleCaption: String {
         if !anySupported {
-            return "Aktuell ist kein Diktat-Asset installiert — Wake-Word kann nicht aktiviert werden. Folge den Schritten unten und tippe „Erneut prüfen“."
+            return String(localized: "No dictation asset installed yet — wake word can’t be enabled. Follow the steps below and tap “Re-check”.")
         }
         if enabled {
-            return "Wake-Word ist aktiv. Während eines Walkthrough-Termins öffnet sich nach 3 s Stille ein Hörfenster: „weiter“ / „nächstes“ → nächstes Ereignis, „fertig“ → Walkthrough beenden."
+            return String(localized: "Wake word is on. During an event, after 3 s of silence a listening window opens: “next” / “weiter” → next event, “done” / “fertig” → end the walkthrough.")
         }
-        return "Wake-Word ist deaktiviert. Tippe weiterhin auf den Pfeil unten rechts, um durch die Termine zu navigieren."
+        return String(localized: "Wake word is off. Keep tapping the arrow at the bottom right to step through events.")
     }
 
     private func recheck() {

@@ -18,6 +18,15 @@ public enum OpenerSlot: String, Sendable {
 
 public enum OpenerLanguage: String, Sendable {
     case de, en
+
+    /// Snapshot of the user's current language preference (the toggle in
+    /// "Mehr → Sprache"). Centralising the call here means every default
+    /// argument in the coordinator + opener pipeline reads from one
+    /// place. `LanguageDetector` still overrides per event title.
+    @MainActor
+    public static var current: OpenerLanguage {
+        AppLanguage.shared.isGerman ? .de : .en
+    }
 }
 
 public enum OpenerTemplates {
