@@ -43,6 +43,12 @@ public final class WakeWordDetector: @unchecked Sendable {
         // everything. The X button is still the full-cancel path.
         case finishSection  // "fertig" / "Abschluss" / "done" / "finish section"
 
+        // Pause the recording (and any in-flight TTS). The current
+        // m4a segment is finalised and added to the manifest; resume
+        // is button-only (no voice command) so the user can't acci-
+        // dentally un-pause by mumbling "weiter".
+        case pause          // "pause" (DE+EN identical)
+
         // Note-review-only intents (note recap step). The base
         // phrase tables don't include these — the coordinator hands
         // the extended `*NoteReview` tables to the detector when
@@ -65,12 +71,15 @@ public final class WakeWordDetector: @unchecked Sendable {
         Phrase("nächstes",  action: .advance),
         Phrase("fertig",    action: .finishSection),
         Phrase("abschluss", action: .finishSection),
+        Phrase("pause",     action: .pause),
+        Phrase("pausieren", action: .pause),
     ]
     public static let english: [Phrase] = [
         Phrase("next",      action: .advance),
         Phrase("continue",  action: .advance),
         Phrase("done",      action: .finishSection),
         Phrase("finish",    action: .finishSection),
+        Phrase("pause",     action: .pause),
     ]
 
     /// Extended phrase tables for the per-note review step. Includes the

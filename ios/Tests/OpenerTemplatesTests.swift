@@ -241,6 +241,27 @@ struct OpenerTemplatesTests {
         #expect(spans.first?.language == "de")
     }
 
+    // MARK: - Closing prompt (SPEC §6 CLOSING state)
+
+    @Test("closing prompt returns correct DE string")
+    func closingPromptDE() {
+        let line = OpenerTemplates.closingPrompt(language: .de)
+        #expect(line == "Willst du noch etwas zum ganzen Tag sagen?")
+    }
+
+    @Test("closing prompt returns correct EN string")
+    func closingPromptEN() {
+        let line = OpenerTemplates.closingPrompt(language: .en)
+        #expect(line == "Anything else you want to say about the day overall?")
+    }
+
+    @Test("closing prompt strings are non-empty per language")
+    func closingPromptNonEmpty() {
+        for lang in [OpenerLanguage.de, .en] {
+            #expect(!OpenerTemplates.closingPrompt(language: lang).isEmpty)
+        }
+    }
+
     // MARK: - helpers
 
     private func makeEvent(attendees: [String], duration: Int, recurring: Bool) -> ServerCalendarEvent {

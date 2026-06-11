@@ -349,4 +349,17 @@ public enum OpenerTemplates {
         case .en: return "Should I move on? Say next, or just start talking."
         }
     }
+
+    /// Closing prompt for the voice-note / free-reflection section
+    /// (SPEC §6 CLOSING state). Appears at three distinct call sites in
+    /// `WalkthroughCoordinator` and is also pre-fetched for TTS caching.
+    /// All three uses MUST produce byte-identical strings so the TTS
+    /// prefetch cache key is stable — centralised here to prevent silent
+    /// divergence from a copy-paste edit.
+    public static func closingPrompt(language: OpenerLanguage) -> String {
+        switch language {
+        case .de: return "Willst du noch etwas zum ganzen Tag sagen?"
+        case .en: return "Anything else you want to say about the day overall?"
+        }
+    }
 }
