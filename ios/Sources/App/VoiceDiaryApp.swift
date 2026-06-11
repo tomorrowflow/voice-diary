@@ -11,6 +11,11 @@ struct VoiceDiaryApp: App {
 
     init() {
         Log.app.info("Voice Diary ready")
+        // MetricKit subscriber must be installed *before* the system
+        // tries to deliver any pending payload at first foreground. The
+        // delivery itself runs on a background queue; installing here
+        // (in `App.init`) is safe and idempotent.
+        DiagnosticsCollector.shared.start()
     }
 
     var body: some Scene {
@@ -40,11 +45,15 @@ struct VoiceDiaryApp: App {
                     // those two steps leaves the temp file on disk.
                     // Old `{stem}.m4a.tmp` orphans from before the
                     // container fix are also caught by the same sweep.
-                    // Runs once per app launch, before any capture
-                    // intent is processed, so an Action Button press
-                    // that immediately starts a new recording can never
-                    // race the cleanup against its own staging file.
-                    if let root = try? LocalStore.appSupport() {
+                    // Guard: only sweep when no recording is already in
+                    // progress (e.g. a re-launch mid-backgrounded-capture
+                    // edge case) — `isRecording` is @MainActor so it's
+                    // safe to read here. The sweep runs BEFORE any intent
+                    // dispatch below so an Action Button press that
+                    // immediately starts a new recording cannot race the
+                    // cleanup against its own staging file.
+                    if let root = try? LocalStore.appSupport(),
+                       !CaptureCoordinator.shared.isRecording {
                         let removed = M4AWriter.cleanupOrphans(in: root)
                         if removed > 0 {
                             Log.app.info(
@@ -81,6 +90,11 @@ struct VoiceDiaryApp: App {
                         }
                     }
 
+                    // Kick the upload queue so any session recorded
+                    // while the server was unreachable is retried now
+                    // that the app has fully launched.
+                    SessionUploader.shared.kick()
+
                     // Pre-warm Parakeet. The CoreML Encoder takes ~15 s
                     // to specialise for the Neural Engine on each
                     // launch (no download — the .mlmodelc is already
@@ -107,6 +121,21 @@ struct VoiceDiaryApp: App {
                         // model again. No eager re-load here — it
                         // happens lazily on first need.
                         Task { await GemmaDialogLLM.shared.resume() }
+                        // Sweep any Live Activity orphaned by a previous
+                        // backgrounded/killed run before the user sees
+                        // the lock screen again. Each coordinator owns
+                        // its rehydrate path so a future activity
+                        // producer can join the same broom.
+                        Task { @MainActor in
+                            await CaptureCoordinator.shared.reclaimLiveActivityIfNeeded()
+                            await WalkthroughCoordinator.shared.reclaimLiveActivityIfNeeded()
+                        }
+                        // Kick the upload queue on every foreground
+                        // transition — the server may have been down
+                        // while the phone was backgrounded / in airplane
+                        // mode. `kick()` is cheap (nonisolated Task spawn)
+                        // and flush() is idempotent (isFlushing guard).
+                        SessionUploader.shared.kick()
                     case .background:
                         // Two reasons to suspend Gemma when backgrounded:
                         // (1) iOS background memory caps are far tighter
@@ -285,9 +314,19 @@ private struct MehrView: View {
                             MehrRow(label: "Wake word", systemImage: "waveform.and.mic")
                         }
                         NavigationLink {
+                            LockScreenSettingsView()
+                        } label: {
+                            MehrRow(label: "Lock screen", systemImage: "lock.rectangle.on.rectangle")
+                        }
+                        NavigationLink {
                             DebugSettingsView()
                         } label: {
                             MehrRow(label: "Server", systemImage: "server.rack")
+                        }
+                        NavigationLink {
+                            DiagnosticsView()
+                        } label: {
+                            MehrRow(label: "Diagnostics", systemImage: "stethoscope")
                         }
                         NavigationLink {
                             DangerZoneView()

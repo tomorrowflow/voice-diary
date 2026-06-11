@@ -90,12 +90,17 @@ public actor ServerClient {
         rsvpFilter: String = "accepted,organizer"
     ) async throws -> Data {
         let (url, token) = try endpoint("/today/calendar")
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw ServerClientError.notConfigured
+        }
         components.queryItems = [
             URLQueryItem(name: "date", value: date),
             URLQueryItem(name: "rsvp_filter", value: rsvpFilter),
         ]
-        var req = URLRequest(url: components.url!)
+        guard let resolvedURL = components.url else {
+            throw ServerClientError.notConfigured
+        }
+        var req = URLRequest(url: resolvedURL)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: req)
         try Self.assertOK(response: response, body: data)
@@ -116,12 +121,17 @@ public actor ServerClient {
     /// picker to mark days that have already been recorded for.
     public func recordedDates(from: String? = nil, to: String? = nil) async throws -> [String] {
         let (url, token) = try endpoint("/api/sessions/dates")
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw ServerClientError.notConfigured
+        }
         var items: [URLQueryItem] = []
         if let from { items.append(URLQueryItem(name: "date_from", value: from)) }
         if let to   { items.append(URLQueryItem(name: "date_to", value: to)) }
         components.queryItems = items.isEmpty ? nil : items
-        var req = URLRequest(url: components.url!)
+        guard let resolvedURL = components.url else {
+            throw ServerClientError.notConfigured
+        }
+        var req = URLRequest(url: resolvedURL)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: req)
         try Self.assertOK(response: response, body: data)
@@ -133,12 +143,17 @@ public actor ServerClient {
 
     public func emailSearch(query: String, responseLanguage: String = "de") async throws -> EnrichmentSummary {
         let (url, token) = try endpoint("/email/search")
-        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw ServerClientError.notConfigured
+        }
         components.queryItems = [
             URLQueryItem(name: "q", value: query),
             URLQueryItem(name: "response_language", value: responseLanguage),
         ]
-        var req = URLRequest(url: components.url!)
+        guard let resolvedURL = components.url else {
+            throw ServerClientError.notConfigured
+        }
+        var req = URLRequest(url: resolvedURL)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: req)
         try Self.assertOK(response: response, body: data)

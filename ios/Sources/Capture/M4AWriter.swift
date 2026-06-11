@@ -317,38 +317,170 @@ public final class M4AWriter: @unchecked Sendable {
         return name.hasSuffix(".tmp.m4a") || name.hasSuffix(".m4a.tmp")
     }
 
-    /// Walk `root` recursively and delete every orphan temp file left
-    /// behind by a crashed previous run. Safe to call at any time when
-    /// no recording is in progress (e.g. once at app launch). Returns
-    /// the number of files removed. Errors during enumeration or
-    /// per-file removal are logged but never thrown — a stale orphan
-    /// is annoying, not catastrophic.
+    /// Minimum file size (bytes) below which an orphan temp file is
+    /// considered empty / unrecoverable and is deleted outright.
+    /// Files at or above this threshold are moved to the quarantine
+    /// directory where `ffmpeg -err_detect ignore_err` can attempt
+    /// recovery rather than silently losing the audio.
+    private static let orphanSizeThreshold: Int = 100 * 1024   // 100 KB
+
+    /// Maximum number of quarantined orphans to keep. When the cap is
+    /// exceeded, the oldest files are removed first to bound growth.
+    private static let orphanQuarantineCap: Int = 10
+
+    /// Walk `root` recursively and handle every orphan temp file left
+    /// behind by a crashed previous run:
+    ///   * Files below `orphanSizeThreshold` (empty / sub-threshold) are
+    ///     deleted — they contain no useful audio.
+    ///   * Files at or above the threshold are moved into a
+    ///     `recoverable/` subdirectory of `root`. The moov atom is
+    ///     absent (that's what makes them orphans), but the AAC payload
+    ///     may be recoverable with `ffmpeg -err_detect ignore_err`.
+    ///     The directory is capped at `orphanQuarantineCap` newest
+    ///     entries to prevent unbounded growth.
+    ///
+    /// Safe to call at any time when no recording is in progress (e.g.
+    /// once at app launch). Returns the number of files handled. Errors
+    /// are logged but never thrown.
     @discardableResult
     public static func cleanupOrphans(in root: URL) -> Int {
         let fm = FileManager.default
         guard fm.fileExists(atPath: root.path),
               let enumerator = fm.enumerator(
                 at: root,
-                includingPropertiesForKeys: nil,
+                includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
                 options: [.skipsHiddenFiles]
               )
         else { return 0 }
 
-        var removed = 0
+        // Collect all orphan URLs before acting — the enumerator must
+        // not be mutated while being walked.
+        var orphans: [URL] = []
         for case let url as URL in enumerator {
             guard isOrphanTempURL(url) else { continue }
+            orphans.append(url)
+        }
+
+        guard !orphans.isEmpty else { return 0 }
+
+        // Resolve / create the quarantine directory once if we need it.
+        // Lazily created only when we actually have a large orphan to move.
+        let quarantineDir = root.appending(path: "recoverable", directoryHint: .isDirectory)
+        var quarantineDirCreated = false
+
+        func ensureQuarantineDir() -> Bool {
+            if quarantineDirCreated { return true }
             do {
-                try fm.removeItem(at: url)
-                removed += 1
-                Log.audio.info(
-                    "removed orphan temp file: \(url.lastPathComponent, privacy: .public)"
-                )
+                try fm.createDirectory(at: quarantineDir, withIntermediateDirectories: true)
+                quarantineDirCreated = true
+                return true
             } catch {
                 Log.audio.error(
-                    "failed to remove orphan \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)"
+                    "failed to create recoverable dir: \(String(describing: error), privacy: .public)"
                 )
+                return false
             }
         }
-        return removed
+
+        var handled = 0
+        for url in orphans {
+            // Skip files that live inside the quarantine dir itself so we
+            // don't re-process our own quarantined items on the next launch.
+            if url.path.hasPrefix(quarantineDir.path) { continue }
+
+            let fileSize: Int
+            do {
+                let rv = try url.resourceValues(forKeys: [.fileSizeKey])
+                fileSize = rv.fileSize ?? 0
+            } catch {
+                fileSize = 0
+            }
+
+            if fileSize < orphanSizeThreshold {
+                // Tiny / empty orphan — delete outright.
+                do {
+                    try fm.removeItem(at: url)
+                    handled += 1
+                    Log.audio.info(
+                        "removed tiny orphan (\(fileSize) B): \(url.lastPathComponent, privacy: .public)"
+                    )
+                } catch {
+                    Log.audio.error(
+                        "failed to remove orphan \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                }
+            } else {
+                // Substantial orphan — quarantine for potential recovery.
+                guard ensureQuarantineDir() else { continue }
+                let dest = quarantineDir.appending(path: url.lastPathComponent)
+                // If a same-named file already exists in the quarantine
+                // dir, uniquify with a timestamp suffix.
+                let finalDest: URL
+                if fm.fileExists(atPath: dest.path) {
+                    let stem = dest.deletingPathExtension().lastPathComponent
+                    let ext = dest.pathExtension
+                    let ts = Int(Date().timeIntervalSince1970)
+                    let leaf = ext.isEmpty ? "\(stem)-\(ts)" : "\(stem)-\(ts).\(ext)"
+                    finalDest = quarantineDir.appending(path: leaf)
+                } else {
+                    finalDest = dest
+                }
+                do {
+                    try fm.moveItem(at: url, to: finalDest)
+                    handled += 1
+                    Log.audio.warning(
+                        "quarantined orphan (\(fileSize) B) → recoverable/\(finalDest.lastPathComponent, privacy: .public)"
+                    )
+                } catch {
+                    Log.audio.error(
+                        "failed to quarantine orphan \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                }
+            }
+        }
+
+        // Trim the quarantine directory to the newest `orphanQuarantineCap`
+        // entries so it never grows unboundedly.
+        trimQuarantine(dir: quarantineDir, cap: orphanQuarantineCap)
+
+        return handled
+    }
+
+    /// Remove oldest entries from the quarantine directory when the count
+    /// exceeds `cap`. Errors are logged; removal failures are skipped.
+    private static func trimQuarantine(dir: URL, cap: Int) {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: dir.path) else { return }
+        do {
+            let contents = try fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: [.contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+            guard contents.count > cap else { return }
+            // Sort oldest-first; remove the excess from the front.
+            let sorted = contents.sorted {
+                let aDate = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let bDate = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return aDate < bDate
+            }
+            let toRemove = sorted.prefix(sorted.count - cap)
+            for url in toRemove {
+                do {
+                    try fm.removeItem(at: url)
+                    Log.audio.info(
+                        "quarantine cap: removed \(url.lastPathComponent, privacy: .public)"
+                    )
+                } catch {
+                    Log.audio.error(
+                        "quarantine cap: failed to remove \(url.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)"
+                    )
+                }
+            }
+        } catch {
+            Log.audio.error(
+                "quarantine trim enumeration failed: \(String(describing: error), privacy: .public)"
+            )
+        }
     }
 }

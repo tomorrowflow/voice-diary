@@ -17,6 +17,80 @@ private final class WakeSinkBox: @unchecked Sendable {
     }
 }
 
+/// Format-keyed converter cache used by the tap callback. The previous
+/// design captured `inputFormat` + the converters into the closure at
+/// install time — which crashes with `Failed to create tap due to
+/// format mismatch` whenever AVAudioEngine's input AU re-initialises
+/// (category change, route flip) between `engine.start()` and our
+/// `installTap` call: node format reports stale 44.1 kHz while the
+/// underlying hw is already at 48 kHz.
+///
+/// New design pairs `installTap(format: nil)` (which sidesteps the
+/// install-time mismatch entirely — AVAudioEngine uses the bus's
+/// live format) with this cache, which rebuilds the converters
+/// lazily whenever `buffer.format` changes. A mid-stream route flip
+/// now just triggers a rebuild on the next buffer instead of an
+/// uncatchable NSException.
+private final class TapConverterCache: @unchecked Sendable {
+    struct State: Sendable {
+        let inputFormat: AVAudioFormat
+        let writerFormat: AVAudioFormat?
+        let writerUpsampler: AVAudioConverter?
+        let parakeetFormat: AVAudioFormat
+        let downsampler: AVAudioConverter?
+    }
+
+    private let lock = OSAllocatedUnfairLock<State?>(initialState: nil)
+    private let writerRate: Double
+
+    init(writerRate: Double) { self.writerRate = writerRate }
+
+    func state(for inputFormat: AVAudioFormat) -> State {
+        lock.withLock { current in
+            if let s = current, Self.matches(s.inputFormat, inputFormat) {
+                return s
+            }
+            let built = Self.build(inputFormat: inputFormat, writerRate: writerRate)
+            current = built
+            return built
+        }
+    }
+
+    private static func matches(_ a: AVAudioFormat, _ b: AVAudioFormat) -> Bool {
+        a.sampleRate == b.sampleRate
+            && a.channelCount == b.channelCount
+            && a.commonFormat == b.commonFormat
+    }
+
+    private static func build(inputFormat: AVAudioFormat, writerRate: Double) -> State {
+        let writerFormat: AVAudioFormat? = writerRate == inputFormat.sampleRate
+            ? nil
+            : AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: writerRate,
+                channels: M4AWriter.channels,
+                interleaved: false
+            )
+        let writerUpsampler: AVAudioConverter? = writerFormat.flatMap {
+            AVAudioConverter(from: inputFormat, to: $0)
+        }
+        let parakeetFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: AudioEngine.parakeetTargetSampleRate,
+            channels: M4AWriter.channels,
+            interleaved: false
+        )!
+        let downsampler = AVAudioConverter(from: inputFormat, to: parakeetFormat)
+        return State(
+            inputFormat: inputFormat,
+            writerFormat: writerFormat,
+            writerUpsampler: writerUpsampler,
+            parakeetFormat: parakeetFormat,
+            downsampler: downsampler
+        )
+    }
+}
+
 // AVAudioEngine wrapper with up to three sinks, all driven by the same
 // input tap callback so we open the microphone exactly once:
 //   1. M4A file writer       (AAC at ≥ 44.1 kHz mono — see writer-clamp note)
@@ -87,17 +161,38 @@ public actor AudioEngine {
     /// happens exactly once during init before any other access.
     private nonisolated(unsafe) var routeObserverTask: Task<Void, Never>?
 
+    /// Pinned AVAudioSession interruption observer task. Mirrors the
+    /// route-change pattern above. On `.began` we finalise the in-flight
+    /// chunk so the moov atom lands on disk even though the app may be
+    /// suspended immediately after; on `.ended` we try a clean restart if
+    /// `.shouldResume` is set. `nonisolated(unsafe)` for the same reason
+    /// as `routeObserverTask`.
+    private nonisolated(unsafe) var interruptionObserverTask: Task<Void, Never>?
+
+    /// Set to `true` by the `.began` handler when a capture is in
+    /// progress at interruption time. Cleared by the `.ended` handler
+    /// after re-opening the chunk (or on the next `start()` call).
+    private var captureWasInterrupted = false
+
+    /// Wall-clock timestamp of the most recent
+    /// `AVAudioSession.routeChangeNotification` we received. `start()`
+    /// reads this right before installing the tap: if a route change
+    /// just fired (within the last ~300 ms), the kernel-mode input AU
+    /// is in the middle of reinitialising and the format we just read
+    /// is unreliable. We settle and re-read in that window.
+    private var lastRouteChangeAt: Date = .distantPast
+
     public init() {
         // Spawn the route observer outside the actor's isolated init:
         // do the Sendable unpacking (reason raw value + rates) in the
         // notification's own context so we never hand a non-Sendable
         // `Notification` across the actor boundary, then re-enter the
         // actor with three plain UInt/Double values.
-        let stream = NotificationCenter.default.notifications(
+        let routeStream = NotificationCenter.default.notifications(
             named: AVAudioSession.routeChangeNotification
         )
-        let task = Task { [weak self] in
-            for await note in stream {
+        let routeTask = Task { [weak self] in
+            for await note in routeStream {
                 let reasonRaw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt
                 let sessionRate = AVAudioSession.sharedInstance().sampleRate
                 guard let self else { return }
@@ -107,11 +202,32 @@ public actor AudioEngine {
                 )
             }
         }
-        self.routeObserverTask = task
+        self.routeObserverTask = routeTask
+
+        // Spawn the interruption observer in the same pattern. The
+        // notification delivers `.began` / `.ended` type codes; we
+        // unpack them here (Sendable-safe integers) and re-enter the
+        // actor. On `.began` while capturing we finalise the current
+        // writer chunk so the moov atom is durable before the system
+        // suspends us. On `.ended` with `shouldResume` we try to re-
+        // activate the session and open a fresh chunk.
+        let interruptStream = NotificationCenter.default.notifications(
+            named: AVAudioSession.interruptionNotification
+        )
+        let interruptTask = Task { [weak self] in
+            for await note in interruptStream {
+                let typeRaw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+                let optionsRaw = note.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
+                guard let self else { return }
+                await self.handleInterruption(typeRaw: typeRaw, optionsRaw: optionsRaw)
+            }
+        }
+        self.interruptionObserverTask = interruptTask
     }
 
     deinit {
         routeObserverTask?.cancel()
+        interruptionObserverTask?.cancel()
     }
 
     /// Sample rate of the most recently written file (0 before any capture).
@@ -133,6 +249,15 @@ public actor AudioEngine {
     /// already running and the session is in `.playAndRecord`.
     public func prepareSession() async throws {
         try configureSession()
+        // Cross-check: if `engineRunning` thinks the engine is alive
+        // but `engine.isRunning` disagrees, the engine died while
+        // backgrounded (interruption, jetsam partial teardown). Reset
+        // the flag so `ensureEngineRunning()` does a full cold-start
+        // rather than returning early on a dead engine.
+        if engineRunning && !engine.isRunning {
+            Diag.log("AudioEngine.prepareSession: flag/reality mismatch — forcing restart")
+            engineRunning = false
+        }
         try ensureEngineRunning()
     }
 
@@ -148,97 +273,125 @@ public actor AudioEngine {
     ) async throws {
         guard !capturing else { throw EngineError.alreadyRunning }
 
+        // A new capture clears the interrupted flag — whatever happened
+        // before is now replaced by a fresh segment.
+        captureWasInterrupted = false
+
         // Belt-and-suspenders: configureSession is idempotent and
         // ensureEngineRunning will boot the AU if prepareSession() was
-        // somehow skipped. In foreground these are no-ops; in
-        // background they do the right thing on an already-prepared
-        // session and fail loudly otherwise.
-        try configureSession()
+        // somehow skipped. In foreground they're typically no-ops; the
+        // only path that actually changes anything is the rare case
+        // where the audio session drifted to a different category
+        // (e.g. Verlauf playback left it in `.playback`) — that
+        // category flip re-initialises the kernel-mode input AU and
+        // the format the node reports lags behind the actual hw rate
+        // by a few hundred ms. Installing a tap against the stale
+        // format crashes uncatchably. Settling for 120 ms after a
+        // real flip closes that race; common-case starts pay zero.
+        let categoryWasChanged = try configureSession()
         try ensureEngineRunning()
+        if categoryWasChanged {
+            Diag.log("AudioEngine.start settling 120ms after category flip")
+            try? await Task.sleep(nanoseconds: 120_000_000)
+        }
+        // Same problem with a different trigger: an
+        // `AVAudioSession.routeChangeNotification` (BT device
+        // connect/disconnect, override) that fired in the last ~300 ms
+        // leaves the input AU mid-reinit too. The route observer's
+        // tap-rebuild branch only acts when `engineRunning` is already
+        // true; during start it isn't yet, so the observer no-ops and
+        // we'd otherwise read stale formats unguarded. Settle for
+        // 200 ms after a recent route flip — long enough for HFP/A2DP
+        // negotiation to land — then re-resolve the format.
+        if Date().timeIntervalSince(lastRouteChangeAt) < 0.3 {
+            Diag.log("AudioEngine.start settling 200ms after recent route change")
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
 
         let input = engine.inputNode
-        let inputFormat = resolvedInputFormat(for: input)
-        // One-line context so an M4AWriter -54 / -40 has a paired
-        // "what did the engine think the mic looked like" entry. Useful
-        // when input format is 0 Hz / 0 channels (engine not actually
-        // up) or the AVAudioSession route flipped between prepare and
-        // start.
+        var inputFormat = resolvedInputFormat(for: input)
+        // Final stability check right before the tap install: if the
+        // session rate disagrees with the format we just resolved,
+        // the underlying AU is still moving. Settle once more and
+        // re-resolve. This is cheap, catches the residue of a
+        // mid-start route flip, and bounds total added latency to
+        // ~300 ms in the worst case.
+        let liveSessionRate = AVAudioSession.sharedInstance().sampleRate
+        if liveSessionRate > 0,
+           abs(liveSessionRate - inputFormat.sampleRate) > 1 {
+            Diag.log(
+                "AudioEngine.start formats disagree pre-install "
+                + "inputFormat=\(Int(inputFormat.sampleRate)) "
+                + "sessionRate=\(Int(liveSessionRate)) — retry"
+            )
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            inputFormat = resolvedInputFormat(for: input)
+        }
         let session = AVAudioSession.sharedInstance()
         Diag.log(
             "AudioEngine.start inputFormat=\(Int(inputFormat.sampleRate))Hz "
             + "channels=\(inputFormat.channelCount) "
+            + "sessionRate=\(Int(session.sampleRate))Hz "
             + "sessionCategory=\(session.category.rawValue) "
             + "sessionMode=\(session.mode.rawValue) "
             + "engineRunning=\(engine.isRunning)"
         )
-        // Pick an encoder-safe rate for the writer. Anything ≥ 44.1 kHz
-        // passes through verbatim; anything below (HFP narrowband /
-        // wideband from non-Apple BT mics) gets clamped to 48 kHz and
-        // resampled in the tap callback below before write. Decoupling
-        // the writer's rate from the input's rate is what makes the
-        // M4A path immune to whichever HFP profile the headset
-        // negotiated.
+        // Pick an encoder-safe rate for the writer. AAC-LC reliably
+        // initialises at ≥ 44.1 kHz; below that the encoder errors
+        // out. Anything ≥ 44.1 kHz passes through verbatim; lower-rate
+        // HFP narrowband / wideband gets clamped to 48 kHz and
+        // resampled by the cached upsampler inside the callback. The
+        // writer rate stays stable for the whole recording; live
+        // buffer-rate drift (mid-stream route flip) triggers a cache
+        // rebuild rather than a tap-install crash.
         let writerRate: Double = inputFormat.sampleRate >= 44_100
             ? inputFormat.sampleRate
             : 48_000
-        let writerFormat: AVAudioFormat? = writerRate == inputFormat.sampleRate
-            ? nil
-            : AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: writerRate,
-                channels: M4AWriter.channels,
-                interleaved: false
-            )
-        let writerUpsampler: AVAudioConverter? = writerFormat.flatMap {
-            AVAudioConverter(from: inputFormat, to: $0)
-        }
-        if writerFormat != nil {
-            Diag.log(
-                "AudioEngine.start writer clamp inputRate=\(Int(inputFormat.sampleRate)) "
-                + "writerRate=\(Int(writerRate)) "
-                + "(low-rate HFP input — upsampling to encoder-safe AAC)"
-            )
-        }
         try writer.open(at: outputURL, inputSampleRate: writerRate)
         streamingSink = streaming
 
-        // 16 kHz downsampler shared by Parakeet streaming + wake-word
-        // sinks. We always create it (cheap) so the wake-word path can
-        // be toggled on later via `setWakeWordSink` without
-        // re-installing the tap.
-        let parakeetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: AudioEngine.parakeetTargetSampleRate,
-            channels: M4AWriter.channels,
-            interleaved: false
-        )
-        let downsampler: AVAudioConverter? = parakeetFormat.flatMap {
-            AVAudioConverter(from: inputFormat, to: $0)
-        }
+        // Lazy converter cache keyed on the *live* `buffer.format`.
+        // Built up-front with the install-time format so the cache is
+        // warm by the first callback (no rebuild on the first buffer),
+        // but still adapts if a subsequent route flip changes the
+        // buffer format.
+        let converters = TapConverterCache(writerRate: writerRate)
+        _ = converters.state(for: inputFormat)
         let wakeRef = wakeWordSink
 
         // Replace whatever tap was on the input node — there might be
         // a no-op tap left over from `ensureEngineRunning`, or a writer
         // tap from a previous segment that wasn't cleanly stopped.
         input.removeTap(onBus: 0)
+        // Install with the explicit input format. `format: nil` was
+        // tried as a defence against category-change AU re-init races
+        // but turned out to silently break buffer delivery on
+        // `AVAudioInputNode` — the tap installs, callbacks never fire,
+        // lull / wake-word / file write all silently no-op. The
+        // category-change race is addressed by `resolvedInputFormat`'s
+        // session-rate override + the route observer's between-segment
+        // tap rebuild instead.
         input.installTap(
             onBus: 0,
             bufferSize: 4096,
             format: inputFormat
-        ) { [writer, streamingSink, wakeRef] buffer, _ in
+        ) { [writer, streamingSink, wakeRef, converters] buffer, _ in
             // CoreAudio occasionally emits zero-frame buffers around tap
             // install / engine state transitions. Skipping them silences
             // the `mBuffers[0].mDataByteSize (0) should be non-zero`
             // warnings without losing real audio.
             guard buffer.frameLength > 0 else { return }
+            let inputFormat = buffer.format
+            let state = converters.state(for: inputFormat)
 
             // 1. File: write the buffer at the writer's rate. If the
-            //    input came in below 44.1 kHz the upsampler converts
-            //    each tap buffer to the writer's processing format
-            //    first; otherwise we feed the raw buffer through.
+            //    input came in below 44.1 kHz (or the writer rate
+            //    otherwise differs from `inputFormat`), the cached
+            //    upsampler converts each tap buffer to the writer's
+            //    processing format first.
             do {
                 let writeBuffer: AVAudioPCMBuffer
-                if let upsampler = writerUpsampler, let wf = writerFormat {
+                if let upsampler = state.writerUpsampler, let wf = state.writerFormat {
                     let cap = AVAudioFrameCount(
                         Double(buffer.frameLength) * wf.sampleRate / inputFormat.sampleRate
                     ) + 1024
@@ -271,7 +424,8 @@ public actor AudioEngine {
             // 2 + 3. Streaming + wake-word both consume 16 kHz mono.
             // Skip the conversion entirely if neither needs it.
             guard streamingSink != nil || liveWakeSink != nil else { return }
-            guard let downsampler, let parakeetFormat else { return }
+            guard let downsampler = state.downsampler else { return }
+            let parakeetFormat = state.parakeetFormat
             let frameCapacity = AVAudioFrameCount(
                 Double(buffer.frameLength) * parakeetFormat.sampleRate / inputFormat.sampleRate
             ) + 1024
@@ -372,6 +526,13 @@ public actor AudioEngine {
     private func handleRouteChange(reasonRaw: UInt?, sessionRate: Double) async {
         let reason = reasonRaw.flatMap(AVAudioSession.RouteChangeReason.init(rawValue:))
         let nodeRate = engine.inputNode.outputFormat(forBus: 0).sampleRate
+        // Record the timestamp so `start()` can settle if a route flip
+        // just landed. The flag is set regardless of `engineRunning` /
+        // `capturing` — even when the observer's tap-rebuild branch
+        // declines to act (because we're between segments OR mid-start)
+        // the AU is still re-initialising under us and the next
+        // installTap needs to wait for the format to settle.
+        lastRouteChangeAt = Date()
         Diag.log(
             "AudioEngine routeChange reason=\(reason.map { "\($0.rawValue)" } ?? "nil") "
             + "sessionRate=\(Int(sessionRate)) nodeRate=\(Int(nodeRate)) "
@@ -403,6 +564,104 @@ public actor AudioEngine {
             break
         }
     }
+
+    // MARK: - Interruption handling -------------------------------------
+    //
+    // AVAudioSession interruptions (phone calls, Siri, alarms) silently
+    // stop CoreAudio's IO loop. Without an observer the tap stops
+    // firing, the in-progress temp file never gets its moov atom, and
+    // the engine appears "running" but is deaf. We mirror the route-
+    // change observer pattern: unpack Sendable integers in the
+    // notification context, re-enter the actor for state mutations.
+    //
+    // On `.began`: finalise the open writer via the same code path as
+    // `stop()` — removes the tap, drops the AVAudioFile ref (writes
+    // moov), reinstalls the no-op tap so the AU can be restarted later.
+    // We record `captureWasInterrupted` so the `.ended` handler knows
+    // whether to re-open a chunk.
+    //
+    // On `.ended`: if `shouldResume` is set we re-activate the session
+    // and reinstall the no-op tap. We do NOT automatically re-open a
+    // writer chunk: the coordinator/UI owns session state and must
+    // decide whether to continue the recording or present an "interrupted"
+    // notice. `captureWasInterrupted` is left `true` so callers can
+    // inspect `wasInterrupted` to surface that notice.
+    //
+    // We intentionally do NOT call `engine.stop()` / `engine.start()`
+    // here for the same reason as the route-change handler: iOS blocks
+    // `engine.start()` from a backgrounded process and an interruption
+    // can fire while we're backgrounded.
+
+    private func handleInterruption(typeRaw: UInt?, optionsRaw: UInt?) async {
+        guard let typeRaw,
+              let interruptType = AVAudioSession.InterruptionType(rawValue: typeRaw)
+        else { return }
+
+        Diag.log(
+            "AudioEngine interruption type=\(typeRaw) "
+            + "engineRunning=\(engineRunning) capturing=\(capturing)"
+        )
+
+        switch interruptType {
+        case .began:
+            // Finalise the open writer so the chunk on disk is durable.
+            // This mirrors the tap-removal + close logic in `stop()` but
+            // does NOT await any engine.stop() — the AU is already
+            // stopped by the system. We just drop the writer ref so the
+            // moov atom lands synchronously here.
+            if capturing {
+                engine.inputNode.removeTap(onBus: 0)
+                try? writer.close()
+                streamingSink = nil
+                capturing = false
+                captureWasInterrupted = true
+                // Keep the no-op tap install deferred until `.ended` /
+                // next `prepareSession()` to avoid touching the AU
+                // while iOS may still be tearing it down.
+                Diag.log("AudioEngine interruption.began — writer closed, captureWasInterrupted=true")
+            }
+
+        case .ended:
+            let options = optionsRaw.map {
+                AVAudioSession.InterruptionOptions(rawValue: $0)
+            } ?? []
+            let shouldResume = options.contains(.shouldResume)
+            Diag.log(
+                "AudioEngine interruption.ended shouldResume=\(shouldResume) "
+                + "captureWasInterrupted=\(captureWasInterrupted)"
+            )
+            guard shouldResume else { return }
+            // Re-activate the session. This is the only call safe to
+            // make here; `engine.start()` remains blocked from
+            // background (the lock-screen comment in the file header
+            // still applies). The no-op tap install below covers the
+            // foreground case: once the user brings the app forward,
+            // `prepareSession()` → `ensureEngineRunning()` will pick
+            // up the already-running session without a cold start.
+            do {
+                try AVAudioSession.sharedInstance().setActive(true, options: [])
+            } catch {
+                Diag.log("AudioEngine interruption.ended setActive failed: \(error)")
+                return
+            }
+            // If the engine is still running (it was kept alive by the
+            // background-keep-alive design), reinstall the no-op tap so
+            // the AU stays pumped until the coordinator opens a new
+            // segment or tears down.
+            if engineRunning {
+                installNoOpTap()
+            }
+
+        @unknown default:
+            break
+        }
+    }
+
+    /// True when the previous capture was cut short by a system interruption
+    /// (phone call, Siri, alarm). The coordinator / UI can read this to
+    /// decide whether to surface a "recording was interrupted" notice.
+    /// Cleared by `start()` when a new capture begins.
+    public var wasInterrupted: Bool { captureWasInterrupted }
 
     /// Return an input format that matches the **actual** hardware.
     ///
@@ -449,27 +708,27 @@ public actor AudioEngine {
         // note-review listen window work (no active recording there, so
         // `start(outputURL:)`'s tap isn't installed). When no sink is
         // set this stays a true no-op: the closure returns immediately
-        // after the atomic `get()`. The downsampler mirrors the one in
-        // `start(outputURL:)` so the wake-word ASR sees the same 16 kHz
-        // mono buffers in both paths.
-        let parakeetFormat = AVAudioFormat(
-            commonFormat: .pcmFormatFloat32,
-            sampleRate: AudioEngine.parakeetTargetSampleRate,
-            channels: M4AWriter.channels,
-            interleaved: false
-        )
-        let downsampler: AVAudioConverter? = parakeetFormat.flatMap {
-            AVAudioConverter(from: inputFormat, to: $0)
-        }
+        // after the atomic `get()`. Converters are built lazily by the
+        // cache keyed on `buffer.format`. Writer rate is irrelevant
+        // here (no writer) so we hand the cache a dummy rate that
+        // matches whatever input we see — the writer-upsampler branch
+        // of the cache is never touched in this path.
+        let converters = TapConverterCache(writerRate: 0)
+        _ = converters.state(for: inputFormat)
         let wakeRef = wakeWordSink
 
-        node.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [wakeRef, downsampler, parakeetFormat] buffer, _ in
+        // Explicit format mirrors `start(outputURL:)` — `format: nil`
+        // silently breaks buffer delivery on AVAudioInputNode.
+        node.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [wakeRef, converters] buffer, _ in
             guard buffer.frameLength > 0 else { return }
             // No wake sink → keep the AU hot, drop frames on the floor.
             guard let sink = wakeRef.get() else { return }
-            guard let downsampler, let parakeetFormat else { return }
+            let liveFormat = buffer.format
+            let state = converters.state(for: liveFormat)
+            guard let downsampler = state.downsampler else { return }
+            let parakeetFormat = state.parakeetFormat
             let frameCapacity = AVAudioFrameCount(
-                Double(buffer.frameLength) * parakeetFormat.sampleRate / inputFormat.sampleRate
+                Double(buffer.frameLength) * parakeetFormat.sampleRate / liveFormat.sampleRate
             ) + 1024
             guard let outBuf = AVAudioPCMBuffer(
                 pcmFormat: parakeetFormat,
@@ -486,7 +745,15 @@ public actor AudioEngine {
         }
     }
 
-    private func configureSession() throws {
+    /// Returns true when this call actually flipped the session
+    /// category from a different mode into `.playAndRecord`. Callers
+    /// (start) use that signal to add a brief settle delay before
+    /// installing a tap — the kernel-mode input AU reinitialises
+    /// after a category change, and a tap installed before that
+    /// reinit completes crashes with `Failed to create tap due to
+    /// format mismatch` (uncatchable NSException).
+    @discardableResult
+    private func configureSession() throws -> Bool {
         // playAndRecord (not record) so TTS playback shares the session.
         //
         // Mode `.default`:
@@ -508,6 +775,7 @@ public actor AudioEngine {
         // breaks the AAC encoder; instead we accept the device's native
         // rate (typically 44.1 / 48 kHz) and let the server downsample.
         let session = AVAudioSession.sharedInstance()
+        var didChangeCategory = false
         do {
             // Skip the setCategory call when we're already in the right
             // mode — that's the only call that reliably fails from
@@ -520,10 +788,12 @@ public actor AudioEngine {
                     options: [.defaultToSpeaker, .allowBluetoothHFP]
                 )
                 try session.setPreferredIOBufferDuration(0.02)
+                didChangeCategory = true
             }
             try session.setActive(true, options: [])
         } catch {
             throw EngineError.sessionConfigFailed("\(error)")
         }
+        return didChangeCategory
     }
 }

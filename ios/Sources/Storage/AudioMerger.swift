@@ -25,13 +25,19 @@ public enum AudioMerger {
         let asset = AVURLAsset(url: url)
         let totalDuration = try await asset.load(.duration)
         let totalSeconds = CMTimeGetSeconds(totalDuration)
-        // Whole file shorter than what we'd cut — drop it entirely so
-        // Whisper doesn't trip on a zero-length M4A.
+        // If the whole file is shorter than what we'd cut, clamp to
+        // the head-keep floor instead of deleting — a near-silent clip
+        // is still a valid M4A that Whisper can handle, and deleting
+        // the only copy of the audio is non-recoverable. Mirror the
+        // same floor used by `trim(keepingFirstSeconds:)`.
+        let keepSeconds: Double
         if totalSeconds <= seconds + 0.05 {
-            try? FileManager.default.removeItem(at: url)
-            return
+            keepSeconds = headKeepFloorSeconds
+        } else {
+            keepSeconds = max(headKeepFloorSeconds, totalSeconds - seconds)
         }
-        let keepSeconds = max(0.0, totalSeconds - seconds)
+        // Nothing meaningful to cut.
+        if keepSeconds >= totalSeconds - 0.05 { return }
         let keepDuration = CMTime(seconds: keepSeconds, preferredTimescale: 600)
         let timeRange = CMTimeRange(start: .zero, duration: keepDuration)
 
@@ -53,8 +59,11 @@ public enum AudioMerger {
         exporter.timeRange = timeRange
         try await exporter.export(to: scratch, as: .m4a)
 
-        try FileManager.default.removeItem(at: url)
-        try FileManager.default.moveItem(at: scratch, to: url)
+        // Atomic replace: avoids the delete-then-move window where a
+        // crash between the two steps would lose the original file.
+        // `replaceItemAt` moves the scratch over the original in one
+        // syscall and leaves the scratch removed on success.
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: scratch)
     }
 
     /// Minimum audio (s) to leave behind when keeping only the head of a
@@ -104,8 +113,9 @@ public enum AudioMerger {
         exporter.timeRange = timeRange
         try await exporter.export(to: scratch, as: .m4a)
 
-        try FileManager.default.removeItem(at: url)
-        try FileManager.default.moveItem(at: scratch, to: url)
+        // Atomic replace — avoids the delete-then-move window where a
+        // crash between the two steps would lose the original.
+        _ = try FileManager.default.replaceItemAt(url, withItemAt: scratch)
     }
 
     public enum MergeError: Error, LocalizedError {
@@ -151,8 +161,9 @@ public enum AudioMerger {
         // announcement).
         let needsAnnouncements = (titles?.contains { $0?.isEmpty == false }) ?? false
         if segments.count == 1 && !needsAnnouncements {
-            try writeOut(data: try Data(contentsOf: segments[0]),
-                         to: outputURL)
+            // Use a file copy instead of Data(contentsOf:) to avoid
+            // materialising the whole audio file in RAM.
+            try copyOut(from: segments[0], to: outputURL)
             return
         }
 
@@ -244,11 +255,26 @@ public enum AudioMerger {
             throw MergeError.emptyInput
         }
 
-        // Re-write through Data with .noFileProtection so the share
-        // sheet extension (separate process) can read the file.
-        let bytes = try Data(contentsOf: scratch)
-        try writeOut(data: bytes, to: outputURL)
+        // Move the scratch to the output path and apply .noFileProtection
+        // so share-sheet receivers (separate process) can read it.
+        // Using replaceItemAt is atomic: if a crash occurs between the
+        // writer deinit and here, the scratch file survives on disk
+        // rather than being lost.
+        try copyOut(from: scratch, to: outputURL)
         try? FileManager.default.removeItem(at: scratch)
+    }
+
+    /// Copy `src` to `dest` with `.noFileProtection` so the file can be
+    /// read by share-sheet receivers (separate process) without loading
+    /// the whole file into RAM. Replaces any existing file at `dest`.
+    private static func copyOut(from src: URL, to dest: URL) throws {
+        let fm = FileManager.default
+        if fm.fileExists(atPath: dest.path) {
+            try fm.removeItem(at: dest)
+        }
+        try fm.copyItem(at: src, to: dest)
+        try? (dest as NSURL).setResourceValue(URLFileProtection.none,
+                                              forKey: .fileProtectionKey)
     }
 
     /// Write the bytes to `dest` with `.noFileProtection` so the file
