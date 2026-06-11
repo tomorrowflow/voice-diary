@@ -36,14 +36,7 @@ public struct BottomActionStack<Content: View>: View {
         // the floating CTA instead of cutting hard against it. 16 pt
         // is enough to read as "this floats" without burying content.
         .overlay(alignment: .top) {
-            LinearGradient(
-                colors: [Theme.color.bg.surface.opacity(0), Theme.color.bg.surface],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(height: 16)
-            .offset(y: -16)
-            .allowsHitTesting(false)
+            TopFade()
         }
     }
 }
