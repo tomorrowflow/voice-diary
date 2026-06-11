@@ -20,6 +20,41 @@ public actor SessionUploader {
         public var audio_file_paths: [String: String]
         public var attempts: Int
         public var next_attempt_at: Date
+        /// Permanently failed entries are kept for diagnostics but
+        /// skipped by `flush()`. They can be cleared via `clear()`.
+        public var permanentlyFailed: Bool
+
+        public init(
+            id: String,
+            manifest: Manifest,
+            audio_file_paths: [String: String],
+            attempts: Int,
+            next_attempt_at: Date,
+            permanentlyFailed: Bool = false
+        ) {
+            self.id = id
+            self.manifest = manifest
+            self.audio_file_paths = audio_file_paths
+            self.attempts = attempts
+            self.next_attempt_at = next_attempt_at
+            self.permanentlyFailed = permanentlyFailed
+        }
+
+        // Custom Decodable so queue files written before `permanentlyFailed`
+        // was added decode cleanly (the missing key defaults to false).
+        public init(from decoder: any Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            manifest = try c.decode(Manifest.self, forKey: .manifest)
+            audio_file_paths = try c.decode([String: String].self, forKey: .audio_file_paths)
+            attempts = try c.decode(Int.self, forKey: .attempts)
+            next_attempt_at = try c.decode(Date.self, forKey: .next_attempt_at)
+            permanentlyFailed = try c.decodeIfPresent(Bool.self, forKey: .permanentlyFailed) ?? false
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, manifest, audio_file_paths, attempts, next_attempt_at, permanentlyFailed
+        }
 
         public var nextBackoff: TimeInterval {
             // 1s, 2s, 4s, 8s, 30s, 60s, 600s max
@@ -47,12 +82,24 @@ public actor SessionUploader {
             manifest: manifest,
             audio_file_paths: pathStrings,
             attempts: 0,
-            next_attempt_at: Date()
+            next_attempt_at: Date(),
+            permanentlyFailed: false
         )
         queue.removeAll { $0.id == entry.id }
         queue.append(entry)
         persist()
+        Log.upload.notice(
+            "upload.enqueue sid=\(entry.id, privacy: .public) files=\(audioFiles.count, privacy: .public)"
+        )
         Task { await flush() }
+    }
+
+    /// Kick the upload queue from outside the actor — e.g. from
+    /// `VoiceDiaryApp` on launch and on `scenePhase == .active`.
+    /// `nonisolated` so call sites don't need `await`; the spawned Task
+    /// hops onto the actor for the actual flush.
+    public nonisolated func kick() {
+        Task { await self.flush() }
     }
 
     public func clear() async {
@@ -104,6 +151,10 @@ public actor SessionUploader {
                 persist()
                 continue
             }
+            Log.upload.notice(
+                "upload.start sid=\(entry.id, privacy: .public) attempt=\(entry.attempts, privacy: .public)"
+            )
+            let started = Date()
             do {
                 _ = try await ServerClient.shared.uploadSession(
                     manifest: entry.manifest,
@@ -111,11 +162,65 @@ public actor SessionUploader {
                 )
                 queue.removeAll { $0.id == entry.id }
                 persist()
+                let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+                Log.upload.notice(
+                    "upload.success sid=\(entry.id, privacy: .public) ms=\(elapsed, privacy: .public)"
+                )
             } catch {
-                rescheduleAfterFailure(entry: entry, error: error)
-                return  // give up the loop until the next trigger
+                let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+                Log.upload.warning(
+                    "upload.failure sid=\(entry.id, privacy: .public) ms=\(elapsed, privacy: .public) err=\(String(describing: error), privacy: .public)"
+                )
+                // Classify the error:
+                //   * notConfigured — no URL/token yet; skip but don't
+                //     increment the attempt counter so the entry retries
+                //     immediately once the server is configured.
+                //   * permanent 4xx (400/404/409/422) — the server will
+                //     never accept this payload; mark failed-permanent so
+                //     future flushes skip it instead of looping forever.
+                //   * everything else (5xx, network, timeout, auth) —
+                //     reschedule with exponential backoff as before.
+                // After classifying, `continue` to the next due entry
+                // rather than returning — one bad entry must not block
+                // the rest of the queue.
+                if case ServerClientError.notConfigured = error {
+                    Log.upload.notice(
+                        "upload.skipped — not configured; stopping flush until configured"
+                    )
+                    // Every entry will fail the same way — no point
+                    // continuing the loop. Break so we don't spin.
+                    break
+                } else if isPermanentClientError(error) {
+                    markPermanentFailure(entry: entry, error: error)
+                } else {
+                    rescheduleAfterFailure(entry: entry, error: error)
+                }
+                // Continue the loop so subsequent due entries are tried.
+                continue
             }
         }
+    }
+
+    /// Returns true for non-retryable client errors: HTTP 400, 404, 409,
+    /// 422. Auth errors (401, 403) and rate-limiting / timeout (408, 429)
+    /// are NOT permanent — they may succeed once the server is accessible
+    /// or credentials are refreshed.
+    private func isPermanentClientError(_ error: any Error) -> Bool {
+        guard case ServerClientError.http(let status, _) = error else {
+            return false
+        }
+        return [400, 404, 409, 422].contains(status)
+    }
+
+    private func markPermanentFailure(entry: QueueEntry, error: any Error) {
+        guard let idx = queue.firstIndex(where: { $0.id == entry.id }) else { return }
+        var updated = queue[idx]
+        updated.permanentlyFailed = true
+        queue[idx] = updated
+        persist()
+        Log.upload.error(
+            "upload.permanent_failure sid=\(entry.id, privacy: .public) err=\(String(describing: error), privacy: .public)"
+        )
     }
 
     // --- path persistence helpers ------------------------------------
@@ -149,7 +254,7 @@ public actor SessionUploader {
 
     private func nextDue() -> QueueEntry? {
         let now = Date()
-        for entry in queue where entry.next_attempt_at <= now {
+        for entry in queue where !entry.permanentlyFailed && entry.next_attempt_at <= now {
             return entry
         }
         return nil
