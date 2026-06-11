@@ -14,7 +14,7 @@ struct LockScreenCaptureWidget: Widget {
             CaptureWidgetView(entry: entry)
         }
         .configurationDisplayName("Voice Diary")
-        .description("Tippen, um einen Drive-by-Gedanken aufzunehmen.")
+        .description(Text("Tap to record a quick thought."))
         .supportedFamilies([.accessoryCircular, .accessoryRectangular, .accessoryInline])
     }
 }
@@ -109,10 +109,10 @@ struct CaptureWidgetView: View {
                 .font(.title2)
                 .widgetAccentable()
             VStack(alignment: .leading, spacing: 2) {
-                Text(entry.isRecording ? "Aufnahme läuft" : "Voice Diary")
+                Text(entry.isRecording ? "Recording…" : "Voice Diary")
                     .font(.headline)
                     .widgetAccentable()
-                Text(entry.isRecording ? "Tippen zum Stoppen" : "Tippen zum Aufnehmen")
+                Text(entry.isRecording ? "Tap to stop" : "Tap to record")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -122,7 +122,9 @@ struct CaptureWidgetView: View {
 
     private var inline: some View {
         Label(
-            entry.isRecording ? "Aufnahme läuft" : "Voice Diary tippen",
+            entry.isRecording
+                ? String(localized: "Recording…")
+                : String(localized: "Voice Diary"),
             systemImage: entry.isRecording ? "record.circle.fill" : "mic.circle.fill"
         )
     }

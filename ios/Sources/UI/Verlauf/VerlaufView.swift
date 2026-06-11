@@ -9,6 +9,10 @@ import UIKit
 public struct VerlaufView: View {
     @State private var items: [SessionHistoryStore.Item] = []
     @State private var deleteError: String?
+    /// Row whose delete swipe is awaiting confirmation. Deleting a
+    /// session removes its audio irreversibly, so — like the
+    /// Gefahrenzone — we confirm instead of deleting on the swipe.
+    @State private var pendingDelete: SessionHistoryStore.Item?
 
     public init() {}
 
@@ -60,6 +64,24 @@ public struct VerlaufView: View {
         // pops back from a detail page after deleting that entry there.
         .onAppear { reload() }
         .refreshable { reload() }
+        .confirmationDialog(
+            Text("Delete recording?"),
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(role: .destructive) {
+                if let item = pendingDelete { delete(item) }
+                pendingDelete = nil
+            } label: {
+                Text("Delete permanently")
+            }
+            Button(role: .cancel) { pendingDelete = nil } label: { Text("Cancel") }
+        } message: {
+            Text("Audio and transcript are removed from this phone. This cannot be undone.")
+        }
     }
 
     @ViewBuilder
@@ -73,13 +95,16 @@ public struct VerlaufView: View {
         .listRowSeparator(.visible)
         .listRowInsets(EdgeInsets(top: 10, leading: Theme.spacing.md,
                                   bottom: 10, trailing: Theme.spacing.md))
-        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+        // `allowsFullSwipe: false` + confirmation dialog: an over-swipe
+        // must not silently destroy irreversible audio (same stance as
+        // the Gefahrenzone).
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             // Icon-only delete button. `.iconOnly` label style strips
             // the "Löschen" text so the swipe action is just a tall
             // trash glyph that fills the row height (the iOS default
             // for swipe-action vertical sizing).
             Button(role: .destructive) {
-                delete(item)
+                pendingDelete = item
             } label: {
                 Label("Delete", systemImage: "trash")
                     .labelStyle(.iconOnly)
@@ -299,6 +324,10 @@ struct VerlaufDetailView: View {
     @State private var deletedSegmentIDs: Set<String> = []
     /// Surfaced-note ids swiped away in this view.
     @State private var deletedNoteIDs: Set<String> = []
+    /// Swipe-delete targets awaiting confirmation — deleting removes
+    /// the audio file irreversibly, so the swipe only stages the row.
+    @State private var pendingSegmentDelete: SegmentDescriptor?
+    @State private var pendingNoteDelete: SurfacedNoteEntry?
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -368,6 +397,29 @@ struct VerlaufDetailView: View {
         }
         .task { await loadServerStatus() }
         .onDisappear { player.stop() }
+        .confirmationDialog(
+            Text("Delete recording?"),
+            isPresented: Binding(
+                get: { pendingSegmentDelete != nil || pendingNoteDelete != nil },
+                set: { if !$0 { pendingSegmentDelete = nil; pendingNoteDelete = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(role: .destructive) {
+                if let d = pendingSegmentDelete { deleteSegment(d) }
+                if let e = pendingNoteDelete { deleteNote(e) }
+                pendingSegmentDelete = nil
+                pendingNoteDelete = nil
+            } label: {
+                Text("Delete permanently")
+            }
+            Button(role: .cancel) {
+                pendingSegmentDelete = nil
+                pendingNoteDelete = nil
+            } label: { Text("Cancel") }
+        } message: {
+            Text("The audio is removed from this phone. This cannot be undone.")
+        }
     }
 
     // MARK: - List sections
@@ -402,8 +454,8 @@ struct VerlaufDetailView: View {
                         .listRowBackground(Theme.color.bg.surface)
                         .listRowInsets(EdgeInsets(top: 8, leading: Theme.spacing.md,
                                                   bottom: 8, trailing: Theme.spacing.md))
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) { deleteSegment(d) } label: {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) { pendingSegmentDelete = d } label: {
                                 Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
                             }
                         }
@@ -422,8 +474,8 @@ struct VerlaufDetailView: View {
                         .listRowBackground(Theme.color.bg.surface)
                         .listRowInsets(EdgeInsets(top: 8, leading: Theme.spacing.md,
                                                   bottom: 8, trailing: Theme.spacing.md))
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) { deleteNote(e) } label: {
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            Button(role: .destructive) { pendingNoteDelete = e } label: {
                                 Label("Delete", systemImage: "trash").labelStyle(.iconOnly)
                             }
                         }
@@ -442,21 +494,69 @@ struct VerlaufDetailView: View {
     // MARK: - Per-row deletion
 
     /// Delete one segment. For a walkthrough that's the segment's audio
-    /// file (the session and its other segments stay). For a note detail
-    /// the single row *is* the whole note, so it deletes the note and
-    /// pops back. A removed source also drops any pending upload.
+    /// file (the session and its other segments stay). For a single-chunk
+    /// note the single row *is* the whole note, so it deletes the note
+    /// and pops back. For a multi-chunk note (pause/resume) we drop just
+    /// the swiped chunk's m4a + rewrite metadata.json so the remaining
+    /// chunks stay playable; the whole drive-by element is only deleted
+    /// when the last chunk goes. A removed source also drops any
+    /// pending upload.
     private func deleteSegment(_ d: SegmentDescriptor) {
         switch item {
-        case .voiceNote:
-            player.stop()
-            try? SessionHistoryStore.delete(item)
-            Task { _ = await SessionUploader.shared.purgeOrphans() }
-            dismiss()
+        case .voiceNote(let entry):
+            if entry.note.chunks?.isEmpty == false,
+               (entry.note.chunks?.count ?? 0) > 1,
+               let url = d.audioURL {
+                if player.activeURL == url { player.stop() }
+                let filename = url.lastPathComponent
+                try? FileManager.default.removeItem(at: url)
+                deletedSegmentIDs.insert(d.id)
+                rewriteVoiceNoteMetadata(removing: filename, in: entry)
+                Task { _ = await SessionUploader.shared.purgeOrphans() }
+            } else {
+                player.stop()
+                try? SessionHistoryStore.delete(item)
+                Task { _ = await SessionUploader.shared.purgeOrphans() }
+                dismiss()
+            }
         case .walkthrough:
             if player.activeURL == d.audioURL { player.stop() }
             if let url = d.audioURL { try? FileManager.default.removeItem(at: url) }
             deletedSegmentIDs.insert(d.id)
             Task { _ = await SessionUploader.shared.purgeOrphans() }
+        }
+    }
+
+    /// Rewrite the drive-by recording's metadata.json after a single
+    /// chunk was swiped out, keeping the surviving chunks intact. If the
+    /// removal leaves zero chunks the directory is purged and we
+    /// dismiss; if one survives we collapse `chunks` back to nil so the
+    /// record looks like a normal single-shot capture again.
+    private func rewriteVoiceNoteMetadata(
+        removing filename: String,
+        in entry: SessionHistoryStore.VoiceNoteEntry
+    ) {
+        var note = entry.note
+        let surviving = (note.chunks ?? []).filter { $0.filename != filename }
+        guard !surviving.isEmpty else {
+            try? SessionHistoryStore.delete(item)
+            dismiss()
+            return
+        }
+        let total = surviving.reduce(0) { $0 + $1.duration_seconds }
+        let first = surviving[0]
+        note.duration_seconds = total
+        note.language = first.language
+        note.transcript = first.transcript
+        note.audio_file_url = entry.directory.appending(path: first.filename)
+        note.chunks = surviving.count > 1 ? surviving : nil
+
+        let metaURL = entry.directory.appending(path: "metadata.json")
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        if let data = try? encoder.encode(note) {
+            try? data.write(to: metaURL, options: [.atomic, .completeFileProtection])
         }
     }
 
@@ -579,8 +679,17 @@ struct VerlaufDetailView: View {
                       label: String(localized: "Size")),
             ]
         case .voiceNote(let d):
-            let bytes = (try? d.directory.appending(path: "audio.m4a")
-                .resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+            // Sum byte sizes across every chunk so multi-chunk
+            // (pause/resume) recordings report the true total, not just
+            // the first file's size. Legacy single-chunk recordings
+            // fall through with chunks==nil and behave as before.
+            let filenames: [String] = d.note.chunks?.map(\.filename)
+                ?? [d.note.audio_file_url.lastPathComponent]
+            let bytes = filenames.reduce(0) { running, name in
+                let size = (try? d.directory.appending(path: name)
+                    .resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                return running + size
+            }
             let kb = Double(bytes) / 1_000
             tiles = [
                 .init(value: String(format: "%.0f", d.note.duration_seconds.rounded()) + " s",
@@ -772,17 +881,35 @@ struct VerlaufDetailView: View {
                 )
             }
         case .voiceNote(let d):
-            let url = d.directory.appending(path: "audio.m4a")
-            return [SegmentDescriptor(
-                id: d.note.id,
-                title: String(localized: "Note recording"),
-                subtitle: nil,
-                transcript: d.note.transcript,
-                language: d.note.language,
-                audioURL: url,
-                serverStatus: nil,
-                durationSeconds: d.note.duration_seconds
-            )]
+            // Multi-chunk recordings (pause/resume) — one descriptor per
+            // chunk so each m4a is independently playable + each chunk's
+            // transcript is shown in place. Single-chunk legacy
+            // recordings fall through to the same code path with a
+            // one-element chunks array so the rendering stays uniform.
+            let chunks: [VoiceNoteChunk] = d.note.chunks ?? [
+                VoiceNoteChunk(
+                    filename: d.note.audio_file_url.lastPathComponent,
+                    duration_seconds: d.note.duration_seconds,
+                    language: d.note.language,
+                    transcript: d.note.transcript
+                )
+            ]
+            return chunks.enumerated().map { idx, chunk in
+                let url = d.directory.appending(path: chunk.filename)
+                let title: String = chunks.count > 1
+                    ? String(localized: "Part \(idx + 1)")
+                    : String(localized: "Note recording")
+                return SegmentDescriptor(
+                    id: "\(d.note.id)/\(chunk.filename)",
+                    title: title,
+                    subtitle: nil,
+                    transcript: chunk.transcript,
+                    language: chunk.language,
+                    audioURL: url,
+                    serverStatus: nil,
+                    durationSeconds: chunk.duration_seconds
+                )
+            }
         }
     }
 
@@ -796,19 +923,27 @@ struct VerlaufDetailView: View {
         }
     }
 
+    // ISO8601 parsing + HH:mm rendering are both locale-agnostic, so the
+    // formatters are built once and reused instead of reallocated on every
+    // `formatTimeRange` call.
+    private static let isoParser = ISO8601DateFormatter()
+    private static let timeRangeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "HH:mm"
+        return f
+    }()
+
     /// "09:00 – 09:30" from two ISO8601 timestamps. Returns `nil` on
     /// parse failure rather than rendering garbage.
     private static func formatTimeRange(start: String, end: String) -> String? {
-        guard let s = ISO8601DateFormatter().date(from: start),
-              let e = ISO8601DateFormatter().date(from: end) else {
+        guard let s = isoParser.date(from: start),
+              let e = isoParser.date(from: end) else {
             return nil
         }
         // HH:mm is locale-agnostic; using POSIX avoids the German
         // formatter forcing 24h on an EN system anyway.
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "HH:mm"
-        return "\(f.string(from: s)) – \(f.string(from: e))"
+        return "\(timeRangeFormatter.string(from: s)) – \(timeRangeFormatter.string(from: e))"
     }
 
     private func prepareAndShare() {
@@ -824,11 +959,38 @@ struct VerlaufDetailView: View {
                     // (LaunchServices error -10814, "no file-provider
                     // domain"). Stage it in tmp/ with a colon-free name
                     // first.
-                    let src = d.directory.appending(path: "audio.m4a")
-                    shareURL = try Self.stageInTempForSharing(
-                        sourceURL: src,
-                        baseName: "voicediary-note-\(Self.sanitize(d.note.id))"
-                    )
+                    //
+                    // Multi-chunk (pause/resume) recordings: concatenate
+                    // every chunk into a single m4a in tmp so the share
+                    // sheet hands the receiver one continuous file
+                    // matching what the user "recorded." Single-chunk
+                    // recordings (legacy + the common path) take the
+                    // cheap copy-to-tmp branch.
+                    let chunkFilenames: [String] = d.note.chunks?.map(\.filename)
+                        ?? [d.note.audio_file_url.lastPathComponent]
+                    if chunkFilenames.count > 1 {
+                        let chunkURLs = chunkFilenames.map {
+                            d.directory.appending(path: $0)
+                        }.filter { FileManager.default.fileExists(atPath: $0.path) }
+                        guard !chunkURLs.isEmpty else {
+                            prepareError = String(localized: "No audio files left.")
+                            isPreparing = false
+                            return
+                        }
+                        let merged = try await AudioMerger.mergedTempFile(
+                            for: d.note.id,
+                            segments: chunkURLs,
+                            titles: nil,
+                            titleLanguage: d.note.language
+                        )
+                        shareURL = merged
+                    } else {
+                        let src = d.directory.appending(path: chunkFilenames[0])
+                        shareURL = try Self.stageInTempForSharing(
+                            sourceURL: src,
+                            baseName: "voicediary-note-\(Self.sanitize(d.note.id))"
+                        )
+                    }
                 case .walkthrough(let w):
                     // Combine all segments into one m4a in tmp/.
                     // Prepend a short TTS announcement of each event
@@ -846,7 +1008,7 @@ struct VerlaufDetailView: View {
                         FileManager.default.fileExists(atPath: $0.path)
                     }
                     guard !existing.isEmpty else {
-                        prepareError = "Keine Audiodateien mehr vorhanden."
+                        prepareError = String(localized: "No audio files left.")
                         isPreparing = false
                         return
                     }
@@ -1139,43 +1301,37 @@ private struct SegmentRow: View {
         Button {
             if let url = descriptor.audioURL { player.toggle(url: url) }
         } label: {
-            ZStack {
-                Circle()
-                    .fill(Theme.color.tint.link10)
-                    .frame(width: 36, height: 36)
-                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.color.text.link)
-                    // Nudge the play glyph rightward to look optically
-                    // centred inside the disc.
-                    .offset(x: isPlaying ? 0 : 1)
-            }
+            PlayPauseDisc(isPlaying: isPlaying,
+                          tint: Theme.color.text.link,
+                          fill: Theme.color.tint.link10)
         }
         .buttonStyle(.plain)
         .disabled(descriptor.audioURL == nil)
         .opacity(descriptor.audioURL == nil ? 0.4 : 1)
-        .accessibilityLabel(isPlaying ? "Pause" : "Abspielen")
+        .accessibilityLabel(isPlaying ? Text("Pause") : Text("Play"))
     }
 
     private func statusPill(for status: String) -> some View {
+        // English keys → German via the string catalog (previously
+        // hardcoded German, which leaked into English mode).
         let label: String
         let bg: Color
         let fg: Color
         switch status {
         case "processed":
-            label = "Verarbeitet"
+            label = String(localized: "Processed")
             bg = Theme.color.tint.success10
             fg = Theme.color.status.success
         case "pending_analysis":
-            label = "Wird verarbeitet"
+            label = String(localized: "Processing")
             bg = Theme.color.tint.warning10
             fg = Theme.color.status.warning
         case "failed":
-            label = "Fehlgeschlagen"
+            label = String(localized: "Failed")
             bg = Theme.color.tint.destructive10
             fg = Theme.color.status.destructive
         default:
-            label = "Unbekannt"
+            label = String(localized: "Unknown")
             bg = Theme.color.bg.containerInset
             fg = Theme.color.text.subdued
         }
@@ -1238,17 +1394,12 @@ private struct NoteRow: View {
                 Button {
                     player.toggle(url: entry.audioURL)
                 } label: {
-                    ZStack {
-                        Circle()
-                            .fill(Theme.color.tint.warning10)
-                            .frame(width: 36, height: 36)
-                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Theme.color.status.warning)
-                            .offset(x: isPlaying ? 0 : 1)
-                    }
+                    PlayPauseDisc(isPlaying: isPlaying,
+                                  tint: Theme.color.status.warning,
+                                  fill: Theme.color.tint.warning10)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(isPlaying ? Text("Pause") : Text("Play"))
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(timeText)
@@ -1282,11 +1433,17 @@ private struct NoteRow: View {
         }
     }
 
-    private var timeText: String {
+    // HH:mm is locale-agnostic, so this formatter is built once and
+    // reused rather than reallocated per row render.
+    private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm"
-        return f.string(from: entry.note.captured_at)
+        return f
+    }()
+
+    private var timeText: String {
+        Self.timeFormatter.string(from: entry.note.captured_at)
     }
 }
 

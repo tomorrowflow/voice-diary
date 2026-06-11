@@ -177,7 +177,7 @@ public struct PermissionsView: View {
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
-                StatusPill(text: statusText, color: statusColor)
+                DSStatusPill(text: statusText, color: statusColor)
             }
 
             // Description.
@@ -208,14 +208,7 @@ public struct PermissionsView: View {
         }
         .padding(Theme.spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
+        .dsCard()
     }
 
     // MARK: - Status mapping
@@ -310,30 +303,5 @@ public struct PermissionsView: View {
         if let url = URL(string: UIApplication.openSettingsURLString) {
             UIApplication.shared.open(url)
         }
-    }
-}
-
-/// Compact status pill — same shape used elsewhere in the app for
-/// state badges (cf. `QualityBadge` / `PiperBadge` in
-/// `VoiceSettingsView`). Uses the DS palette so the pill colours
-/// follow the same dark/light mode rules as the rest of the system.
-private struct StatusPill: View {
-    let text: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: Theme.spacing.xs) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-            Text(text)
-                .font(Theme.font.caption2.weight(.medium))
-                .foregroundStyle(color)
-        }
-        .padding(.horizontal, Theme.spacing.xs)
-        .padding(.vertical, 3)
-        .background(
-            Capsule().fill(color.opacity(0.10))
-        )
     }
 }

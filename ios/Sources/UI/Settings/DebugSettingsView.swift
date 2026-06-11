@@ -8,7 +8,6 @@ public struct DebugSettingsView: View {
     @State private var serverURL: String = KeychainStore.read(.serverURL) ?? "http://"
     @State private var bearerToken: String = KeychainStore.read(.bearerToken) ?? ""
     @State private var lastError: String?
-    @State private var voxtralBusy: Bool = false
     @StateObject private var reachability = Reachability()
 
     public init() {}
@@ -24,7 +23,6 @@ public struct DebugSettingsView: View {
                     VStack(spacing: Theme.spacing.md) {
                         tailscaleCard
                         connectionCard
-                        voxtralCard
                         if let lastError {
                             errorCard(lastError)
                         }
@@ -78,7 +76,7 @@ public struct DebugSettingsView: View {
                 Text("Bearer Token")
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
-                SecureField("IOS_BEARER_TOKEN", text: $bearerToken)
+                SecureField("Paste your token", text: $bearerToken)
                     .font(Theme.font.monoBody)
                     .foregroundStyle(Theme.color.text.primary)
                     .padding(Theme.spacing.sm)
@@ -101,14 +99,7 @@ public struct DebugSettingsView: View {
         }
         .padding(Theme.spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
+        .dsCard()
     }
 
     private var connectionCard: some View {
@@ -122,7 +113,7 @@ public struct DebugSettingsView: View {
                     .font(Theme.font.headline)
                     .foregroundStyle(Theme.color.text.primary)
                 Spacer()
-                StatusPill(text: statusLabel, color: statusColor)
+                DSStatusPill(text: statusLabel, color: statusColor)
             }
 
             HStack {
@@ -144,60 +135,7 @@ public struct DebugSettingsView: View {
         }
         .padding(Theme.spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
-    }
-
-    /// Slice 01 of the Voxtral TTS integration: a single button that
-    /// synthesises one German line through the new server route and
-    /// plays it on the device speaker. Server errors land in the
-    /// existing `errorCard`. Once slice 02 ships the picker, this card
-    /// can be retired.
-    private var voxtralCard: some View {
-        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
-            HStack(spacing: Theme.spacing.sm) {
-                Image(systemName: "waveform.circle")
-                    .font(.title3)
-                    .foregroundStyle(Theme.color.text.primary)
-                    .frame(width: 28)
-                Text("Test Voxtral")
-                    .font(Theme.font.headline)
-                    .foregroundStyle(Theme.color.text.primary)
-                Spacer()
-            }
-
-            Text("Synthesis via server → \(VoxtralTTS.fallbackVoice) · DE")
-                .font(Theme.font.caption)
-                .foregroundStyle(Theme.color.text.subdued)
-
-            Button {
-                Task { await runVoxtralTest() }
-            } label: {
-                if voxtralBusy {
-                    Label("Playing…", systemImage: "play.circle")
-                } else {
-                    Label("Play sample", systemImage: "play.circle")
-                }
-            }
-            .buttonStyle(DSButtonStyle(variant: .secondary, size: .md, fullWidth: true))
-            .disabled(voxtralBusy)
-        }
-        .padding(Theme.spacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
+        .dsCard()
     }
 
     private func errorCard(_ message: String) -> some View {
@@ -231,44 +169,6 @@ public struct DebugSettingsView: View {
 
     // MARK: - Logic
 
-    private func runVoxtralTest() async {
-        voxtralBusy = true
-        lastError = nil
-        defer { voxtralBusy = false }
-        do {
-            try await VoxtralTTS.shared.speakOrThrow(
-                text: "Hallo, ich bin die neue Stimme.",
-                voice: VoxtralTTS.fallbackVoice,
-                language: "DE"
-            )
-        } catch let error as VoxtralError {
-            lastError = "Voxtral: \(describe(error))"
-        } catch {
-            lastError = "Voxtral: \(error.localizedDescription)"
-        }
-    }
-
-    private func describe(_ error: VoxtralError) -> String {
-        switch error {
-        case .notConfigured:
-            return String(localized: "No server URL or bearer in Keychain. Enter them above and tap Save.")
-        case .unauthorized:
-            return String(localized: "401 — bearer doesn’t match IOS_BEARER_TOKEN.")
-        case .unknownVoice(let detail):
-            return String(localized: "Voxtral doesn’t recognise this voice: \(detail)")
-        case .unavailable(let detail):
-            return String(localized: "Voxtral sidecar unreachable: \(detail)")
-        case .timeout(let detail):
-            return String(localized: "Server timeout: \(detail)")
-        case .serverError(let status, let detail):
-            return String(localized: "Server \(status): \(detail)")
-        case .transport(let underlying):
-            return String(localized: "Network error: \(underlying.localizedDescription)")
-        case .decodeFailed(let reason):
-            return String(localized: "Couldn’t read response: \(reason)")
-        }
-    }
-
     private func save() {
         KeychainStore.write(serverURL.trimmingCharacters(in: .whitespacesAndNewlines),
                             for: .serverURL)
@@ -286,7 +186,7 @@ public struct DebugSettingsView: View {
     private func applyStatusSideEffects(_ status: Reachability.Status) {
         switch status {
         case .authInvalid:
-            lastError = String(localized: "401 from server. Bearer in the app doesn’t match IOS_BEARER_TOKEN in server/.env. Paste the value again and tap Save.")
+            lastError = String(localized: "The server rejected the token (401). It doesn’t match the token configured on the server — paste it again and tap Save.")
         case .down(let reason):
             lastError = reason
         case .ok, .degraded, .unknown:
@@ -323,29 +223,5 @@ public struct DebugSettingsView: View {
         case .authInvalid, .down:            return Theme.color.status.destructive
         case .unknown:                       return Theme.color.text.subdued
         }
-    }
-}
-
-/// Compact status pill — same shape used elsewhere in the app for
-/// state badges. Uses the DS palette so the pill colours follow the
-/// same dark/light mode rules as the rest of the system.
-private struct StatusPill: View {
-    let text: String
-    let color: Color
-
-    var body: some View {
-        HStack(spacing: Theme.spacing.xs) {
-            Circle()
-                .fill(color)
-                .frame(width: 6, height: 6)
-            Text(text)
-                .font(Theme.font.caption2.weight(.medium))
-                .foregroundStyle(color)
-        }
-        .padding(.horizontal, Theme.spacing.xs)
-        .padding(.vertical, 3)
-        .background(
-            Capsule().fill(color.opacity(0.10))
-        )
     }
 }
