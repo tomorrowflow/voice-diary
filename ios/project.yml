@@ -184,6 +184,19 @@ targets:
     sources:
       - path: WidgetExtension
       - path: Sources/Shared
+      # Design-system seam + generated tokens so the widget can use
+      # `Theme.color.status.*` instead of raw SwiftUI colours. The folder
+      # references only UIKit trait-based dynamic colours (no UIApplication
+      # / other extension-unavailable API), so it is safe in this
+      # app-extension target.
+      - path: Sources/DesignSystem
+      # Same catalog as the app, so widget strings (Live Activity +
+      # lock-screen widget) localize too. The extension process resolves
+      # against the *system* locale — the app's runtime bundle swap
+      # doesn't reach it, which is the correct behaviour for lock-screen
+      # surfaces (matches InfoPlist.xcstrings reasoning above).
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
     info:
       path: WidgetExtension/Info.plist
       properties:

@@ -80,7 +80,7 @@ public struct WalkthroughView: View {
                                       total: coordinator.events.count)
                         }
 
-                        // ListeningTimer is rendered in the bottom
+                        // DisplayTimer is rendered in the bottom
                         // overlay (just above the BottomActionStack) so
                         // its distance from the bottom of the screen
                         // stays constant — content above can grow/shrink
@@ -112,7 +112,7 @@ public struct WalkthroughView: View {
                     // Combined status row above the timer. Same horizontal
                     // slot covers the AI-speaking indicator AND the silence
                     // hint; only one is ever visible. Reserved-height so the
-                    // ListeningTimer's vertical position never jumps.
+                    // DisplayTimer's vertical position never jumps.
                     //
                     // The whole status+timer group sits on the same opaque
                     // surface as BottomActionStack — without it the scroll
@@ -132,7 +132,7 @@ public struct WalkthroughView: View {
                         // of what's in the scroll area above. Lives in the
                         // overlay (not the scroll view) so EventCard growth
                         // can't push it around.
-                        ListeningTimer(seconds: coordinator.elapsedSeconds)
+                        DisplayTimer(seconds: coordinator.elapsedSeconds)
                             .padding(.bottom, Theme.spacing.sm)
                     }
                     .frame(maxWidth: .infinity)
@@ -141,24 +141,20 @@ public struct WalkthroughView: View {
                             .allowsHitTesting(false)
                     }
                     .overlay(alignment: .top) {
-                        LinearGradient(
-                            colors: [Theme.color.bg.surface.opacity(0), Theme.color.bg.surface],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 16)
-                        .offset(y: -16)
-                        .allowsHitTesting(false)
+                        TopFade()
                     }
                 }
                 if coordinator.state.isInEventLoop {
-                    // Single-action bottom: the dialog drives itself, so the
-                    // user only ever needs to confirm "I'm done with this
-                    // event" via Weiter. Skip / Finish-early / Frage-stellen
-                    // were dropped because they encouraged interrupting the
-                    // assistant rather than letting the dialogue flow. The
-                    // wake-word "Hey Voice Diary" still triggers enrichment;
-                    // a future skip-by-voice command can replace the button.
+                    // Two-button bottom: Weiter advances the dialog,
+                    // Pause/Resume freezes it (recording + TTS) so the
+                    // user can step away. Weiter is disabled while
+                    // paused; the only forward action from a paused
+                    // walkthrough is Resume (or Cancel via the header).
+                    // The Pause/Resume button itself only renders for
+                    // states where pause is meaningful (`isPausable`)
+                    // — `noteReview` and `confirmingTodos` are
+                    // recording-free, so pause there would just be a
+                    // state-restore with no audio benefit.
                     BottomActionStack {
                         Text(bottomHintText)
                             .font(Theme.font.caption)
@@ -166,34 +162,98 @@ public struct WalkthroughView: View {
                             .multilineTextAlignment(.center)
                             .frame(maxWidth: .infinity)
 
-                        Button {
-                            // No-op when iOS is muting haptics during
-                            // recording — see comment on `haptics`.
-                            // The button still feels live thanks to the
-                            // `.dsPrimary` opacity / scale press
-                            // animation baked into DSButtonStyle.
-                            haptics.tap()
-                            Task { await coordinator.advance() }
-                        } label: {
-                            Label("Next", systemImage: "arrow.right.circle.fill")
+                        HStack(spacing: Theme.spacing.sm) {
+                            Button {
+                                // No-op when iOS is muting haptics during
+                                // recording — see comment on `haptics`.
+                                // The button still feels live thanks to the
+                                // `.dsPrimary` opacity / scale press
+                                // animation baked into DSButtonStyle.
+                                haptics.tap()
+                                Task { await coordinator.advance() }
+                            } label: {
+                                Label("Next", systemImage: "arrow.right.circle.fill")
+                            }
+                            .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
+                            .disabled(coordinator.isPaused)
+
+                            if coordinator.state.isPausable {
+                                Button {
+                                    haptics.tap()
+                                    Task {
+                                        if coordinator.isPaused {
+                                            await coordinator.resume()
+                                        } else {
+                                            await coordinator.pause()
+                                        }
+                                    }
+                                } label: {
+                                    Label(
+                                        coordinator.isPaused ? "Resume" : "Pause",
+                                        systemImage: coordinator.isPaused
+                                            ? "play.fill"
+                                            : "pause.fill"
+                                    )
+                                }
+                                .buttonStyle(.dsSecondary(size: .lg, fullWidth: true))
+                            }
                         }
-                        .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
                     }
                 } else if case .idle = coordinator.state {
                     BottomActionStack {
-                        Button {
-                            haptics.tap()
-                            Task { await coordinator.begin() }
-                        } label: {
-                            startCtaLabel
+                        if coordinator.unfinishedSessionURL != nil {
+                            // Two-button layout when there's a local
+                            // in-progress session for the selected day:
+                            // Pick up (primary CTA — the more useful
+                            // action when an unfinished session exists)
+                            // + Start fresh (secondary, in case the
+                            // user wants to abandon what was captured).
+                            HStack(spacing: Theme.spacing.sm) {
+                                Button {
+                                    haptics.tap()
+                                    Task { await coordinator.beginPickup() }
+                                } label: {
+                                    Label("Pick up", systemImage: "arrow.uturn.right.circle.fill")
+                                }
+                                .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
+                                .disabled(!isModelReady || coordinator.isPreviewing)
+
+                                Button {
+                                    haptics.tap()
+                                    Task { await coordinator.begin() }
+                                } label: {
+                                    Label("Start fresh", systemImage: "play.fill")
+                                }
+                                .buttonStyle(.dsSecondary(size: .lg, fullWidth: true))
+                                .disabled(!isModelReady || coordinator.isPreviewing)
+                            }
+                        } else {
+                            Button {
+                                haptics.tap()
+                                Task { await coordinator.begin() }
+                            } label: {
+                                startCtaLabel
+                            }
+                            .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
+                            .disabled(!isModelReady || coordinator.isPreviewing)
                         }
-                        .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
-                        .disabled(!isModelReady || coordinator.isPreviewing)
                     }
                 }
             }
             .ignoresSafeArea(.keyboard)
+
+            // Model-loading overlay — covers the calendar AND both
+            // bottom buttons until Parakeet is ready, so the user
+            // can't tap a CTA that would silently no-op. Only shows
+            // on the idle/start screen; during an active walkthrough
+            // the model is already loaded. Fades out via the
+            // top-level `animation(_:value:)` on `isModelReady`.
+            if case .idle = coordinator.state, !isModelReady {
+                ModelLoadingOverlay(state: modelState)
+                    .transition(.opacity)
+            }
         }
+        .animation(.easeInOut(duration: 0.35), value: isModelReady)
         .task {
             // Surface Parakeet load state so the user sees the
             // ~1.2 GB first-launch download instead of silently
@@ -465,39 +525,32 @@ private struct EventCard: View {
     }
 
     private var rsvpLabel: String {
+        // English keys → German via the string catalog (previously
+        // hardcoded German, which leaked into English mode).
         switch event.rsvp_status {
-        case "organizer": return "Organisator"
-        case "accepted":  return "zugesagt"
-        case "tentative": return "vorläufig"
-        default:          return "ohne Antwort"
+        case "organizer": return String(localized: "Organizer")
+        case "accepted":  return String(localized: "Accepted")
+        case "tentative": return String(localized: "Tentative")
+        default:          return String(localized: "No response")
         }
     }
 
-    private func timeRange(_ ev: ServerCalendarEvent) -> String {
+    // HH:mm renders identical digits across locales, so this formatter is
+    // built once and reused instead of reallocated per event card.
+    private static let timeFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "de_DE")
         f.dateFormat = "HH:mm"
+        return f
+    }()
+
+    private func timeRange(_ ev: ServerCalendarEvent) -> String {
         guard let start = ev.startDate, let end = ev.endDate else { return "" }
-        return "\(f.string(from: start)) – \(f.string(from: end))"
+        return "\(Self.timeFormatter.string(from: start)) – \(Self.timeFormatter.string(from: end))"
     }
 }
 
-/// Walkthrough listening counter. Matches the note Aufnahme counter
-/// (`CaptureView.recordingBody`) on font size, weight, and slot height so
-/// both screens read as the same component at the same vertical position.
-private struct ListeningTimer: View {
-    let seconds: Int
-    var body: some View {
-        Text(String(format: "%02d:%02d", seconds / 60, seconds % 60))
-            .font(.system(size: 64, weight: .regular, design: .monospaced))
-            .foregroundStyle(Theme.color.text.primary)
-            .monospacedDigit()
-            .frame(maxWidth: .infinity)
-            .frame(height: 80)             // matches CaptureView's recording slot
-    }
-}
-
-/// Combined status row above the ListeningTimer. Surfaces, in priority
+/// Combined status row above the DisplayTimer. Surfaces, in priority
 /// order:
 ///   1. "Stimme spricht …" while the assistant is talking (covers both
 ///      Piper synthesis and audible playback).
@@ -508,6 +561,98 @@ private struct ListeningTimer: View {
 /// Only one signal is shown at a time so the row stays calm. The fixed
 /// frame height prevents the surrounding overlay from shifting when the
 /// status changes mid-event.
+/// Full-screen loading splash shown over the walkthrough start page
+/// while the on-device speech model is loading or has failed. Covers
+/// the calendar + day overview + bottom buttons so the user can't tap
+/// a CTA before the engine is ready (and so the dual Pick up /
+/// Start fresh layout doesn't have to inline its own spinner — the
+/// overlay handles loading state uniformly across both layouts).
+@MainActor
+private struct ModelLoadingOverlay: View {
+    let state: ParakeetManager.LoadState
+
+    var body: some View {
+        ZStack {
+            // Solid surface so nothing leaks through. ignoresSafeArea
+            // on the *background* so the bottom safe area also fills.
+            Theme.color.bg.surface.ignoresSafeArea()
+
+            VStack(spacing: Theme.spacing.lg) {
+                Spacer()
+
+                Image(systemName: iconName)
+                    .font(.system(size: 56, weight: .regular))
+                    .foregroundStyle(iconColor)
+
+                VStack(spacing: Theme.spacing.xs) {
+                    Text(title)
+                        .font(Theme.font.title3)
+                        .foregroundStyle(Theme.color.text.primary)
+                        .multilineTextAlignment(.center)
+                    Text(detail)
+                        .font(Theme.font.body)
+                        .foregroundStyle(Theme.color.text.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, Theme.spacing.xl)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if !isFailed {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .controlSize(.large)
+                        .tint(Theme.color.text.link)
+                        .padding(.top, Theme.spacing.sm)
+                }
+
+                Spacer()
+            }
+            .padding(.horizontal, Theme.spacing.lg)
+        }
+    }
+
+    private var isFailed: Bool {
+        if case .failed = state { return true }
+        return false
+    }
+
+    private var iconName: String {
+        switch state {
+        case .failed: return "exclamationmark.triangle.fill"
+        default:      return "waveform.badge.mic"
+        }
+    }
+
+    private var iconColor: Color {
+        switch state {
+        case .failed: return Theme.color.status.warning
+        default:      return Theme.color.text.link
+        }
+    }
+
+    private var title: String {
+        switch state {
+        case .failed: return String(localized: "Speech model unavailable")
+        default:      return String(localized: "Getting ready")
+        }
+    }
+
+    private var detail: String {
+        switch state {
+        case .ready:
+            return ""
+        case .idle:
+            return String(localized: "Preparing the on-device speech model…")
+        case .loading:
+            return String(localized: "Loading the on-device speech model — about 1.2 GB. This only happens the first time.")
+        case .failed(let msg):
+            // Truncate so the splash stays legible if the underlying
+            // error is a multi-line system message.
+            return String(localized: "Restart the app or check storage. Detail: \(String(msg.prefix(120)))")
+        }
+    }
+}
+
 @MainActor
 /// Transient warning banner shown during BRIEFING when the user has a
 /// Voxtral voice selected but `/health` reports the sidecar is down.
@@ -634,6 +779,7 @@ private struct StartCard: View {
             selectedDate = coordinator.selectedDate
             await coordinator.previewDay()
             await coordinator.loadRecordedDates(around: selectedDate)
+            await coordinator.loadUnfinishedSession(forDate: selectedDate)
         }
     }
 
@@ -691,25 +837,44 @@ private struct StartCard: View {
         }
         .onChange(of: selectedDate) { _, newValue in
             coordinator.setSelectedDate(newValue)
-            Task { await coordinator.previewDay(newValue) }
+            Task {
+                await coordinator.previewDay(newValue)
+                await coordinator.loadUnfinishedSession(forDate: newValue)
+            }
         }
     }
 
-    /// Marker shown next to the day overview header when the selected
-    /// date already has at least one recording on the server.
+    /// Marker(s) shown next to the day overview header. Green for a
+    /// recording that's already on the server; amber for a local
+    /// session that was started but never reached the upload step
+    /// (the "Pick up where you left off" affordance). Both can be true
+    /// for the same day — e.g. user finished one session this morning
+    /// and aborted a second one this evening.
     @ViewBuilder
     fileprivate var recordedBadge: some View {
-        if coordinator.recordedDates.contains(Self.isoDay(selectedDate)) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(Theme.color.status.success)
-                    .frame(width: 8, height: 8)
-                Text("Recording already exists")
-                    .font(Theme.font.caption)
-                    .foregroundStyle(Theme.color.text.subdued)
+        VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
+            if coordinator.recordedDates.contains(Self.isoDay(selectedDate)) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Theme.color.status.success)
+                        .frame(width: 8, height: 8)
+                    Text("Recording already exists")
+                        .font(Theme.font.caption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                }
             }
-            .padding(.horizontal, Theme.spacing.xs)
+            if coordinator.unfinishedSessionURL != nil {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Theme.color.status.warning)
+                        .frame(width: 8, height: 8)
+                    Text("Unfinished session — pick it up below")
+                        .font(Theme.font.caption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                }
+            }
         }
+        .padding(.horizontal, Theme.spacing.xs)
     }
 
     fileprivate static let isoDay: (Date) -> String = {
@@ -1183,20 +1348,13 @@ private struct NoteReviewCard: View {
         Button {
             player.toggle(url: note.audio_file_url)
         } label: {
-            ZStack {
-                Circle()
-                    .fill(Theme.color.tint.warning10)
-                    .frame(width: 36, height: 36)
-                Image(systemName: isPlaying(note: note) ? "pause.fill" : "play.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.color.status.warning)
-                    // Optically centre the play glyph inside the disc.
-                    .offset(x: isPlaying(note: note) ? 0 : 1)
-            }
+            PlayPauseDisc(isPlaying: isPlaying(note: note),
+                          tint: Theme.color.status.warning,
+                          fill: Theme.color.tint.warning10)
         }
         .buttonStyle(.plain)
         .accessibilityLabel(
-            isPlaying(note: note) ? Text("Pause") : Text("Listen")
+            isPlaying(note: note) ? Text("Pause") : Text("Play")
         )
     }
 
@@ -1250,7 +1408,7 @@ private struct TodoConfirmationCard: View {
             // context, so the AUFGABE / AUS DEM TRANSKRIPT sublabels are
             // dropped — the divider between the two sections is enough.
             Text(candidate?.text ?? "")
-                .font(.system(size: 24, weight: .medium))
+                .font(Theme.font.title2.weight(.medium))
                 .foregroundStyle(Theme.color.text.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -1411,18 +1569,12 @@ private struct DoneCard: View {
                 .font(.system(size: 44))
                 .foregroundStyle(Theme.color.status.success)
 
-            VStack(spacing: 6) {
-                Text(summaryText)
-                    .font(Theme.font.body)
-                    .foregroundStyle(Theme.color.text.secondary)
-                    .multilineTextAlignment(.center)
-                if let id = coordinator.sessionID {
-                    Text(id)
-                        .font(Theme.font.monoCaption)
-                        .foregroundStyle(Theme.color.text.subdued)
-                        .opacity(0.7)
-                }
-            }
+            // The raw session ID used to render here; it's developer
+            // data — it lives in the Verlauf detail footer instead.
+            Text(summaryText)
+                .font(Theme.font.body)
+                .foregroundStyle(Theme.color.text.secondary)
+                .multilineTextAlignment(.center)
 
             Button("New session") {
                 Task { await coordinator.cancel() }

@@ -68,32 +68,12 @@ public struct VoiceSettingsView: View {
                                 voxtralRow(voice: voice, language: lang.code, sample: lang.sample)
                             }
                             if appleVoices.isEmpty && piperVoices.isEmpty && voxtralVoices.isEmpty {
-                                Text("No voices available. Download a Premium voice via iOS Settings → Accessibility → Spoken Content → Voices, run `ios/scripts/fetch_piper_voices.sh`, or check the Voxtral server in Server settings.")
+                                Text("No voices available. Download a Premium voice in iOS Settings → Accessibility → Spoken Content → Voices, or connect your server in Server settings.")
                                     .font(Theme.font.caption)
                                     .foregroundStyle(Theme.color.text.subdued)
                             }
                         } header: {
                             Text(lang.label)
-                                .font(Theme.font.subheadline)
-                                .foregroundStyle(Theme.color.text.secondary)
-                        }
-                    }
-
-                    if let catalogError = voiceCatalog.lastError {
-                        Section {
-                            Text("Voxtral voices could not be loaded: \(catalogError)")
-                                .font(Theme.font.caption)
-                                .foregroundStyle(Theme.color.text.subdued)
-                            Button {
-                                Task { await voiceCatalog.refresh() }
-                            } label: {
-                                Label("Try again", systemImage: "arrow.clockwise")
-                            }
-                            .buttonStyle(.plain)
-                            .foregroundStyle(Theme.color.text.link)
-                            .disabled(voiceCatalog.isLoading)
-                        } header: {
-                            Text("Voxtral · Server")
                                 .font(Theme.font.subheadline)
                                 .foregroundStyle(Theme.color.text.secondary)
                         }
@@ -122,7 +102,7 @@ public struct VoiceSettingsView: View {
                     }
 
                     Section {
-                        Text("Apple Premium voices need a one-time download in iOS Settings. Piper voices ship with the app (≈ 110 MB each) and play fully on-device. Voxtral voices come from your server over Tailscale — higher quality, but need a connection.")
+                        Text("Apple Premium voices need a one-time download in iOS Settings. Piper voices ship with the app and play fully on-device. Server voices stream from your own server — higher quality, but they need a connection.")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
@@ -131,10 +111,12 @@ public struct VoiceSettingsView: View {
             }
         }
         .navigationBarHidden(true)
-        .onAppear {
-            loadVoices()
-            Task { await voiceCatalog.refresh() }
-            Task { await reachability.refresh() }
+        .onAppear { loadVoices() }
+        // `.task` (not fire-and-forget Tasks in onAppear) so the network
+        // refreshes are cancelled automatically when the user leaves.
+        .task {
+            await voiceCatalog.refresh()
+            await reachability.refresh()
         }
     }
 
@@ -164,9 +146,23 @@ public struct VoiceSettingsView: View {
                         .foregroundStyle(Theme.color.text.link)
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel(Text("Re-check server connection"))
+            }
+            if let catalogError = voiceCatalog.lastError {
+                Text("Server voices could not be loaded: \(catalogError)")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                Button {
+                    Task { await voiceCatalog.refresh() }
+                } label: {
+                    Label("Try again", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Theme.color.text.link)
+                .disabled(voiceCatalog.isLoading)
             }
         } header: {
-            Text("Voxtral · Server")
+            Text("Server voices")
                 .font(Theme.font.subheadline)
                 .foregroundStyle(Theme.color.text.secondary)
         }
@@ -216,13 +212,13 @@ public struct VoiceSettingsView: View {
     private var voxtralReachabilityDetail: String {
         switch voxtralUpstreamValue {
         case "ok":
-            return String(localized: "Voxtral voices are available. Falls back to Piper/Apple automatically on hiccups.")
+            return String(localized: "Server voices are available. If the connection drops, playback falls back to your Piper or Apple voice automatically.")
         case "down":
-            return String(localized: "Voxtral sidecar is not responding. Voxtral voices fall back to your Piper or Apple voice; the walkthrough keeps running.")
+            return String(localized: "The server’s voice service is not responding. Server voices fall back to your Piper or Apple voice; the walkthrough keeps running.")
         case "skipped":
-            return String(localized: "VOXTRAL_BASE_URL is not set on the server — no Voxtral voices available.")
+            return String(localized: "No server voices are configured on the server.")
         default:
-            return String(localized: "Reachability is checked when you open Settings. Tap ↻ to re-check.")
+            return String(localized: "The connection is checked when you open Settings. Tap ↻ to re-check.")
         }
     }
 
@@ -266,6 +262,7 @@ public struct VoiceSettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(isPreviewing)
+            .accessibilityLabel(Text("Preview \(voice.name)"))
         }
     }
 
@@ -312,6 +309,7 @@ public struct VoiceSettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(!available || isPreviewing)
+            .accessibilityLabel(Text("Preview \(voice.label)"))
         }
     }
 
@@ -330,7 +328,7 @@ public struct VoiceSettingsView: View {
                         Text(voice.label)
                             .font(Theme.font.body)
                             .foregroundStyle(Theme.color.text.primary)
-                        Text("Voxtral · Server — \(voice.description)")
+                        Text("Server — \(voice.description)")
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
@@ -353,6 +351,7 @@ public struct VoiceSettingsView: View {
             }
             .buttonStyle(.plain)
             .disabled(isPreviewing)
+            .accessibilityLabel(Text("Preview \(voice.label)"))
         }
     }
 

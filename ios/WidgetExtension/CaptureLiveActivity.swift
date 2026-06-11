@@ -18,10 +18,10 @@ struct CaptureLiveActivity: Widget {
                     .font(.title2)
                     .foregroundStyle(stateColor(context.state.kind))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(stateLabel(context.state.kind))
+                    Text(stateLabel(context.state.kind, isPaused: context.state.isPaused))
                         .font(.headline)
                     if context.state.kind != .speaking {
-                        Text(timeString(context.state.elapsedSeconds))
+                        timerView(state: context.state)
                             .font(.callout.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
@@ -48,18 +48,18 @@ struct CaptureLiveActivity: Widget {
                 }
                 DynamicIslandExpandedRegion(.trailing) {
                     if context.state.kind != .speaking {
-                        Text(timeString(context.state.elapsedSeconds))
+                        timerView(state: context.state)
                             .font(.callout.monospacedDigit())
                     }
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(stateLabel(context.state.kind))
+                    Text(stateLabel(context.state.kind, isPaused: context.state.isPaused))
                         .font(.callout.weight(.medium))
                         .foregroundStyle(stateColor(context.state.kind))
                 }
                 DynamicIslandExpandedRegion(.bottom) {
                     if context.state.kind == .recording {
-                        Text("Voice Diary nimmt auf — Action Button erneut drücken zum Beenden.")
+                        Text("Voice Diary is recording — press the Action Button again to stop.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -79,7 +79,7 @@ struct CaptureLiveActivity: Widget {
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(stateColor(context.state.kind))
                 } else {
-                    Text(timeString(context.state.elapsedSeconds))
+                    timerView(state: context.state)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(stateColor(context.state.kind))
                 }
@@ -105,16 +105,43 @@ struct CaptureLiveActivity: Widget {
 
     private func stateColor(_ kind: CaptureActivityAttributes.Kind) -> Color {
         switch kind {
-        case .recording, .listening: return .red
-        case .speaking:              return .orange
+        case .recording, .listening: return Theme.color.status.destructive
+        case .speaking:              return Theme.color.status.warning
         }
     }
 
-    private func stateLabel(_ kind: CaptureActivityAttributes.Kind) -> String {
+    /// English keys → German via the shared string catalog. Widgets
+    /// localize against the *system* locale (the app's runtime bundle
+    /// swap doesn't reach the extension process), which matches how
+    /// every other lock-screen string behaves.
+    private func stateLabel(_ kind: CaptureActivityAttributes.Kind, isPaused: Bool) -> String {
+        if isPaused { return String(localized: "Paused") }
         switch kind {
-        case .recording: return "Aufnahme läuft"
-        case .listening: return "höre zu"
-        case .speaking:  return "Editor spricht"
+        case .recording: return String(localized: "Recording…")
+        case .listening: return String(localized: "Listening…")
+        case .speaking:  return String(localized: "Speaking…")
+        }
+    }
+
+    /// Self-incrementing timer when the session is active; static
+    /// snapshot when paused. Using `Text(timerInterval:)` removes the
+    /// dependence on the app pushing per-second updates — when iOS
+    /// throttles or suspends background updates the digit kept showing
+    /// the last value forever, which is the "lock screen stalled" UX
+    /// the user was reporting. The widget now ticks on its own.
+    @ViewBuilder
+    private func timerView(state: CaptureActivityAttributes.ContentState) -> some View {
+        if state.isPaused {
+            Text(timeString(state.elapsedSeconds))
+        } else {
+            // `startedAt` is biased by the producer so that `now -
+            // startedAt == elapsedSeconds` at push time. The range is
+            // open-ended via `.distantFuture`; iOS clamps the visible
+            // counter to a sensible upper bound.
+            Text(timerInterval: state.startedAt...Date.distantFuture,
+                 pauseTime: nil,
+                 countsDown: false,
+                 showsHours: true)
         }
     }
 

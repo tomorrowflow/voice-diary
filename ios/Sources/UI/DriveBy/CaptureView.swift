@@ -59,17 +59,44 @@ public struct CaptureView: View {
                 Spacer()
                 BottomActionStack {
                     if coordinator.isRecording {
-                        // Destructive variant for "Stopp" — same shape +
-                        // size as walkthrough's primary CTA, just
-                        // tinted red so the active recording state
-                        // reads at a glance.
-                        Button {
-                            Task { await coordinator.toggle() }
-                        } label: {
-                            Label("Stop", systemImage: "stop.fill")
+                        // Two-button bottom while recording: Stop +
+                        // Pause/Resume side-by-side at the same height.
+                        // Stop is destructive (red) so the end-session
+                        // action stays the visually heaviest signal;
+                        // Pause/Resume is a calmer secondary that
+                        // doesn't compete for attention.
+                        HStack(spacing: Theme.spacing.sm) {
+                            Button {
+                                Task { await coordinator.toggle() }
+                            } label: {
+                                Label("Stop", systemImage: "stop.fill")
+                            }
+                            .buttonStyle(.dsDestructive(size: .lg, fullWidth: true))
+                            .accessibilityLabel(Text("End recording"))
+
+                            Button {
+                                Task {
+                                    if coordinator.isPaused {
+                                        await coordinator.resume()
+                                    } else {
+                                        await coordinator.pause()
+                                    }
+                                }
+                            } label: {
+                                Label(
+                                    coordinator.isPaused ? "Resume" : "Pause",
+                                    systemImage: coordinator.isPaused
+                                        ? "play.fill"
+                                        : "pause.fill"
+                                )
+                            }
+                            .buttonStyle(.dsSecondary(size: .lg, fullWidth: true))
+                            .accessibilityLabel(Text(
+                                coordinator.isPaused
+                                    ? "Resume recording"
+                                    : "Pause recording"
+                            ))
                         }
-                        .buttonStyle(.dsDestructive(size: .lg, fullWidth: true))
-                        .accessibilityLabel(Text("End recording"))
                     } else {
                         // Idle CTA — disabled until Parakeet finished
                         // loading, exactly like the walkthrough's
@@ -142,7 +169,7 @@ public struct CaptureView: View {
             }
             VStack(spacing: 8) {
                 Text("Quick capture")
-                    .font(.system(size: 24, weight: .semibold))
+                    .font(Theme.font.title2)
                     .foregroundStyle(Theme.color.text.primary)
                 Text("Catch a thought now. It resurfaces during this evening's walkthrough.")
                     .font(Theme.font.body)
@@ -162,11 +189,7 @@ public struct CaptureView: View {
 
     private var recordingBody: some View {
         VStack(spacing: Theme.spacing.sm) {
-            Text(timeString(coordinator.elapsedSeconds))
-                .font(.system(size: 64, weight: .regular, design: .monospaced))
-                .foregroundStyle(Theme.color.text.primary)
-                .monospacedDigit()
-                .frame(height: 80)             // fixed slot — no vertical jump
+            DisplayTimer(seconds: coordinator.elapsedSeconds)
             // Hint lives directly under the timer so it doesn't sit
             // below the sticky round button (which would shift the
             // button's Y between recording / idle).
@@ -184,9 +207,14 @@ public struct CaptureView: View {
         // mention). Uses `Bundle.main` which is already isa-swapped to
         // `LocalizedMainBundle` by `AppLanguage`, so the active
         // language is honoured.
-        let raw: String = coordinator.isRecording
-            ? String(localized: "Say \u{201C}hey voice diary\u{201D} to ask a question.")
-            : String(localized: "Or press the Action button.")
+        let raw: String
+        if coordinator.isPaused {
+            raw = String(localized: "Paused. Tap Resume to continue.")
+        } else if coordinator.isRecording {
+            raw = String(localized: "Say \u{201C}hey voice diary\u{201D} to ask a question.")
+        } else {
+            raw = String(localized: "Or press the Action button.")
+        }
         var hint = AttributedString(raw)
         if let range = hint.range(of: "hey voice diary") {
             hint[range].font = Theme.font.monoCaption
@@ -198,10 +226,6 @@ public struct CaptureView: View {
             hint[range].foregroundColor = Theme.color.text.secondary
         }
         return hint
-    }
-
-    private func timeString(_ s: Int) -> String {
-        String(format: "%02d:%02d", s / 60, s % 60)
     }
 }
 

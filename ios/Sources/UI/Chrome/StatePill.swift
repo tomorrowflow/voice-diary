@@ -35,10 +35,12 @@ public struct StatePill: View {
     }
 
     private var label: String {
+        // English keys → German via the string catalog, so the pill
+        // follows the app-language toggle like every other label.
         switch kind {
-        case .recording: return "Aufnahme läuft"
-        case .listening: return "höre zu"
-        case .speaking:  return "Editor spricht"
+        case .recording: return String(localized: "Recording…")
+        case .listening: return String(localized: "Listening…")
+        case .speaking:  return String(localized: "Speaking…")
         }
     }
 

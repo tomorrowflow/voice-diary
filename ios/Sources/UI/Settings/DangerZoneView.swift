@@ -293,14 +293,7 @@ public struct DangerZoneView: View {
         }
         .padding(Theme.spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
+        .dsCard()
     }
 
     private var partialDeleteCard: some View {
@@ -330,14 +323,7 @@ public struct DangerZoneView: View {
         }
         .padding(Theme.spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
+        .dsCard()
     }
 
     private var nukeCard: some View {
@@ -367,14 +353,7 @@ public struct DangerZoneView: View {
         }
         .padding(Theme.spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.container)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.border.subdued, lineWidth: 1)
-        )
+        .dsCard()
     }
 
     private var nukeDescription: String {
