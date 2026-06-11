@@ -36,6 +36,19 @@ public enum Diag {
     public static func log(_ message: String) {
         Log.app.notice("\(message, privacy: .public)")
     }
+
+    /// Stamp the message with a short session correlation tag so the
+    /// Diagnostics view can pull every event from one recording with a
+    /// single substring filter. Pass `nil` (or skip) when the call site
+    /// has no associated session.
+    public static func log(session: UUID?, _ message: String) {
+        if let session {
+            let short = session.uuidString.prefix(8)
+            Log.app.notice("[sid=\(String(short), privacy: .public)] \(message, privacy: .public)")
+        } else {
+            log(message)
+        }
+    }
 }
 
 /// Lightweight resident-memory reader so cardinal-event Diag lines can
