@@ -402,16 +402,17 @@ public enum LLMHelpers {
     }
 
     public static func summaryPrompt(transcript: String, german: Bool) -> String {
+        let safe = truncatedForLLM(transcript)
         if german {
             return """
             Fasse diese Sprachnotiz in einem kurzen Satz zusammen:
-            \(transcript)
+            \(safe)
             Gib nur die Zusammenfassung auf Deutsch zurück.
             """
         } else {
             return """
             Summarize this voice note in one short statement:
-            \(transcript)
+            \(safe)
             Return only the summary in English.
             """
         }
@@ -467,21 +468,46 @@ public enum LLMHelpers {
     }
 
     public static func implicitPrompt(transcript: String, german: Bool) -> String {
+        let safe = truncatedForLLM(transcript)
         if german {
             return """
             Reflexion:
-            \(transcript)
+            \(safe)
 
             Extrahiere die impliziten Aufgaben gemäss den Anweisungen.
             """
         } else {
             return """
             Reflection:
-            \(transcript)
+            \(safe)
 
             Extract the implicit todos following the instructions.
             """
         }
+    }
+
+    /// Cap a free-form transcript before embedding it in an LLM
+    /// prompt. Apple Foundation Models maxes out at 4096 tokens
+    /// for the entire session (instructions + prompt scaffold +
+    /// transcript + response). With instructions (~150 tokens),
+    /// prompt scaffold (~50), and a 160-token response cap, that
+    /// leaves roughly 3700 tokens for the transcript. A 6000-char
+    /// cap is conservative even for token-dense German compounds
+    /// (~3.5 chars/token → ~1700 tokens). For the gist-summary
+    /// and implicit-todo tasks we don't need the full transcript —
+    /// keeping the head + a "[…]" marker is plenty.
+    ///
+    /// Symptom this prevents: `exceededContextWindowSize` from a
+    /// multi-minute voice note whose transcript runs 30k+ chars
+    /// (~8k tokens). Without the cap the LLM call fails and the
+    /// caller silently falls back to a deterministic first-sentence
+    /// summary — workable, but wastes the model.
+    public static func truncatedForLLM(_ transcript: String, maxChars: Int = 6000) -> String {
+        let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > maxChars else { return trimmed }
+        let idx = trimmed.index(trimmed.startIndex, offsetBy: maxChars)
+        let head = String(trimmed[..<idx]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return head + " […]"
     }
 
     // MARK: Output validation + sanitisation

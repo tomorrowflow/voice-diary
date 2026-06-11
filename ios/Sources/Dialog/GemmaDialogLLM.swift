@@ -180,6 +180,27 @@ public actor GemmaDialogLLM: DialogLLM {
         Diag.log("Gemma: resumed (foreground)")
     }
 
+    /// Cancel an in-flight load and clear the broadcaster's replay
+    /// state. Called by the Dialog-Modell view's "Stalled — tap to
+    /// retry" button: without this, a retry just re-awaits the same
+    /// stalled `Task<ModelContainer, Error>` (because `ensureLoaded`
+    /// short-circuits when `loadTask != nil`) and the UI's "32.4 MB"
+    /// bar position never moves because the broadcaster keeps
+    /// replaying the same snapshot.
+    ///
+    /// Already-downloaded chunks survive because they live in
+    /// HuggingFace's on-disk `HubCache`, not in the in-process task.
+    public func cancelLoad() {
+        #if canImport(MLXLLM) && canImport(MLXLMCommon)
+        if let task = loadTask {
+            task.cancel()
+            loadTask = nil
+            Diag.log("Gemma: load cancelled")
+        }
+        downloadBroadcaster.reset()
+        #endif
+    }
+
     // MARK: - DialogLLM
 
     public func generateFollowUp(
@@ -376,9 +397,9 @@ public actor GemmaDialogLLM: DialogLLM {
         Diag.log("Gemma: starting load of \(Self.modelID)")
         let task = Task<ModelContainer, Error> {
             let configuration = ModelConfiguration(id: Self.modelID)
-            return try await #huggingFaceLoadModelContainer(
+            return try await Self.loadWithRetry(
                 configuration: configuration,
-                progressHandler: progress
+                progress: progress
             )
         }
         loadTask = task
@@ -392,6 +413,203 @@ public actor GemmaDialogLLM: DialogLLM {
             loadTask = nil
             Diag.log("Gemma: load failed: \(error)")
             throw LLMError.unavailable("gemma_load_failed: \(error)")
+        }
+    }
+
+    /// Auto-retry wrapper for the HuggingFace load.
+    ///
+    /// Two real-world failure modes drove this design:
+    ///
+    ///   * **`NSURLErrorNetworkConnectionLost` (-1005)** when iOS suspends
+    ///     us out from under an in-flight `session.data(for:)` /
+    ///     `session.bytes(for:)`. Mitigation: retry with a fresh session;
+    ///     HuggingFace's on-disk `HubCache` keeps completed files so
+    ///     each retry resumes at the next file boundary.
+    ///
+    ///   * **Foreground deterministic stall at exactly 32.4 MB** —
+    ///     reproduces consistently on `mlx-community/gemma-4-e4b-it-4bit`
+    ///     even with the screen awake. The 32.4 MB matches the
+    ///     cumulative size of every file in the repo *except*
+    ///     `model.safetensors`. So all small files complete fine, then
+    ///     the lone 5.2 GB safetensors download starts and never
+    ///     reports a single byte to its `URLSessionDownloadDelegate`.
+    ///     Apple's WWDC23 talk on resumable transfers documents this
+    ///     as a known weakness of `URLSession.download(for:delegate:)`
+    ///     for very large foreground transfers, especially with
+    ///     concurrent connections to the same host. Mitigation in
+    ///     `TunedHubDownloader` below: serialise file downloads
+    ///     (`maxConcurrent: 1`) so the safetensors gets the entire
+    ///     network pipe, and use an ephemeral session so iOS's
+    ///     `URLCache` can't interfere with multi-GB transfers.
+    ///
+    /// We can't switch to a `URLSessionConfiguration.background(...)`
+    /// because HuggingFace's library uses the async sequence API which
+    /// isn't supported on background sessions. Forking the library is
+    /// the only path to true background downloads; not done.
+    ///
+    /// The retry budget is intentionally generous (8 attempts, 3 s
+    /// backoff between each) because each retry typically only makes
+    /// it past one file before the user backgrounds again. Total
+    /// wall-clock cap: ~24 s of sleep on top of however long the
+    /// downloads themselves take.
+    private static func loadWithRetry(
+        configuration: ModelConfiguration,
+        progress: @escaping @Sendable (Progress) -> Void,
+        maxAttempts: Int = 8
+    ) async throws -> ModelContainer {
+        var attempt = 0
+        var lastError: (any Error)?
+        while attempt < maxAttempts {
+            attempt += 1
+            let session = Self.makeTunedSession()
+            let hub = HuggingFace.HubClient(session: session)
+            let downloader = TunedHubDownloader(client: hub)
+            do {
+                Diag.log("Gemma download: attempt \(attempt)/\(maxAttempts) starting")
+                return try await loadModelContainer(
+                    from: downloader,
+                    using: #huggingFaceTokenizerLoader(),
+                    configuration: configuration,
+                    progressHandler: progress
+                )
+            } catch {
+                lastError = error
+                session.invalidateAndCancel()
+                guard Self.isTransient(error), attempt < maxAttempts else {
+                    throw error
+                }
+                let code = (error as NSError).code
+                Diag.log(
+                    "Gemma download: transient error code=\(code) attempt=\(attempt)/\(maxAttempts), retrying in 3s"
+                )
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                if Task.isCancelled { throw CancellationError() }
+            }
+        }
+        throw lastError ?? LLMError.unavailable("gemma_retry_exhausted")
+    }
+
+    /// Build the URLSession we hand to `HubClient`. Ephemeral so iOS's
+    /// shared `URLCache` is bypassed entirely — that cache has been
+    /// observed to mis-handle the multi-GB safetensors transfer (it
+    /// thinks the response is cacheable, buffers in the cache layer
+    /// instead of streaming to disk, and the download delegate sees
+    /// no progress). Connection limits and timeouts tuned for one
+    /// huge file rather than many small ones.
+    private static func makeTunedSession() -> URLSession {
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.waitsForConnectivity = true
+        cfg.timeoutIntervalForResource = 7200   // 2 h ceiling on total transfer
+        cfg.timeoutIntervalForRequest = 180     // 3 min per-request idle timeout
+        cfg.httpMaximumConnectionsPerHost = 2   // model.safetensors is one file; 2 leaves room for the metadata HEAD
+        cfg.httpShouldUsePipelining = false
+        cfg.allowsCellularAccess = true
+        cfg.allowsExpensiveNetworkAccess = true
+        cfg.allowsConstrainedNetworkAccess = true
+        cfg.networkServiceType = .responsiveData
+        // No URLCache. Ephemeral already has nil, but be explicit.
+        cfg.urlCache = nil
+        cfg.requestCachePolicy = .reloadIgnoringLocalCacheData
+        return URLSession(configuration: cfg)
+    }
+
+    /// Recognised transient network errors that warrant an auto-retry.
+    /// Anything else (HTTP 4xx, decode failures, missing tokenizer
+    /// files, etc.) bubbles up so the resolver falls through to
+    /// Apple FM with a real diagnosis.
+    private static func isTransient(_ error: any Error) -> Bool {
+        let ns = error as NSError
+        guard ns.domain == NSURLErrorDomain else { return false }
+        switch ns.code {
+        case NSURLErrorNetworkConnectionLost,        // -1005, app suspended
+             NSURLErrorNotConnectedToInternet,        // -1009
+             NSURLErrorTimedOut,                      // -1001
+             NSURLErrorCannotConnectToHost,           // -1004
+             NSURLErrorCannotFindHost,                // -1003
+             NSURLErrorDNSLookupFailed,               // -1006
+             NSURLErrorBackgroundSessionWasDisconnected,  // -997
+             NSURLErrorBackgroundSessionInUseByAnotherProcess,  // -996
+             NSURLErrorBackgroundSessionRequiresSharedContainer,  // -995
+             NSURLErrorDataNotAllowed:                // -1020 (cellular off)
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Drop-in replacement for `#hubDownloader(hub)` that lets us
+    /// override the per-snapshot concurrency. The macro hard-codes the
+    /// default `maxConcurrentDownloads = 8`, which is the wrong value
+    /// for a repo whose total size is dominated by a single 5.2 GB
+    /// `model.safetensors`. Serial downloads give that one file the
+    /// entire network pipe + connection pool, which empirically fixes
+    /// the foreground stall.
+    private struct TunedHubDownloader: MLXLMCommon.Downloader {
+        let client: HuggingFace.HubClient
+
+        func download(
+            id: String,
+            revision: String?,
+            matching patterns: [String],
+            useLatest _: Bool,
+            progressHandler: @Sendable @escaping (Foundation.Progress) -> Void
+        ) async throws -> URL {
+            guard let repoID = HuggingFace.Repo.ID(rawValue: id) else {
+                throw HuggingFaceDownloaderError.invalidRepositoryID(id)
+            }
+            // Wrap the caller's progress handler to add per-50-MB +
+            // every-30-s Diag lines so the next stall lands a clean
+            // breadcrumb in the Diagnostics view (instead of just the
+            // watchdog blasting one line at 60 s with no context).
+            let logger = ProgressLogger()
+            let combined: @Sendable @MainActor (Foundation.Progress) -> Void = { p in
+                logger.log(p)
+                progressHandler(p)
+            }
+            return try await client.downloadSnapshot(
+                of: repoID,
+                revision: revision ?? "main",
+                matching: patterns,
+                // Serial: see the comment above the struct. The MLX
+                // snapshot is one huge weight file plus a handful of
+                // small JSONs; the small ones download in milliseconds
+                // either way, so we trade ~negligible wall-clock for
+                // the foreground stall fix.
+                maxConcurrentDownloads: 1,
+                progressHandler: combined
+            )
+        }
+    }
+
+    /// Emit a Diag entry every 50 MB *or* every 30 s — whichever fires
+    /// first. Provides a clear progress trace in the Diagnostics view
+    /// when the user hits another stall, so we can see whether the
+    /// download is moving slowly, has hit a specific byte boundary,
+    /// or has gone silent on a particular file.
+    private final class ProgressLogger: @unchecked Sendable {
+        private let lock = NSLock()
+        private var lastLoggedBytes: Int64 = 0
+        private var lastLoggedAt: Date = .distantPast
+        private static let byteStep: Int64 = 50 * 1024 * 1024
+        private static let timeStep: TimeInterval = 30
+
+        func log(_ p: Foundation.Progress) {
+            let now = Date()
+            let completed = p.completedUnitCount
+            let total = p.totalUnitCount
+            lock.lock()
+            let bytesAdvanced = completed - lastLoggedBytes >= Self.byteStep
+            let timeAdvanced = now.timeIntervalSince(lastLoggedAt) >= Self.timeStep
+            let shouldLog = bytesAdvanced || timeAdvanced
+            if shouldLog {
+                lastLoggedBytes = completed
+                lastLoggedAt = now
+            }
+            lock.unlock()
+            guard shouldLog else { return }
+            let mb = Double(completed) / (1024 * 1024)
+            let totalMB = Double(total) / (1024 * 1024)
+            Diag.log(String(format: "Gemma progress: %.1f / %.1f MB", mb, totalMB))
         }
     }
 
@@ -480,6 +698,17 @@ private final class GemmaDownloadProgressBroadcaster: @unchecked Sendable {
         for handler in handlers {
             handler(progress)
         }
+    }
+
+    /// Clear the replay snapshot so a fresh load doesn't immediately
+    /// snap the UI back to the previous bar position. Called by
+    /// `GemmaDialogLLM.cancelLoad()` when the user retries a stalled
+    /// download.
+    func reset() {
+        lock.lock()
+        lastCompletedBytes = 0
+        lastTotalBytes = 0
+        lock.unlock()
     }
 }
 

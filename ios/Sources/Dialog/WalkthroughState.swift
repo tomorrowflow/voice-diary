@@ -59,6 +59,24 @@ public extension WalkthroughState {
         }
     }
 
+    /// States where the Pause button is meaningful: briefing, openers,
+    /// and listening phases. `noteReview` is a visual-only step with no
+    /// recording in flight, and `confirmingTodos` shows a per-candidate
+    /// prompt that's quick by design — neither has a recording to
+    /// preserve, so pause/resume in those states would just be a
+    /// state-restore with no audio benefit. Hide the Pause CTA there.
+    var isPausable: Bool {
+        switch self {
+        case .briefing,
+             .eventOpener, .eventListening,
+             .generalOpener, .generalListening,
+             .voiceNoteOpener, .voiceNoteListening:
+            return true
+        default:
+            return false
+        }
+    }
+
     var label: String {
         switch self {
         case .idle:                       return "Bereit"

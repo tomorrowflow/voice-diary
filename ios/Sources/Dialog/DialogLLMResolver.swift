@@ -17,8 +17,8 @@ public enum DialogLLMPreference: String, Sendable, CaseIterable {
 
     public var displayName: String {
         switch self {
-        case .appleFoundation: return "Apple Foundation Models"
-        case .gemmaE4B:        return "Gemma 4 E4B (MLX)"
+        case .appleFoundation: return "Apple"
+        case .gemmaE4B:        return "Gemma"
         }
     }
 

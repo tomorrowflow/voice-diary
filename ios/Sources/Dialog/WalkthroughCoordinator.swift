@@ -37,6 +37,12 @@ public final class WalkthroughCoordinator {
     public private(set) var isPreviewing: Bool = false
     public private(set) var previewError: ConnectionDiagnosis?
     public private(set) var recordedDates: Set<String> = []
+    /// On-disk session dir for the currently-selected date that has
+    /// segments but no `manifest.json` — i.e. a walkthrough that was
+    /// aborted or interrupted before reaching the upload step. Drives
+    /// the "Pick up where you left off" affordance on the start card.
+    /// Nil when no such dir exists for the selected day.
+    public private(set) var unfinishedSessionURL: URL?
     public private(set) var statusHint: String = ""
     public private(set) var isEnriching: Bool = false
     /// True from the moment a TTS line starts being synthesized until
@@ -157,6 +163,67 @@ public final class WalkthroughCoordinator {
     /// `.m4a.tmp`. Set at the top of each transition method, cleared in
     /// `defer`. `@MainActor` makes the read/set atomic across Tasks.
     private var transitionInFlight: Bool = false
+    /// Time-based debounce on top of `transitionInFlight`. The in-flight
+    /// flag catches re-entrant taps while the previous advance is still
+    /// awaiting its async work; this rejects a second tap that arrives
+    /// shortly *after* the previous one completed (e.g. wake-word
+    /// "weiter" finishes, then a fraction of a second later the user
+    /// taps the button thinking nothing happened — without this we'd
+    /// happily skip two steps).
+    private var lastAdvanceAt: Date = .distantPast
+    private static let advanceDebounceSeconds: TimeInterval = 0.6
+
+    /// True while the user paused the walkthrough via wake-word "pause"
+    /// or the Pause button. While paused: no recording, no TTS, no
+    /// wake-word window, timer frozen. Resume restarts the current
+    /// step from its opener — the prior segment's audio is preserved
+    /// and a new segment is appended on resume (see
+    /// `segmentResumeCounter`).
+    public private(set) var isPaused: Bool = false
+    /// Snapshot of the state we paused FROM, so `resume()` knows which
+    /// step to re-enter. Nil whenever `isPaused == false`.
+    private var pausedAtState: WalkthroughState?
+    /// On-disk record of the most recent pause, persisted into the
+    /// session dir so `beginPickup` can re-enter at the right step
+    /// even after an app kill. Mirrors `pausedAtState` but encoded
+    /// (state has associated values that can't trivially round-trip
+    /// through Codable, so we project into a flat struct).
+    fileprivate struct PauseMarker: Codable, Sendable {
+        enum Phase: String, Codable { case briefing, opener, listening }
+        enum Kind: String, Codable { case event, general, voiceNote }
+        let phase: Phase
+        let kind: Kind?
+        let stepIndex: Int
+        let eventIndex: Int?
+        let sectionID: String?
+        let elapsedSeconds: Int
+        let activeSegmentID: String?
+        let pausedAt: Date
+    }
+    /// AVAudioPlayer + delegate proxy retained across the "last 5s"
+    /// playback inside `playLastSeconds(of:seconds:)` so the closure
+    /// can return while the player keeps the delegate alive.
+    private var pickupPlayerHolder: (AVAudioPlayer, PickupPlaybackDelegate)?
+    /// Continuation backing `playLastSeconds`'s `await`. Stored on
+    /// self so `cancel()` can stop the player and resume the
+    /// continuation explicitly — `AVAudioPlayer.stop()` does *not*
+    /// fire `audioPlayerDidFinishPlaying`, so without this hook a
+    /// cancel mid-playback would leak the task forever (and the
+    /// audio would keep playing because nothing else stopped it).
+    private var pickupPlaybackContinuation: CheckedContinuation<Void, Never>?
+    /// Per-base-segment-ID counter that disambiguates the second, third,
+    /// … recording of the same step after pause/resume cycles. The first
+    /// recording uses the base ID verbatim (e.g. `s01e02`); subsequent
+    /// recordings append `c<N>` (`s01e02c2`, `s01e02c3`, …) so each
+    /// pause/resume produces its own segment in the manifest.
+    private var segmentResumeCounter: [String: Int] = [:]
+    /// Actual segment ID of the file the AudioEngine is currently
+    /// writing into (after the resume suffix has been applied). Set
+    /// inside `startEventCapture` / `startGeneralCapture` /
+    /// `startVoiceNoteCapture`; cleared in `stopSegmentCapture`.
+    /// Was previously a computed property derived from `state`, which
+    /// couldn't distinguish a first recording from a post-resume one.
+    private var currentRecordingSegmentID: String?
 
     /// Built in `begin()` from settings.order + events + notes. Each entry
     /// drives exactly one opener+listen cycle, except `.calendar` which
@@ -233,11 +300,19 @@ public final class WalkthroughCoordinator {
     private var noteSummaryCache: [String: String] = [:]
     private var noteSummaryTasks: [String: Task<String, Never>] = [:]
 
-    private var liveActivity: Any?
-    private var liveActivityStartedAt: Date?
-
     private init() {
         observeStateForIsland()
+        // Adopt any orphan activity left over from a previous launch
+        // (jetsam during walkthrough leaves the banner on the lock
+        // screen but `liveActivity = nil` here). The next state-change
+        // sync will overwrite content + ownership.
+        Task { await LiveActivityHub.shared.rehydrate() }
+    }
+
+    /// Called from `App.scenePhase == .active` so the hub can sweep
+    /// stale activities that survived the previous run. Idempotent.
+    public func reclaimLiveActivityIfNeeded() async {
+        await LiveActivityHub.shared.rehydrate()
     }
 
     // MARK: - Plan model -----------------------------------------------
@@ -280,7 +355,11 @@ public final class WalkthroughCoordinator {
         confirmedImplicit = []
         rejectedImplicit = []
         confirmationLanguage = language
-        liveActivityStartedAt = Date()
+        isPaused = false
+        pausedAtState = nil
+        segmentResumeCounter = [:]
+        currentRecordingSegmentID = nil
+        lastAdvanceAt = .distantPast
         plan = []
         surfacedNoteIDs = []
         deferredNoteIDs = []
@@ -376,6 +455,841 @@ public final class WalkthroughCoordinator {
         }
     }
 
+    /// Scan the local staging dir for an unfinished walkthrough session
+    /// whose ISO timestamp falls on `date`. "Unfinished" = the dir has
+    /// at least one m4a in `segments/` but no `manifest.json` (the
+    /// manifest is only written by `finishUpload()` after the user
+    /// completes the walkthrough). Sets `unfinishedSessionURL` to the
+    /// most-recent matching dir (or nil). Returns the URL for callers
+    /// that want it inline.
+    @discardableResult
+    public func loadUnfinishedSession(forDate date: Date) async -> URL? {
+        let cal = Calendar.current
+        let targetDay = cal.startOfDay(for: date)
+        let parser = ISO8601DateFormatter()
+        let found: URL? = await Task.detached(priority: .utility) { () -> URL? in
+            guard let root = try? LocalStore.sessionsStagingDir(),
+                  let names = try? FileManager.default.contentsOfDirectory(atPath: root.path)
+            else { return nil }
+            var candidates: [(url: URL, ts: Date)] = []
+            for name in names {
+                let dir = root.appending(path: name, directoryHint: .isDirectory)
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir),
+                      isDir.boolValue else { continue }
+                // Skip dirs that already finished (manifest written).
+                let manifestURL = dir.appending(path: LocalStore.manifestFilename)
+                if FileManager.default.fileExists(atPath: manifestURL.path) { continue }
+                // Need at least one real m4a to be worth resuming.
+                let segmentsDir = dir.appending(path: "segments", directoryHint: .isDirectory)
+                let segmentFiles = (try? FileManager.default.contentsOfDirectory(
+                    at: segmentsDir,
+                    includingPropertiesForKeys: nil
+                ))?.filter {
+                    $0.pathExtension.lowercased() == "m4a"
+                        && !M4AWriter.isOrphanTempURL($0)
+                } ?? []
+                guard !segmentFiles.isEmpty else { continue }
+                // session_id is the dir name (ISO timestamp). Match by
+                // calendar day so a session started at 23:50 yesterday
+                // still shows up tomorrow if the user picks "yesterday."
+                let ts: Date? = parser.date(from: name.replacingOccurrences(of: "_", with: "+"))
+                    ?? (try? dir.resourceValues(forKeys: [.creationDateKey]).creationDate)
+                if let ts, cal.isDate(cal.startOfDay(for: ts), inSameDayAs: targetDay) {
+                    candidates.append((dir, ts))
+                }
+            }
+            return candidates.max(by: { $0.ts < $1.ts })?.url
+        }.value
+        unfinishedSessionURL = found
+        return found
+    }
+
+    // MARK: - Pause marker persistence
+
+    private static let pauseMarkerFilename = "pause_state.json"
+
+    private func pauseMarkerURL(in dir: URL) -> URL {
+        dir.appending(path: Self.pauseMarkerFilename)
+    }
+
+    private func writePauseMarker(activeSegmentID: String?) {
+        guard let dir = sessionDir else { return }
+        let marker: PauseMarker? = {
+            switch state {
+            case .briefing:
+                return PauseMarker(
+                    phase: .briefing, kind: nil,
+                    stepIndex: 0, eventIndex: nil, sectionID: nil,
+                    elapsedSeconds: elapsedSeconds,
+                    activeSegmentID: nil, pausedAt: Date()
+                )
+            case .eventOpener(let s, let e):
+                return PauseMarker(
+                    phase: .opener, kind: .event,
+                    stepIndex: s, eventIndex: e, sectionID: nil,
+                    elapsedSeconds: elapsedSeconds,
+                    activeSegmentID: nil, pausedAt: Date()
+                )
+            case .eventListening(let s, let e):
+                return PauseMarker(
+                    phase: .listening, kind: .event,
+                    stepIndex: s, eventIndex: e, sectionID: nil,
+                    elapsedSeconds: elapsedSeconds,
+                    activeSegmentID: activeSegmentID, pausedAt: Date()
+                )
+            case .generalOpener(let s, let id):
+                return PauseMarker(
+                    phase: .opener, kind: .general,
+                    stepIndex: s, eventIndex: nil, sectionID: id,
+                    elapsedSeconds: elapsedSeconds,
+                    activeSegmentID: nil, pausedAt: Date()
+                )
+            case .generalListening(let s, let id):
+                return PauseMarker(
+                    phase: .listening, kind: .general,
+                    stepIndex: s, eventIndex: nil, sectionID: id,
+                    elapsedSeconds: elapsedSeconds,
+                    activeSegmentID: activeSegmentID, pausedAt: Date()
+                )
+            case .voiceNoteOpener(let s):
+                return PauseMarker(
+                    phase: .opener, kind: .voiceNote,
+                    stepIndex: s, eventIndex: nil, sectionID: nil,
+                    elapsedSeconds: elapsedSeconds,
+                    activeSegmentID: nil, pausedAt: Date()
+                )
+            case .voiceNoteListening(let s):
+                return PauseMarker(
+                    phase: .listening, kind: .voiceNote,
+                    stepIndex: s, eventIndex: nil, sectionID: nil,
+                    elapsedSeconds: elapsedSeconds,
+                    activeSegmentID: activeSegmentID, pausedAt: Date()
+                )
+            default:
+                return nil
+            }
+        }()
+        guard let marker else { return }
+        do {
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            enc.dateEncodingStrategy = .iso8601
+            let data = try enc.encode(marker)
+            try data.write(to: pauseMarkerURL(in: dir),
+                           options: [.atomic, .completeFileProtection])
+        } catch {
+            Log.app.warning("pause marker write failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func deletePauseMarker() {
+        guard let dir = sessionDir else { return }
+        try? FileManager.default.removeItem(at: pauseMarkerURL(in: dir))
+    }
+
+    private func readPauseMarker(from dir: URL) -> PauseMarker? {
+        let url = pauseMarkerURL(in: dir)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let dec = JSONDecoder()
+        dec.dateDecodingStrategy = .iso8601
+        return try? dec.decode(PauseMarker.self, from: data)
+    }
+
+    /// Fallback when no `pause_state.json` exists: derive a marker
+    /// purely from the segments[] array that `loadExistingSegments`
+    /// just populated. Picks the highest `(stepIndex, eventIndex,
+    /// chunkIndex)` and synthesises a `listening`-phase marker so
+    /// pickup runs the rich opener-replay + tail-playback flow at
+    /// the actual last-recorded position. Used for cancel-then-pickup
+    /// or app-kill-then-pickup, where the user never tapped Pause.
+    private func inferPickupPoint() -> PauseMarker? {
+        struct Score {
+            let stepIndex: Int
+            let eventIndex: Int  // -1 when the step isn't a calendar block
+            let chunkIndex: Int
+            let actualID: String
+        }
+        var best: Score?
+        for seg in segments {
+            let actualID: String
+            switch seg {
+            case .calendarEvent(let v):  actualID = v.segment_id
+            case .freeReflection(let v): actualID = v.segment_id
+            case .generalSection(let v): actualID = v.segment_id
+            case .voiceNote, .emptyBlock: continue
+            }
+            let (baseID, chunkIdx) = parseSegmentID(actualID)
+            guard let parsed = parseBaseSegmentID(baseID) else { continue }
+            let candidate = Score(
+                stepIndex: parsed.step,
+                eventIndex: parsed.event ?? -1,
+                chunkIndex: chunkIdx,
+                actualID: actualID
+            )
+            if best == nil
+                || candidate.stepIndex > best!.stepIndex
+                || (candidate.stepIndex == best!.stepIndex
+                    && candidate.eventIndex > best!.eventIndex)
+                || (candidate.stepIndex == best!.stepIndex
+                    && candidate.eventIndex == best!.eventIndex
+                    && candidate.chunkIndex > best!.chunkIndex) {
+                best = candidate
+            }
+        }
+        guard let best, best.stepIndex >= 0, best.stepIndex < plan.count else {
+            return nil
+        }
+        let kind: PauseMarker.Kind
+        let eventIndex: Int?
+        let sectionID: String?
+        switch plan[best.stepIndex] {
+        case .calendar:
+            kind = .event
+            eventIndex = best.eventIndex >= 0 ? best.eventIndex : nil
+            sectionID = nil
+            guard eventIndex != nil else { return nil }
+        case .general(let section):
+            kind = .general
+            eventIndex = nil
+            sectionID = section.id
+        case .voiceNote:
+            kind = .voiceNote
+            eventIndex = nil
+            sectionID = nil
+        }
+        // Sum the recorded duration of every chunk that belongs to
+        // the picked base id, so the timer resumes at the total time
+        // spent in this meeting/section instead of snapping to 00:00.
+        // Sync probe via `AVAudioPlayer(contentsOf:)` reads the m4a
+        // duration atom in microseconds without decoding samples.
+        let baseID = parseSegmentID(best.actualID).baseID
+        var elapsed: Double = 0
+        for seg in segments {
+            let id: String
+            switch seg {
+            case .calendarEvent(let v):  id = v.segment_id
+            case .freeReflection(let v): id = v.segment_id
+            case .generalSection(let v): id = v.segment_id
+            case .voiceNote, .emptyBlock: continue
+            }
+            guard parseSegmentID(id).baseID == baseID,
+                  let url = segmentURLs[mediaPath(for: id)],
+                  let player = try? AVAudioPlayer(contentsOf: url)
+            else { continue }
+            elapsed += player.duration
+        }
+        return PauseMarker(
+            phase: .listening,
+            kind: kind,
+            stepIndex: best.stepIndex,
+            eventIndex: eventIndex,
+            sectionID: sectionID,
+            elapsedSeconds: Int(elapsed.rounded()),
+            activeSegmentID: best.actualID,
+            pausedAt: Date()
+        )
+    }
+
+    /// Parse a *base* segment id (no `c<N>` suffix) into its plan-step
+    /// and optional event indices. `s03` → step 2, no event. `s01e04`
+    /// → step 0, event 3.
+    private func parseBaseSegmentID(_ base: String) -> (step: Int, event: Int?)? {
+        let ns = base as NSString
+        guard let regex = try? NSRegularExpression(pattern: #"^s(\d+)(?:e(\d+))?$"#),
+              let match = regex.firstMatch(
+                  in: base,
+                  options: [],
+                  range: NSRange(location: 0, length: ns.length)
+              ),
+              let s = Int(ns.substring(with: match.range(at: 1)))
+        else { return nil }
+        let step = s - 1
+        let eRange = match.range(at: 2)
+        if eRange.location == NSNotFound { return (step, nil) }
+        guard let e = Int(ns.substring(with: eRange)) else { return (step, nil) }
+        return (step, e - 1)
+    }
+
+    /// Continue an unfinished session for `date`. Reuses the existing
+    /// session dir (so the prior audio survives), re-runs the
+    /// walkthrough plan from step 0, and bumps `segmentResumeCounter`
+    /// so newly-recorded segments don't collide with the on-disk files
+    /// (a re-record of `s01e02` becomes `s01e02c2`). Falls back to
+    /// `begin()` when no unfinished session is detected.
+    public func beginPickup(today: Date? = nil, language: OpenerLanguage = .current) async {
+        guard case .idle = state else { return }
+        let targetDate = today ?? selectedDate
+        let existingDir = await loadUnfinishedSession(forDate: targetDate)
+        guard let existingDir else {
+            await begin(today: targetDate, language: language)
+            return
+        }
+        state = .briefing
+        voxtralPreflightWarning = nil
+        if hasVoxtralVoiceSelected() {
+            Task { await preflightVoxtral() }
+        }
+        // Reset coordinator state the same way begin() does — but
+        // hand the existing dir + session_id to the engine instead of
+        // making fresh ones.
+        error = nil
+        events = previewEvents
+        segments = []
+        segmentURLs = [:]
+        aiPrompts = []
+        followUpUsed = [:]
+        followUpRotation = 0
+        statusHint = ""
+        segmentByID = [:]
+        pendingFinalisation = []
+        pendingImplicitTodos = []
+        confirmedImplicit = []
+        rejectedImplicit = []
+        confirmationLanguage = language
+        isPaused = false
+        pausedAtState = nil
+        segmentResumeCounter = [:]
+        currentRecordingSegmentID = nil
+        lastAdvanceAt = .distantPast
+        plan = []
+        surfacedNoteIDs = []
+        deferredNoteIDs = []
+        droppedNoteIDs = []
+        clearPrefetchedOpeners()
+        syncLiveActivity()
+        Task { await ParakeetManager.shared.warmUp() }
+        do { try await engine.prepareSession() }
+        catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
+        do {
+            sessionDir = existingDir
+            sessionID = existingDir.lastPathComponent
+            try await fetchCalendar(date: targetDate)
+            plan = await buildPlan(forDate: targetDate)
+            if plan.isEmpty {
+                await finishUploadOrConfirmTodos()
+                return
+            }
+            // Replay the existing segment files into the in-memory
+            // structures so they survive into the eventual upload, AND
+            // so the resume counter knows about them (next recording on
+            // the same step picks up at `c<N>`).
+            loadExistingSegments(in: existingDir, plan: plan)
+            // Resolve where the user actually left off. Two sources:
+            //   1. On-disk pause marker (only present if the user
+            //      tapped Pause explicitly — carries exact phase +
+            //      elapsedSeconds; can be stale across cancel→advance
+            //      cycles).
+            //   2. Disk inference — synthesised `listening` marker
+            //      pointing at the highest (step, event, chunk) m4a.
+            //      Always current with disk truth.
+            // Combine: pick whichever is FURTHER ALONG. A position-
+            // newer inference wins over a stale marker; a position-
+            // equal-or-older marker wins because it carries phase +
+            // elapsed details inference can't reconstruct.
+            // Final fall-through to `runStep(at: 0)` only when neither
+            // source produced anything (empty / mangled dir).
+            let marker: PauseMarker? = {
+                let saved = readPauseMarker(from: existingDir)
+                let inferred = inferPickupPoint()
+                switch (saved, inferred) {
+                case (let s?, let i?):
+                    let sScore = (s.stepIndex, s.eventIndex ?? -1)
+                    let iScore = (i.stepIndex, i.eventIndex ?? -1)
+                    if iScore.0 > sScore.0
+                        || (iScore.0 == sScore.0 && iScore.1 > sScore.1) {
+                        return i
+                    }
+                    return s
+                case (let s?, nil):  return s
+                case (nil, let i?):  return i
+                case (nil, nil):     return nil
+                }
+            }()
+            prefetchAllOpeners(language: language)
+            // No day-overview intro on pickup — the user already knows
+            // what day they're in, and stacking a briefing on top of
+            // the pre-intro cue feels chatty. Fresh `begin()` still
+            // plays the intro.
+            if let marker {
+                await routePickup(marker: marker, language: language)
+            } else {
+                await runStep(at: 0, language: language)
+            }
+        } catch {
+            self.error = "\(error)"
+            state = .failed("\(error)")
+            await endLiveActivity()
+        }
+        // Pickup consumed the badge — clear so the start card stops
+        // advertising it after a successful upload (or another tap).
+        unfinishedSessionURL = nil
+    }
+
+    /// Dispatch pickup based on what the pause marker says. Opener
+    /// phase replays the opener via the canonical `runEvent`/`runStep`
+    /// paths; listening phase routes to `beginListeningPickup` which
+    /// adds the "here is where we left off" cue + a 5-second tail
+    /// playback of the prior chunk before starting a fresh recording.
+    private func routePickup(marker: PauseMarker, language: OpenerLanguage) async {
+        // Bump the paused step's opener to the front of the prefetch
+        // queue. Without this, `prefetchAllOpeners` would synthesise
+        // step 0's opener first (which we never visit on pickup),
+        // delaying the actual opener by ~3 s of LLM + Piper synth.
+        // beginListeningPickup also calls this for its own path; for
+        // the opener phase below the runEvent/runStep tail picks up
+        // the warmed cache via `speakOpenerScript`.
+        if marker.phase != .briefing {
+            prefetchOpener(stepIndex: marker.stepIndex,
+                           eventIndex: marker.eventIndex,
+                           language: language)
+        }
+        switch marker.phase {
+        case .briefing:
+            await runStep(at: 0, language: language)
+        case .opener:
+            switch marker.kind ?? .event {
+            case .event:
+                guard marker.stepIndex >= 0,
+                      marker.stepIndex < plan.count,
+                      case .calendar(let evts) = plan[marker.stepIndex],
+                      let evtIdx = marker.eventIndex,
+                      evtIdx >= 0, evtIdx < evts.count else {
+                    await runStep(at: marker.stepIndex, language: language)
+                    return
+                }
+                await runEvent(stepIndex: marker.stepIndex,
+                               eventIndex: evtIdx,
+                               events: evts,
+                               language: language)
+            case .general, .voiceNote:
+                await runStep(at: marker.stepIndex, language: language)
+            }
+        case .listening:
+            await beginListeningPickup(marker: marker, language: language)
+        }
+    }
+
+    /// Rich pickup flow for a listening-phase resume. Sequence:
+    ///   1. Pre-intro TTS — informs the user a previous session is
+    ///      being picked up ("Wir machen mit deiner letzten Sitzung
+    ///      weiter.").
+    ///   2. Re-speak the actual step opener (event opener / general
+    ///      intro / closing prompt) so the user is re-oriented to the
+    ///      specific meeting / section.
+    ///   3. Bridging TTS ("Hier sind die letzten Sekunden deiner
+    ///      Aufnahme:") + last 5s of the prior chunk. Skipped when
+    ///      the chunk's audio file is too short / missing.
+    ///   4. `startXCapture` for a fresh c<N> chunk + transition to
+    ///      listening. Counter logic preserves the previous chunk.
+    ///
+    /// Lock-mode safe: every TTS call runs through the same audio
+    /// session the rest of the walkthrough uses (`.playAndRecord`,
+    /// pre-armed by `engine.prepareSession()`), and `AVAudioPlayer`'s
+    /// playback survives screen lock.
+    private func beginListeningPickup(
+        marker: PauseMarker,
+        language: OpenerLanguage
+    ) async {
+        // Resolve the URL of the chunk we'll preview. Falls back to
+        // skipping the tail playback if the file is gone (manual
+        // delete, sync mishap).
+        let tailURL: URL? = {
+            guard let segID = marker.activeSegmentID else { return nil }
+            return segmentURLs[mediaPath(for: segID)]
+        }()
+        // Only play a tail when there's actually something worth
+        // playing — files shorter than ~5 s are too short to be a
+        // useful re-orient cue, so we just skip the bridge entirely
+        // and rely on the opener replay.
+        let tailIsWorthPlaying: Bool = {
+            guard let tailURL else { return false }
+            let attrs = try? FileManager.default.attributesOfItem(atPath: tailURL.path)
+            // Rough size gate: AAC-LC at 64 kbps ≈ 8 kB/s, so 40 kB ≈
+            // 5 s. Cheaper than probing the m4a's duration header.
+            let bytes = (attrs?[.size] as? Int) ?? 0
+            return bytes > 40_000
+        }()
+        // Restore the timer so the visible counter resumes where it
+        // left off — the user "lost" the paused seconds during the
+        // intro + 5s preview, but past that the timer reads correctly.
+        elapsedSeconds = marker.elapsedSeconds
+
+        // Set the matching opener state so the EventCard / general
+        // header / closing prompt renders while we speak.
+        switch marker.kind ?? .event {
+        case .event:
+            guard let evtIdx = marker.eventIndex else { return }
+            state = .eventOpener(stepIndex: marker.stepIndex, eventIndex: evtIdx)
+        case .general:
+            guard let sid = marker.sectionID else { return }
+            state = .generalOpener(stepIndex: marker.stepIndex, sectionID: sid)
+        case .voiceNote:
+            state = .voiceNoteOpener(stepIndex: marker.stepIndex)
+        }
+
+        // Pre-warm the paused step's opener BEFORE we speak the
+        // pre-intro. `prefetchAllOpeners` in `beginPickup` queues step
+        // 0 first by default — wasteful for pickup since we'll never
+        // visit step 0, and it steals CPU from the Piper synth pass we
+        // actually need. Bumping the priority here hides the LLM +
+        // synth cost behind the pre-intro's ~2 s playback.
+        prefetchOpener(stepIndex: marker.stepIndex,
+                       eventIndex: marker.eventIndex,
+                       language: language)
+
+        // 1. Pre-intro — frames the pickup.
+        let preIntro = language == .de
+            ? "Wir machen mit deiner letzten Sitzung weiter."
+            : "Picking up where you left off."
+        recordAiPrompt(role: "pickup_pre_intro",
+                       segmentID: marker.activeSegmentID,
+                       text: preIntro)
+        lastSpoken = preIntro
+        await speak(preIntro, language: language.rawValue)
+        if interruptInFlight { return }
+
+        // 2. Re-speak the actual opener for the paused step. This is
+        //    the same content runEvent / runGeneral / runVoiceNotes
+        //    would speak on a normal entry; centralised here so the
+        //    pickup path doesn't duplicate composition logic.
+        await speakPickupOpener(marker: marker, language: language)
+        if interruptInFlight { return }
+
+        // 3. Bridge + tail. Only when the prior chunk is long enough
+        //    to be worth re-hearing.
+        if tailIsWorthPlaying, let url = tailURL {
+            let bridge = language == .de
+                ? "Hier sind die letzten Sekunden deiner Aufnahme:"
+                : "Here are the last few seconds of your recording:"
+            recordAiPrompt(role: "pickup_tail_intro",
+                           segmentID: marker.activeSegmentID,
+                           text: bridge)
+            lastSpoken = bridge
+            await speak(bridge, language: language.rawValue)
+            if interruptInFlight { return }
+            await playLastSeconds(of: url, seconds: 5.0)
+            if interruptInFlight { return }
+        }
+
+        // Hand off to the canonical listening tail of each runX
+        // path. Counter logic in startXCapture allocates the next
+        // c<N> suffix so the prior chunk stays untouched.
+        switch marker.kind ?? .event {
+        case .event:
+            guard let evtIdx = marker.eventIndex,
+                  marker.stepIndex >= 0, marker.stepIndex < plan.count,
+                  case .calendar(let evts) = plan[marker.stepIndex],
+                  evtIdx >= 0, evtIdx < evts.count else { return }
+            do {
+                let segID = makeEventSegmentID(stepIndex: marker.stepIndex, eventIndex: evtIdx)
+                try await startEventCapture(segmentID: segID, event: evts[evtIdx])
+                state = .eventListening(stepIndex: marker.stepIndex, eventIndex: evtIdx)
+                startTimer()
+                startLullDetection(
+                    context: .event(eventIndex: evtIdx, evts: evts),
+                    step: marker.stepIndex,
+                    language: language
+                )
+                prefetchNextOpener(
+                    afterStep: marker.stepIndex,
+                    eventIndex: evtIdx,
+                    language: language
+                )
+            } catch {
+                self.error = "\(error)"
+                state = .failed("\(error)")
+            }
+        case .general:
+            guard marker.stepIndex >= 0, marker.stepIndex < plan.count,
+                  case .general(let section) = plan[marker.stepIndex] else { return }
+            do {
+                let segID = "s\(zeroPad(marker.stepIndex + 1))"
+                try await startGeneralCapture(segmentID: segID, section: section)
+                state = .generalListening(stepIndex: marker.stepIndex, sectionID: section.id)
+                startTimer()
+                startLullDetection(
+                    context: .general(section),
+                    step: marker.stepIndex,
+                    language: language
+                )
+                prefetchNextOpener(
+                    afterStep: marker.stepIndex,
+                    eventIndex: nil,
+                    language: language
+                )
+            } catch {
+                self.error = "\(error)"
+                state = .failed("\(error)")
+            }
+        case .voiceNote:
+            guard marker.stepIndex >= 0, marker.stepIndex < plan.count,
+                  case .voiceNote(let notes) = plan[marker.stepIndex] else { return }
+            confirmationLanguage = language
+            do {
+                let segID = "s\(zeroPad(marker.stepIndex + 1))"
+                try await startVoiceNoteCapture(segmentID: segID, notes: notes)
+                state = .voiceNoteListening(stepIndex: marker.stepIndex)
+                startTimer()
+                startLullDetection(
+                    context: .voiceNote,
+                    step: marker.stepIndex,
+                    language: language
+                )
+            } catch {
+                self.error = "\(error)"
+                await ingestAndUpload()
+            }
+        }
+    }
+
+    /// Speak the opener line(s) that `runEvent` / `runGeneral` /
+    /// `runVoiceNoteClosing` would speak for the paused step. Pulled
+    /// out so the pickup path can splice the opener between its
+    /// pre-intro + tail-preview cues without duplicating each runX's
+    /// composition logic.
+    private func speakPickupOpener(
+        marker: PauseMarker,
+        language: OpenerLanguage
+    ) async {
+        switch marker.kind ?? .event {
+        case .event:
+            guard let evtIdx = marker.eventIndex,
+                  marker.stepIndex >= 0, marker.stepIndex < plan.count,
+                  case .calendar(let evts) = plan[marker.stepIndex],
+                  evtIdx >= 0, evtIdx < evts.count else { return }
+            let segID = makeEventSegmentID(
+                stepIndex: marker.stepIndex,
+                eventIndex: evtIdx
+            )
+            let spans = await eventOpenerSpans(
+                event: evts[evtIdx],
+                index: evtIdx,
+                total: evts.count,
+                segmentID: segID,
+                language: language
+            )
+            let line = spans.flatten()
+            lastSpoken = line
+            recordAiPrompt(role: "opener", segmentID: segID, text: line)
+            await speakOpenerScript(segmentID: segID, fallbackSpans: spans)
+        case .general:
+            guard marker.stepIndex >= 0, marker.stepIndex < plan.count,
+                  case .general(let section) = plan[marker.stepIndex] else { return }
+            let segID = "s\(zeroPad(marker.stepIndex + 1))"
+            let line = section.introText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { return }
+            lastSpoken = line
+            recordAiPrompt(role: "general_opener", segmentID: segID, text: line)
+            await speakOpenerScript(
+                segmentID: segID,
+                fallbackSpans: [SpokenSpan(text: line, language: language.rawValue)]
+            )
+        case .voiceNote:
+            guard marker.stepIndex >= 0, marker.stepIndex < plan.count,
+                  case .voiceNote = plan[marker.stepIndex] else { return }
+            let segID = "s\(zeroPad(marker.stepIndex + 1))"
+            let closing = OpenerTemplates.closingPrompt(language: language)
+            lastSpoken = closing
+            recordAiPrompt(role: "closing_prompt", segmentID: segID, text: closing)
+            await speakOpenerScript(
+                segmentID: segID,
+                fallbackSpans: [SpokenSpan(text: closing, language: language.rawValue)]
+            )
+        }
+    }
+
+    /// Play just the last `seconds` of an m4a under the active
+    /// `.playAndRecord` session. Awaits natural finish (or decode
+    /// error) via a delegate-continuation. Files shorter than
+    /// `seconds` play in full from t=0. Interruptible: `cancel()`
+    /// stops the player and resumes the continuation so the caller's
+    /// await returns immediately and the chain bails on
+    /// `interruptInFlight`.
+    private func playLastSeconds(of url: URL, seconds: TimeInterval) async {
+        do {
+            let player = try AVAudioPlayer(contentsOf: url)
+            player.prepareToPlay()
+            let start = max(0, player.duration - seconds)
+            player.currentTime = start
+            isSpeaking = true
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let proxy = PickupPlaybackDelegate { [weak self] in
+                    Task { @MainActor [weak self] in
+                        self?.resumePickupContinuation()
+                    }
+                }
+                player.delegate = proxy
+                // Stash everything on self so the closure can return,
+                // the audio thread keeps a strong ref via the player,
+                // and `cancel()` has a hook to stop + resume.
+                self.pickupPlayerHolder = (player, proxy)
+                self.pickupPlaybackContinuation = continuation
+                player.play()
+            }
+            isSpeaking = false
+            pickupPlayerHolder = nil
+            pickupPlaybackContinuation = nil
+        } catch {
+            Log.audio.warning(
+                "pickup tail playback failed: \(String(describing: error), privacy: .public)"
+            )
+            isSpeaking = false
+            pickupPlayerHolder = nil
+            pickupPlaybackContinuation = nil
+        }
+    }
+
+    /// Idempotent resume of the pickup-playback continuation. Called
+    /// from the natural-finish delegate AND from `cancel()` (where
+    /// `AVAudioPlayer.stop()` won't fire the delegate). Whichever
+    /// fires first wins; the other is a no-op.
+    private func resumePickupContinuation() {
+        guard let c = pickupPlaybackContinuation else { return }
+        pickupPlaybackContinuation = nil
+        c.resume()
+    }
+
+    /// Parse a segment filename stem (`s01`, `s01e02`, `s01e02c3`)
+    /// into its base id + resume index. Used by `loadExistingSegments`
+    /// to seed `segmentResumeCounter` from on-disk files.
+    private static let segmentIDPattern: NSRegularExpression? = {
+        try? NSRegularExpression(pattern: #"^(s\d+(?:e\d+)?)(?:c(\d+))?$"#)
+    }()
+
+    private func parseSegmentID(_ stem: String) -> (baseID: String, resumeIdx: Int) {
+        guard let regex = Self.segmentIDPattern,
+              let match = regex.firstMatch(
+                  in: stem,
+                  options: [],
+                  range: NSRange(stem.startIndex..., in: stem)
+              )
+        else { return (stem, 1) }
+        let ns = stem as NSString
+        let base = ns.substring(with: match.range(at: 1))
+        let chunkRange = match.range(at: 2)
+        let chunk: Int = {
+            guard chunkRange.location != NSNotFound else { return 1 }
+            return Int(ns.substring(with: chunkRange)) ?? 1
+        }()
+        return (base, chunk)
+    }
+
+    /// Hydrate `segmentURLs`, `segments`, `segmentByID`, and
+    /// `segmentResumeCounter` from m4a files left behind in an
+    /// unfinished session dir. Each old file is also queued for
+    /// (re-)finalisation so its transcript and todo extraction run
+    /// before the eventual upload.
+    private func loadExistingSegments(in dir: URL, plan: [PlanStep]) {
+        let segmentsDir = dir.appending(path: "segments", directoryHint: .isDirectory)
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: segmentsDir,
+            includingPropertiesForKeys: nil
+        ) else { return }
+        let m4a = urls
+            .filter {
+                $0.pathExtension.lowercased() == "m4a"
+                    && !M4AWriter.isOrphanTempURL($0)
+            }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        for url in m4a {
+            let stem = url.deletingPathExtension().lastPathComponent
+            let (baseID, resumeIdx) = parseSegmentID(stem)
+            let path = "segments/\(url.lastPathComponent)"
+            // Only register the file if we can also build a Segment
+            // record for it — files that can't be mapped (e.g. plan
+            // shape changed) would otherwise upload as orphans the
+            // manifest doesn't reference.
+            guard let seg = makeReconstructedSegment(
+                baseID: baseID,
+                actualID: stem,
+                audioPath: path,
+                plan: plan
+            ) else {
+                Log.app.warning(
+                    "pickup: dropping orphan audio file \(url.lastPathComponent, privacy: .public) — no matching plan step"
+                )
+                continue
+            }
+            // Bump the counter to at least this index so a future call
+            // to `nextActualSegmentID(forBase:)` skips past the on-disk
+            // file rather than overwriting it.
+            let prior = segmentResumeCounter[baseID, default: 0]
+            segmentResumeCounter[baseID] = max(prior, resumeIdx)
+            segmentURLs[path] = url
+            segments.append(seg)
+            segmentByID[stem] = segments.count - 1
+            // Re-transcribe — finalise() handles the rest (todos +
+            // setting transcript on the segment record).
+            let task = Task { [weak self] in
+                guard let self else { return }
+                await self.finalise(segmentID: stem, url: url)
+            }
+            pendingFinalisation.append(task)
+        }
+    }
+
+    /// Build a Segment record for a reloaded m4a, looking up the
+    /// matching plan step (and event index for calendar segments).
+    /// Returns nil when the base id falls outside the current plan
+    /// (e.g. plan length changed between sessions).
+    private func makeReconstructedSegment(
+        baseID: String,
+        actualID: String,
+        audioPath: String,
+        plan: [PlanStep]
+    ) -> Segment? {
+        // base id formats: "sNN" or "sNNeMM"
+        let ns = baseID as NSString
+        guard let regex = try? NSRegularExpression(pattern: #"^s(\d+)(?:e(\d+))?$"#),
+              let match = regex.firstMatch(
+                  in: baseID,
+                  options: [],
+                  range: NSRange(location: 0, length: ns.length)
+              ),
+              let stepIdx = Int(ns.substring(with: match.range(at: 1))).map({ $0 - 1 })
+        else { return nil }
+        guard stepIdx >= 0, stepIdx < plan.count else { return nil }
+        let eventIdxRange = match.range(at: 2)
+        let eventIdx: Int? = eventIdxRange.location == NSNotFound
+            ? nil
+            : Int(ns.substring(with: eventIdxRange)).map { $0 - 1 }
+
+        switch plan[stepIdx] {
+        case .calendar(let evts):
+            guard let evtIdx = eventIdx, evtIdx >= 0, evtIdx < evts.count else { return nil }
+            let event = evts[evtIdx]
+            let calRef = CalendarRef(
+                graph_event_id: event.graph_event_id,
+                title: event.subject,
+                start: event.start,
+                end: event.end,
+                attendees: event.attendees.map { $0.email.isEmpty ? $0.name : $0.email },
+                rsvp_status: event.rsvp_status
+            )
+            return .calendarEvent(CalendarEventSegment(
+                segment_id: actualID,
+                calendar_ref: calRef,
+                audio_file: audioPath
+            ))
+        case .general(let section):
+            return .generalSection(GeneralSectionSegment(
+                segment_id: actualID,
+                section_id: section.id,
+                title: section.title,
+                prompt_text: section.introText,
+                audio_file: audioPath
+            ))
+        case .voiceNote:
+            return .freeReflection(FreeReflectionSegment(
+                segment_id: actualID,
+                audio_file: audioPath,
+                captured_at: ISO8601DateFormatter().string(from: Date())
+            ))
+        }
+    }
+
     public func setSelectedDate(_ date: Date) {
         selectedDate = date
     }
@@ -387,27 +1301,74 @@ public final class WalkthroughCoordinator {
         return f
     }()
 
+    // MARK: - Transition preamble helpers
+
+    /// Cancel the wake-word window and any in-flight follow-up task.
+    /// Called at the top of every public transition entry point so each
+    /// one starts with a clean slate regardless of what was mid-flight.
+    private func cancelTransientTasks() {
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        followUpTask?.cancel(); followUpTask = nil
+    }
+
+    /// Gate a transition on `transitionInFlight`, set the flag, install
+    /// a `defer` to clear it, cancel transient tasks, then execute
+    /// `body`. Returns immediately (without calling `body`) when another
+    /// transition is already in flight.
+    ///
+    /// Usage pattern:
+    ///
+    ///     await withTransition {
+    ///         switch state { … }
+    ///     }
+    ///
+    /// If the call site needs extra teardown before the `switch` (e.g.
+    /// `stopNotePlayback()`), do it inside `body` rather than after the
+    /// `await withTransition {` line — the flag is already held at that
+    /// point.
+    @discardableResult
+    private func withTransition(_ body: () async -> Void) async -> Bool {
+        guard !transitionInFlight else { return false }
+        transitionInFlight = true
+        defer { transitionInFlight = false }
+        cancelTransientTasks()
+        await body()
+        return true
+    }
+
     /// Advance to the next plan step (or the next event inside the
     /// calendar block).
     public func advance(language: OpenerLanguage = .current) async {
+        // Don't let a paused walkthrough be advanced — wait for the
+        // user to resume first. Otherwise a tap that arrived while the
+        // pause was being acknowledged would silently jump to the next
+        // step.
+        if isPaused { return }
+        // Time-based debounce: the in-flight flag below catches a
+        // re-entrant tap while the previous advance is still mid-await,
+        // but doesn't catch a SECOND tap that arrives shortly *after*
+        // the previous advance returned (e.g. wake-word "weiter"
+        // resolves, then a fraction of a second later the user taps
+        // the button thinking nothing happened — without this we'd
+        // happily skip two steps). 600 ms is comfortably above human
+        // double-tap intent and well below a deliberate single tap.
+        let now = Date()
+        if now.timeIntervalSince(lastAdvanceAt) < Self.advanceDebounceSeconds {
+            Diag.log("advance: debounced (last=\(String(format: "%.2f", now.timeIntervalSince(lastAdvanceAt)))s ago)")
+            return
+        }
+        lastAdvanceAt = now
         // Coalesce rapid Weiter taps. The runEvent/runGeneral/runVoiceNotes
         // chains are not idempotent — re-entering with the same captured
         // step/event indices double-starts the next segment's audio file
         // and double-queues the opener TTS. Drop the second tap here.
         // Cleared in defer so a real follow-up tap after this one
         // completes goes through.
-        guard !transitionInFlight else { return }
-        transitionInFlight = true
-        defer { transitionInFlight = false }
         // Drop the wake-word window + its in-flight follow-up before
-        // transitioning. Without these, a stale `wakeWordTask` from
-        // the previous event would block `handleLull(case 3)` on the
-        // next event (the `wakeWordTask?.cancel()` guard there only
-        // helps if the field is non-nil but cancelled — clearing here
-        // makes the whole pipeline self-resetting).
-        wakeWordTask?.cancel(); wakeWordTask = nil
-        isWakeListening = false
-        followUpTask?.cancel(); followUpTask = nil
+        // transitioning (see `cancelTransientTasks` comment). The
+        // `withTransition` helper owns the in-flight guard + defer.
+        await withTransition {
         switch state {
         case .eventListening(let stepIdx, let eventIdx):
             await stopSegmentCapture()
@@ -460,19 +1421,25 @@ public final class WalkthroughCoordinator {
             interruptInFlight = true
             await cancelTTS()
             await rejectCurrentTodo()
+        case .briefing:
+            // The intro briefing is just a single TTS line before the
+            // first step; tapping Weiter here means "skip the intro,
+            // jump into the first event." Without this case the button
+            // would visually press but advance() would fall through to
+            // the default and return — exactly the "feedback fires but
+            // nothing happens" symptom the user reported.
+            interruptInFlight = true
+            await cancelTTS()
+            await runStep(at: 0, language: language)
         default:
-            return
+            break
         }
+        } // end withTransition
     }
 
     /// Skip the current step's segment without recording it.
     public func skip(language: OpenerLanguage = .current) async {
-        guard !transitionInFlight else { return }
-        transitionInFlight = true
-        defer { transitionInFlight = false }
-        wakeWordTask?.cancel(); wakeWordTask = nil
-        isWakeListening = false
-        followUpTask?.cancel(); followUpTask = nil
+        await withTransition {
         switch state {
         case .eventListening(let stepIdx, let eventIdx):
             await dropStagedSegment(forStepIndex: stepIdx, eventIndex: eventIdx)
@@ -508,8 +1475,9 @@ public final class WalkthroughCoordinator {
             surfacedNoteIDs = []
             await runStep(at: stepIdx + 1, language: language)
         default:
-            return
+            break
         }
+        } // end withTransition
     }
 
     /// End the *current* section and advance to the next plan step.
@@ -520,12 +1488,7 @@ public final class WalkthroughCoordinator {
     /// note-review / closing — which is already the last section —
     /// "next step" naturally falls through to `ingestAndUpload`.
     public func finishCurrentSection(language: OpenerLanguage = .current) async {
-        guard !transitionInFlight else { return }
-        transitionInFlight = true
-        defer { transitionInFlight = false }
-        wakeWordTask?.cancel(); wakeWordTask = nil
-        isWakeListening = false
-        followUpTask?.cancel(); followUpTask = nil
+        await withTransition {
         switch state {
         case .eventListening(let stepIdx, _):
             // Stop capturing the in-flight event so its audio is
@@ -567,6 +1530,7 @@ public final class WalkthroughCoordinator {
         default:
             break
         }
+        } // end withTransition
     }
 
     public func cancel() async {
@@ -596,6 +1560,14 @@ public final class WalkthroughCoordinator {
         wakeWordTask?.cancel(); wakeWordTask = nil
         isWakeListening = false
         stopNotePlayback()
+        // Stop the pickup last-5s playback if it's mid-flight, and
+        // resume its continuation so the awaiting beginListeningPickup
+        // task drops out instead of hanging until natural finish.
+        // `AVAudioPlayer.stop()` is a no-op when idle, so this is safe
+        // outside the pickup window too.
+        pickupPlayerHolder?.0.stop()
+        pickupPlayerHolder = nil
+        resumePickupContinuation()
         timer?.invalidate(); timer = nil
         await cancelTodoAnswerCapture()
         // Engine.stop() finalises the in-flight segment file on disk —
@@ -615,8 +1587,129 @@ public final class WalkthroughCoordinator {
         // makes sure we don't leak the files until the system reaper
         // kicks in.
         clearPrefetchedOpeners()
+        // Keep the pause marker (if any) on disk. Cancel preserves the
+        // session_dir + its m4a files by design — "recordings until
+        // this point shall be stored" — and the pickup intent should
+        // survive alongside them. `finishUpload()` is the only path
+        // that strips the marker.
         state = .idle
+        isPaused = false
+        pausedAtState = nil
         await endLiveActivity()
+    }
+
+    // MARK: - Pause / Resume -------------------------------------------
+
+    /// Pause the walkthrough. Wake-word "pause" (in listening states)
+    /// and the Pause button (any pausable state) both route here.
+    /// Finalises any active recording so the audio captured up to this
+    /// point is preserved as its own segment in the manifest; cancels
+    /// TTS, wake-word, follow-ups, lull detection, and stops the timer.
+    /// Resume is button-only — by design — so the user can't acci-
+    /// dentally un-pause with a "weiter" mid-thought.
+    public func pause() async {
+        guard !isPaused else { return }
+        guard state.isPausable else { return }
+        Diag.log("walkthrough pause: state=\(state.label)")
+
+        pausedAtState = state
+        isPaused = true
+        interruptInFlight = true
+
+        // Capture the actual segment ID before `stopSegmentCapture`
+        // clears it — we want the marker to remember which `c<N>` file
+        // was being written so pickup can play its tail.
+        let activeSegmentForMarker = currentRecordingSegmentID
+
+        wakeWordTask?.cancel(); wakeWordTask = nil
+        isWakeListening = false
+        followUpTask?.cancel(); followUpTask = nil
+        stopNotePlayback()
+        timer?.invalidate(); timer = nil
+        // Do NOT reset elapsedSeconds — leave it frozen at the moment
+        // the user paused so the timer visibly stops at "02:13" instead
+        // of snapping to "00:00". Resume's startTimer continues from
+        // there.
+        silenceLevel = 0
+        lullDetector.stop()
+        await cancelTodoAnswerCapture()
+        await cancelTTS()
+
+        // Persist the pause point to disk before any further work that
+        // could fail or be killed — survives an app kill so the next
+        // launch's `beginPickup` knows exactly where to resume.
+        writePauseMarker(activeSegmentID: activeSegmentForMarker)
+
+        // If a recording is in flight, finalise it as its own segment.
+        // `stopSegmentCapture` enqueues the finalisation task that runs
+        // Parakeet on the captured audio and writes the transcript onto
+        // the manifest entry. Subsequent resume() will append a NEW
+        // segment with `c<N>` suffix via `nextActualSegmentID`.
+        if currentRecordingSegmentID != nil {
+            await stopSegmentCapture(resetElapsed: false)
+        }
+        // Two presentations for paused state, gated by user preference:
+        //   off (default) — end the Live Activity so the lock screen +
+        //                   Dynamic Island free up while the user is
+        //                   stepped away from the walkthrough.
+        //   on            — push a paused snapshot so the banner stays
+        //                   on-screen as a one-tap shortcut back into
+        //                   the walkthrough card.
+        // The `observeStateForIsland` watcher fires on `state` changes
+        // only, not on `isPaused`, so we push (or end) explicitly here.
+        if LockScreenPreferences.showWhenPaused {
+            syncLiveActivity()
+        } else {
+            Task { await endLiveActivity() }
+        }
+    }
+
+    /// Resume from a paused state. Re-enters the same step's opener
+    /// via the canonical `runEvent` / `runStep` paths — the opener
+    /// re-speaks as a deliberate reorientation cue. The timer continues
+    /// from the paused value (frozen in `pause()`) so the user sees
+    /// "02:13 → opener replays → 02:14, 02:15…" rather than a hard
+    /// reset to 00:00. On the listening phase that follows,
+    /// `startXCapture` allocates a fresh `c<N>`-suffixed segment so
+    /// the prior recording stays intact.
+    public func resume(language: OpenerLanguage = .current) async {
+        guard isPaused else { return }
+        guard let paused = pausedAtState else {
+            isPaused = false
+            deletePauseMarker()
+            return
+        }
+        Diag.log("walkthrough resume: state=\(paused.label)")
+        isPaused = false
+        pausedAtState = nil
+        interruptInFlight = false
+        deletePauseMarker()
+
+        // Push the un-paused state up to the Live Activity so the widget
+        // un-freezes the timer (re-based by the hub from `elapsedSeconds`,
+        // so it picks up at "02:13" instead of snapping to "00:00").
+        syncLiveActivity()
+
+        switch paused {
+        case .briefing:
+            await runStep(at: 0, language: language)
+        case .eventOpener(let stepIdx, let eventIdx),
+             .eventListening(let stepIdx, let eventIdx):
+            guard stepIdx >= 0, stepIdx < plan.count,
+                  case .calendar(let evts) = plan[stepIdx] else {
+                await runStep(at: stepIdx, language: language)
+                return
+            }
+            await runEvent(stepIndex: stepIdx, eventIndex: eventIdx,
+                           events: evts, language: language)
+        case .generalOpener(let stepIdx, _),
+             .generalListening(let stepIdx, _),
+             .voiceNoteOpener(let stepIdx),
+             .voiceNoteListening(let stepIdx):
+            await runStep(at: stepIdx, language: language)
+        default:
+            break
+        }
     }
 
     // MARK: - Plan building --------------------------------------------
@@ -1139,9 +2232,7 @@ public final class WalkthroughCoordinator {
         confirmationLanguage = language
 
         let segID = "s\(zeroPad(stepIndex + 1))"
-        let closing = language == .de
-            ? "Willst du noch etwas zum ganzen Tag sagen?"
-            : "Anything else you want to say about the day overall?"
+        let closing = OpenerTemplates.closingPrompt(language: language)
         recordAiPrompt(role: "closing_prompt", segmentID: segID, text: closing)
         lastSpoken = closing
         await speakOpenerScript(
@@ -1232,7 +2323,11 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    private var currentRecordingSegmentID: String? {
+    /// Compute the canonical *base* segment ID for the current listening
+    /// state. The actual on-disk segment may carry a `c<N>` suffix once
+    /// the user has paused/resumed; use `currentRecordingSegmentID` for
+    /// "the file we're actually writing to right now."
+    private var baseSegmentIDForCurrentState: String? {
         switch state {
         case .eventListening(let s, let e):
             return makeEventSegmentID(stepIndex: s, eventIndex: e)
@@ -1243,14 +2338,27 @@ public final class WalkthroughCoordinator {
         }
     }
 
+    /// Derive the actual segment ID to use for the next recording of a
+    /// given base ID, accounting for prior pause/resume cycles on the
+    /// same step. Bumps `segmentResumeCounter` so the next call returns
+    /// a unique suffix. First call returns the base verbatim; second
+    /// returns `<base>c2`, third `<base>c3`, …
+    private func nextActualSegmentID(forBase base: String) -> String {
+        let prior = segmentResumeCounter[base, default: 0]
+        let next = prior + 1
+        segmentResumeCounter[base] = next
+        return next == 1 ? base : "\(base)c\(next)"
+    }
+
     // MARK: - Capture --------------------------------------------------
 
     private func startEventCapture(
-        segmentID: String,
+        segmentID baseSegmentID: String,
         event: ServerCalendarEvent
     ) async throws {
         guard let sessionDir else { throw NSError(domain: "Walkthrough", code: 1) }
-        let path = mediaPath(for: segmentID)
+        let actualID = nextActualSegmentID(forBase: baseSegmentID)
+        let path = mediaPath(for: actualID)
         let url = sessionDir.appending(path: path)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -1273,20 +2381,22 @@ public final class WalkthroughCoordinator {
             rsvp_status: event.rsvp_status
         )
         let seg = CalendarEventSegment(
-            segment_id: segmentID,
+            segment_id: actualID,
             calendar_ref: calRef,
             audio_file: path
         )
         segments.append(.calendarEvent(seg))
-        segmentByID[segmentID] = segments.count - 1
+        segmentByID[actualID] = segments.count - 1
+        currentRecordingSegmentID = actualID
     }
 
     private func startGeneralCapture(
-        segmentID: String,
+        segmentID baseSegmentID: String,
         section: GeneralSection
     ) async throws {
         guard let sessionDir else { throw NSError(domain: "Walkthrough", code: 1) }
-        let path = mediaPath(for: segmentID)
+        let actualID = nextActualSegmentID(forBase: baseSegmentID)
+        let path = mediaPath(for: actualID)
         let url = sessionDir.appending(path: path)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -1300,22 +2410,24 @@ public final class WalkthroughCoordinator {
         segmentRecordingStartedAt = Date()
         silenceRunStartedAt = nil
         let seg = GeneralSectionSegment(
-            segment_id: segmentID,
+            segment_id: actualID,
             section_id: section.id,
             title: section.title,
             prompt_text: section.introText,
             audio_file: path
         )
         segments.append(.generalSection(seg))
-        segmentByID[segmentID] = segments.count - 1
+        segmentByID[actualID] = segments.count - 1
+        currentRecordingSegmentID = actualID
     }
 
     private func startVoiceNoteCapture(
-        segmentID: String,
+        segmentID baseSegmentID: String,
         notes: [VoiceNote]
     ) async throws {
         guard let sessionDir else { throw NSError(domain: "Walkthrough", code: 1) }
-        let path = mediaPath(for: segmentID)
+        let actualID = nextActualSegmentID(forBase: baseSegmentID)
+        let path = mediaPath(for: actualID)
         let url = sessionDir.appending(path: path)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(),
@@ -1329,12 +2441,13 @@ public final class WalkthroughCoordinator {
         segmentRecordingStartedAt = Date()
         silenceRunStartedAt = nil
         let seg = FreeReflectionSegment(
-            segment_id: segmentID,
+            segment_id: actualID,
             audio_file: path,
             captured_at: ISO8601DateFormatter().string(from: Date())
         )
         segments.append(.freeReflection(seg))
-        segmentByID[segmentID] = segments.count - 1
+        segmentByID[actualID] = segments.count - 1
+        currentRecordingSegmentID = actualID
 
         // Attach each surfaced note as its own `drive_by` segment so the
         // server has the audio + transcript already available. Files are
@@ -1373,7 +2486,13 @@ public final class WalkthroughCoordinator {
 
     private func dropStagedSegment(forStepIndex stepIdx: Int, eventIndex: Int?) async {
         try? await engine.stop()
-        let segID: String = {
+        // Drop the *actual* segment currently being recorded, not the
+        // base ID derived from indices. After a pause/resume the actual
+        // ID carries a `c<N>` suffix; using the base would orphan the
+        // suffixed file and leave the dangling segment in the manifest.
+        // Falls back to the base ID when nothing was actively recording
+        // (e.g. skip during an opener TTS before the engine started).
+        let segID: String = currentRecordingSegmentID ?? {
             if let eIdx = eventIndex {
                 return makeEventSegmentID(stepIndex: stepIdx, eventIndex: eIdx)
             }
@@ -1392,15 +2511,26 @@ public final class WalkthroughCoordinator {
             case .voiceNote, .emptyBlock:  return false
             }
         }
+        segmentByID.removeValue(forKey: segID)
+        currentRecordingSegmentID = nil
     }
 
-    private func stopSegmentCapture() async {
+    private func stopSegmentCapture(resetElapsed: Bool = true) async {
         timer?.invalidate(); timer = nil
-        elapsedSeconds = 0
+        // Pause flow passes `resetElapsed: false` so the visible timer
+        // freezes at the moment the user tapped Pause instead of
+        // snapping back to 00:00. Normal advance/skip/finishSection keep
+        // the default — each new event gets a fresh counter.
+        if resetElapsed { elapsedSeconds = 0 }
         lullDetector.stop()
 
         let finishingSegmentID: String? = currentRecordingSegmentID
         let finishingURL = finishingSegmentID.flatMap { segmentURLs[mediaPath(for: $0)] }
+        // Clear the actual-id pointer before we await the engine so a
+        // subsequent `resume()` (or a stray wake-word window racing the
+        // shutdown) can't accidentally trim/transcribe the same file
+        // twice.
+        currentRecordingSegmentID = nil
 
         do { _ = try await engine.stop() } catch {
             Log.audio.warning("walkthrough engine stop: \(String(describing: error), privacy: .public)")
@@ -1580,6 +2710,23 @@ public final class WalkthroughCoordinator {
     private func finishUpload() async throws {
         state = .ingesting
         await endLiveActivity()
+        // Merge any chunked recordings (pause/resume produced multiple
+        // m4a per logical event) into one m4a per base id BEFORE we
+        // build the manifest, so the upload + history both see "one
+        // continuous recording per meeting" — matching the user's
+        // mental model. Chunks stay on disk during recording for
+        // crash safety; this is the consolidation step.
+        if let dir = sessionDir {
+            let merged = await ChunkMerger.merge(
+                segments: segments,
+                segmentURLs: segmentURLs,
+                segmentByID: segmentByID,
+                sessionDir: dir
+            )
+            segments = merged.segments
+            segmentURLs = merged.segmentURLs
+            segmentByID = merged.segmentByID
+        }
         let manifest = try buildManifest()
         sessionID = manifest.session_id
         if let dir = sessionDir {
@@ -1602,6 +2749,9 @@ public final class WalkthroughCoordinator {
             audioFiles: segmentURLs
         )
         recordedDates.insert(manifest.date)
+        // The session is on its way to the server; any lingering pause
+        // marker no longer applies.
+        deletePauseMarker()
         state = .done
         // Walkthrough is over — release the always-running audio engine
         // and let the audio session deactivate cleanly. The next
@@ -2516,7 +3666,12 @@ public final class WalkthroughCoordinator {
             Task { @MainActor in
                 guard let self else { return }
                 self.elapsedSeconds += 1
-                self.syncLiveActivity()
+                // No per-second Live Activity push — the widget renders
+                // its counter via `Text(timerInterval:)` from
+                // `state.startedAt`, which the hub re-bases each time we
+                // sync. Pushing every second only burned the system's
+                // activity-update budget and made the digit *more*
+                // likely to freeze on the lock screen.
             }
         }
     }
@@ -2564,35 +3719,34 @@ public final class WalkthroughCoordinator {
     /// a stray voice command. Advances to the next note (or the
     /// closing question) on completion.
     public func dropCurrentNote(language: OpenerLanguage = .current) async {
-        guard !transitionInFlight else { return }
-        transitionInFlight = true
-        defer { transitionInFlight = false }
-        wakeWordTask?.cancel(); wakeWordTask = nil
-        isWakeListening = false
-        followUpTask?.cancel(); followUpTask = nil
-        stopNotePlayback()
+        await withTransition {
+            // stopNotePlayback() is load-bearing here: must halt any
+            // in-progress note audio before the state guard runs so we
+            // don't leave a dangling player when the guard returns early.
+            stopNotePlayback()
 
-        guard case .noteReview(let stepIdx, let noteIdx) = state,
-              stepIdx >= 0, stepIdx < plan.count,
-              case .voiceNote(let notes) = plan[stepIdx],
-              noteIdx >= 0, noteIdx < notes.count
-        else { return }
+            guard case .noteReview(let stepIdx, let noteIdx) = state,
+                  stepIdx >= 0, stepIdx < plan.count,
+                  case .voiceNote(let notes) = plan[stepIdx],
+                  noteIdx >= 0, noteIdx < notes.count
+            else { return }
 
-        let dropped = notes[noteIdx]
-        droppedNoteIDs.insert(dropped.seed_id)
-        Log.app.info("note dropped: \(dropped.seed_id, privacy: .public)")
-        recordAiPrompt(role: "note_dropped",
-                       segmentID: "s\(zeroPad(stepIdx + 1))",
-                       text: dropped.transcript)
+            let dropped = notes[noteIdx]
+            droppedNoteIDs.insert(dropped.seed_id)
+            Log.app.info("note dropped: \(dropped.seed_id, privacy: .public)")
+            recordAiPrompt(role: "note_dropped",
+                           segmentID: "s\(zeroPad(stepIdx + 1))",
+                           text: dropped.transcript)
 
-        interruptInFlight = true
-        await cancelTTS()
-        let next = noteIdx + 1
-        if next < notes.count {
-            await runNoteReview(stepIndex: stepIdx, noteIndex: next,
-                                notes: notes, language: language)
-        } else {
-            await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
+            interruptInFlight = true
+            await cancelTTS()
+            let next = noteIdx + 1
+            if next < notes.count {
+                await runNoteReview(stepIndex: stepIdx, noteIndex: next,
+                                    notes: notes, language: language)
+            } else {
+                await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
+            }
         }
     }
 
@@ -2622,44 +3776,42 @@ public final class WalkthroughCoordinator {
     /// transcribe inline, splice the new note back into the entry) is
     /// out of scope here and tracked as a follow-up slice.
     public func rerecordCurrentNote(language: OpenerLanguage = .current) async {
-        guard !transitionInFlight else { return }
-        transitionInFlight = true
-        defer { transitionInFlight = false }
-        wakeWordTask?.cancel(); wakeWordTask = nil
-        isWakeListening = false
-        followUpTask?.cancel(); followUpTask = nil
-        stopNotePlayback()
+        await withTransition {
+            // stopNotePlayback() must run before the state guard (see
+            // dropCurrentNote comment above for why).
+            stopNotePlayback()
 
-        guard case .noteReview(let stepIdx, let noteIdx) = state,
-              stepIdx >= 0, stepIdx < plan.count,
-              case .voiceNote(let notes) = plan[stepIdx],
-              noteIdx >= 0, noteIdx < notes.count
-        else { return }
+            guard case .noteReview(let stepIdx, let noteIdx) = state,
+                  stepIdx >= 0, stepIdx < plan.count,
+                  case .voiceNote(let notes) = plan[stepIdx],
+                  noteIdx >= 0, noteIdx < notes.count
+            else { return }
 
-        let dropped = notes[noteIdx]
-        droppedNoteIDs.insert(dropped.seed_id)
-        Log.app.info("note rerecord requested → note \(dropped.seed_id, privacy: .public) dropped, user redirected to Aufnahme tab")
-        recordAiPrompt(role: "note_rerecord_requested",
-                       segmentID: "s\(zeroPad(stepIdx + 1))",
-                       text: dropped.transcript)
+            let dropped = notes[noteIdx]
+            droppedNoteIDs.insert(dropped.seed_id)
+            Log.app.info("note rerecord requested → note \(dropped.seed_id, privacy: .public) dropped, user redirected to Aufnahme tab")
+            recordAiPrompt(role: "note_rerecord_requested",
+                           segmentID: "s\(zeroPad(stepIdx + 1))",
+                           text: dropped.transcript)
 
-        interruptInFlight = true
-        await cancelTTS()
-        let hint = language == .de
-            ? "Verworfen. Du kannst sie über den Aufnahme-Tab neu aufzeichnen."
-            : "Discarded. You can re-record it via the Aufnahme tab."
-        await speak(hint, language: language.rawValue)
+            interruptInFlight = true
+            await cancelTTS()
+            let hint = language == .de
+                ? "Verworfen. Du kannst sie über den Aufnahme-Tab neu aufzeichnen."
+                : "Discarded. You can re-record it via the Aufnahme tab."
+            await speak(hint, language: language.rawValue)
 
-        // Re-enter runNoteReview only if state is still .noteReview —
-        // a parallel X tap or auto-advance during the TTS could have
-        // moved us already.
-        guard case .noteReview = state else { return }
-        let next = noteIdx + 1
-        if next < notes.count {
-            await runNoteReview(stepIndex: stepIdx, noteIndex: next,
-                                notes: notes, language: language)
-        } else {
-            await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
+            // Re-enter runNoteReview only if state is still .noteReview —
+            // a parallel X tap or auto-advance during the TTS could have
+            // moved us already.
+            guard case .noteReview = state else { return }
+            let next = noteIdx + 1
+            if next < notes.count {
+                await runNoteReview(stepIndex: stepIdx, noteIndex: next,
+                                    notes: notes, language: language)
+            } else {
+                await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
+            }
         }
     }
 
@@ -2671,30 +3823,28 @@ public final class WalkthroughCoordinator {
     /// on orphan notes (older than the diary day); same-day notes
     /// always fold into the session via the regular Weiter path.
     public func saveCurrentNoteForLater(language: OpenerLanguage = .current) async {
-        guard !transitionInFlight else { return }
-        transitionInFlight = true
-        defer { transitionInFlight = false }
-        wakeWordTask?.cancel(); wakeWordTask = nil
-        isWakeListening = false
-        followUpTask?.cancel(); followUpTask = nil
-        stopNotePlayback()
+        await withTransition {
+            // stopNotePlayback() must run before the state guard (see
+            // dropCurrentNote comment above for why).
+            stopNotePlayback()
 
-        guard case .noteReview(let stepIdx, let noteIdx) = state,
-              stepIdx >= 0, stepIdx < plan.count,
-              case .voiceNote(let notes) = plan[stepIdx],
-              noteIdx >= 0, noteIdx < notes.count
-        else { return }
+            guard case .noteReview(let stepIdx, let noteIdx) = state,
+                  stepIdx >= 0, stepIdx < plan.count,
+                  case .voiceNote(let notes) = plan[stepIdx],
+                  noteIdx >= 0, noteIdx < notes.count
+            else { return }
 
-        deferredNoteIDs.insert(notes[noteIdx].seed_id)
+            deferredNoteIDs.insert(notes[noteIdx].seed_id)
 
-        interruptInFlight = true
-        await cancelTTS()
-        let next = noteIdx + 1
-        if next < notes.count {
-            await runNoteReview(stepIndex: stepIdx, noteIndex: next,
-                                notes: notes, language: language)
-        } else {
-            await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
+            interruptInFlight = true
+            await cancelTTS()
+            let next = noteIdx + 1
+            if next < notes.count {
+                await runNoteReview(stepIndex: stepIdx, noteIndex: next,
+                                    notes: notes, language: language)
+            } else {
+                await runVoiceNoteClosing(stepIndex: stepIdx, notes: notes, language: language)
+            }
         }
     }
 
@@ -2760,6 +3910,12 @@ public final class WalkthroughCoordinator {
     }
 
     // MARK: - Live activity (Dynamic Island state indicator) ---------
+    //
+    // Routed through `LiveActivityHub`: the hub arbitrates with
+    // `CaptureCoordinator`'s drive-by activity so we never stack two of
+    // the same type, and it re-bases `startedAt` from `elapsedSeconds`
+    // so the widget's self-incrementing `Text(timerInterval:)` shows
+    // the right offset on every push (including pause→resume).
 
     private var liveActivityKind: CaptureActivityAttributes.Kind? {
         switch state {
@@ -2775,44 +3931,28 @@ public final class WalkthroughCoordinator {
     }
 
     private func syncLiveActivity() {
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         guard let kind = liveActivityKind else {
             Task { await endLiveActivity() }
             return
         }
-        let started = liveActivityStartedAt ?? Date()
-        liveActivityStartedAt = started
-        // Counter shows the *current segment's* elapsed seconds, mirror
-        // of the in-app `ListeningTimer`. During speaking states we send
-        // 0 (the lock-screen UI also hides the counter for `.speaking`).
-        // Previously this computed `Date() - liveActivityStartedAt`,
-        // which is a wall-clock since `begin()` — that's why the counter
-        // never zeroed and ticked during speaking.
+        // Counter shows the *current segment's* elapsed seconds (mirror
+        // of the in-app `ListeningTimer`). During speaking states we
+        // send 0 so the widget doesn't suggest the user is being timed
+        // while the AI has the floor.
         let elapsed = (kind == .speaking) ? 0 : self.elapsedSeconds
-        let content = CaptureActivityAttributes.ContentState(
-            startedAt: started,
-            elapsedSeconds: elapsed,
-            kind: kind
-        )
-        if let activity = liveActivity as? Activity<CaptureActivityAttributes> {
-            Task { await activity.update(.init(state: content, staleDate: nil)) }
-        } else {
-            do {
-                liveActivity = try Activity.request(
-                    attributes: CaptureActivityAttributes(),
-                    content: .init(state: content, staleDate: nil)
-                )
-            } catch {
-                Log.app.warning("Walkthrough live activity start failed: \(String(describing: error), privacy: .public)")
-            }
+        let paused = self.isPaused
+        Task {
+            await LiveActivityHub.shared.sync(
+                owner: .walkthrough,
+                kind: kind,
+                elapsedSeconds: elapsed,
+                isPaused: paused
+            )
         }
     }
 
     private func endLiveActivity() async {
-        guard let activity = liveActivity as? Activity<CaptureActivityAttributes> else { return }
-        await activity.end(nil, dismissalPolicy: .immediate)
-        liveActivity = nil
-        liveActivityStartedAt = nil
+        await LiveActivityHub.shared.end(owner: .walkthrough)
     }
 
     private func observeStateForIsland() {
@@ -3052,9 +4192,7 @@ public final class WalkthroughCoordinator {
             // `runNoteReview` at note 0 via `speak()`; bundling it here
             // too made `runVoiceNoteClosing` replay it after the notes.
             let segID = "s\(zeroPad(stepIndex + 1))"
-            let closing = language == .de
-                ? "Willst du noch etwas zum ganzen Tag sagen?"
-                : "Anything else you want to say about the day overall?"
+            let closing = OpenerTemplates.closingPrompt(language: language)
             return (segID, { [SpokenSpan(text: closing, language: language.rawValue)] })
         }
     }
@@ -3642,6 +4780,7 @@ public final class WalkthroughCoordinator {
             switch action {
             case .advance:        await advance()
             case .finishSection:  await finishCurrentSection()
+            case .pause:          await pause()
             case .dropNote:       await dropCurrentNote()
             case .deferNote:      await saveCurrentNoteForLater()
             case .replayNote:     await replayCurrentNote()
@@ -3698,5 +4837,23 @@ public final class WalkthroughCoordinator {
                 return true
             }
         }
+    }
+}
+
+/// Bridges `AVAudioPlayerDelegate` (Obj-C protocol, can't be put on
+/// an actor) to the Swift continuation used by
+/// `playLastSeconds(of:seconds:)`. Both the natural finish and the
+/// decode-error path resume the continuation so the caller never
+/// hangs on a malformed m4a tail.
+final class PickupPlaybackDelegate: NSObject, AVAudioPlayerDelegate {
+    private let onFinish: @Sendable () -> Void
+    init(onFinish: @escaping @Sendable () -> Void) {
+        self.onFinish = onFinish
+    }
+    func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully _: Bool) {
+        onFinish()
+    }
+    func audioPlayerDecodeErrorDidOccur(_ player: AVAudioPlayer, error _: Error?) {
+        onFinish()
     }
 }
