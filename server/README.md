@@ -18,6 +18,10 @@ and a backup script. The HTMX review/admin/Harvest UIs are unchanged.
 - Docker Engine + Compose v2 on the host.
 - A Tailscale interface so iOS can reach this server.
 - An Ollama instance reachable from the host (recommended model: `qwen2.5:14b`).
+  The analysis call in `document_processor.py` needs a large context window;
+  since it talks OpenAI-shape `/v1/chat/completions` (no per-request `num_ctx`),
+  configure that context length on the Ollama side — see the `OLLAMA_ANALYSIS_*`
+  comment block in `.env.example`.
 - A LightRAG instance reachable from the host.
 - An Entra (Azure AD) tenant the user already signs into.
 
