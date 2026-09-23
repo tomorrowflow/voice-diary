@@ -858,6 +858,16 @@ header h1 {
   overflow-y: auto;
   padding: 8px;
 }
+.entity-list-empty {
+  margin: 8px;
+  padding: 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: var(--bg-container-inset);
+  border: 1px dashed var(--border-primary);
+  border-radius: var(--radius-md);
+  text-align: center;
+}
 
 /* Entity Card */
 .entity-card {
