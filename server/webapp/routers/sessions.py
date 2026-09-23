@@ -252,12 +252,9 @@ async def session_status(session_id: str) -> SessionStatus:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="session_not_found",
         )
-    status_obj = SessionStatus(
-        session_id=persisted["session_id"],
-        received_at=persisted["received_at"],
-        state=persisted["state"],
-        segments=[SegmentResult.model_validate(s) for s in persisted["segments"]],
-    )
+    # `get_session_status` returns exactly SessionStatus's fields (segments as
+    # dicts), so model_validate reconstructs it without restating each field.
+    status_obj = SessionStatus.model_validate(persisted)
     async with _status_lock:
         _session_status.setdefault(session_id, status_obj)
     return status_obj
