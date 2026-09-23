@@ -837,35 +837,25 @@ When Apple FM is used for dynamic follow-ups, the prompt is:
 
 ### 12.1 Categories & fields
 
-**Language & voice**
-- Recording language: `Auto-detect | German | English` (default: `Auto-detect`)
-- Response language: `Match input | Always German | Always English` (default: `Match input`)
+This is the intentionally-reduced surface (2026-07-04 grill): a single-user tool doesn't need
+every knob turned into a setting. Only fields that are actually exposed in the app are listed
+here; everything the team decided not to build a picker for lives in §12.2 instead.
+
+**Language & voice** (UX-13a)
+- App language: `System (recommended) | Deutsch` (default: `System`) — one toggle, not the
+  separate recording/response pickers this section used to describe. `System` follows the
+  iPhone's language and falls back to English on any device whose system language isn't German;
+  `Deutsch` locks German regardless of the system setting. Per-event language detection (from
+  the calendar title) still overrides the spoken voice independently of this toggle — a
+  German-titled event in an English session is still spoken with the German voice.
 - German voice: dropdown of bundled German Piper voices
 - English voice: dropdown of bundled English Piper voices
-
-**Schedule**
-- Workday start time (default 08:00)
-- Workday end time (default 18:00)
-- Evening diary notification time (default 20:00)
 
 **Walkthrough**
 - **Sections** (Mehr → Walkthrough → Abschnitte): list of user-defined `general` sections. Each has `id` (stable UUID), `title` (header text + manifest field), `introText` (TTS opener line). Stored in `UserDefaults` under `walkthrough.generals.v1`.
 - **Reihenfolge** (Mehr → Walkthrough → Reihenfolge): ordered list of `WalkthroughSection` (`.general(id) | .calendarEvents | .driveBy`). Drag to reorder. The two system sections (`calendarEvents`, `driveBy`) always appear once each; if missing from the stored order they're appended in default order on read. Stored in `UserDefaults` under `walkthrough.sectionOrder.v1`. Default order = `[.calendarEvents, .driveBy]`.
 - RSVP filter: multi-select `Accepted | Tentative | All` (default: Accepted + Tentative)
-- Multi-day gap cap: integer days (default 7)
-- Lull thresholds: three sliders for 3s / 6s / 15s (defaults shown)
-- Empty-block threshold: minutes (default 30)
-- Empty-block behaviour: `Ask once | Never ask` (default Ask once)
 - End-of-day drive-by recap: toggle (default on)
-
-**Capture**
-- Drive-by notification duration: seconds (default 4)
-- Drive-by auto-stop silence: seconds (default 3)
-
-**Storage**
-- Raw audio retention: `1 month | 3 months | Forever` (default 3 months)
-- Transcript retention: `3 months | 6 months | Forever` (default Forever)
-- Conversation history in UI: `Last 7 days | 30 days | All` (default 30 days)
 
 **Backend**
 - Server endpoint URL (set during onboarding, e.g. `http://my-server.tailnet.ts.net:8000`)
@@ -880,6 +870,13 @@ When Apple FM is used for dynamic follow-ups, the prompt is:
 
 ### 12.2 Parked settings (not exposed yet)
 
+- Workday hours + evening diary notification schedule
+- Lull / empty-block / multi-day-gap thresholds — `LullDetector` ships fixed 3s/6s/15s
+  thresholds today; no slider UI exposes them
+- Drive-by capture numerics (notification duration, auto-stop silence)
+- Retention pickers (raw audio / transcript / conversation-history windows) — no retention
+  sweep exists in code; local data is only cleared manually today, via Mehr → Gefahrenzone
+  (delete-all or older-than-30-days)
 - Enrichment wake-word customization
 - Custom opener templates
 - Haptic patterns
@@ -938,24 +935,24 @@ All of `server/data/` is gitignored.
 
 ## 14. Onboarding
 
-First launch flow (one-time):
+First-run gate (UX-6a), not the multi-step wizard this section used to describe. This is a
+single-user tool the developer sets up once, so onboarding is reduced to what actually blocks
+first capture — everything else (a dedicated welcome/privacy screen, a workday-hours step, a
+lock-screen widget prompt) lives in Settings (Mehr) instead, reachable whenever the user wants
+it rather than front-loaded into a wizard:
 
 ```
-1. Welcome screen — short description, privacy statement.
-2. Microphone permission request.
-3. Notification permission request.
-4. Diary-processor endpoint setup:
+1. Microphone + Speech Recognition + notification permission prompts — fired proactively at
+   app launch (`Permissions.requestStartupPermissions()`), not a dedicated onboarding screen.
+2. Server setup:
    - URL (Tailscale hostname, e.g. "http://my-server.tailnet.ts.net:8000")
    - Bearer token (user copies from `server`'s `.env`)
    - Test connection (calls GET /health, shows result)
-5. Language setup:
-   - Primary recording language pick
-   - Voice preview: AI says a sentence in German and English so user picks
-6. Workday hours setup.
-7. Lock screen widget install prompt (deep link to widget gallery).
-8. Action Button binding prompt (deep link to Settings → Action Button).
-9. First drive-by tutorial: "Try it now" → records "Hallo Voice Diary", plays back transcript.
-10. Done — app ready.
+3. Voice preview: pick a voice per language (German / English) — the pickers from §12
+   Language & voice.
+4. Action Button binding prompt (deep link to Settings → Action Button).
+5. First drive-by tutorial: "Try it now" → records "Hallo Voice Diary", plays back transcript.
+6. Done — app ready.
 ```
 
 Graph OAuth setup is a one-time step the user runs on the server (`server/scripts/msgraph_bootstrap.py`) before first iOS launch — not on the phone.
@@ -972,7 +969,8 @@ Graph OAuth setup is a one-time step the user runs on the server (`server/script
 | Network | Tailscale unreachable during enrichment | "Can't reach server. Enrichment skipped." |
 | Ingest | Upload fails repeatedly | "2 sessions pending upload. Tap to retry." |
 | LLM | Apple FM generation fails | Silent fallback to canned follow-up template. |
-| TTS | Piper model fails to load | Fallback to AVSpeechSynthesizer for that language. |
+| TTS | Voxtral (server voice) request fails or is unreachable | Silent fallback: `TTSFallbackPolicy` re-dispatches the utterance to the user's Piper voice for that language if its bundled assets are present, else to AVSpeechSynthesizer. Walkthrough keeps speaking. |
+| TTS | Piper voice assets missing / model fails to load | Silent fallback to AVSpeechSynthesizer for that language (`VoiceRegistry`). |
 
 ### 15.2 Never-fail principles
 
