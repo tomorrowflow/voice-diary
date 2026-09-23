@@ -1142,12 +1142,8 @@ function undoLastManualEntity() {
     return e.status === 'new-entity' && e.match_type === 'manual'
       && e.start === lastManualEntity.start && e.end === lastManualEntity.end;
   });
-  if (idx === -1) return;
-
-  entities.splice(idx, 1);
-  if (activeEntityIdx === idx) activeEntityIdx = null;
   lastManualEntity = null;
-  render();
+  if (idx !== -1) removeEntity(idx);
 }
 
 // ============================================================
