@@ -21,7 +21,7 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 import httpx
-from fastapi import FastAPI, Form, Request, UploadFile, File
+from fastapi import APIRouter, Depends, FastAPI, Form, Request, UploadFile, File
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 from fastapi.staticfiles import StaticFiles
@@ -99,6 +99,7 @@ templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 # iOS-facing routers (bearer-token auth applied per-router via Depends,
 # except `/health` which is reachable pre-onboarding for the Tailscale probe).
+from routers.auth import require_bearer  # noqa: E402
 from routers.calendar import router as calendar_router  # noqa: E402
 from routers.email import router as email_router  # noqa: E402
 from routers.lightrag import router as lightrag_router  # noqa: E402
@@ -112,6 +113,11 @@ app.include_router(lightrag_router)
 app.include_router(sessions_router)
 app.include_router(health_router)
 app.include_router(tts_router)
+
+# Legacy review/admin/data routes (SEC-2, docs/REVIEW-2026-07-04.md §3).
+# These share the same published port as the routers above, so the same
+# bearer token gates them — `/health` is the only intentionally open route.
+legacy_router = APIRouter(dependencies=[Depends(require_bearer)])
 
 
 # ─── Text correction pre-processing ──────────────────────────────────
@@ -175,7 +181,7 @@ MONTHS = [
 ]
 
 
-@app.get("/", response_class=HTMLResponse)
+@legacy_router.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     """Transcript list page."""
     transcripts = await db.list_transcripts()
@@ -215,7 +221,7 @@ async def index(request: Request):
     )
 
 
-@app.get("/review/{transcript_id}", response_class=HTMLResponse)
+@legacy_router.get("/review/{transcript_id}", response_class=HTMLResponse)
 async def review_page(request: Request, transcript_id: int):
     """Main review page. Uses saved entities if available, otherwise runs detection."""
     transcript = await db.get_transcript(transcript_id)
@@ -268,7 +274,7 @@ async def review_page(request: Request, transcript_id: int):
     )
 
 
-@app.get("/api/transcripts/{transcript_id}/process")
+@legacy_router.get("/api/transcripts/{transcript_id}/process")
 async def process_transcript_stream(transcript_id: int):
     """SSE endpoint: combined pipeline — LLM correction, entity detection, LLM validation."""
     transcript = await db.get_transcript(transcript_id)
@@ -422,7 +428,7 @@ async def process_transcript_stream(transcript_id: int):
 # ─── Document Processing ──────────────────────────────────────────────
 
 
-@app.get("/process/{transcript_id}")
+@legacy_router.get("/process/{transcript_id}")
 async def process_page(request: Request, transcript_id: int):
     """HTML page for document processing."""
     transcript = await db.get_transcript(transcript_id)
@@ -455,7 +461,7 @@ async def process_page(request: Request, transcript_id: int):
     )
 
 
-@app.get("/api/transcripts/{transcript_id}/process-document")
+@legacy_router.get("/api/transcripts/{transcript_id}/process-document")
 async def process_document_stream(transcript_id: int):
     """SSE endpoint: runs the full document processing pipeline."""
     transcript = await db.get_transcript(transcript_id)
@@ -573,7 +579,7 @@ async def process_document_stream(transcript_id: int):
     return EventSourceResponse(event_generator())
 
 
-@app.get("/api/documents/{doc_id}")
+@legacy_router.get("/api/documents/{doc_id}")
 async def get_document(doc_id: int):
     """Get a processed document."""
     doc = await db.get_processed_document(doc_id)
@@ -594,7 +600,7 @@ async def get_document(doc_id: int):
     return result
 
 
-@app.post("/api/documents/{doc_id}/save")
+@legacy_router.post("/api/documents/{doc_id}/save")
 async def save_document(doc_id: int, request: Request):
     """Save edited markdown for a processed document."""
     body = await request.json()
@@ -607,7 +613,7 @@ async def save_document(doc_id: int, request: Request):
     return {"status": "ok", "updated_at": result["updated_at"].isoformat()}
 
 
-@app.post("/api/documents/{doc_id}/ingest")
+@legacy_router.post("/api/documents/{doc_id}/ingest")
 async def ingest_document(doc_id: int):
     """Send a processed document to LightRAG."""
     doc = await db.get_processed_document(doc_id)
@@ -700,7 +706,7 @@ async def _fetch_calendar_events(date_str: str) -> list[dict]:
     return data.get("value", []) or []
 
 
-@app.get("/api/calendar/{date_str}")
+@legacy_router.get("/api/calendar/{date_str}")
 async def get_calendar_events(date_str: str):
     """Calendar events for a specific date.
 
@@ -714,7 +720,7 @@ async def get_calendar_events(date_str: str):
 # ─── API ─────────────────────────────────────────────────────────────
 
 
-@app.get("/api/dictionary")
+@legacy_router.get("/api/dictionary")
 async def get_dictionary():
     """Full entity dictionary."""
     persons = await db.load_person_dictionary()
@@ -722,7 +728,7 @@ async def get_dictionary():
     return {"persons": persons, "terms": terms}
 
 
-@app.post("/api/transcripts")
+@legacy_router.post("/api/transcripts")
 async def upload_transcript(
     filename: str = Form(...),
     date_str: str = Form(..., alias="date"),
@@ -734,7 +740,7 @@ async def upload_transcript(
     return {"id": tid, "status": "pending"}
 
 
-@app.post("/api/transcripts/delete")
+@legacy_router.post("/api/transcripts/delete")
 async def delete_transcripts(request: Request):
     """Delete selected transcripts by IDs."""
     body = await request.json()
@@ -744,7 +750,7 @@ async def delete_transcripts(request: Request):
     return {"status": "ok", "deleted": len(ids)}
 
 
-@app.get("/api/transcripts/status")
+@legacy_router.get("/api/transcripts/status")
 async def transcripts_status():
     """Return current status for recently submitted transcripts (last 24h)."""
     pool = await db.get_pool()
@@ -770,7 +776,7 @@ async def transcripts_status():
     return result
 
 
-@app.post("/api/transcripts/{transcript_id}/retry")
+@legacy_router.post("/api/transcripts/{transcript_id}/retry")
 async def retry_transcript(transcript_id: int):
     """Reset a failed transcript so it can be re-processed.
 
@@ -796,7 +802,7 @@ async def retry_transcript(transcript_id: int):
     return {"status": "submitted", "process_url": f"/process/{transcript_id}"}
 
 
-@app.post("/api/transcripts/{transcript_id}/reset")
+@legacy_router.post("/api/transcripts/{transcript_id}/reset")
 async def reset_transcript(transcript_id: int):
     """Reset a transcript's saved data so it can be reprocessed."""
     transcript = await db.get_transcript(transcript_id)
@@ -806,7 +812,7 @@ async def reset_transcript(transcript_id: int):
     return {"status": "reset"}
 
 
-@app.post("/api/transcripts/{transcript_id}/save")
+@legacy_router.post("/api/transcripts/{transcript_id}/save")
 async def save_draft(transcript_id: int, request: Request):
     """Save corrected transcript and entity changes (draft save, no processing)."""
     body = await request.json()
@@ -860,7 +866,7 @@ async def save_draft(transcript_id: int, request: Request):
     return {"status": "saved", "new_dictionary_entries": new_entries}
 
 
-@app.post("/api/transcripts/{transcript_id}/submit")
+@legacy_router.post("/api/transcripts/{transcript_id}/submit")
 async def submit_review(transcript_id: int, request: Request):
     """
     Submit reviewed transcript. Saves corrections to the dictionary
@@ -1018,7 +1024,7 @@ async def submit_review(transcript_id: int, request: Request):
 # ─── Data Management ──────────────────────────────────────────────────
 
 
-@app.get("/settings", response_class=HTMLResponse)
+@legacy_router.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request):
     counts = await db.get_data_counts()
     return templates.TemplateResponse(
@@ -1028,12 +1034,12 @@ async def settings_page(request: Request):
     )
 
 
-@app.get("/data", response_class=HTMLResponse)
+@legacy_router.get("/data", response_class=HTMLResponse)
 async def data_page_redirect():
     return RedirectResponse("/settings", status_code=301)
 
 
-@app.get("/api/data/backup")
+@legacy_router.get("/api/data/backup")
 async def data_backup(transcripts: bool = True, review_log: bool = True):
     backup = await db.export_backup(
         include_transcripts=transcripts, include_review_log=review_log
@@ -1049,7 +1055,7 @@ async def data_backup(transcripts: bool = True, review_log: bool = True):
     )
 
 
-@app.post("/api/data/restore")
+@legacy_router.post("/api/data/restore")
 async def data_restore(file: UploadFile = File(...)):
     try:
         content = await file.read()
@@ -1097,7 +1103,7 @@ def _parse_csv_text(text: str) -> list[dict]:
     return rows
 
 
-@app.post("/api/data/import-csv")
+@legacy_router.post("/api/data/import-csv")
 async def data_import_csv(
     request: Request,
     mode: str = Form("upsert"),
@@ -1130,13 +1136,13 @@ async def data_import_csv(
     return {"status": "ok", **counts}
 
 
-@app.post("/api/data/clear-dictionary")
+@legacy_router.post("/api/data/clear-dictionary")
 async def data_clear_dictionary():
     await db.clear_dictionary()
     return {"status": "ok"}
 
 
-@app.post("/api/data/reset")
+@legacy_router.post("/api/data/reset")
 async def data_reset():
     await db.reset_all_data()
     return {"status": "ok"}
@@ -1145,7 +1151,7 @@ async def data_reset():
 # ─── Admin ────────────────────────────────────────────────────────────
 
 
-@app.get("/admin", response_class=HTMLResponse)
+@legacy_router.get("/admin", response_class=HTMLResponse)
 async def admin_page(request: Request):
     """Dictionary admin page."""
     persons = await db.load_all_persons()
@@ -1167,7 +1173,7 @@ async def admin_page(request: Request):
     )
 
 
-@app.put("/api/admin/persons/{person_id}")
+@legacy_router.put("/api/admin/persons/{person_id}")
 async def admin_update_person(person_id: int, request: Request):
     body = await request.json()
     await db.update_person(
@@ -1183,13 +1189,13 @@ async def admin_update_person(person_id: int, request: Request):
     return {"status": "ok"}
 
 
-@app.delete("/api/admin/persons/{person_id}")
+@legacy_router.delete("/api/admin/persons/{person_id}")
 async def admin_delete_person(person_id: int):
     await db.delete_person(person_id)
     return {"status": "ok"}
 
 
-@app.post("/api/admin/persons")
+@legacy_router.post("/api/admin/persons")
 async def admin_create_person(request: Request):
     body = await request.json()
     first = body.get("first_name", "").strip()
@@ -1206,7 +1212,7 @@ async def admin_create_person(request: Request):
     return {"status": "ok", "id": pid, "canonical_name": canonical}
 
 
-@app.post("/api/admin/persons/{person_id}/variations")
+@legacy_router.post("/api/admin/persons/{person_id}/variations")
 async def admin_add_person_variation(person_id: int, request: Request):
     body = await request.json()
     await db.save_person_variation(
@@ -1222,13 +1228,13 @@ async def admin_add_person_variation(person_id: int, request: Request):
     return {"status": "ok", "id": row["id"] if row else None}
 
 
-@app.delete("/api/admin/persons/{person_id}/variations/{variation_id}")
+@legacy_router.delete("/api/admin/persons/{person_id}/variations/{variation_id}")
 async def admin_delete_person_variation(person_id: int, variation_id: int):
     await db.delete_person_variation(variation_id)
     return {"status": "ok"}
 
 
-@app.put("/api/admin/terms/{term_id}")
+@legacy_router.put("/api/admin/terms/{term_id}")
 async def admin_update_term(term_id: int, request: Request):
     body = await request.json()
     await db.update_term(
@@ -1241,13 +1247,13 @@ async def admin_update_term(term_id: int, request: Request):
     return {"status": "ok"}
 
 
-@app.delete("/api/admin/terms/{term_id}")
+@legacy_router.delete("/api/admin/terms/{term_id}")
 async def admin_delete_term(term_id: int):
     await db.delete_term(term_id)
     return {"status": "ok"}
 
 
-@app.post("/api/admin/terms")
+@legacy_router.post("/api/admin/terms")
 async def admin_create_term(request: Request):
     body = await request.json()
     name = body.get("canonical_term", "").strip()
@@ -1259,7 +1265,7 @@ async def admin_create_term(request: Request):
     return {"status": "ok", "id": tid, "canonical_term": name}
 
 
-@app.post("/api/admin/terms/{term_id}/variations")
+@legacy_router.post("/api/admin/terms/{term_id}/variations")
 async def admin_add_term_variation(term_id: int, request: Request):
     body = await request.json()
     await db.save_term_variation(term_id, body["text"])
@@ -1272,7 +1278,7 @@ async def admin_add_term_variation(term_id: int, request: Request):
     return {"status": "ok", "id": row["id"] if row else None}
 
 
-@app.delete("/api/admin/terms/{term_id}/variations/{variation_id}")
+@legacy_router.delete("/api/admin/terms/{term_id}/variations/{variation_id}")
 async def admin_delete_term_variation(term_id: int, variation_id: int):
     await db.delete_term_variation(variation_id)
     return {"status": "ok"}
@@ -1281,13 +1287,13 @@ async def admin_delete_term_variation(term_id: int, variation_id: int):
 # ─── Vector Store Admin ────────────────────────────────────────────────
 
 
-@app.get("/api/admin/vector-status")
+@legacy_router.get("/api/admin/vector-status")
 async def vector_status():
     """Return Qdrant collection stats and connection status."""
     return await vector_store.get_collection_stats()
 
 
-@app.post("/api/admin/backfill-vectors")
+@legacy_router.post("/api/admin/backfill-vectors")
 async def backfill_vectors(recreate: bool = False):
     """Backfill vector store from existing review_log and text_corrections.
 
@@ -1318,7 +1324,7 @@ def _harvest_headers() -> dict:
     }
 
 
-@app.get("/api/harvest/pattern-status")
+@legacy_router.get("/api/harvest/pattern-status")
 async def harvest_pattern_status():
     """Return status of stored Harvest entries and pattern DB."""
     await db.ensure_harvest_table()
@@ -1331,7 +1337,7 @@ async def harvest_pattern_status():
     }
 
 
-@app.post("/api/harvest/load-patterns")
+@legacy_router.post("/api/harvest/load-patterns")
 async def harvest_load_patterns(days: int = 90):
     """Fetch Harvest time entries and store them for pattern analysis."""
     global _harvest_pattern_db
@@ -1371,7 +1377,7 @@ async def harvest_load_patterns(days: int = 90):
     }
 
 
-@app.post("/api/harvest/clear-patterns")
+@legacy_router.post("/api/harvest/clear-patterns")
 async def harvest_clear_patterns():
     """Clear stored Harvest entries and pattern DB."""
     global _harvest_pattern_db
@@ -1381,7 +1387,7 @@ async def harvest_clear_patterns():
     return {"status": "ok"}
 
 
-@app.get("/harvest", response_class=HTMLResponse)
+@legacy_router.get("/harvest", response_class=HTMLResponse)
 async def harvest_page(request: Request, date: str = ""):
     """Harvest time tracking suggestion page."""
     if not date:
@@ -1393,7 +1399,7 @@ async def harvest_page(request: Request, date: str = ""):
     )
 
 
-@app.get("/api/harvest/projects")
+@legacy_router.get("/api/harvest/projects")
 async def harvest_projects():
     """Fetch active Harvest projects with task assignments."""
     global _harvest_projects_cache
@@ -1433,7 +1439,7 @@ async def harvest_projects():
         return JSONResponse({"error": str(e)}, 502)
 
 
-@app.get("/api/harvest/recent-entries")
+@legacy_router.get("/api/harvest/recent-entries")
 async def harvest_recent_entries(days: int = 30):
     """Fetch recent Harvest time entries for pattern analysis."""
     if not HARVEST_ACCESS_TOKEN:
@@ -1459,7 +1465,7 @@ async def harvest_recent_entries(days: int = 30):
         return JSONResponse({"error": str(e)}, 502)
 
 
-@app.get("/api/harvest/suggest")
+@legacy_router.get("/api/harvest/suggest")
 async def harvest_suggest(date: str):
     """Generate Harvest booking suggestions for a given date."""
     global _harvest_pattern_db
@@ -1598,7 +1604,7 @@ SETTING_DEFAULTS = {
 }
 
 
-@app.get("/api/settings")
+@legacy_router.get("/api/settings")
 async def get_settings():
     """Return all app settings with defaults filled in."""
     stored = await db.get_all_settings()
@@ -1606,7 +1612,7 @@ async def get_settings():
     return result
 
 
-@app.put("/api/settings")
+@legacy_router.put("/api/settings")
 async def update_settings(request: Request):
     """Update one or more settings."""
     body = await request.json()
@@ -1618,7 +1624,7 @@ async def update_settings(request: Request):
 # ─── Ingest ──────────────────────────────────────────────────────────
 
 
-@app.get("/ingest", response_class=HTMLResponse)
+@legacy_router.get("/ingest", response_class=HTMLResponse)
 async def ingest_page(request: Request):
     """Audio file ingestion page."""
     return templates.TemplateResponse(
@@ -1628,7 +1634,7 @@ async def ingest_page(request: Request):
     )
 
 
-@app.get("/api/ingest/history")
+@legacy_router.get("/api/ingest/history")
 async def ingest_history(limit: int = 100):
     """Return recent upload history."""
     uploads = await db.list_ingest_uploads(limit)
@@ -1648,7 +1654,7 @@ async def ingest_history(limit: int = 100):
     return {"uploads": rows}
 
 
-@app.post("/api/ingest/clear-history")
+@legacy_router.post("/api/ingest/clear-history")
 async def ingest_clear_history():
     """Clear all upload history."""
     await db.clear_ingest_history()
@@ -1725,7 +1731,7 @@ async def _ingest_audio_to_transcript(
     return transcript_id, review_url, text
 
 
-@app.post("/api/ingest/upload")
+@legacy_router.post("/api/ingest/upload")
 async def ingest_upload(file: UploadFile = File(...)):
     """Accept an audio upload, run ffmpeg + Whisper locally, persist transcript."""
     content = await file.read()
@@ -1770,7 +1776,7 @@ async def ingest_upload(file: UploadFile = File(...)):
         )
 
 
-@app.post("/api/ingest/{upload_id}/retry")
+@legacy_router.post("/api/ingest/{upload_id}/retry")
 async def ingest_retry(upload_id: int, file: UploadFile = File(...)):
     """Retry a failed upload by re-running the local ASR pipeline."""
     content = await file.read()
@@ -1809,31 +1815,31 @@ async def ingest_retry(upload_id: int, file: UploadFile = File(...)):
 # ─── Skeleton Sync ──────────────────────────────────────────────────
 
 
-@app.get("/api/skeleton/status")
+@legacy_router.get("/api/skeleton/status")
 async def skeleton_status():
     import skeleton_sync
     return await skeleton_sync.get_sync_status()
 
 
-@app.get("/api/skeleton/diff")
+@legacy_router.get("/api/skeleton/diff")
 async def skeleton_diff():
     import skeleton_sync
     return await skeleton_sync.get_sync_diff()
 
 
-@app.get("/api/skeleton/bones")
+@legacy_router.get("/api/skeleton/bones")
 async def skeleton_bones():
     import skeleton_sync
     return await skeleton_sync.list_bones()
 
 
-@app.get("/api/skeleton/log")
+@legacy_router.get("/api/skeleton/log")
 async def skeleton_log(limit: int = 20):
     import skeleton_sync
     return await skeleton_sync.get_sync_log(limit)
 
 
-@app.post("/api/skeleton/sync")
+@legacy_router.post("/api/skeleton/sync")
 async def skeleton_sync_trigger(request: Request):
     import skeleton_sync
     body = await request.json()
@@ -1846,14 +1852,14 @@ async def skeleton_sync_trigger(request: Request):
     return {"status": "ok", "stats": stats.to_dict()}
 
 
-@app.post("/api/skeleton/sync/{bone_id:path}")
+@legacy_router.post("/api/skeleton/sync/{bone_id:path}")
 async def skeleton_sync_single(bone_id: str):
     import skeleton_sync
     result = await skeleton_sync.sync_single_bone(bone_id)
     return {"status": "ok", "result": result, "bone_id": bone_id}
 
 
-@app.get("/api/skeleton/render/{bone_id:path}")
+@legacy_router.get("/api/skeleton/render/{bone_id:path}")
 async def skeleton_render(bone_id: str):
     import skeleton_sync
     content = await skeleton_sync.render_bone(bone_id)
@@ -1865,12 +1871,12 @@ async def skeleton_render(bone_id: str):
 # ─── Org Units CRUD ────────────────────────────────────────────────
 
 
-@app.get("/api/admin/org-units")
+@legacy_router.get("/api/admin/org-units")
 async def admin_list_org_units():
     return await db.list_org_units()
 
 
-@app.post("/api/admin/org-units")
+@legacy_router.post("/api/admin/org-units")
 async def admin_create_org_unit(request: Request):
     body = await request.json()
     oid = await db.create_org_unit(
@@ -1884,14 +1890,14 @@ async def admin_create_org_unit(request: Request):
     return {"status": "ok", "id": oid}
 
 
-@app.put("/api/admin/org-units/{org_id}")
+@legacy_router.put("/api/admin/org-units/{org_id}")
 async def admin_update_org_unit(org_id: int, request: Request):
     body = await request.json()
     await db.update_org_unit(org_id, **body)
     return {"status": "ok"}
 
 
-@app.delete("/api/admin/org-units/{org_id}")
+@legacy_router.delete("/api/admin/org-units/{org_id}")
 async def admin_delete_org_unit(org_id: int):
     await db.delete_org_unit(org_id)
     return {"status": "ok"}
@@ -1900,12 +1906,12 @@ async def admin_delete_org_unit(org_id: int):
 # ─── Entity Relationships CRUD ─────────────────────────────────────
 
 
-@app.get("/api/admin/relationships")
+@legacy_router.get("/api/admin/relationships")
 async def admin_list_relationships():
     return await db.list_entity_relationships()
 
 
-@app.post("/api/admin/relationships")
+@legacy_router.post("/api/admin/relationships")
 async def admin_create_relationship(request: Request):
     body = await request.json()
     rid = await db.create_entity_relationship(
@@ -1920,7 +1926,7 @@ async def admin_create_relationship(request: Request):
     return {"status": "ok", "id": rid}
 
 
-@app.delete("/api/admin/relationships/{rel_id}")
+@legacy_router.delete("/api/admin/relationships/{rel_id}")
 async def admin_delete_relationship(rel_id: int):
     await db.delete_entity_relationship(rel_id)
     return {"status": "ok"}
@@ -1929,12 +1935,12 @@ async def admin_delete_relationship(rel_id: int):
 # ─── Role Assignments CRUD ─────────────────────────────────────────
 
 
-@app.get("/api/admin/role-assignments")
+@legacy_router.get("/api/admin/role-assignments")
 async def admin_list_role_assignments(person_id: int = None):
     return await db.list_role_assignments(person_id)
 
 
-@app.post("/api/admin/role-assignments")
+@legacy_router.post("/api/admin/role-assignments")
 async def admin_create_role_assignment(request: Request):
     body = await request.json()
     rid = await db.create_role_assignment(
@@ -1949,14 +1955,14 @@ async def admin_create_role_assignment(request: Request):
     return {"status": "ok", "id": rid}
 
 
-@app.put("/api/admin/role-assignments/{ra_id}")
+@legacy_router.put("/api/admin/role-assignments/{ra_id}")
 async def admin_update_role_assignment(ra_id: int, request: Request):
     body = await request.json()
     await db.update_role_assignment(ra_id, **body)
     return {"status": "ok"}
 
 
-@app.delete("/api/admin/role-assignments/{ra_id}")
+@legacy_router.delete("/api/admin/role-assignments/{ra_id}")
 async def admin_delete_role_assignment(ra_id: int):
     await db.delete_role_assignment(ra_id)
     return {"status": "ok"}
@@ -1965,12 +1971,12 @@ async def admin_delete_role_assignment(ra_id: int):
 # ─── Static Entities CRUD ──────────────────────────────────────────
 
 
-@app.get("/api/admin/static-entities")
+@legacy_router.get("/api/admin/static-entities")
 async def admin_list_static_entities():
     return await db.list_static_entities()
 
 
-@app.post("/api/admin/static-entities")
+@legacy_router.post("/api/admin/static-entities")
 async def admin_create_static_entity(request: Request):
     body = await request.json()
     sid = await db.create_static_entity(
@@ -1983,14 +1989,14 @@ async def admin_create_static_entity(request: Request):
     return {"status": "ok", "id": sid}
 
 
-@app.put("/api/admin/static-entities/{entity_id}")
+@legacy_router.put("/api/admin/static-entities/{entity_id}")
 async def admin_update_static_entity(entity_id: int, request: Request):
     body = await request.json()
     await db.update_static_entity(entity_id, **body)
     return {"status": "ok"}
 
 
-@app.delete("/api/admin/static-entities/{entity_id}")
+@legacy_router.delete("/api/admin/static-entities/{entity_id}")
 async def admin_delete_static_entity(entity_id: int):
     await db.delete_static_entity(entity_id)
     return {"status": "ok"}
@@ -1999,12 +2005,12 @@ async def admin_delete_static_entity(entity_id: int):
 # ─── Initiatives CRUD ──────────────────────────────────────────────
 
 
-@app.get("/api/admin/initiatives")
+@legacy_router.get("/api/admin/initiatives")
 async def admin_list_initiatives():
     return await db.list_initiatives()
 
 
-@app.post("/api/admin/initiatives")
+@legacy_router.post("/api/admin/initiatives")
 async def admin_create_initiative(request: Request):
     body = await request.json()
     iid = await db.create_initiative(
@@ -2018,16 +2024,19 @@ async def admin_create_initiative(request: Request):
     return {"status": "ok", "id": iid}
 
 
-@app.put("/api/admin/initiatives/{init_id}")
+@legacy_router.put("/api/admin/initiatives/{init_id}")
 async def admin_update_initiative(init_id: int, request: Request):
     body = await request.json()
     await db.update_initiative(init_id, **body)
     return {"status": "ok"}
 
 
-@app.delete("/api/admin/initiatives/{init_id}")
+@legacy_router.delete("/api/admin/initiatives/{init_id}")
 async def admin_delete_initiative(init_id: int):
     await db.delete_initiative(init_id)
     return {"status": "ok"}
+
+
+app.include_router(legacy_router)
 
 
