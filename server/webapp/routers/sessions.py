@@ -201,6 +201,14 @@ async def post_session(
             state="processing",
             segments=pending_results,
         )
+    # Persist before we answer 200 — the in-memory map above is a cache;
+    # this row is what survives a restart (SRV-A6).
+    await db.create_session_status(
+        session_id=session_id,
+        received_at=received_at,
+        state="processing",
+        segments=[r.model_dump() for r in pending_results],
+    )
 
     # Cheap pre-flight: Whisper is the one upstream we cannot work around.
     # If it's down we surface 503 early rather than persisting a useless bundle.
@@ -208,6 +216,7 @@ async def post_session(
         shutil.rmtree(session_dir, ignore_errors=True)
         async with _status_lock:
             _session_status.pop(session_id, None)
+        await db.delete_session_status(session_id)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="whisper_unavailable",
@@ -231,11 +240,25 @@ async def post_session(
 async def session_status(session_id: str) -> SessionStatus:
     async with _status_lock:
         status_obj = _session_status.get(session_id)
-    if status_obj is None:
+    if status_obj is not None:
+        return status_obj
+
+    # Cache miss — e.g. a restart cleared the in-memory map. Fall back to
+    # the persisted row (SRV-A6) before giving up.
+    persisted = await db.get_session_status(session_id)
+    if persisted is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="session_not_found",
         )
+    status_obj = SessionStatus(
+        session_id=persisted["session_id"],
+        received_at=persisted["received_at"],
+        state=persisted["state"],
+        segments=[SegmentResult.model_validate(s) for s in persisted["segments"]],
+    )
+    async with _status_lock:
+        _session_status.setdefault(session_id, status_obj)
     return status_obj
 
 

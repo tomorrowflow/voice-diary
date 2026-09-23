@@ -131,6 +131,21 @@ CREATE TABLE IF NOT EXISTS ingest_uploads (
 CREATE INDEX IF NOT EXISTS idx_ingest_uploads_status ON ingest_uploads (status);
 CREATE INDEX IF NOT EXISTS idx_ingest_uploads_created ON ingest_uploads (created_at DESC);
 
+-- iOS session ingest status (SRV-A6). Mirrors ingest_uploads: the
+-- process-local status map in routers/sessions.py is a cache over this
+-- table, not the source of truth, so a restart doesn't lose in-flight
+-- session state or pending_analysis retryability.
+CREATE TABLE IF NOT EXISTS session_ingests (
+    session_id VARCHAR(200) PRIMARY KEY,
+    received_at VARCHAR(40) NOT NULL,
+    state VARCHAR(20) NOT NULL DEFAULT 'processing',
+    segments JSONB NOT NULL DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_ingests_state ON session_ingests (state);
+
 CREATE TABLE IF NOT EXISTS processed_documents (
     id SERIAL PRIMARY KEY,
     transcript_id INTEGER NOT NULL REFERENCES transcripts(id) ON DELETE CASCADE,
