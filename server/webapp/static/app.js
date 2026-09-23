@@ -991,6 +991,7 @@ var savedMultiWordSelection = null;
     popup.style.left = Math.min(rect.left, panelRect.right - 320) + 'px';
     popup.style.top = (rect.bottom + window.scrollY + 8) + 'px';
     popup.classList.add('visible');
+    focusFirstEntityTypeButton();
   });
 
   // Save multi-word selection before browser clears it on mousedown.
@@ -1012,6 +1013,41 @@ var savedMultiWordSelection = null;
       hideSelectionPopup();
     }
   });
+})();
+
+function focusFirstEntityTypeButton() {
+  requestAnimationFrame(function() {
+    var first = document.querySelector('.selection-popup-types button');
+    if (first) first.focus();
+  });
+}
+
+// Roving keyboard navigation across the entity-type buttons: arrow keys
+// move focus, Escape closes the popup (native Enter/Space already
+// activates a focused button).
+function selectionPopupTypeKeydown(e) {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    hideSelectionPopup();
+    return;
+  }
+
+  var buttons = Array.prototype.slice.call(document.querySelectorAll('.selection-popup-types button'));
+  var idx = buttons.indexOf(document.activeElement);
+  if (idx === -1) return;
+
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    buttons[(idx + 1) % buttons.length].focus();
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    buttons[(idx - 1 + buttons.length) % buttons.length].focus();
+  }
+}
+
+(function() {
+  var typesEl = document.querySelector('.selection-popup-types');
+  if (typesEl) typesEl.addEventListener('keydown', selectionPopupTypeKeydown);
 })();
 
 function hideSelectionPopup() {

@@ -95,3 +95,24 @@ def test_add_manual_entity_offers_undo():
     add_fn = js.split("function addManualEntity(type)")[1].split("\nfunction ")[0]
     assert "undoLastManualEntity" in add_fn
     assert "function undoLastManualEntity(" in js
+
+
+# --- entity-type popup keyboard affordance -------------------------------
+
+
+def test_selection_popup_focuses_first_type_button_when_shown():
+    js = _app_js()
+    assert "focusFirstEntityTypeButton" in js
+
+
+def test_selection_popup_types_listen_for_escape_and_arrow_keys():
+    js = _app_js()
+    assert "function selectionPopupTypeKeydown(" in js
+    handler = js.split("function selectionPopupTypeKeydown(")[1].split("\nfunction ")[0]
+    assert "Escape" in handler
+    assert "ArrowRight" in handler and "ArrowLeft" in handler
+
+
+def test_selection_popup_types_have_focus_visible_style():
+    css = (WEBAPP_DIR / "static" / "style.css").read_text()
+    assert ".selection-popup-types button:focus-visible" in css

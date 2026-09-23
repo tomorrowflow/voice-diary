@@ -1379,6 +1379,11 @@ footer {
   color: var(--color-blue);
   background: var(--color-blue-light);
 }
+.selection-popup-types button:focus-visible {
+  outline: none;
+  border-color: var(--border-focus);
+  box-shadow: var(--shadow-focus);
+}
 
 /* Disfluency highlight */
 .disfluent {
