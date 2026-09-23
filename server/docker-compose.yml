@@ -107,7 +107,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env, e.g. via `openssl rand -hex 32`}
       POSTGRES_DB: ${POSTGRES_DB:-diary_processor}
     # No host port mapping — webapp connects via the internal `postgres` hostname.
-    # For ad-hoc psql, use `docker compose exec postgres psql -U "$POSTGRES_USER" "$POSTGRES_DB"`.
+    # For ad-hoc psql, use `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB"'`
+    # (the inner shell expands the container's own env; a bare $VAR would expand host-side, where it is unset).
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./webapp/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
