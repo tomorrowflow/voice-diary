@@ -233,6 +233,9 @@ function renderEntityList() {
   const el = document.getElementById('entity-list');
   if (!el) return;
 
+  var emptyEl = document.getElementById('entity-list-empty');
+  if (emptyEl) emptyEl.style.display = entities.length === 0 ? '' : 'none';
+
   // Build flat list with original indices
   var order = { ambiguous: 0, suggested: 1, 'new-entity': 2, 'auto-matched': 3, dismissed: 4 };
   var indexed = entities.map(function(ent, idx) { return { ent: ent, idx: idx }; });
