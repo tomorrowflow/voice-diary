@@ -195,7 +195,7 @@ The server in `server/` is one FastAPI app with three clusters of responsibility
 - Single `docker-compose.yml` under `server/` brings up: webapp + postgres + qdrant + whisper.
 - LightRAG and Ollama are external services on the same host or reachable by URL; their endpoints come from `.env`.
 - Exposed port is 8000 (matches what any existing external integrations already point at). Bound to the Tailscale interface only.
-- Bearer token in `server/.env` authenticates the iOS app for the iOS-only routes. Existing routes remain open to the internal Docker network (same as before).
+- Bearer token in `server/.env` authenticates every route except `/health` — the iOS-facing routers and the legacy review/admin/data routes alike. `/health` stays open so the iOS app can probe reachability before onboarding.
 - MSAL refresh tokens persist under `server/data/msal_cache.bin`. Bootstrapped once via `server/scripts/msgraph_bootstrap.py` (device-code flow), then auto-renewed.
 
 ---
