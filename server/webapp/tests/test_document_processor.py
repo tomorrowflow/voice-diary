@@ -4,7 +4,14 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from document_processor import _split_diary_markdown, diary_to_interchange_jsonl
+import httpx
+
+from document_processor import (
+    _split_diary_markdown,
+    analyze_transcript,
+    diary_to_interchange_jsonl,
+    summarize_context,
+)
 
 
 SIMPLE_MARKDOWN = """\
@@ -107,3 +114,122 @@ def test_interchange_chunk_order_contiguous():
     lines = jsonl.strip().split("\n")
     indices = [json.loads(l)["chunk_order_index"] for l in lines[1:]]
     assert indices == list(range(len(indices)))
+
+
+# --- summarize_context: OpenAI-shape /v1/chat/completions -----------------
+
+
+async def test_summarize_context_posts_to_v1_chat_completions():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "x" * 60}}]},
+        )
+
+    result = await summarize_context(
+        "recent", "history", "2026-05-10", transport=httpx.MockTransport(handler)
+    )
+
+    assert captured["url"].endswith("/v1/chat/completions")
+    assert result == "x" * 60
+
+
+async def test_summarize_context_payload_has_no_ollama_native_options():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "x" * 60}}]},
+        )
+
+    await summarize_context(
+        "recent", "history", "2026-05-10", transport=httpx.MockTransport(handler)
+    )
+
+    body = captured["body"]
+    assert "options" not in body
+    assert "num_ctx" not in body
+    assert body["temperature"] == 0.1
+    assert body["stream"] is False
+
+
+async def test_summarize_context_falls_back_on_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "boom"})
+
+    result = await summarize_context(
+        "recent", "history", "2026-05-10", transport=httpx.MockTransport(handler)
+    )
+
+    assert result == "Keine historischen Daten verfügbar."
+
+
+# --- analyze_transcript: OpenAI-shape /v1/chat/completions -----------------
+
+
+ENRICHED_CTX = {
+    "normalized_text": "Heute mit Thomas über das Projekt gesprochen.",
+    "entity_context": {"persons": [], "terms": []},
+    "lightrag_context": {"summary": "", "available": False},
+    "date": "2026-05-10",
+    "diary_author": "Florian Wolf",
+    "diary_author_role": "CTO, Managing Director",
+    "diary_author_company": "Enersis",
+}
+
+
+def _analysis_response(payload: dict) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={"choices": [{"message": {"content": json.dumps(payload)}}]},
+    )
+
+
+async def test_analyze_transcript_posts_to_v1_chat_completions_with_json_mode():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        captured["body"] = json.loads(request.read())
+        return _analysis_response({"relationships": [], "projects": [],
+                                    "decisions": [], "todos": [],
+                                    "insights": [], "recurring_themes": []})
+
+    await analyze_transcript(ENRICHED_CTX, transport=httpx.MockTransport(handler))
+
+    assert captured["url"].endswith("/v1/chat/completions")
+    body = captured["body"]
+    assert body["response_format"] == {"type": "json_object"}
+    assert "options" not in body
+    assert "num_ctx" not in body
+
+
+async def test_analyze_transcript_parses_openai_shape_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _analysis_response({
+            "relationships": [{"a": "Florian", "b": "Thomas"}],
+            "projects": [], "decisions": [], "todos": [],
+            "insights": [], "recurring_themes": [],
+        })
+
+    result = await analyze_transcript(
+        ENRICHED_CTX, transport=httpx.MockTransport(handler)
+    )
+
+    assert result["relationships"] == [{"a": "Florian", "b": "Thomas"}]
+
+
+async def test_analyze_transcript_read_timeout_raises_runtime_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    try:
+        await analyze_transcript(ENRICHED_CTX, transport=httpx.MockTransport(handler))
+        assert False, "expected RuntimeError"
+    except RuntimeError as e:
+        assert "timed out" in str(e)

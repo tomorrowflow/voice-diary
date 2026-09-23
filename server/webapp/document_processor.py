@@ -3,8 +3,8 @@ Document processing pipeline — runs the Analysis → LightRAG flow in-process.
 
 Steps:
 1. Query LightRAG for recent context + entity history (parallel)
-2. Summarize context via Ollama
-3. Analyze transcript via Ollama → structured JSON
+2. Summarize context via the OpenAI-compatible chat endpoint
+3. Analyze transcript via the OpenAI-compatible chat endpoint → structured JSON
 4. Generate temporal-anchored narrative markdown
 5. (Optional) Ingest into LightRAG
 """
@@ -20,28 +20,23 @@ from datetime import datetime
 
 import httpx
 
-from ollama_client import OllamaClient, OllamaTimeoutError
-
 logger = logging.getLogger(__name__)
 
 # --- Config ---
 
+# The analysis calls below speak the OpenAI-compatible /v1/chat/completions
+# shape, which Ollama serves natively. OLLAMA_BASE_URL is shared with the
+# other LLM callers (transcript_corrector, enrichment, ...), which still use
+# Ollama-native /api/chat, so it must stay an Ollama instance. The OpenAI
+# shape is what later lets this call alone target another compatible base
+# URL (e.g. Blindfold — see docs/adr/0001-blindfolded-cloud-egress-opt-in.md).
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.2.17:11434")
 OLLAMA_ANALYSIS_MODEL = os.getenv(
     "OLLAMA_ANALYSIS_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
 )
-OLLAMA_ANALYSIS_NUM_CTX = int(os.getenv("OLLAMA_ANALYSIS_NUM_CTX", "262144"))
 OLLAMA_ANALYSIS_TIMEOUT = float(os.getenv("OLLAMA_ANALYSIS_TIMEOUT", "300"))
 LIGHTRAG_URL = os.getenv("LIGHTRAG_URL", "http://192.168.2.16:9621")
 LIGHTRAG_API_KEY = os.getenv("LIGHTRAG_API_KEY", "")
-
-_ollama_client = OllamaClient(
-    base_url=OLLAMA_BASE_URL, model=OLLAMA_ANALYSIS_MODEL, timeout_seconds=OLLAMA_ANALYSIS_TIMEOUT
-)
-# Separate connect/read/write timeouts — analysis can take minutes.
-_OLLAMA_ANALYSIS_HTTP_TIMEOUT = httpx.Timeout(
-    connect=30.0, read=OLLAMA_ANALYSIS_TIMEOUT, write=30.0, pool=30.0
-)
 
 MONTH_NAMES_DE = [
     "Januar", "Februar", "März", "April", "Mai", "Juni",
@@ -51,6 +46,48 @@ WEEKDAY_NAMES_DE = [
     "Montag", "Dienstag", "Mittwoch", "Donnerstag",
     "Freitag", "Samstag", "Sonntag",
 ]
+
+
+def _extract_chat_content(result: dict) -> str:
+    """Extract the assistant message text from an OpenAI-shape
+    /v1/chat/completions response."""
+    if isinstance(result, dict):
+        choices = result.get("choices")
+        if isinstance(choices, list) and choices:
+            msg = choices[0].get("message")
+            if isinstance(msg, dict) and msg.get("content"):
+                return msg["content"]
+    return ""
+
+
+async def _call_llm(
+    messages: list[dict],
+    *,
+    timeout_seconds: float,
+    temperature: float = 0.1,
+    json_mode: bool = False,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> str:
+    """POST to the OpenAI-compatible /v1/chat/completions endpoint and
+    return the assistant message content.
+
+    `transport` is exposed only so tests can inject an `httpx.MockTransport`;
+    production calls always leave it `None`.
+    """
+    payload: dict = {
+        "model": OLLAMA_ANALYSIS_MODEL,
+        "stream": False,
+        "temperature": temperature,
+        "messages": messages,
+    }
+    if json_mode:
+        payload["response_format"] = {"type": "json_object"}
+
+    timeout = httpx.Timeout(connect=30.0, read=timeout_seconds, write=30.0, pool=30.0)
+    async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
+        resp = await client.post(f"{OLLAMA_BASE_URL}/v1/chat/completions", json=payload)
+        resp.raise_for_status()
+        return _extract_chat_content(resp.json())
 
 
 # --- LightRAG queries ---
@@ -180,7 +217,11 @@ async def query_lightrag_entity_history(persons: list[str], date_str: str) -> st
 
 
 async def summarize_context(
-    recent_context: str, entity_history: str, date_str: str
+    recent_context: str,
+    entity_history: str,
+    date_str: str,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
     """Compress LightRAG responses into a 200-word German summary."""
     prompt = (
@@ -207,14 +248,14 @@ async def summarize_context(
     )
 
     try:
-        result = await _ollama_client.chat(
+        content = await _call_llm(
             [{"role": "user", "content": prompt}],
+            timeout_seconds=OLLAMA_ANALYSIS_TIMEOUT,
             temperature=0.1,
-            num_ctx=OLLAMA_ANALYSIS_NUM_CTX,
-            timeout=_OLLAMA_ANALYSIS_HTTP_TIMEOUT,
+            transport=transport,
         )
-        if result.content and len(result.content) >= 50:
-            return result.content
+        if content and len(content) >= 50:
+            return content
         return "Keine historischen Daten verfügbar."
     except Exception as e:
         logger.warning("Context summarization failed: %s (%s)", e, type(e).__name__)
@@ -265,7 +306,11 @@ def build_enriched_context(
     }
 
 
-async def analyze_transcript(enriched_ctx: dict) -> dict:
+async def analyze_transcript(
+    enriched_ctx: dict,
+    *,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> dict:
     """Run the main analysis LLM call — returns structured JSON."""
     persons_text = "\n".join(
         f"- {p['name']} ({p['role']} at {p['company']})"
@@ -381,15 +426,15 @@ async def analyze_transcript(enriched_ctx: dict) -> dict:
     )
 
     try:
-        result = await _ollama_client.chat(
+        # Analysis can take minutes — OLLAMA_ANALYSIS_TIMEOUT bounds the read.
+        content = await _call_llm(
             [{"role": "user", "content": prompt}],
-            format="json",
+            timeout_seconds=OLLAMA_ANALYSIS_TIMEOUT,
             temperature=0.1,
-            num_ctx=OLLAMA_ANALYSIS_NUM_CTX,
-            timeout=_OLLAMA_ANALYSIS_HTTP_TIMEOUT,
+            json_mode=True,
+            transport=transport,
         )
-        content = result.content
-    except OllamaTimeoutError:
+    except httpx.ReadTimeout:
         logger.error("Main analysis timed out after %ss (model: %s)", OLLAMA_ANALYSIS_TIMEOUT, OLLAMA_ANALYSIS_MODEL)
         raise RuntimeError(f"LLM analysis timed out after {OLLAMA_ANALYSIS_TIMEOUT}s")
     except Exception as e:
