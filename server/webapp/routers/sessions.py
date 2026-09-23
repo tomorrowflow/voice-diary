@@ -25,11 +25,9 @@ import json
 import logging
 import re
 import shutil
-import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import httpx
 from fastapi import (
     APIRouter,
     BackgroundTasks,
@@ -43,6 +41,7 @@ from fastapi import (
 # parent class, so `isinstance(part, fastapi.UploadFile)` is always False.
 from starlette.datastructures import UploadFile
 
+import asr_client
 import db
 import document_processor
 import transcript_corrector
@@ -74,9 +73,15 @@ def _sessions_data_dir() -> Path:
     return sessions_dir()
 
 
-def _whisper_url() -> str:
-    import os as _os
-    return _os.getenv("WHISPER_URL", "http://whisper:9000")
+_asr_client: asr_client.AsrClient | None = None
+
+
+def _get_asr_client() -> asr_client.AsrClient:
+    global _asr_client
+    if _asr_client is None:
+        _asr_client = asr_client.AsrClient()
+    return _asr_client
+
 
 # In-memory status map. Per-process is fine — the iOS client polls within
 # a single session; a restart loses status but the bundle on disk survives.
@@ -204,7 +209,7 @@ async def post_session(
 
     # Cheap pre-flight: Whisper is the one upstream we cannot work around.
     # If it's down we surface 503 early rather than persisting a useless bundle.
-    if not await _whisper_reachable():
+    if not await _get_asr_client().reachable():
         shutil.rmtree(session_dir, ignore_errors=True)
         async with _status_lock:
             _session_status.pop(session_id, None)
@@ -433,11 +438,13 @@ async def _process_segment(
     audio_bytes = audio_path.read_bytes()
     language = (segment.language or "de").split("-")[0]
 
+    client = _get_asr_client()
+
     # 1. ffmpeg → WAV
-    wav_bytes = await _ffmpeg_to_wav(audio_bytes, Path(segment.audio_file).suffix or ".m4a")
+    wav_bytes = await client.to_wav_16k_mono(audio_bytes, Path(segment.audio_file).suffix or ".m4a")
 
     # 2. Whisper
-    raw_transcript = await _whisper(wav_bytes, language=language)
+    raw_transcript = await client.transcribe(wav_bytes, language=language)
     if not raw_transcript:
         raise RuntimeError("whisper_empty_transcript")
 
@@ -728,61 +735,6 @@ def _format_session_todo_block(
         if not todo.source_segment_id:
             todos.append(todo)
     return _format_todo_block(todos)
-
-
-# --- ffmpeg + Whisper helpers --------------------------------------------
-
-
-async def _ffmpeg_to_wav(src_bytes: bytes, suffix: str) -> bytes:
-    tmpdir = Path(tempfile.mkdtemp(prefix="seg-"))
-    src_path = tmpdir / f"in{suffix}"
-    wav_path = tmpdir / "out.wav"
-    try:
-        src_path.write_bytes(src_bytes)
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", str(src_path),
-            "-ar", "16000", "-ac", "1", "-f", "wav", str(wav_path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"ffmpeg_failed: {stderr.decode('utf-8', 'replace')[-300:]}"
-            )
-        return wav_path.read_bytes()
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-
-
-async def _whisper_reachable() -> bool:
-    base = _whisper_url().rstrip("/")
-    try:
-        async with httpx.AsyncClient(timeout=2.5) as client:
-            resp = await client.get(f"{base}/")
-            return resp.status_code < 500
-    except Exception:
-        return False
-
-
-async def _whisper(wav_bytes: bytes, *, language: str) -> str:
-    base = _whisper_url().rstrip("/")
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        try:
-            resp = await client.post(
-                f"{base}/asr",
-                params={"task": "transcribe", "language": language, "output": "json"},
-                files={"audio_file": ("seg.wav", wav_bytes, "audio/wav")},
-            )
-        except (httpx.NetworkError, httpx.TimeoutException) as exc:
-            raise RuntimeError(f"whisper_unreachable: {exc}") from exc
-        if resp.status_code >= 400:
-            raise RuntimeError(f"whisper_status_{resp.status_code}")
-        try:
-            data = resp.json()
-        except json.JSONDecodeError:
-            return resp.text.strip()
-        return (data.get("text") or "").strip()
 
 
 def _slug_session_id(session_id: str) -> str:
