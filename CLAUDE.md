@@ -175,7 +175,7 @@ Gemma 4 E4B via MLX Swift is the documented fallback if Apple Foundation Models 
 | Knowledge graph | LightRAG (external, reachable by URL) |
 | Microsoft Graph | MSAL device-code flow, refresh tokens in `data/msal_cache.bin` |
 | Exposure | Tailscale interface only, port 8000 |
-| Auth to iOS | Single bearer token in `.env`, validated on iOS-only routes |
+| Auth | Single bearer token in `.env`, validated on every route except `/health` — iOS routers and the legacy review/admin/data routes alike |
 
 ## Target device
 
