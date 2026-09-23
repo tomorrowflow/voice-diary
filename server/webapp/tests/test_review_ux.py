@@ -79,3 +79,19 @@ def test_save_draft_shows_confirmation_toast():
     js = _app_js()
     save_fn = js.split("async function saveDraft()")[1].split("\nasync function")[0]
     assert "showToast(" in save_fn
+
+
+# --- undo after addManualEntity -----------------------------------------
+
+
+def test_add_manual_entity_shows_confirmation_toast():
+    js = _app_js()
+    add_fn = js.split("function addManualEntity(type)")[1].split("\nfunction ")[0]
+    assert "showToast(" in add_fn
+
+
+def test_add_manual_entity_offers_undo():
+    js = _app_js()
+    add_fn = js.split("function addManualEntity(type)")[1].split("\nfunction ")[0]
+    assert "undoLastManualEntity" in add_fn
+    assert "function undoLastManualEntity(" in js

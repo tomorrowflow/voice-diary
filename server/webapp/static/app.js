@@ -1042,6 +1042,8 @@ function resolveOffset(node, localOffset) {
   return spanStart + localOffset;
 }
 
+var lastManualEntity = null; // {start, end} of the most recently manually-added entity, for undo
+
 function addManualEntity(type) {
   if (!pendingSelection) return;
 
@@ -1086,13 +1088,30 @@ function addManualEntity(type) {
     return e.start === newEntity.start && e.end === newEntity.end;
   });
   activeEntityIdx = newIdx;
+  lastManualEntity = { start: newEntity.start, end: newEntity.end };
   render();
+
+  showToast(type + ' added', false, { actionLabel: 'Undo', onAction: undoLastManualEntity });
 
   requestAnimationFrame(function() {
     requestAnimationFrame(function() {
       scrollSidebarToActiveCard();
     });
   });
+}
+
+function undoLastManualEntity() {
+  if (!lastManualEntity) return;
+  var idx = entities.findIndex(function(e) {
+    return e.status === 'new-entity' && e.match_type === 'manual'
+      && e.start === lastManualEntity.start && e.end === lastManualEntity.end;
+  });
+  if (idx === -1) return;
+
+  entities.splice(idx, 1);
+  if (activeEntityIdx === idx) activeEntityIdx = null;
+  lastManualEntity = null;
+  render();
 }
 
 // ============================================================
