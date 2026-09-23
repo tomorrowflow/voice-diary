@@ -44,8 +44,8 @@ class AsrTimeoutError(AsrError):
 
 
 class AsrEngineError(AsrError):
-    """ffmpeg failed to convert the audio, or Whisper returned a server-side
-    error, or the transcript came back empty."""
+    """ffmpeg failed to convert the audio, Whisper returned an error status,
+    or the request failed with a non-timeout, non-connect transport error."""
 
 
 # --- client ------------------------------------------------------------------
