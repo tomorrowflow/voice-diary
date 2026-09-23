@@ -144,7 +144,7 @@ Prior art: the existing FastAPI test pattern in `server/webapp/tests/` (FastAPI 
 
 `VoxtralTTSClient`, `TTSFallbackPolicy`, `VoxtralTTS`, `VoiceCatalogClient`, the `VoiceRegistry` extension, and the `VoiceSettingsView` changes are not covered by automated tests in v1 per the user's scoping decision. They are designed to be testable in isolation: `VoxtralTTSClient` accepts a `URLProtocol` stub, `TTSFallbackPolicy` is a pure decision function, `VoiceCatalogClient` accepts an injectable URLSession. Tests can be added in a later milestone without refactoring.
 
-### Manual scenarios that must pass before M13b is called done
+### Manual scenarios that must pass before slice 05 is called done
 
 These are not automated but must be executed end-to-end on a real iPhone 17 Pro before claiming completion:
 
