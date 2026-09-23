@@ -157,7 +157,7 @@ These are not automated but must be executed end-to-end on a real iPhone 17 Pro 
 ## Out of Scope
 
 - **Custom voice cloning from a 3 s user reference.** Reopened as Slice 07 on 2026-05-19, then reverted same day after discovering the open-source Voxtral checkpoint is missing the audio encoder needed for cloning. See the Slice 07 post-mortem at the end of this PRD.
-- **Streaming inference.** The official model card mentions streaming but documents only batch. v1 uses batch. M13c will measure whether streaming is worth pursuing.
+- **Streaming inference.** The official model card mentions streaming but documents only batch. v1 uses batch. The slice 06 latency addendum below closed this in favour of batch — no streaming work is scheduled.
 - **Replacing Whisper STT with Voxtral Transcribe.** Different model, different milestone. The user separately noted the `virtUOS/vllm-voxtral` repo as a potential STT path; explicitly not addressed here.
 - **Apple Foundation Models or Gemma fallback for the dialog LLM.** Unchanged by this PRD.
 - **Free-reflection mode TTS quality.** Free reflection currently uses the same engine selection as the walkthrough, so it benefits automatically; no dedicated work.
@@ -182,7 +182,7 @@ These are not automated but must be executed end-to-end on a real iPhone 17 Pro 
 
 **Privacy posture.** Text strings sent to Voxtral are the AI's *outgoing* prompts (openers, follow-ups, closing lines). They are not user content. No user audio or transcript ever leaves the phone via this path; that constraint is preserved.
 
-**Documentation updates same commit.** `SPEC.md` §4 gains a Voxtral row with a CC BY-NC 4.0 note. `SPEC.md` §13 gains the new on-disk location. `DEVELOPMENT.md` gains S5, M13a, M13b, M13c entries with the exit criteria from the milestone table. `CLAUDE.md` does not need to change.
+**Documentation updates same commit.** `SPEC.md` §4 gains a Voxtral row with a CC BY-NC 4.0 note. `SPEC.md` §13 gains the new on-disk location. `CLAUDE.md` does not need to change. (The original plan also called for S5 / M13a / M13b / M13c entries in `DEVELOPMENT.md`; as recorded in the Milestones section above, those were never added — the work shipped as the slice issues in `docs/issues/voxtral-tts/` instead.)
 
 **Sign-off captured.** Before drafting this PRD the user confirmed: (a) the 2× RTX 3090 server, (b) bundled Voxtral voices only in v1, (c) silent per-utterance fallback to Piper or Apple, (d) the 10-module decomposition with five marked deep, (e) automated test coverage scoped to `voxtral_client` on the server in v1.
 
