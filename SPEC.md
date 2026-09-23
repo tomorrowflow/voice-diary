@@ -921,10 +921,18 @@ All of `server/data/` is gitignored.
 
 ### 13.2 Retention
 
-- **Raw audio**: respects `Raw audio retention` setting. Background task runs daily at 03:00 local time, deletes session folders older than setting.
-- **Transcripts & manifests**: respect `Transcript retention` setting. Kept longer than audio because they're much smaller.
-- **Drive-by seeds**: deleted after successful ingest in the evening session, regardless of retention setting.
-- **Upload queue**: never pruned by retention — entries stay until successfully uploaded.
+Retention is **manual today**. The automated, per-setting daily sweep this section used to
+describe is not built: the retention pickers are parked (§12.2), so nothing prunes local
+data on a schedule. The user clears data on demand via Mehr → Gefahrenzone — either
+delete-all (wipes both audio directories, notes, and the upload queue) or remove-older-than-
+30-days (sessions + notes past a 30-day cutoff). Diary entries already on the server are
+untouched by both.
+
+Independent of that manual sweep:
+
+- **Drive-by seeds**: deleted after successful ingest in the evening session.
+- **Upload queue**: entries stay until successfully uploaded — only delete-all discards
+  un-uploaded entries.
 
 ### 13.3 Encryption
 
