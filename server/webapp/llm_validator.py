@@ -12,9 +12,13 @@ import os
 import time
 from dataclasses import asdict
 
-import httpx
-
 from entity_detector import DetectedEntity
+from ollama_client import (
+    OllamaClient,
+    OllamaEngineError,
+    OllamaTimeoutError,
+    OllamaUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +27,8 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
 LLM_VALIDATION_ENABLED = os.getenv("LLM_VALIDATION_ENABLED", "true").lower() == "true"
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120"))
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "131072"))
+
+_ollama_client = OllamaClient(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL, timeout_seconds=OLLAMA_TIMEOUT)
 
 
 def _needs_validation(ent: DetectedEntity) -> bool:
@@ -290,33 +296,24 @@ async def validate_entities_stream(
     t0 = time.monotonic()
 
     try:
-        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "messages": messages,
-                    "format": "json",
-                    "stream": False,
-                    "options": {"num_ctx": OLLAMA_NUM_CTX},
-                },
-            )
-            resp.raise_for_status()
-    except httpx.ConnectError:
+        result = await _ollama_client.chat(
+            messages, format="json", num_ctx=OLLAMA_NUM_CTX, timeout=OLLAMA_TIMEOUT
+        )
+    except OllamaUnavailableError:
         msg = f"Ollama unreachable at {OLLAMA_BASE_URL}"
         logger.warning(msg)
         yield _sse_log(msg, "error")
         yield _sse_result(entities)
         return
-    except httpx.TimeoutException:
+    except OllamaTimeoutError:
         elapsed = time.monotonic() - t0
         msg = f"Ollama timed out after {elapsed:.1f}s"
         logger.warning(msg)
         yield _sse_log(msg, "error")
         yield _sse_result(entities)
         return
-    except httpx.HTTPStatusError as e:
-        msg = f"Ollama returned HTTP {e.response.status_code}"
+    except OllamaEngineError as e:
+        msg = f"Ollama returned HTTP {e.status_code}"
         logger.warning(msg)
         yield _sse_log(msg, "error")
         yield _sse_result(entities)
@@ -325,11 +322,8 @@ async def validate_entities_stream(
     elapsed = time.monotonic() - t0
     yield _sse_log(f"Ollama responded in {elapsed:.1f}s")
 
-    # Parse response
-    try:
-        body = resp.json()
-        content = body.get("message", {}).get("content", "")
-    except (json.JSONDecodeError, AttributeError):
+    content = result.content
+    if not content:
         yield _sse_log("Failed to parse Ollama response body", "error")
         yield _sse_result(entities)
         return
