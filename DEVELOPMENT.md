@@ -205,7 +205,7 @@ cp .env.example .env
 #   TAILNET_IP=<this host's Tailscale IPv4, from `tailscale ip -4`; the webapp
 #               publishes 8000 on this address only and refuses to start
 #               without it — SEC-1)
-#   DATABASE_URL=postgresql://diary:diary@postgres:5432/diary_processor
+#   POSTGRES_PASSWORD=<generate with `openssl rand -hex 32`, no default>
 #   OLLAMA_BASE_URL=http://<ollama-host>:11434
 #   OLLAMA_MODEL=qwen2.5:14b
 #   LIGHTRAG_URL=http://<lightrag-host>:9621
