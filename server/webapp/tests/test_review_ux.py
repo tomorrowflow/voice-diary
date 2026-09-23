@@ -60,3 +60,22 @@ def test_render_entity_list_toggles_empty_state():
     js = _app_js()
     render_fn = js.split("function renderEntityList()")[1].split("\nfunction ")[0]
     assert "entity-list-empty" in render_fn
+
+
+# --- save / add confirmation -------------------------------------------
+
+
+def test_review_html_has_toast_host():
+    html = _render_review_html()
+    assert 'id="toast"' in html
+
+
+def test_app_js_defines_show_toast():
+    js = _app_js()
+    assert "function showToast(" in js
+
+
+def test_save_draft_shows_confirmation_toast():
+    js = _app_js()
+    save_fn = js.split("async function saveDraft()")[1].split("\nasync function")[0]
+    assert "showToast(" in save_fn

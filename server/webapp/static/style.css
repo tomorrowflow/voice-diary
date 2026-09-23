@@ -584,6 +584,19 @@ header h1 {
 }
 .toast.visible { opacity: 1; }
 .toast.error { background: var(--color-red); }
+.toast-action {
+  pointer-events: auto;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border: 1px solid var(--text-on-primary);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-on-primary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.toast-action:hover { background: var(--color-alpha-white-300); }
 
 /* ============================================================
    STATUS BAR & AUTO-CORRECTIONS BANNER

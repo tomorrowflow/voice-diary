@@ -74,6 +74,29 @@ function modalAlert(title, message, opts) {
 }
 
 // ============================================================
+// TOAST
+// ============================================================
+
+function showToast(msg, isError, opts) {
+  opts = opts || {};
+  var t = document.getElementById('toast');
+  if (!t) return;
+  clearTimeout(t._timer);
+  if (opts.actionLabel && opts.onAction) {
+    t.innerHTML = escapeHtml(msg) + ' <button class="toast-action" type="button">' + escapeHtml(opts.actionLabel) + '</button>';
+    t.querySelector('.toast-action').onclick = function() {
+      clearTimeout(t._timer);
+      t.classList.remove('visible');
+      opts.onAction();
+    };
+  } else {
+    t.textContent = msg;
+  }
+  t.className = 'toast visible' + (isError ? ' error' : '');
+  t._timer = setTimeout(function() { t.classList.remove('visible'); }, opts.duration || 2500);
+}
+
+// ============================================================
 // RENDER
 // ============================================================
 
@@ -615,6 +638,7 @@ async function saveDraft() {
     var result = await resp.json();
     if (result.status === 'saved') {
       btnDone(btn, 'Saved', 'Save', 1500);
+      showToast('Draft saved');
     } else {
       modalAlert('Save Failed', 'Error: ' + JSON.stringify(result), { danger: true });
       btnReset(btn, 'Save');
