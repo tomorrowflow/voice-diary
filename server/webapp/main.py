@@ -2039,4 +2039,3 @@ async def admin_delete_initiative(init_id: int):
 
 app.include_router(legacy_router)
 
-
