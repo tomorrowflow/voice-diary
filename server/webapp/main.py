@@ -40,6 +40,8 @@ from llm_validator import validate_entities_stream
 
 WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
 HARVEST_ACCESS_TOKEN = os.getenv("HARVEST_ACCESS_TOKEN", "")
+HARVEST_ACCOUNT_ID = os.getenv("HARVEST_ACCOUNT_ID", "")
+HARVEST_USER_ID = os.getenv("HARVEST_USER_ID", "")
 
 _asr_client: asr_client.AsrClient | None = None
 
@@ -51,9 +53,6 @@ def _get_asr_client() -> asr_client.AsrClient:
     if _asr_client is None:
         _asr_client = asr_client.AsrClient()
     return _asr_client
-
-HARVEST_ACCOUNT_ID = os.getenv("HARVEST_ACCOUNT_ID", "")
-HARVEST_USER_ID = os.getenv("HARVEST_USER_ID", "")
 
 BASE_DIR = Path(__file__).resolve().parent
 
