@@ -931,8 +931,8 @@ untouched by both.
 Independent of that manual sweep:
 
 - **Drive-by seeds**: deleted after successful ingest in the evening session.
-- **Upload queue**: entries stay until successfully uploaded — only delete-all discards
-  un-uploaded entries.
+- **Upload queue**: entries stay until successfully uploaded — only a manual clear (delete-all,
+  or clearing the upload-queue category in Gefahrenzone) discards un-uploaded entries.
 
 ### 13.3 Encryption
 
@@ -951,7 +951,9 @@ it rather than front-loaded into a wizard:
 
 ```
 1. Microphone + Speech Recognition + notification permission prompts — fired proactively at
-   app launch (`Permissions.requestStartupPermissions()`), not a dedicated onboarding screen.
+   app launch, not a dedicated onboarding screen. Mic + Speech come from
+   `Permissions.requestStartupPermissions()`; the notification prompt from
+   `CaptureNotifications.requestAuthorisationIfNeeded()`, both on the launch task.
 2. Server setup:
    - URL (Tailscale hostname, e.g. "http://my-server.tailnet.ts.net:8000")
    - Bearer token (user copies from `server`'s `.env`)
