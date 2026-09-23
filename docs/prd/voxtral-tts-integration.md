@@ -1,9 +1,9 @@
 # PRD: Voxtral TTS Integration
 
-Status: Draft, awaiting triage
+Status: Shipped (2026-05-19). Slices 01, 02, 05 landed; slice 03 verified with no code changes needed; slice 04 (opener prefetch) deliberately deferred per the slice 06 latency decision; slice 06 closed the streaming question; slice 07 (custom voice cloning) was reverted — see post-mortem below. Tracked as individual slice issues in `docs/issues/voxtral-tts/`, not as DEVELOPMENT.md milestones.
 Owner: Florian
 Authored: 2026-05-18
-Related: `SPEC.md` §4 (on-device stack), `SPEC.md` §13 (storage), `DEVELOPMENT.md` (introduces milestones S5 and M13)
+Related: `SPEC.md` §4 (on-device stack), `SPEC.md` §13 (storage), `docs/issues/voxtral-tts/` (per-slice issues; this work was not tracked as DEVELOPMENT.md milestones)
 
 ## Problem Statement
 
@@ -109,14 +109,14 @@ A new on-disk location is introduced: `server/data/voxtral-models/` as the Huggi
 
 `Settings → Stimme` gains one new section per language called "Voxtral (Server)". The existing per-language voice picker continues to be the canonical selection surface; the only change is that the radio list now contains a third group of options.
 
-### Milestones added to DEVELOPMENT.md
+### Milestones (originally planned as DEVELOPMENT.md entries; superseded by slice issues)
 
-- **S5 — Voxtral server route.** Compose service, `voxtral_client`, `voice_catalog`, `tts` router, `/health` extension, env vars, tests. Exit criterion: `curl` over Tailscale returns a playable WAV for both DE and EN with at least one bundled voice each.
-- **M13a — iOS engine end-to-end.** `VoxtralTTSClient`, `VoxtralTTS`, registry routing, minimum-viable Settings entry. Exit criterion: a Settings preview tap plays a Voxtral-synthesized utterance through the speaker.
-- **M13b — Production polish.** `TTSFallbackPolicy`, prefetch integration, `VoiceCatalogClient`, full Settings UI, onboarding probe. Exit criterion: one full evening walkthrough completes end-to-end on Voxtral with no audible stalls vs. the current Piper baseline; pulling the ethernet falls back to Piper without a crash.
-- **M13c — Latency tuning.** Measure TTFA from `speak()` call to first audio frame over Tailscale. Decide whether streaming inference is worth pursuing. Exit criterion: median TTFA ≤ 600 ms on home Wi-Fi for an opener of typical length.
+At authoring time the plan was to land this as four DEVELOPMENT.md milestones. In practice the work was tracked and shipped as the individual slice issues in `docs/issues/voxtral-tts/` instead, and no S5 / M13a / M13b / M13c entries were ever added to DEVELOPMENT.md. The original plan is kept below for historical context only; do not treat it as a live reference.
 
-S5 gates M13a (cannot test the engine without the route). M13a and M13b can overlap modestly.
+- ~~S5 — Voxtral server route.~~ Compose service, `voxtral_client`, `voice_catalog`, `tts` router, `/health` extension, env vars, tests. Shipped as slice 01.
+- ~~M13a — iOS engine end-to-end.~~ `VoxtralTTSClient`, `VoxtralTTS`, registry routing, minimum-viable Settings entry. Shipped as slice 01, extended in slice 02.
+- ~~M13b — Production polish.~~ `TTSFallbackPolicy`, prefetch integration, `VoiceCatalogClient`, full Settings UI, onboarding probe. Fallback/reachability shipped as slice 05; prefetch integration (slice 04) was deliberately deferred — see the latency addendum below.
+- ~~M13c — Latency tuning.~~ Measure TTFA, decide on streaming inference. Closed by slice 06 on qualitative dogfood evidence rather than the originally planned instrumented measurement; see the addendum below.
 
 ## Testing Decisions
 
