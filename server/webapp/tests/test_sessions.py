@@ -85,6 +85,97 @@ def test_status_still_404s_when_neither_cache_nor_db_has_the_session(monkeypatch
     assert resp.status_code == 404
 
 
+def test_derive_session_state_all_processed_is_done():
+    from models import SegmentResult
+
+    results = [SegmentResult(segment_id="s01", status="processed", transcript_id=1)]
+    assert sessions_router._derive_session_state(results) == "done"
+
+
+def test_derive_session_state_all_failed_is_failed():
+    from models import SegmentResult
+
+    results = [SegmentResult(segment_id="s01", status="failed", error="boom")]
+    assert sessions_router._derive_session_state(results) == "failed"
+
+
+def test_derive_session_state_mixed_is_partial():
+    from models import SegmentResult
+
+    results = [
+        SegmentResult(segment_id="s01", status="processed", transcript_id=1),
+        SegmentResult(segment_id="s02", status="failed", error="boom"),
+    ]
+    assert sessions_router._derive_session_state(results) == "partial"
+
+
+def test_persist_session_status_updates_cache_and_writes_through_to_db(monkeypatch):
+    from models import SegmentResult, SessionStatus
+
+    _setup(monkeypatch)
+    sessions_router._session_status["sess-x"] = SessionStatus(
+        session_id="sess-x",
+        received_at="2026-07-01T10:00:00Z",
+        state="processing",
+        segments=[SegmentResult(segment_id="s01", status="pending_analysis")],
+    )
+
+    updated: list[tuple] = []
+
+    async def fake_update_session_status(session_id, state, segments) -> None:
+        updated.append((session_id, state, segments))
+
+    monkeypatch.setattr(db, "update_session_status", fake_update_session_status)
+
+    new_results = [SegmentResult(segment_id="s01", status="processed", transcript_id=7)]
+    import asyncio
+
+    asyncio.run(
+        sessions_router._persist_session_status("sess-x", "done", new_results)
+    )
+
+    assert sessions_router._session_status["sess-x"].state == "done"
+    assert sessions_router._session_status["sess-x"].segments == new_results
+    assert updated == [
+        ("sess-x", "done", [{"segment_id": "s01", "status": "processed", "transcript_id": 7, "error": None}])
+    ]
+
+
+def test_process_session_bg_marks_failed_in_db_on_crash(monkeypatch):
+    from dataclasses import dataclass
+    from models import SegmentResult, SessionStatus
+
+    _setup(monkeypatch)
+    sessions_router._session_status["sess-crash"] = SessionStatus(
+        session_id="sess-crash",
+        received_at="2026-07-01T10:00:00Z",
+        state="processing",
+        segments=[SegmentResult(segment_id="s01", status="pending_analysis")],
+    )
+
+    async def fake_process_session(parsed, session_dir):
+        raise RuntimeError("boom")
+
+    marked_failed: list[str] = []
+
+    async def fake_mark_session_failed(session_id: str) -> None:
+        marked_failed.append(session_id)
+
+    monkeypatch.setattr(sessions_router, "_process_session", fake_process_session)
+    monkeypatch.setattr(db, "mark_session_failed", fake_mark_session_failed)
+
+    @dataclass
+    class _FakeManifest:
+        session_id: str
+
+    import asyncio
+
+    asyncio.run(sessions_router._process_session_bg(_FakeManifest("sess-crash"), None))
+
+    assert marked_failed == ["sess-crash"]
+    assert sessions_router._session_status["sess-crash"].state == "failed"
+
+
 def _manifest(session_id: str) -> dict:
     return {
         "session_id": session_id,
