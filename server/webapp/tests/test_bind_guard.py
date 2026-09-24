@@ -41,3 +41,15 @@ def test_enforce_logs_reason_before_raising(monkeypatch, caplog):
             enforce_tailnet_bind()
     assert "Refusing to start" in caplog.text
     assert "TAILNET_IP is not set" in caplog.text
+
+
+def test_app_refuses_to_start_without_tailnet_ip(monkeypatch):
+    """The guard is wired first in main.py's lifespan: booting the real app
+    without TAILNET_IP must fail before anything else initializes."""
+    import main
+    from fastapi.testclient import TestClient
+
+    monkeypatch.delenv("TAILNET_IP", raising=False)
+    with pytest.raises(BindGuardError):
+        with TestClient(main.app):
+            pass
