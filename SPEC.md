@@ -849,28 +849,43 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
 - App language: `System (recommended) | Deutsch` (default: `System`) — one toggle, not the
   separate recording/response pickers this section used to describe. `System` follows the
   iPhone's language and falls back to English on any device whose system language isn't German;
-  `Deutsch` locks German regardless of the system setting. Per-event language detection (from
-  the calendar title) still overrides the spoken voice independently of this toggle — a
-  German-titled event in an English session is still spoken with the German voice.
-- German voice: dropdown of bundled German Piper voices
-- English voice: dropdown of bundled English Piper voices
+  `Deutsch` locks German regardless of the system setting. This toggle sets the surrounding
+  opener's base language; whether an individual event title/attendee name inside that opener
+  gets its own detected-language voice is controlled separately by "Detect language per event"
+  below.
+- German voice / English voice: one combined list per language (`VoiceSettingsView`) —
+  installed Apple Premium voices, bundled Piper voices, and reachable server (Voxtral) voices
+  side by side; the selected row's prefix (`piper:` / `voxtral:` / neither) is what
+  `VoiceRegistry` switches on, so there's no separate engine picker.
+- **Detect language per event** toggle (`WalkthroughSettingsStore.mixedLanguageSpeech`,
+  default **on**): when on, an event opener splices in the calendar title/attendee name using
+  its own detected language (e.g. a German frame around an English title is spoken German /
+  English / German across the two voices — `OpenerTemplates.script`, `LanguageDetector`); when
+  off, the whole line collapses to the opener's base (App-language) voice, so a German-titled
+  event in an English session would be read in English.
 
 **Walkthrough**
 - **Sections** (Mehr → Walkthrough → Abschnitte): list of user-defined `general` sections. Each has `id` (stable UUID), `title` (header text + manifest field), `introText` (TTS opener line). Stored in `UserDefaults` under `walkthrough.generals.v1`.
-- **Reihenfolge** (Mehr → Walkthrough → Reihenfolge): ordered list of `WalkthroughSection` (`.general(id) | .calendarEvents | .driveBy`). Drag to reorder. The two system sections (`calendarEvents`, `driveBy`) always appear once each; if missing from the stored order they're appended in default order on read. Stored in `UserDefaults` under `walkthrough.sectionOrder.v1`. Default order = `[.calendarEvents, .driveBy]`.
-- RSVP filter: multi-select `Accepted | Tentative | All` (default: Accepted + Tentative)
-- End-of-day drive-by recap: toggle (default on)
+- **Reihenfolge** (Mehr → Walkthrough → Reihenfolge): ordered list of `WalkthroughSection` (`.general(id) | .calendarEvents | .voiceNote`; the `.voiceNote` case still encodes to JSON `kind: "drive_by"` for on-disk compatibility). Drag to reorder. The two system sections (`calendarEvents`, `voiceNote`) always appear once each; if missing from the stored order they're appended in default order on read. Stored in `UserDefaults` under `walkthrough.sectionOrder.v1`. Default order = `[.calendarEvents, .voiceNote]`.
+- Event filters (`WalkthroughSettingsView`): three independent toggles — Include all-day events,
+  Include tentative events, Include not-accepted events. Not a single RSVP picker. All three
+  default **off**, i.e. only accepted, timed events flow into the per-event loop by default.
 
 **Backend**
-- Server endpoint URL (set during onboarding, e.g. `http://my-server.tailnet.ts.net:8000`)
-- Bearer token (set during onboarding)
-- Tailscale health indicator (read-only, shows last successful contact time)
+- Server endpoint URL + bearer token (Mehr → Server, `DebugSettingsView`) — a Keychain-backed
+  text field + secure field, not an onboarding-only step.
+- "Check server" button: on-demand `Reachability.refresh()` call — pings `/health` and a
+  bearer-gated route, shows a live status (`—` / `OK` / `degraded` / `Bearer invalid` / `down`).
+  It is not a persisted "last successful contact time"; the status only reflects the most
+  recent check (fired on-demand or when the settings screen appears).
 
-**About**
-- App version
-- Voice model versions
-- Parakeet model version
-- Reset app (clear all local data)
+**Diagnostics** (Mehr → Diagnostics, `DiagnosticsView`)
+- Rolling local error/crash/hang log (`DiagnosticsCollector`, backed by `MXMetricManager`),
+  viewable and shareable per-report; delete-all and per-report delete.
+- There is no "About" grouping and no app-version / voice-model-version / Parakeet-model-version
+  display anywhere in the app today — those fields this section used to list don't exist in
+  code. "Reset app" is the Danger Zone delete-all documented in §12.2/§13.2, not a separate
+  About-screen control.
 
 ### 12.2 Parked settings (not exposed yet)
 
@@ -949,25 +964,22 @@ Independent of that manual sweep:
 
 First-run gate (UX-6a), not the multi-step wizard this section used to describe. This is a
 single-user tool the developer sets up once, so onboarding is reduced to what actually blocks
-first capture — everything else (a dedicated welcome/privacy screen, a workday-hours step, a
-lock-screen widget prompt) lives in Settings (Mehr) instead, reachable whenever the user wants
-it rather than front-loaded into a wizard:
+first capture. Today that's a single step:
 
 ```
 1. Microphone + Speech Recognition + notification permission prompts — fired proactively at
    app launch, not a dedicated onboarding screen. Mic + Speech come from
    `Permissions.requestStartupPermissions()`; the notification prompt from
    `CaptureNotifications.requestAuthorisationIfNeeded()`, both on the launch task.
-2. Server setup:
-   - URL (Tailscale hostname, e.g. "http://my-server.tailnet.ts.net:8000")
-   - Bearer token (user copies from `server`'s `.env`)
-   - Test connection (calls GET /health, shows result)
-3. Voice preview: pick a voice per language (German / English) — the pickers from §12
-   Language & voice.
-4. Action Button binding prompt (deep link to Settings → Action Button).
-5. First drive-by tutorial: "Try it now" → records "Hallo Voice Diary", plays back transcript.
-6. Done — app ready.
 ```
+
+There is no first-run wizard beyond that: `ios/Sources/UI/Onboarding/_OnboardingPlaceholder.swift`
+is a two-line stub ("Tailscale check + bearer-token paste + voice preview + Action Button hookup.
+Implemented in milestone M11.") — none of that has landed yet. Server URL/bearer-token entry +
+a "Check server" test (`DebugSettingsView`) and the voice pickers (`VoiceSettingsView`, §12.1)
+already exist, but only as ordinary Settings (Mehr) screens the developer opens manually, not as
+onboarding steps 2+. An Action Button binding prompt and a first-run drive-by tutorial
+("Hallo Voice Diary") don't exist in code at all yet.
 
 Graph OAuth setup is a one-time step the user runs on the server (`server/scripts/msgraph_bootstrap.py`) before first iOS launch — not on the phone.
 
@@ -984,7 +996,8 @@ Graph OAuth setup is a one-time step the user runs on the server (`server/script
 | Ingest | Upload fails repeatedly | "2 sessions pending upload. Tap to retry." |
 | LLM | Apple FM generation fails | Silent fallback to canned follow-up template. |
 | TTS | Voxtral (server voice) request fails or is unreachable | Silent fallback: `TTSFallbackPolicy` re-dispatches the utterance to the user's Piper voice for that language if its bundled assets are present, else to AVSpeechSynthesizer. Walkthrough keeps speaking. |
-| TTS | Piper voice assets missing / model fails to load | Silent fallback to AVSpeechSynthesizer for that language (`VoiceRegistry`). |
+| TTS | Piper voice selected but its bundled assets are missing | `VoiceRegistry` pre-checks asset presence before ever routing to Piper; falls back to AVSpeechSynthesizer for that language. |
+| TTS | Piper assets present but the on-device model load / synthesis itself fails | **Known gap, not a fallback:** `PiperTTS.performSpeak` logs the error and returns — no re-dispatch to Apple, no audio for that utterance. `VoiceRegistry`'s check only covers the assets-missing case above. |
 
 ### 15.2 Never-fail principles
 
@@ -994,7 +1007,7 @@ Graph OAuth setup is a one-time step the user runs on the server (`server/script
 
 ### 15.3 Telemetry
 
-None. Errors log locally to a rolling file viewable in Settings → About → Diagnostics. No data leaves the phone except to the user's own `server` over Tailscale.
+None. Errors log locally to a rolling file viewable in Mehr → Diagnostics (§12.1). No data leaves the phone except to the user's own `server` over Tailscale.
 
 ---
 
