@@ -173,7 +173,7 @@ Tasks:
    - `GET /today/calendar?date=YYYY-MM-DD` — Graph `/me/calendar/events` query, filtered by `rsvp_status` (accepted, tentative by default).
    - `GET /calendar/event/{graph_event_id}` — single-event detail.
 5. Replace the old `/api/calendar/{date}` stub with a call to the same underlying Graph client so the HTMX review UI's calendar widget keeps working.
-6. Bearer-token middleware for the new iOS-only routes (existing routes stay on internal auth).
+6. Bearer-token `Depends` for the new iOS routes. (SEC-2 later extended the same token to the legacy review/admin/data routes; `/health` is the only open route.)
 7. Integration test against a real Exchange tenant.
 
 Exit criteria: user runs the bootstrap once, then the server answers calendar queries for weeks without re-auth. The webapp's existing calendar widget works again.

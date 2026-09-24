@@ -132,6 +132,13 @@ Expected `/health` shape on a healthy host:
 }}
 ```
 
+Every other route — the iOS routers *and* the HTMX review/admin/data UI
+(`/`, `/review/*`, `/admin`, `/settings`, `/ingest`, `/harvest`, `/api/*`) —
+requires the same bearer. A browser does not send it on its own, so opening
+the UI directly returns `401 missing_bearer_token`; use a header-injecting
+browser extension that adds `Authorization: Bearer $TOKEN` for the tailnet
+host.
+
 ---
 
 ## Bearer-token rotation
@@ -211,6 +218,7 @@ was restored intact.
 | `/api/sessions` → 503 `whisper_unavailable` | Whisper sidecar stopped | `docker compose ps whisper` and restart |
 | Segments come back with `status: "pending_analysis"` | Ollama or LightRAG was down during ingest | bundle persisted on disk; re-process via `/process/<transcript_id>` once upstream returns |
 | `/health` returns `"status":"degraded"` | one upstream down | check `upstream` map for the offending service |
+| HTMX review UI returns `401 missing_bearer_token` | browser isn't sending the bearer | add the `Authorization` header for the tailnet host (see First-time setup, step 7) |
 | HTMX review UI's calendar widget shows nothing | tenant returned no events for that date, or MSAL bootstrap stale | confirm `/today/calendar` works directly |
 
 ---

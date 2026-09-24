@@ -1,4 +1,4 @@
-"""Bearer-token Depends for iOS-facing routers.
+"""Bearer-token Depends for the iOS-facing routers and the legacy routes in `main.py`.
 
 Reads `IOS_BEARER_TOKEN` from the environment at request time (not at import
 time) so token rotation via `.env` reload doesn't require an image rebuild.
@@ -24,7 +24,7 @@ def _expected_token() -> str:
 async def require_bearer(authorization: str | None = Header(default=None)) -> None:
     expected = _expected_token()
     if not expected:
-        # Fail closed: a server with no bearer set must not accept iOS calls.
+        # Fail closed: a server with no bearer set must not accept any calls.
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="ios_bearer_not_configured",
