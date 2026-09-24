@@ -236,3 +236,37 @@ def test_post_session_persists_status_row_before_returning(monkeypatch, tmp_path
     assert segments == [
         {"segment_id": "s01", "status": "pending_analysis", "transcript_id": None, "error": None}
     ]
+
+
+def test_post_session_deletes_persisted_row_when_whisper_unreachable(monkeypatch, tmp_path):
+    """The row written before the Whisper pre-flight must not linger as a
+    permanently 'processing' ghost once the 503 rollback kicks in."""
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    async def fake_whisper_unreachable() -> bool:
+        return False
+
+    async def fake_create_session_status(session_id, received_at, state, segments) -> None:
+        return None
+
+    deleted: list[str] = []
+
+    async def fake_delete_session_status(session_id) -> None:
+        deleted.append(session_id)
+
+    monkeypatch.setattr(sessions_router, "_whisper_reachable", fake_whisper_unreachable)
+    monkeypatch.setattr(db, "create_session_status", fake_create_session_status)
+    monkeypatch.setattr(db, "delete_session_status", fake_delete_session_status)
+
+    manifest = _manifest("sess-post-2")
+    files = [
+        ("manifest", ("manifest.json", jsonlib.dumps(manifest).encode(), "application/json")),
+        ("segments/s01.m4a", ("s01.m4a", b"fake-audio-bytes", "audio/mp4")),
+    ]
+
+    resp = _client().post("/api/sessions", files=files, headers=_auth())
+
+    assert resp.status_code == 503
+    assert deleted == ["sess-post-2"]
+    assert "sess-post-2" not in sessions_router._session_status
