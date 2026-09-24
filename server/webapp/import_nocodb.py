@@ -2,18 +2,18 @@
 """
 Import NocoDB CSV exports into the diary processor database.
 
-Reads 4 CSV files exported from NocoDB and generates SQL to populate
-the persons, person_variations, terms, and term_variations tables.
+Reads 4 CSV files exported from NocoDB and applies parameterized INSERT
+statements (via asyncpg) to populate the persons, person_variations,
+terms, and term_variations tables. Values are always bound as query
+parameters, never interpolated into SQL text.
 
 Usage:
-    # Generate SQL to stdout:
+    # Apply directly to the database (reads DATABASE_URL from the
+    # environment; defaults to postgresql://diary:diary@localhost:5432/diary_processor):
     python import_nocodb.py /path/to/csv/dir
 
-    # Apply directly to database:
-    python import_nocodb.py /path/to/csv/dir | psql -h localhost -U diary diary_processor
-
-    # Or pipe to a file:
-    python import_nocodb.py /path/to/csv/dir > seed_full.sql
+    # Preview the statements and their bound params without touching the database:
+    python import_nocodb.py /path/to/csv/dir --dry-run
 
 The CSV directory should contain NocoDB exports matching these patterns:
     *team_roster*.csv
@@ -22,10 +22,31 @@ The CSV directory should contain NocoDB exports matching these patterns:
     *term_variations*.csv
 """
 
+import asyncio
 import csv
 import io
+import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+
+import asyncpg
+
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql://diary:diary@localhost:5432/diary_processor",
+)
+
+
+@dataclass
+class SqlStatement:
+    """A parameterized statement: `query` uses asyncpg's $1, $2, ...
+    placeholders; `params` are bound positionally by asyncpg. CSV values
+    are never spliced into `query` text, so they cannot break out of a
+    literal or inject additional statements."""
+
+    query: str
+    params: tuple
 
 
 def find_csv(directory: Path, pattern: str) -> Path:
@@ -61,13 +82,16 @@ def parse_csv(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def sql_escape(value: str) -> str:
-    """Escape a string for SQL single-quoted literal."""
-    return value.replace("'", "''").strip()
+def _clean(value, default: str = "") -> str:
+    """Normalize a raw CSV cell to a stripped string, applying `default`
+    for missing/empty values. No SQL escaping needed: values are only
+    ever bound as query parameters, never interpolated into SQL text."""
+    value = (value or "").strip()
+    return value or default
 
 
-def generate_sql(csv_dir: Path) -> str:
-    """Generate SQL INSERT statements from NocoDB CSV exports."""
+def build_statements(csv_dir: Path) -> list[SqlStatement]:
+    """Parse NocoDB CSV exports into a list of parameterized statements."""
     # Find CSV files
     team_roster_path = find_csv(csv_dir, "team_roster")
     person_vars_path = find_csv(csv_dir, "person_variations")
@@ -85,39 +109,36 @@ def generate_sql(csv_dir: Path) -> str:
     terms = parse_csv(terms_roster_path)
     term_vars = parse_csv(term_vars_path)
 
-    lines = []
-    lines.append("-- Auto-generated from NocoDB export")
-    lines.append("-- Run: python import_nocodb.py /path/to/csvs | psql ...\n")
-    lines.append("BEGIN;\n")
+    statements: list[SqlStatement] = []
 
     # --- Persons ---
-    lines.append("-- === Persons ===")
     for p in persons:
-        canonical = sql_escape(p.get("canonical_name", ""))
-        first = sql_escape(p.get("first_name", ""))
-        last = sql_escape(p.get("last_name", ""))
-        role = sql_escape(p.get("role", ""))
-        dept = sql_escape(p.get("department", ""))
-        company = sql_escape(p.get("company", ""))
-        status = sql_escape(p.get("status", "active"))
+        canonical = _clean(p.get("canonical_name"))
         if not canonical:
             continue
-        lines.append(
-            f"INSERT INTO persons (canonical_name, first_name, last_name, role, department, company, status) "
-            f"VALUES ('{canonical}', '{first}', '{last}', '{role}', '{dept}', '{company}', '{status}') "
-            f"ON CONFLICT (canonical_name) DO UPDATE SET "
-            f"first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name, "
-            f"role=EXCLUDED.role, department=EXCLUDED.department, "
-            f"company=EXCLUDED.company, updated_at=NOW();"
+        first = _clean(p.get("first_name"))
+        last = _clean(p.get("last_name"))
+        role = _clean(p.get("role"))
+        dept = _clean(p.get("department"))
+        company = _clean(p.get("company"))
+        status = _clean(p.get("status"), "active")
+        statements.append(
+            SqlStatement(
+                "INSERT INTO persons (canonical_name, first_name, last_name, role, department, company, status) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+                "ON CONFLICT (canonical_name) DO UPDATE SET "
+                "first_name=EXCLUDED.first_name, last_name=EXCLUDED.last_name, "
+                "role=EXCLUDED.role, department=EXCLUDED.department, "
+                "company=EXCLUDED.company, updated_at=NOW()",
+                (canonical, first, last, role, dept, company, status),
+            )
         )
-    lines.append("")
 
     # --- Person variations (chunked by parent variation count) ---
-    lines.append("-- === Person Variations ===")
     var_idx = 0
     total_person_vars = 0
     for p in persons:
-        canonical = sql_escape(p.get("canonical_name", ""))
+        canonical = _clean(p.get("canonical_name"))
         if not canonical:
             continue
         count = int(p.get("person_variations", 0))
@@ -126,17 +147,19 @@ def generate_sql(csv_dir: Path) -> str:
         total_person_vars += len(chunk)
 
         for v in chunk:
-            variation = sql_escape(v.get("variation", ""))
-            var_type = sql_escape(v.get("variation_type", "asr_correction"))
-            confidence = sql_escape(v.get("confidence", "high"))
-            approved = v.get("approved", "1") == "1"
+            variation = _clean(v.get("variation"))
             if not variation:
                 continue
-            lines.append(
-                f"INSERT INTO person_variations (person_id, variation, variation_type, confidence, approved) "
-                f"VALUES ((SELECT id FROM persons WHERE canonical_name='{canonical}'), "
-                f"'{variation}', '{var_type}', '{confidence}', {approved}) "
-                f"ON CONFLICT (person_id, variation) DO NOTHING;"
+            var_type = _clean(v.get("variation_type"), "asr_correction")
+            confidence = _clean(v.get("confidence"), "high")
+            approved = v.get("approved", "1") == "1"
+            statements.append(
+                SqlStatement(
+                    "INSERT INTO person_variations (person_id, variation, variation_type, confidence, approved) "
+                    "VALUES ((SELECT id FROM persons WHERE canonical_name=$1), $2, $3, $4, $5) "
+                    "ON CONFLICT (person_id, variation) DO NOTHING",
+                    (canonical, variation, var_type, confidence, approved),
+                )
             )
 
     if var_idx != len(person_vars):
@@ -150,31 +173,30 @@ def generate_sql(csv_dir: Path) -> str:
             f"OK: {len(persons)} persons, {total_person_vars} person variations",
             file=sys.stderr,
         )
-    lines.append("")
 
     # --- Terms ---
-    lines.append("-- === Terms ===")
     for t in terms:
-        canonical = sql_escape(t.get("canonical_term", ""))
-        category = sql_escape(t.get("category", "term"))
-        context = sql_escape(t.get("context", ""))
-        status = sql_escape(t.get("status", "active"))
+        canonical = _clean(t.get("canonical_term"))
         if not canonical:
             continue
-        lines.append(
-            f"INSERT INTO terms (canonical_term, category, context, status) "
-            f"VALUES ('{canonical}', '{category}', '{context}', '{status}') "
-            f"ON CONFLICT (canonical_term) DO UPDATE SET "
-            f"category=EXCLUDED.category, context=EXCLUDED.context, updated_at=NOW();"
+        category = _clean(t.get("category"), "term")
+        context = _clean(t.get("context"))
+        status = _clean(t.get("status"), "active")
+        statements.append(
+            SqlStatement(
+                "INSERT INTO terms (canonical_term, category, context, status) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT (canonical_term) DO UPDATE SET "
+                "category=EXCLUDED.category, context=EXCLUDED.context, updated_at=NOW()",
+                (canonical, category, context, status),
+            )
         )
-    lines.append("")
 
     # --- Term variations (chunked by parent variation count) ---
-    lines.append("-- === Term Variations ===")
     var_idx = 0
     total_term_vars = 0
     for t in terms:
-        canonical = sql_escape(t.get("canonical_term", ""))
+        canonical = _clean(t.get("canonical_term"))
         if not canonical:
             continue
         count = int(t.get("term_variations", 0))
@@ -183,15 +205,17 @@ def generate_sql(csv_dir: Path) -> str:
         total_term_vars += len(chunk)
 
         for v in chunk:
-            variation = sql_escape(v.get("variation", ""))
-            approved = v.get("approved", "1") == "1"
+            variation = _clean(v.get("variation"))
             if not variation:
                 continue
-            lines.append(
-                f"INSERT INTO term_variations (term_id, variation, approved) "
-                f"VALUES ((SELECT id FROM terms WHERE canonical_term='{canonical}'), "
-                f"'{variation}', {approved}) "
-                f"ON CONFLICT (term_id, variation) DO NOTHING;"
+            approved = v.get("approved", "1") == "1"
+            statements.append(
+                SqlStatement(
+                    "INSERT INTO term_variations (term_id, variation, approved) "
+                    "VALUES ((SELECT id FROM terms WHERE canonical_term=$1), $2, $3) "
+                    "ON CONFLICT (term_id, variation) DO NOTHING",
+                    (canonical, variation, approved),
+                )
             )
 
     if var_idx != len(term_vars):
@@ -205,15 +229,25 @@ def generate_sql(csv_dir: Path) -> str:
             f"OK: {len(terms)} terms, {total_term_vars} term variations",
             file=sys.stderr,
         )
-    lines.append("")
 
-    lines.append("COMMIT;")
-    return "\n".join(lines)
+    return statements
 
 
-if __name__ == "__main__":
+async def apply_statements(statements: list[SqlStatement], database_url: str = DATABASE_URL) -> None:
+    """Apply statements to Postgres in a single transaction, positionally
+    binding each statement's params via asyncpg (no string interpolation)."""
+    conn = await asyncpg.connect(database_url)
+    try:
+        async with conn.transaction():
+            for stmt in statements:
+                await conn.execute(stmt.query, *stmt.params)
+    finally:
+        await conn.close()
+
+
+def main() -> None:
     if len(sys.argv) < 2:
-        print(f"Usage: {sys.argv[0]} <csv_directory>", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <csv_directory> [--dry-run]", file=sys.stderr)
         print(f"Example: {sys.argv[0]} ./import/", file=sys.stderr)
         sys.exit(1)
 
@@ -222,5 +256,18 @@ if __name__ == "__main__":
         print(f"ERROR: {csv_dir} is not a directory", file=sys.stderr)
         sys.exit(1)
 
-    sql = generate_sql(csv_dir)
-    print(sql)
+    dry_run = "--dry-run" in sys.argv[2:]
+    statements = build_statements(csv_dir)
+
+    if dry_run:
+        for stmt in statements:
+            print(f"{stmt.query} -- params={stmt.params!r}")
+        print(f"-- {len(statements)} statements (dry run, nothing applied)", file=sys.stderr)
+        return
+
+    asyncio.run(apply_statements(statements))
+    print(f"Applied {len(statements)} statements", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()
