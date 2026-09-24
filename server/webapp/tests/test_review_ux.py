@@ -62,6 +62,14 @@ def test_render_entity_list_toggles_empty_state():
     assert "entity-list-empty" in render_fn
 
 
+def test_correction_summary_has_no_loading_placeholder():
+    # Everything correction-summary shows is server-rendered (render() runs at
+    # script parse), so a "Loading..." placeholder is dead text, never a state.
+    html = _render_review_html()
+    summary = html.split('id="correction-summary"')[1].split("</span>")[0]
+    assert "Loading" not in summary
+
+
 # --- save / add confirmation -------------------------------------------
 
 
