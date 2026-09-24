@@ -42,7 +42,7 @@ async def extract_work_activities(transcript: str, date_str: str) -> list[dict]:
 
     try:
         data = json.loads(result.content)
-    except (json.JSONDecodeError, AttributeError) as e:
+    except json.JSONDecodeError as e:
         logger.warning("Failed to parse Ollama response: %s", e)
         return []
 
