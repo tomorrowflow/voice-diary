@@ -27,6 +27,7 @@ from sse_starlette.sse import EventSourceResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+import bind_guard
 import db
 import document_processor
 import llm_validator
@@ -48,6 +49,11 @@ BASE_DIR = Path(__file__).resolve().parent
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # SEC-1: refuse to come up unless TAILNET_IP is a real tailnet address —
+    # before any other startup work, so a misconfigured deploy never reaches
+    # the point of binding all interfaces.
+    bind_guard.enforce_tailnet_bind()
+
     # Log configuration on startup
     logger.info("=== Diary Processor starting ===")
     logger.info("OLLAMA_BASE_URL    = %s", os.getenv("OLLAMA_BASE_URL", "(not set)"))
