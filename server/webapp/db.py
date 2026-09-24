@@ -6,7 +6,7 @@ from typing import Optional
 
 _pool: Optional[asyncpg.Pool] = None
 
-DATABASE_URL = os.environ.get("DATABASE_URL")
+DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError(
         "DATABASE_URL is not set. docker-compose.yml assembles it from "
