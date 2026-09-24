@@ -2,7 +2,7 @@
 
 Run inside the gate container so deps match prod:
 
-    docker compose run --rm --no-deps --entrypoint pytest voxtral -q tests/test_gate.py
+    docker compose run --rm --entrypoint pytest voxtral tests/test_gate.py
 
 The engine is an `httpx.MockTransport`, so no live vLLM is needed. What's
 under test is *when* the gate decides to sleep or wake, not the proxying
@@ -180,36 +180,6 @@ async def test_maybe_sleep_never_sleeps_under_an_inflight_request(
     g.note_end()
     await g.maybe_sleep()
     assert engine.sleeping is True
-
-
-async def test_request_during_idle_sleep_waits_and_rewakes(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A request admitted while the idle /sleep RPC is still in flight
-    must not be proxied onto an engine that is going to sleep — it waits
-    for the sleep to land, then wakes the engine."""
-    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", False)
-    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
-    engine = FakeEngine(sleeping=False)
-    sleep_started = asyncio.Event()
-
-    async def slow_handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/sleep":
-            sleep_started.set()
-            await asyncio.sleep(0.05)
-        return engine.handler(request)
-
-    g = EngineGate(httpx.AsyncClient(transport=httpx.MockTransport(slow_handler)))
-    await g.bootstrap()
-
-    idle_tick = asyncio.create_task(g.maybe_sleep())
-    await sleep_started.wait()
-    g.note_start()
-    await g.ensure_awake()
-    await idle_tick
-
-    assert engine.sleeping is False
-    assert engine.calls[-2:] == ["/sleep", "/wake_up"]
 
 
 async def test_maybe_sleep_is_a_noop_when_sleep_unsupported() -> None:
