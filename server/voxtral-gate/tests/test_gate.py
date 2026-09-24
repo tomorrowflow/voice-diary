@@ -2,7 +2,7 @@
 
 Run inside the gate container so deps match prod:
 
-    docker compose run --rm --entrypoint pytest voxtral tests/test_gate.py
+    docker compose run --rm --no-deps --entrypoint pytest voxtral -q tests/test_gate.py
 
 The engine is an `httpx.MockTransport`, so no live vLLM is needed. What's
 under test is *when* the gate decides to sleep or wake, not the proxying
@@ -202,3 +202,66 @@ def test_liveness_paths_are_excluded_from_waking() -> None:
     assert "/v1/models" in gate_mod.NO_WAKE_PATHS
     assert "/health" in gate_mod.NO_WAKE_PATHS
     assert "/v1/audio/speech" not in gate_mod.NO_WAKE_PATHS
+
+
+# --- sleep/wake races -----------------------------------------------------
+
+
+class SlowSleepEngine(FakeEngine):
+    """Holds /sleep open until released, so a request can land mid-sleep."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.sleep_started = asyncio.Event()
+        self.release_sleep = asyncio.Event()
+
+    async def async_handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sleep":
+            self.sleep_started.set()
+            await self.release_sleep.wait()
+        return self.handler(request)
+
+
+def _slow_gate(engine: SlowSleepEngine) -> EngineGate:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(engine.async_handler))
+    return EngineGate(client)
+
+
+async def test_request_during_idle_sleep_rewakes_the_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request admitted while /sleep is in flight must not be forwarded
+    to an engine that is about to be asleep."""
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", False)
+    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
+    engine = SlowSleepEngine(sleeping=False)
+    g = _slow_gate(engine)
+    await g.bootstrap()
+
+    sleeper = asyncio.create_task(g.maybe_sleep())
+    await engine.sleep_started.wait()
+    waker = asyncio.create_task(g.ensure_awake())
+    await asyncio.sleep(0)
+    engine.release_sleep.set()
+    await asyncio.gather(sleeper, waker)
+
+    assert engine.sleeping is False
+    assert engine.calls.count("/wake_up") == 1
+
+
+async def test_request_during_startup_sleep_rewakes_the_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
+    engine = SlowSleepEngine(sleeping=False)
+    g = _slow_gate(engine)
+
+    booter = asyncio.create_task(g.bootstrap())
+    await engine.sleep_started.wait()
+    waker = asyncio.create_task(g.ensure_awake())
+    await asyncio.sleep(0)
+    engine.release_sleep.set()
+    await asyncio.gather(booter, waker)
+
+    assert engine.sleeping is False
+    assert engine.calls.count("/wake_up") == 1

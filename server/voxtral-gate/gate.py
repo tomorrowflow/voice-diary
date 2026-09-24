@@ -162,20 +162,25 @@ class EngineGate:
 
         self._booted.set()
 
-        if self._sleep_supported and SLEEP_ON_START and not self._asleep:
-            await self._sleep_now(reason="startup")
+        if self._sleep_supported and SLEEP_ON_START:
+            async with self._lock:
+                if self._asleep is False and self._inflight == 0:
+                    await self._sleep_now(reason="startup")
 
     async def ensure_awake(self) -> None:
         """Block until the engine can serve. Held open rather than failing
         fast — see the module docstring."""
         await asyncio.wait_for(self._booted.wait(), timeout=BOOT_TIMEOUT)
 
-        if not self._sleep_supported or self._asleep is False:
+        if not self._sleep_supported:
             return
 
+        # Checked under the lock, never before it: `_asleep` only flips to
+        # True once a /sleep RPC completes, so an unlocked read could pass a
+        # request through to an engine that is mid-sleep.
         async with self._lock:
             if self._asleep is False:
-                return  # another request woke it while we queued
+                return
             started = time.monotonic()
             resp = await self._client.post(
                 f"{ENGINE_URL}/wake_up", timeout=WAKE_TIMEOUT
