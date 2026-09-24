@@ -2037,4 +2037,6 @@ async def admin_delete_initiative(init_id: int):
     return {"status": "ok"}
 
 
+# Must stay last: include_router copies routes at call time, so any
+# legacy route declared below this line would never be registered.
 app.include_router(legacy_router)
