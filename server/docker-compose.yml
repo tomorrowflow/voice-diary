@@ -2,7 +2,9 @@ services:
   webapp:
     build: ./webapp
     ports:
-      - "8000:8000"
+      # SEC-1: publish to the tailnet IP only, never all interfaces. Set
+      # TAILNET_IP in .env to this host's Tailscale IPv4 address.
+      - "${TAILNET_IP}:8000:8000"
     env_file:
       - .env
     environment:
