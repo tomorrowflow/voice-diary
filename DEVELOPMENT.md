@@ -252,6 +252,13 @@ Swift 6 / SwiftUI / iOS 26.
 
 ### 5.1 Planned project layout
 
+The layout exists on disk by now and drifted past the plan — additions it didn't name include
+`Sources/{Intents,Localization,Shared}/`, top-level `WidgetExtension/` (instead of
+`Sources/Widget/`), `Tests/`, and `scripts/`; and `Dialog/`'s planned `StateMachine.swift`
+shipped as `WalkthroughState.swift` + `WalkthroughCoordinator.swift`, with
+`WakeWordDetector.swift` landing in `Capture/`. The listing is kept as the original plan; see
+`git log` and `ios/README.md` for what actually shipped.
+
 ```
 ios/
 ├── README.md
