@@ -154,8 +154,8 @@ class OllamaClient:
 
     # -- internals ---------------------------------------------------------
 
-    def _make_client(self, timeout_seconds: float | httpx.Timeout) -> httpx.AsyncClient:
-        return httpx.AsyncClient(timeout=timeout_seconds, transport=self._transport)
+    def _make_client(self, timeout: float | httpx.Timeout) -> httpx.AsyncClient:
+        return httpx.AsyncClient(timeout=timeout, transport=self._transport)
 
 
 # --- helpers --------------------------------------------------------------
