@@ -26,7 +26,7 @@ def _write_csv(path, header, rows):
 PERSON_HEADER = ["canonical_name", "first_name", "last_name", "role", "department", "company", "status", "person_variations"]
 
 
-def _make_csv_dir(tmp_path, *, persons, person_variations=()):
+def _make_csv_dir(tmp_path, *, persons, person_variations=(), terms=(), term_variations=()):
     _write_csv(tmp_path / "team_roster.csv", PERSON_HEADER, persons)
     _write_csv(
         tmp_path / "person_variations.csv",
@@ -36,9 +36,9 @@ def _make_csv_dir(tmp_path, *, persons, person_variations=()):
     _write_csv(
         tmp_path / "terms_roster.csv",
         ["canonical_term", "category", "context", "status", "term_variations"],
-        [],
+        terms,
     )
-    _write_csv(tmp_path / "term_variations.csv", ["variation", "approved"], [])
+    _write_csv(tmp_path / "term_variations.csv", ["variation", "approved"], term_variations)
     return tmp_path
 
 
@@ -68,6 +68,39 @@ def test_person_variation_insert_uses_placeholders_for_canonical_and_variation(t
     assert malicious_variation not in var_stmt.query
     assert "Alice" not in var_stmt.query
     assert var_stmt.params == ("Alice", malicious_variation, "asr_correction", "high", True)
+
+
+def test_terms_insert_uses_placeholders_not_interpolated_value(tmp_path):
+    malicious = "Kubernetes'); DROP TABLE terms;--"
+    csv_dir = _make_csv_dir(
+        tmp_path,
+        persons=[["Alice", "Alice", "A", "role", "dept", "co", "active", "0"]],
+        terms=[[malicious, "tech", "cluster orchestration", "active", "0"]],
+    )
+
+    statements = build_statements(csv_dir)
+
+    terms_stmt = next(s for s in statements if s.query.startswith("INSERT INTO terms"))
+    assert malicious not in terms_stmt.query
+    assert "$1" in terms_stmt.query
+    assert terms_stmt.params == (malicious, "tech", "cluster orchestration", "active")
+
+
+def test_term_variation_insert_uses_placeholders_for_canonical_and_variation(tmp_path):
+    malicious_variation = "k8s'); DELETE FROM terms;--"
+    csv_dir = _make_csv_dir(
+        tmp_path,
+        persons=[["Alice", "Alice", "A", "role", "dept", "co", "active", "0"]],
+        terms=[["Kubernetes", "tech", "cluster orchestration", "active", "1"]],
+        term_variations=[[malicious_variation, "1"]],
+    )
+
+    statements = build_statements(csv_dir)
+
+    var_stmt = next(s for s in statements if s.query.startswith("INSERT INTO term_variations"))
+    assert malicious_variation not in var_stmt.query
+    assert "Kubernetes" not in var_stmt.query
+    assert var_stmt.params == ("Kubernetes", malicious_variation, True)
 
 
 class _FakeTransaction:
