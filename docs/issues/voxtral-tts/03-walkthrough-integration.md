@@ -11,7 +11,7 @@ Type: AFK
 
 Wire the user's chosen Voxtral voices into the real evening walkthrough so that every utterance kind — opener, follow-up, todo confirmation, closing prompt — speaks through Voxtral when selected, with no regression in walkthrough behavior. Most of this slice is verification and small fixes rather than new infrastructure, because `WalkthroughCoordinator` already resolves engines through `VoiceRegistry` at call time. The point is to prove that nothing in the state machine or the multi-language script dispatch path leaks past the `VoiceRegistry` seam.
 
-Free reflection mode and the wake-word enrichment "einen Moment" cue are in scope to verify (they share the same engine selection path) but should not require code changes. This slice also lands the DEVELOPMENT.md milestone entries for S5 / M13 since the milestone is now user-observable.
+Free reflection mode and the wake-word enrichment "einen Moment" cue are in scope to verify (they share the same engine selection path) but should not require code changes. (This work is tracked as the slice issues in `docs/issues/voxtral-tts/`; the once-planned S5 / M13 entries in `DEVELOPMENT.md` were dropped — see the Milestones note in the PRD.)
 
 ## Acceptance criteria
 
@@ -21,7 +21,6 @@ Free reflection mode and the wake-word enrichment "einen Moment" cue are in scop
 - [ ] The wake-word enrichment "einen Moment, ich schaue nach…" cue speaks in the user's chosen Voxtral voice when one is selected.
 - [ ] Free reflection mode at end of session uses the chosen Voxtral voice (no code change expected; verification only).
 - [ ] Switching the German voice from a Piper voice to a Voxtral voice and back across two consecutive walkthroughs produces no state corruption; the second walkthrough uses the newly chosen voice.
-- [ ] `DEVELOPMENT.md` gains entries for S5 (server route) and M13a / M13b (iOS engine + production polish) with exit criteria copied from the PRD's milestone table.
 - [ ] No new design-system violations introduced.
 
 ## Blocked by

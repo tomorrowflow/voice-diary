@@ -1,9 +1,9 @@
 # PRD: Voxtral TTS Integration
 
-Status: Draft, awaiting triage
+Status: Shipped (2026-05-19). Slices 01, 02, 05 landed; slice 03 verified with no code changes needed; slice 04 (opener prefetch) deliberately deferred per the slice 06 latency decision; slice 06 closed the streaming question; slice 07 (custom voice cloning) was reverted — see post-mortem below. Tracked as individual slice issues in `docs/issues/voxtral-tts/`, not as DEVELOPMENT.md milestones. Post-ship ops change (2026-08-16): the always-warm sidecar was replaced by a lazy-wake gate that sleeps the engine while TTS is idle — see the Compose service note below and `server/voxtral-gate/README.md`.
 Owner: Florian
 Authored: 2026-05-18
-Related: `SPEC.md` §4 (on-device stack), `SPEC.md` §13 (storage), `DEVELOPMENT.md` (introduces milestones S5 and M13)
+Related: `SPEC.md` §4 (on-device stack), `SPEC.md` §13 (storage), `docs/issues/voxtral-tts/` (per-slice issues; this work was not tracked as DEVELOPMENT.md milestones)
 
 ## Problem Statement
 
@@ -68,8 +68,8 @@ From the user's seat: in Settings, a new "Voxtral (Server)" section appears per 
 2. **`voice_catalog` (deep).** Single source of truth for "which voices exist per language." On first request, calls vLLM (or reads a static manifest derived from the model card if vLLM does not expose a list endpoint), normalizes the response into `{ language: [VoiceDescriptor, …] }`, and caches it in memory with a TTL on the order of the process lifetime. Exposes `list(language)` and `exists(voice_id)`. Independent of FastAPI; testable with a fake `voxtral_client`.
 3. **`routers/tts` (deliberately shallow).** Two routes: `POST /api/tts/synthesize` and `GET /api/tts/voices`. Both gated by the existing bearer-auth `Depends`. The POST route validates payload (text length cap, language in {DE, EN}, voice exists per `voice_catalog`), delegates to `voxtral_client`, and streams the WAV body back with `Cache-Control: no-store`. The GET route serializes `voice_catalog.list(...)` to JSON. The router holds no synthesis logic.
 4. **`/health` extension.** The existing health endpoint gets a `voxtral` field reporting reachability. Implementation: a one-line ping into `voxtral_client` with a tight timeout, classified as `ok`, `degraded`, or `down`.
-5. **Compose service.** New `voxtral` service in `docker-compose.yml` using `vllm/vllm-omni:v0.18.0`, pinned to GPU 0 via `device_ids: ["0"]`, with a named volume for the HuggingFace model cache. Not exposed on any host port. The webapp reaches it on the compose-internal hostname `voxtral`. Sidecar lifecycle is independent of webapp; restarting webapp must not require Voxtral re-warmup.
-6. **Configuration surface.** Three new env vars: `VOXTRAL_BASE_URL` (default `http://voxtral:8001`), `VOXTRAL_MODEL` (default `mistralai/Voxtral-4B-TTS-2603`), `VOXTRAL_TIMEOUT_SECONDS`. Documented in `.env.example`.
+5. **Compose service.** New `voxtral` service in `docker-compose.yml` using `vllm/vllm-omni:v0.18.0`, pinned to GPU 0 via `device_ids: ["0"]`, with a named volume for the HuggingFace model cache. Not exposed on any host port. The webapp reaches it on the compose-internal hostname `voxtral`. Sidecar lifecycle is independent of webapp; restarting webapp must not require Voxtral re-warmup. *As shipped, then revised (2026-08-16):* the `voxtral` service is now a lazy-wake gate (`server/voxtral-gate/`) that owns the `voxtral:8001` address webapp already talks to and forwards to the real engine, renamed `voxtral-engine`. The engine is pinned to GPU **1** (`device_ids: ["1"]`), leaving GPU 0 for Ollama and ComfyUI — slice 01 shipped with `["0"]`, but the pin was flipped the next day (2026-05-19, well before the gate). The gate sleeps the engine after `VOXTRAL_IDLE_SECONDS` of no traffic (weights offloaded to host RAM) and wakes it (~1 s) on the next request; a request arriving during a wake is held open rather than 503'd, so the API contract below is unchanged.
+6. **Configuration surface.** Three new env vars: `VOXTRAL_BASE_URL` (default `http://voxtral:8001`), `VOXTRAL_MODEL` (default `mistralai/Voxtral-4B-TTS-2603`), `VOXTRAL_TIMEOUT_SECONDS`. Documented in `.env.example`. *Post-ship, the lazy-wake gate adds `VOXTRAL_IDLE_SECONDS`, `VOXTRAL_SLEEP_LEVEL`, and `VOXTRAL_SLEEP_ON_START`, and the `VOXTRAL_TIMEOUT_SECONDS` default rose from 30 to 60 to absorb a wake on a cold request.*
 
 ### Modules — iOS
 
@@ -109,14 +109,14 @@ A new on-disk location is introduced: `server/data/voxtral-models/` as the Huggi
 
 `Settings → Stimme` gains one new section per language called "Voxtral (Server)". The existing per-language voice picker continues to be the canonical selection surface; the only change is that the radio list now contains a third group of options.
 
-### Milestones added to DEVELOPMENT.md
+### Milestones (originally planned as DEVELOPMENT.md entries; superseded by slice issues)
 
-- **S5 — Voxtral server route.** Compose service, `voxtral_client`, `voice_catalog`, `tts` router, `/health` extension, env vars, tests. Exit criterion: `curl` over Tailscale returns a playable WAV for both DE and EN with at least one bundled voice each.
-- **M13a — iOS engine end-to-end.** `VoxtralTTSClient`, `VoxtralTTS`, registry routing, minimum-viable Settings entry. Exit criterion: a Settings preview tap plays a Voxtral-synthesized utterance through the speaker.
-- **M13b — Production polish.** `TTSFallbackPolicy`, prefetch integration, `VoiceCatalogClient`, full Settings UI, onboarding probe. Exit criterion: one full evening walkthrough completes end-to-end on Voxtral with no audible stalls vs. the current Piper baseline; pulling the ethernet falls back to Piper without a crash.
-- **M13c — Latency tuning.** Measure TTFA from `speak()` call to first audio frame over Tailscale. Decide whether streaming inference is worth pursuing. Exit criterion: median TTFA ≤ 600 ms on home Wi-Fi for an opener of typical length.
+At authoring time the plan was to land this as four DEVELOPMENT.md milestones. In practice the work was tracked and shipped as the individual slice issues in `docs/issues/voxtral-tts/` instead, and no S5 / M13a / M13b / M13c entries were ever added to DEVELOPMENT.md. The original plan is kept below for historical context only; do not treat it as a live reference.
 
-S5 gates M13a (cannot test the engine without the route). M13a and M13b can overlap modestly.
+- ~~S5 — Voxtral server route.~~ Compose service, `voxtral_client`, `voice_catalog`, `tts` router, `/health` extension, env vars, tests. Shipped as slice 01.
+- ~~M13a — iOS engine end-to-end.~~ `VoxtralTTSClient`, `VoxtralTTS`, registry routing, minimum-viable Settings entry. Shipped as slice 01, extended in slice 02.
+- ~~M13b — Production polish.~~ `TTSFallbackPolicy`, prefetch integration, `VoiceCatalogClient`, full Settings UI, onboarding probe. Fallback/reachability shipped as slice 05; prefetch integration (slice 04) was deliberately deferred — see the latency addendum below.
+- ~~M13c — Latency tuning.~~ Measure TTFA, decide on streaming inference. Closed by slice 06 on qualitative dogfood evidence rather than the originally planned instrumented measurement; see the addendum below.
 
 ## Testing Decisions
 
@@ -144,7 +144,7 @@ Prior art: the existing FastAPI test pattern in `server/webapp/tests/` (FastAPI 
 
 `VoxtralTTSClient`, `TTSFallbackPolicy`, `VoxtralTTS`, `VoiceCatalogClient`, the `VoiceRegistry` extension, and the `VoiceSettingsView` changes are not covered by automated tests in v1 per the user's scoping decision. They are designed to be testable in isolation: `VoxtralTTSClient` accepts a `URLProtocol` stub, `TTSFallbackPolicy` is a pure decision function, `VoiceCatalogClient` accepts an injectable URLSession. Tests can be added in a later milestone without refactoring.
 
-### Manual scenarios that must pass before M13b is called done
+### Manual scenarios that must pass before slice 05 is called done
 
 These are not automated but must be executed end-to-end on a real iPhone 17 Pro before claiming completion:
 
@@ -157,7 +157,7 @@ These are not automated but must be executed end-to-end on a real iPhone 17 Pro 
 ## Out of Scope
 
 - **Custom voice cloning from a 3 s user reference.** Reopened as Slice 07 on 2026-05-19, then reverted same day after discovering the open-source Voxtral checkpoint is missing the audio encoder needed for cloning. See the Slice 07 post-mortem at the end of this PRD.
-- **Streaming inference.** The official model card mentions streaming but documents only batch. v1 uses batch. M13c will measure whether streaming is worth pursuing.
+- **Streaming inference.** The official model card mentions streaming but documents only batch. v1 uses batch. The slice 06 latency addendum below closed this in favour of batch — no streaming work is scheduled.
 - **Replacing Whisper STT with Voxtral Transcribe.** Different model, different milestone. The user separately noted the `virtUOS/vllm-voxtral` repo as a potential STT path; explicitly not addressed here.
 - **Apple Foundation Models or Gemma fallback for the dialog LLM.** Unchanged by this PRD.
 - **Free-reflection mode TTS quality.** Free reflection currently uses the same engine selection as the walkthrough, so it benefits automatically; no dedicated work.
@@ -176,13 +176,13 @@ These are not automated but must be executed end-to-end on a real iPhone 17 Pro 
 
 **Why vLLM Omni and not the virtUOS/vllm-voxtral wrapper.** Evaluated during research: the wrapper packages the realtime *audio-understanding* model (`Voxtral-Mini-4B-Realtime-2602`), not the TTS model (`Voxtral-4B-TTS-2603`). Two stars, one commit, no documented `/v1/audio/speech` endpoint. Not suitable for this goal. Useful bookmark for a future STT replacement.
 
-**GPU planning.** Voxtral 4 B unquantized fits comfortably in a single 3090's 24 GB. Pinning to GPU 0 leaves the second 3090 free for Ollama (already in the stack), LightRAG, or future workloads. Mixed-precision and the model's own optimizations are vLLM's concern, not ours.
+**GPU planning.** Voxtral 4 B unquantized fits comfortably in a single 3090's 24 GB. Pinning to GPU 1 leaves the other 3090 free for Ollama (already in the stack), LightRAG, or future workloads. Mixed-precision and the model's own optimizations are vLLM's concern, not ours. *In practice the awake engine holds ~20 GB of VRAM around the clock, which starved ComfyUI and Ollama on the same box and is what motivated the post-ship lazy-wake gate — asleep it retains ~1.4 GB.*
 
-**Cold-start.** vLLM Omni takes multiple seconds to load the model on container start. The sidecar lifecycle is independent of webapp's, so a webapp restart for an iOS-route change does not retrigger Voxtral warmup. Compose's `restart: unless-stopped` keeps the sidecar warm across host reboots.
+**Cold-start.** vLLM Omni takes multiple seconds to load the model on container start (a full restart costs ~60 s). The sidecar lifecycle is independent of webapp's, so a webapp restart for an iOS-route change does not retrigger Voxtral warmup. Compose's `restart: unless-stopped` keeps the sidecar warm across host reboots. *Superseded post-ship (2026-08-16):* keeping a 20 GB model warm around the clock proved too expensive in VRAM, so the lazy-wake gate now sleeps the engine after `VOXTRAL_IDLE_SECONDS` idle and wakes it in ~1 s on the next request — sleep mode rather than stopping the container, precisely because a restart costs ~60 s. Webapp-restart independence still holds: the gate and engine lifecycles are separate from webapp's.
 
 **Privacy posture.** Text strings sent to Voxtral are the AI's *outgoing* prompts (openers, follow-ups, closing lines). They are not user content. No user audio or transcript ever leaves the phone via this path; that constraint is preserved.
 
-**Documentation updates same commit.** `SPEC.md` §4 gains a Voxtral row with a CC BY-NC 4.0 note. `SPEC.md` §13 gains the new on-disk location. `DEVELOPMENT.md` gains S5, M13a, M13b, M13c entries with the exit criteria from the milestone table. `CLAUDE.md` does not need to change.
+**Documentation updates same commit.** `SPEC.md` §4 gains a Voxtral row with a CC BY-NC 4.0 note. `SPEC.md` §13 gains the new on-disk location. `CLAUDE.md` does not need to change. (The original plan also called for S5 / M13a / M13b / M13c entries in `DEVELOPMENT.md`; as recorded in the Milestones section above, those were never added — the work shipped as the slice issues in `docs/issues/voxtral-tts/` instead.)
 
 **Sign-off captured.** Before drafting this PRD the user confirmed: (a) the 2× RTX 3090 server, (b) bundled Voxtral voices only in v1, (c) silent per-utterance fallback to Piper or Apple, (d) the 10-module decomposition with five marked deep, (e) automated test coverage scoped to `voxtral_client` on the server in v1.
 
@@ -204,6 +204,8 @@ We close M13c on **qualitative dogfood evidence** instead:
 **Interpretation.** The 70 ms model latency Mistral reports, plus tail-end network RTT to the home Tailnet, plus first-audio-frame setup in `AVAudioPlayer`, lands comfortably under the perceptual threshold for this user on this network. The hypothetical case that would push us toward streaming inference is a multi-paragraph utterance on a slow link — neither of those is in the walkthrough's actual workload (openers and follow-ups are 1–3 sentences, the user's primary capture path is on home Wi-Fi).
 
 **Decision.** No follow-up streaming-inference issue is opened. Slice 04 (opener prefetch) remains deferred for the same reason — the latency it would hide is already imperceptible. Both can be reopened later if the workload changes (e.g. longer free-reflection prompts, off-Tailscale operation, or a noticeable degradation after a model upgrade).
+
+**Post-decision note (2026-08-16).** The lazy-wake gate (see Compose service above) added a ~1–2 s wake cost on requests that land on a sleeping engine (measured webapp → gate → sleeping engine → WAV: 1.64 s). The decision above is unchanged: the gate holds such requests open rather than erroring, the error contract `voxtral_client` and the iOS fallback policy code against is intact, and the existing per-utterance fallback still covers a genuinely-down engine.
 
 **Operational note for future re-measurement.** If we ever do want hard numbers, the cheapest path is to add a `Date()` at the start of `VoxtralTTS.performSpeak`, capture `audioPlayerDidBeginPlaying` (not just `didFinishPlaying`) on the playback delegate, log the delta as TTFA, and gate the whole thing behind the debug toggle already in place for synth-time logging. That adds maybe 20 lines and zero production risk; the only reason to do it would be to settle an objective vs subjective dispute about whether the gap is acceptable. None today.
 
