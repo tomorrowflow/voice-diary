@@ -137,7 +137,7 @@ server/
 ### 4.3 Milestones
 
 Written as the original task breakdown, not a live status board. As of this writing, S1's n8n
-removal and audio pipeline, S2's MSAL/Graph client, and S3's `webapp/routers/` are all present on
+removal and audio pipeline, S2's MSAL/Graph client, and the S2–S3 `webapp/routers/` are all present on
 disk — see `server/README.md` for current state before treating any task below as unstarted.
 
 #### S1 — Remove n8n, add local audio processing
