@@ -38,6 +38,10 @@ LIGHTRAG_API_KEY = os.getenv("LIGHTRAG_API_KEY", "")
 _ollama_client = OllamaClient(
     base_url=OLLAMA_BASE_URL, model=OLLAMA_ANALYSIS_MODEL, timeout_seconds=OLLAMA_ANALYSIS_TIMEOUT
 )
+# Separate connect/read/write timeouts — analysis can take minutes.
+_OLLAMA_ANALYSIS_HTTP_TIMEOUT = httpx.Timeout(
+    connect=30.0, read=OLLAMA_ANALYSIS_TIMEOUT, write=30.0, pool=30.0
+)
 
 MONTH_NAMES_DE = [
     "Januar", "Februar", "März", "April", "Mai", "Juni",
@@ -203,12 +207,11 @@ async def summarize_context(
     )
 
     try:
-        timeout = httpx.Timeout(connect=30.0, read=OLLAMA_ANALYSIS_TIMEOUT, write=30.0, pool=30.0)
         result = await _ollama_client.chat(
             [{"role": "user", "content": prompt}],
             temperature=0.1,
             num_ctx=OLLAMA_ANALYSIS_NUM_CTX,
-            timeout=timeout,
+            timeout=_OLLAMA_ANALYSIS_HTTP_TIMEOUT,
         )
         if result.content and len(result.content) >= 50:
             return result.content
@@ -378,19 +381,12 @@ async def analyze_transcript(enriched_ctx: dict) -> dict:
     )
 
     try:
-        # Use separate connect/read/write timeouts — analysis can take minutes
-        timeout = httpx.Timeout(
-            connect=30.0,
-            read=OLLAMA_ANALYSIS_TIMEOUT,
-            write=30.0,
-            pool=30.0,
-        )
         result = await _ollama_client.chat(
             [{"role": "user", "content": prompt}],
             format="json",
             temperature=0.1,
             num_ctx=OLLAMA_ANALYSIS_NUM_CTX,
-            timeout=timeout,
+            timeout=_OLLAMA_ANALYSIS_HTTP_TIMEOUT,
         )
         content = result.content
     except OllamaTimeoutError:
