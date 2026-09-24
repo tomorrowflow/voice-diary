@@ -570,18 +570,23 @@ The server hands todos to the existing `document_processor.py` pipeline. The pip
 
 | Setting | Values |
 |---|---|
-| Recording language | Auto-detect / German / English |
-| Response language | Match input / Always German / Always English |
-| German voice | Thorsten (high) / Eva / Karlsson |
-| English voice | Lessac (high) / Alan (British) / Ryan |
+| App language | `System (recommended) / Deutsch` (see §12.1) |
+| German voice | Combined Apple Premium / Piper / Voxtral list (see §12.1); bundled Piper default: Thorsten (high) |
+| English voice | Combined Apple Premium / Piper / Voxtral list (see §12.1); bundled Piper default: Lessac (high) |
+
+The separate `Recording language` / `Response language` pickers this table used to list
+were collapsed into the single **App language** toggle (§12.1, `AppLanguage`): `System`
+resolves to `de` on a German device and `en` otherwise, `Deutsch` forces `de`. Per-event
+language detection can still override the spoken voice, gated by the "Detect language per
+event" toggle (§12.1) — see §9.3.
 
 ### 9.3 Auto-detect behaviour
 
 Parakeet v3 reports per-utterance language confidence. The app:
 - For events ≥ 10 words: use Parakeet's detected language.
-- For very short utterances (drive-by < 10 words or interjections): fall back to `Recording language` setting.
+- For very short utterances (drive-by < 10 words or interjections): fall back to the App-language default (`AppLanguage.bcp47` — `de` under `Deutsch`, otherwise the system-resolved code).
 - Per-turn, the detected input language is plumbed to the dialog LLM's system prompt.
-- The `Response language` setting determines which voice TTS uses and which language Apple FM is instructed to reply in.
+- The detected input language then drives which voice TTS uses and which language Apple FM is instructed to reply in, falling back to the App-language default when detection is inconclusive.
 
 ### 9.4 Voice bundling
 
@@ -745,7 +750,7 @@ The iOS app also consumes these read endpoints on `server` over Tailscale:
 | `GET /calendar/event/{graph_event_id}` | Full detail for a specific event (for enrichment "tell me more about this meeting"). | MS Graph |
 | `GET /health` | Tailscale reachability + upstream health probe. Returns `ok` only when LightRAG, Ollama, Whisper, and Postgres are reachable. | self |
 
-All endpoints require a simple bearer token set during onboarding. No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
+All endpoints require a simple bearer token entered in Mehr → Server (`DebugSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
 
 ---
 
@@ -837,49 +842,63 @@ When Apple FM is used for dynamic follow-ups, the prompt is:
 
 ### 12.1 Categories & fields
 
-**Language & voice**
-- Recording language: `Auto-detect | German | English` (default: `Auto-detect`)
-- Response language: `Match input | Always German | Always English` (default: `Match input`)
-- German voice: dropdown of bundled German Piper voices
-- English voice: dropdown of bundled English Piper voices
+This is the intentionally-reduced surface (2026-07-04 grill): a single-user tool doesn't need
+every knob turned into a setting. Only fields that are actually exposed in the app are listed
+here; everything the team decided not to build a picker for lives in §12.2 instead.
 
-**Schedule**
-- Workday start time (default 08:00)
-- Workday end time (default 18:00)
-- Evening diary notification time (default 20:00)
+**Language & voice** (UX-13a)
+- App language: `System (recommended) | Deutsch` (default: `System`; Mehr → Sprache,
+  `LanguageSettingsView`) — one toggle, not the separate recording/response pickers this
+  section used to describe. `System` follows the iPhone's language and falls back to English on
+  any device whose system language isn't German; `Deutsch` locks German regardless of the system
+  setting. This toggle sets the surrounding opener's base language; whether an individual
+  event title/attendee name inside that opener gets its own detected-language voice is
+  controlled separately by "Detect language per event" below.
+- German voice / English voice: one combined list per language (`VoiceSettingsView`) —
+  installed Apple Premium voices, bundled Piper voices, and reachable server (Voxtral) voices
+  side by side; the selected row's prefix (`piper:` / `voxtral:` / neither) is what
+  `VoiceRegistry` switches on, so there's no separate engine picker.
+- **Detect language per event** toggle (`VoiceSettingsView`, stored in
+  `WalkthroughSettingsStore.mixedLanguageSpeech`, default **on**): when on, an event opener
+  splices in the calendar title/attendee name using its own detected language (e.g. a German
+  frame around an English title is spoken German / English / German across the two voices —
+  `OpenerTemplates.script`, `LanguageDetector`); when off, the whole line collapses to the
+  opener's base (App-language) voice, so a German-titled event in an English session would be
+  read in English.
 
 **Walkthrough**
-- **Sections** (Mehr → Walkthrough → Abschnitte): list of user-defined `general` sections. Each has `id` (stable UUID), `title` (header text + manifest field), `introText` (TTS opener line). Stored in `UserDefaults` under `walkthrough.generals.v1`.
-- **Reihenfolge** (Mehr → Walkthrough → Reihenfolge): ordered list of `WalkthroughSection` (`.general(id) | .calendarEvents | .driveBy`). Drag to reorder. The two system sections (`calendarEvents`, `driveBy`) always appear once each; if missing from the stored order they're appended in default order on read. Stored in `UserDefaults` under `walkthrough.sectionOrder.v1`. Default order = `[.calendarEvents, .driveBy]`.
-- RSVP filter: multi-select `Accepted | Tentative | All` (default: Accepted + Tentative)
-- Multi-day gap cap: integer days (default 7)
-- Lull thresholds: three sliders for 3s / 6s / 15s (defaults shown)
-- Empty-block threshold: minutes (default 30)
-- Empty-block behaviour: `Ask once | Never ask` (default Ask once)
-- End-of-day drive-by recap: toggle (default on)
-
-**Capture**
-- Drive-by notification duration: seconds (default 4)
-- Drive-by auto-stop silence: seconds (default 3)
-
-**Storage**
-- Raw audio retention: `1 month | 3 months | Forever` (default 3 months)
-- Transcript retention: `3 months | 6 months | Forever` (default Forever)
-- Conversation history in UI: `Last 7 days | 30 days | All` (default 30 days)
+- **Sections** (Mehr → Abschnitte): list of user-defined `general` sections. Each has `id` (stable UUID), `title` (header text + manifest field), `introText` (TTS opener line). Stored in `UserDefaults` under `walkthrough.generals.v1`.
+- **Reihenfolge** (Mehr → Reihenfolge): ordered list of `WalkthroughSection` (`.general(id) | .calendarEvents | .voiceNote`; the `.voiceNote` case still encodes to JSON `kind: "drive_by"` for on-disk compatibility). Drag to reorder. The two system sections (`calendarEvents`, `voiceNote`) always appear once each; if missing from the stored order they're appended in default order on read. Stored in `UserDefaults` under `walkthrough.sectionOrder.v1`. Default order = `[.calendarEvents, .voiceNote]`.
+- Event filters (`WalkthroughSettingsView`): three independent toggles — Include all-day events,
+  Include tentative events, Include not-accepted events. Not a single RSVP picker. All three
+  default **off**, i.e. only accepted, timed events flow into the per-event loop by default.
 
 **Backend**
-- Server endpoint URL (set during onboarding, e.g. `http://my-server.tailnet.ts.net:8000`)
-- Bearer token (set during onboarding)
-- Tailscale health indicator (read-only, shows last successful contact time)
+- Server endpoint URL + bearer token (Mehr → Server, `DebugSettingsView`) — a Keychain-backed
+  text field + secure field, not an onboarding-only step.
+- "Check server" button: on-demand `Reachability.refresh()` call — pings `/health` and a
+  bearer-gated route, shows a live status (`—` / `OK` / `degraded` / `Bearer invalid` / `down`).
+  It is not a persisted "last successful contact time"; the status only reflects the most
+  recent check (fired on-demand or when the settings screen appears).
 
-**About**
-- App version
-- Voice model versions
-- Parakeet model version
-- Reset app (clear all local data)
+**Diagnostics** (Mehr → Diagnostics, `DiagnosticsView`)
+- Rolling local error/crash/hang log (`DiagnosticsCollector`, backed by `MXMetricManager`),
+  viewable and shareable per-report; delete-all and per-report delete.
+- There is no "About" grouping and no app-version / voice-model-version / Parakeet-model-version
+  display anywhere in the app today — those fields this section used to list don't exist in
+  code. "Reset app" is the Mehr → Gefahrenzone delete-all documented in §12.2/§13.2, not a
+  separate About-screen control.
 
 ### 12.2 Parked settings (not exposed yet)
 
+- Workday hours + evening diary notification schedule
+- Lull / empty-block / multi-day-gap thresholds — `LullDetector` ships fixed
+  3s/6s/15s/24s thresholds today (`WalkthroughCoordinator` sets the 24s auto-advance on top of
+  the class default); no slider UI exposes them
+- Drive-by capture numerics (notification duration, auto-stop silence)
+- Retention pickers (raw audio / transcript / conversation-history windows) — no retention
+  sweep exists in code; local data is only cleared manually today, via Mehr → Gefahrenzone
+  (delete-all or older-than-30-days)
 - Enrichment wake-word customization
 - Custom opener templates
 - Haptic patterns
@@ -924,10 +943,23 @@ All of `server/data/` is gitignored.
 
 ### 13.2 Retention
 
-- **Raw audio**: respects `Raw audio retention` setting. Background task runs daily at 03:00 local time, deletes session folders older than setting.
-- **Transcripts & manifests**: respect `Transcript retention` setting. Kept longer than audio because they're much smaller.
-- **Drive-by seeds**: deleted after successful ingest in the evening session, regardless of retention setting.
-- **Upload queue**: never pruned by retention — entries stay until successfully uploaded.
+Retention is **manual today**. The automated, per-setting daily sweep this section used to
+describe is not built: the retention pickers are parked (§12.2), so nothing prunes local
+data on a schedule. The user clears data on demand via Mehr → Gefahrenzone — either
+delete-all (wipes both audio directories, notes, and the upload queue) or remove-older-than-
+30-days (sessions + notes past a 30-day cutoff). Diary entries already on the server are
+untouched by both.
+
+Independent of that manual clearing:
+
+- **Drive-by seeds**: *not* deleted after ingest. A seed used in a walkthrough is marked
+  "surfaced" (so it won't be offered again) but its audio file stays on disk
+  (`WalkthroughCoordinator.finishUpload`, `LocalStore.markSeedsSurfaced`) — same as a dropped
+  ("verwerfen") seed. Seed audio only goes away via manual deletion: the Gefahrenzone "notes"
+  category (`LocalStore.voiceNotesDir()`, i.e. `driveby_seeds/`) or a per-item delete from
+  Verlauf.
+- **Upload queue**: entries stay until successfully uploaded — only a manual clear (delete-all,
+  or clearing the upload-queue category in Gefahrenzone) discards un-uploaded entries.
 
 ### 13.3 Encryption
 
@@ -938,25 +970,24 @@ All of `server/data/` is gitignored.
 
 ## 14. Onboarding
 
-First launch flow (one-time):
+First-run gate (UX-6a), not the multi-step wizard this section used to describe. This is a
+single-user tool the developer sets up once, so onboarding is reduced to what actually blocks
+first capture. Today that's a single step:
 
 ```
-1. Welcome screen — short description, privacy statement.
-2. Microphone permission request.
-3. Notification permission request.
-4. Diary-processor endpoint setup:
-   - URL (Tailscale hostname, e.g. "http://my-server.tailnet.ts.net:8000")
-   - Bearer token (user copies from `server`'s `.env`)
-   - Test connection (calls GET /health, shows result)
-5. Language setup:
-   - Primary recording language pick
-   - Voice preview: AI says a sentence in German and English so user picks
-6. Workday hours setup.
-7. Lock screen widget install prompt (deep link to widget gallery).
-8. Action Button binding prompt (deep link to Settings → Action Button).
-9. First drive-by tutorial: "Try it now" → records "Hallo Voice Diary", plays back transcript.
-10. Done — app ready.
+1. Microphone + Speech Recognition + notification permission prompts — fired proactively at
+   app launch, not a dedicated onboarding screen. Mic + Speech come from
+   `Permissions.requestStartupPermissions()`; the notification prompt from
+   `CaptureNotifications.requestAuthorisationIfNeeded()`, both on the launch task.
 ```
+
+There is no first-run wizard beyond that: `ios/Sources/UI/Onboarding/_OnboardingPlaceholder.swift`
+is a two-line stub ("Tailscale check + bearer-token paste + voice preview + Action Button hookup.
+Implemented in milestone M11.") — none of that has landed yet. Server URL/bearer-token entry +
+a "Check server" test (`DebugSettingsView`) and the voice pickers (`VoiceSettingsView`, §12.1)
+already exist, but only as ordinary Settings (Mehr) screens the developer opens manually, not as
+onboarding steps 2+. An Action Button binding prompt and a first-run drive-by tutorial
+("Hallo Voice Diary") don't exist in code at all yet.
 
 Graph OAuth setup is a one-time step the user runs on the server (`server/scripts/msgraph_bootstrap.py`) before first iOS launch — not on the phone.
 
@@ -972,7 +1003,9 @@ Graph OAuth setup is a one-time step the user runs on the server (`server/script
 | Network | Tailscale unreachable during enrichment | "Can't reach server. Enrichment skipped." |
 | Ingest | Upload fails repeatedly | "2 sessions pending upload. Tap to retry." |
 | LLM | Apple FM generation fails | Silent fallback to canned follow-up template. |
-| TTS | Piper model fails to load | Fallback to AVSpeechSynthesizer for that language. |
+| TTS | Voxtral (server voice) request fails or is unreachable | Silent fallback: `TTSFallbackPolicy` re-dispatches the utterance to the user's Piper voice for that language if its bundled assets are present, else to AVSpeechSynthesizer. Walkthrough keeps speaking. |
+| TTS | Piper voice selected but its bundled assets are missing | `VoiceRegistry` pre-checks asset presence before ever routing to Piper; falls back to AVSpeechSynthesizer for that language. |
+| TTS | Piper assets present but the on-device model load / synthesis itself fails | **Known gap, not a fallback:** `PiperTTS.performSpeak` logs the error and returns — no re-dispatch to Apple, no audio for that utterance. `VoiceRegistry`'s check only covers the assets-missing case above. |
 
 ### 15.2 Never-fail principles
 
@@ -982,7 +1015,7 @@ Graph OAuth setup is a one-time step the user runs on the server (`server/script
 
 ### 15.3 Telemetry
 
-None. Errors log locally to a rolling file viewable in Settings → About → Diagnostics. No data leaves the phone except to the user's own `server` over Tailscale.
+None. Errors log locally to a rolling file viewable in Mehr → Diagnostics (§12.1). No data leaves the phone except to the user's own `server` over Tailscale.
 
 ---
 
