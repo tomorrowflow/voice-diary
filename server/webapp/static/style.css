@@ -585,7 +585,6 @@ header h1 {
 .toast.visible { opacity: 1; }
 .toast.error { background: var(--color-red); }
 .toast-action {
-  pointer-events: auto;
   margin-left: var(--spacing-2);
   padding: var(--spacing-0_5) var(--spacing-2);
   border: 1px solid var(--text-on-primary);
@@ -596,6 +595,7 @@ header h1 {
   font-weight: 600;
   cursor: pointer;
 }
+.toast.visible .toast-action { pointer-events: auto; }
 .toast-action:hover { background: var(--color-alpha-white-300); }
 
 /* ============================================================
