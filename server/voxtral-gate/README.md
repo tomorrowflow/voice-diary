@@ -87,8 +87,8 @@ docker compose run --rm --no-deps --entrypoint pytest voxtral -q tests/test_gate
 
 ## Keeping it awake
 
-For a long dogfooding session where the wake latency is unwanted, raise the
-idle window for the session:
+For a long dogfooding session where the wake latency is unwanted, either
+raise the idle window or pin it awake for the session:
 
 ```bash
 VOXTRAL_IDLE_SECONDS=3600 docker compose up -d voxtral
