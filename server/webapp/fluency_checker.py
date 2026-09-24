@@ -155,7 +155,7 @@ async def check_fluency(raw_text: str) -> list[dict]:
 
     content = result.content
     if not content:
-        logger.warning("Failed to parse Ollama response for fluency check")
+        logger.warning("Empty Ollama response for fluency check")
         return []
 
     issues = _parse_issues(content)

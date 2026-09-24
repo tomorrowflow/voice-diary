@@ -202,7 +202,7 @@ async def correct_transcript(
 
     content = result.content
     if not content:
-        logger.warning("Failed to parse Ollama response for transcript correction")
+        logger.warning("Empty Ollama response for transcript correction")
         return raw_text, []
 
     corrections = _parse_corrections(content)
