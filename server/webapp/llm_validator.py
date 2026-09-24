@@ -296,9 +296,7 @@ async def validate_entities_stream(
     t0 = time.monotonic()
 
     try:
-        result = await _ollama_client.chat(
-            messages, format="json", num_ctx=OLLAMA_NUM_CTX, timeout=OLLAMA_TIMEOUT
-        )
+        result = await _ollama_client.chat(messages, format="json", num_ctx=OLLAMA_NUM_CTX)
     except OllamaUnavailableError:
         msg = f"Ollama unreachable at {OLLAMA_BASE_URL}"
         logger.warning(msg)
@@ -313,7 +311,7 @@ async def validate_entities_stream(
         yield _sse_result(entities)
         return
     except OllamaEngineError as e:
-        msg = f"Ollama returned HTTP {e.status_code}"
+        msg = f"Ollama error: {e}"
         logger.warning(msg)
         yield _sse_log(msg, "error")
         yield _sse_result(entities)

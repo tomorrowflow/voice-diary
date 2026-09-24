@@ -84,9 +84,7 @@ async def summarise_for_speech(
     ]
 
     try:
-        result = await _ollama_client.chat(
-            messages, num_ctx=OLLAMA_NUM_CTX, temperature=0.2, timeout=OLLAMA_TIMEOUT
-        )
+        result = await _ollama_client.chat(messages, num_ctx=OLLAMA_NUM_CTX, temperature=0.2)
     except OllamaUnavailableError as exc:
         raise EnrichmentSummariserUnavailable(f"ollama_unreachable: {exc}") from exc
     except OllamaTimeoutError as exc:

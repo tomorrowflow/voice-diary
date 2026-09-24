@@ -60,7 +60,8 @@ class ChatResponse:
 
 
 class OllamaClient:
-    """Pure async client. One instance per FastAPI app lifespan.
+    """Pure async client. Holds no connection state, so a single
+    module-level instance per caller is safe to share across requests.
 
     Construction reads `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, and
     `OLLAMA_TIMEOUT` from the environment by default; tests override

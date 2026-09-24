@@ -138,9 +138,7 @@ async def check_fluency(raw_text: str) -> list[dict]:
     t0 = time.monotonic()
 
     try:
-        result = await _ollama_client.chat(
-            messages, format="json", num_ctx=OLLAMA_NUM_CTX, timeout=OLLAMA_TIMEOUT
-        )
+        result = await _ollama_client.chat(messages, format="json", num_ctx=OLLAMA_NUM_CTX)
     except OllamaUnavailableError:
         logger.warning("Ollama unreachable at %s for fluency check", OLLAMA_BASE_URL)
         return []
@@ -149,7 +147,7 @@ async def check_fluency(raw_text: str) -> list[dict]:
         logger.warning("Fluency check timed out after %.1fs", elapsed)
         return []
     except OllamaEngineError as e:
-        logger.warning("Ollama returned HTTP %s for fluency check", e.status_code)
+        logger.warning("Ollama error for fluency check: %s", e)
         return []
 
     elapsed = time.monotonic() - t0

@@ -35,7 +35,7 @@ async def extract_work_activities(transcript: str, date_str: str) -> list[dict]:
     prompt = _build_prompt(transcript, date_str)
 
     try:
-        result = await _ollama_client.chat(prompt, format="json", timeout=OLLAMA_TIMEOUT)
+        result = await _ollama_client.chat(prompt, format="json")
     except Exception as e:
         logger.warning("Ollama call failed for harvest LLM: %s", e)
         return []
