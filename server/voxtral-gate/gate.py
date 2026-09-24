@@ -1,6 +1,6 @@
 """Lazy-wake reverse proxy in front of the Voxtral vLLM Omni engine.
 
-Voxtral is a ~20 GB resident on the RTX 3090 but serves a route the iOS
+Voxtral holds ~19 GB of VRAM on the RTX 3090 but serves a route the iOS
 app hits in short bursts. This gate sits at `voxtral:8001` — the address
 `webapp` already talks to — and forwards to the real engine at
 `voxtral-engine:8001`, putting it to sleep when idle:
@@ -316,8 +316,9 @@ async def proxy(path: str, request: Request) -> StreamingResponse | JSONResponse
             gate.note_end()
             raise
 
+    release = gate.note_end if needs_engine else None
     try:
-        return await _forward(client, request, path, release=gate.note_end if needs_engine else None)
+        return await _forward(client, request, path, release=release)
     except BaseException:
         if needs_engine:
             gate.note_end()
