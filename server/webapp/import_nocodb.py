@@ -32,19 +32,6 @@ from pathlib import Path
 
 import asyncpg
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    # No built-in default: that previously hardcoded guessable
-    # diary:diary credentials (SEC-4). Fail like the other operator-facing
-    # errors in this tool (e.g. missing CSV files): clear message, exit 1.
-    print(
-        "ERROR: DATABASE_URL is not set. Export the target database URL, "
-        "e.g. postgresql://<user>:<password>@localhost:5432/diary_processor "
-        "(see .env.example).",
-        file=sys.stderr,
-    )
-    sys.exit(1)
-
 
 @dataclass
 class SqlStatement:
@@ -241,7 +228,7 @@ def build_statements(csv_dir: Path) -> list[SqlStatement]:
     return statements
 
 
-async def apply_statements(statements: list[SqlStatement], database_url: str = DATABASE_URL) -> None:
+async def apply_statements(statements: list[SqlStatement], database_url: str) -> None:
     """Apply statements to Postgres in a single transaction, positionally
     binding each statement's params via asyncpg (no string interpolation)."""
     conn = await asyncpg.connect(database_url)
@@ -273,7 +260,19 @@ def main() -> None:
         print(f"-- {len(statements)} statements (dry run, nothing applied)", file=sys.stderr)
         return
 
-    asyncio.run(apply_statements(statements))
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        # No built-in default: that previously hardcoded guessable
+        # diary:diary credentials (SEC-4).
+        print(
+            "ERROR: DATABASE_URL is not set. Export the target database URL, "
+            "e.g. postgresql://<user>:<password>@localhost:5432/diary_processor "
+            "(see .env.example).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    asyncio.run(apply_statements(statements, database_url))
     print(f"Applied {len(statements)} statements", file=sys.stderr)
 
 
