@@ -46,7 +46,7 @@ fresh scaffold. `DEVELOPMENT.md`'s milestone lists describe the original build p
 status board; check `git log`, `ios/README.md`, and the actual directories for current state.
 
 - Server track: work has landed well beyond the seed — S1's n8n removal and audio pipeline
-  (ffmpeg + a Whisper sidecar), S2's MSAL Graph client, and S3's iOS-facing routers
+  (ffmpeg + a Whisper sidecar), S2's MSAL Graph client, and the S2–S3 iOS-facing routers
   (`webapp/routers/{calendar,sessions,email,lightrag,health}.py`) are all on disk on top of the
   `diary-processor` seed. See `DEVELOPMENT.md §4` for what's tracked as remaining.
 - iOS track: well past M1 — `ios/Sources/` has capture, dialog, TTS, storage and UI modules plus
