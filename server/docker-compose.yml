@@ -12,7 +12,9 @@ services:
       - WHISPER_URL=${WHISPER_URL:-http://whisper:9000}
       - VOXTRAL_BASE_URL=${VOXTRAL_BASE_URL:-http://voxtral:8001}
       - VOXTRAL_MODEL=${VOXTRAL_MODEL:-mistralai/Voxtral-4B-TTS-2603}
-      - VOXTRAL_TIMEOUT_SECONDS=${VOXTRAL_TIMEOUT_SECONDS:-30}
+      # Raised from 30s: a request landing on a sleeping engine now pays a
+      # wake (~seconds) before synthesis starts.
+      - VOXTRAL_TIMEOUT_SECONDS=${VOXTRAL_TIMEOUT_SECONDS:-60}
       - DATA_DIR=/data
     volumes:
       # Persists iOS session bundles + MSAL refresh-token cache across
@@ -31,14 +33,30 @@ services:
     restart: unless-stopped
 
   voxtral:
+    # Lazy-wake gate. Owns the `voxtral:8001` address webapp talks to and
+    # forwards to voxtral-engine, sleeping the engine after
+    # VOXTRAL_IDLE_SECONDS of no traffic and waking it (~seconds) on the
+    # next request. Liveness probes — webapp's /health hits GET /v1/models
+    # — pass through without waking anything. See voxtral-gate/gate.py.
+    build: ./voxtral-gate
+    environment:
+      - VOXTRAL_ENGINE_URL=http://voxtral-engine:8001
+      - VOXTRAL_IDLE_SECONDS=${VOXTRAL_IDLE_SECONDS:-300}
+      - VOXTRAL_SLEEP_LEVEL=${VOXTRAL_SLEEP_LEVEL:-1}
+      - VOXTRAL_SLEEP_ON_START=${VOXTRAL_SLEEP_ON_START:-true}
+    depends_on:
+      - voxtral-engine
+    restart: unless-stopped
+
+  voxtral-engine:
     # Mistral's Voxtral-4B-TTS-2603 served by vLLM Omni. Exposes the
     # OpenAI-compatible /v1/audio/speech endpoint that webapp's
     # /api/tts/synthesize route proxies for the iOS app.
     #
     # CC BY-NC 4.0 weights — fine for personal use, see SPEC.md §4.
-    # Not bound to a host port — only webapp (same compose network)
-    # reaches Voxtral. HF model cache lives in a named volume so a
-    # restart does not re-download ~8 GB.
+    # Not bound to a host port — only the voxtral gate (same compose
+    # network) reaches the engine. HF model cache lives in a named volume
+    # so a restart does not re-download ~8 GB.
     image: vllm/vllm-omni:v0.18.0
     # The image ships with `vllm` + `vllm-omni` on PATH but no ENTRYPOINT/CMD
     # set, so we spell out the binary + subcommand explicitly. The `--omni`
@@ -51,15 +69,23 @@ services:
       - "--omni"
       - "--port"
       - "8001"
+      # Lets the gate offload weights to host RAM between sessions.
+      # Without it /sleep returns an error and the ~19 GB stays resident.
+      - "--enable-sleep-mode"
     environment:
       # Mistral models are gated on Hugging Face — accept the license
       # at huggingface.co/mistralai/Voxtral-4B-TTS-2603 with the same
       # account whose token you put here, then `docker compose up -d voxtral`.
       HF_TOKEN: ${HF_TOKEN:-}
       HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      # Registers /sleep, /wake_up and /is_sleeping. vLLM calls these
+      # "development endpoints" — acceptable here because the engine has
+      # no host port and is reachable only by the gate on the compose
+      # network, and the stack as a whole is Tailscale-only (SPEC.md §6).
+      VLLM_SERVER_DEV_MODE: "1"
     volumes:
       - voxtral_models:/root/.cache/huggingface
-    # Pinned to GPU 0 — leaves GPU 1 free for Ollama / future workloads.
+    # Pinned to GPU 1 — leaves GPU 0 free for Ollama / future workloads.
     # Requires nvidia-container-toolkit on the host.
     deploy:
       resources:
