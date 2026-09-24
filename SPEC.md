@@ -952,7 +952,7 @@ Independent of that manual clearing:
 
 - **Drive-by seeds**: *not* deleted after ingest. A seed used in a walkthrough is marked
   "surfaced" (so it won't be offered again) but its audio file stays on disk
-  (`WalkthroughCoordinator.enqueue`, `LocalStore.markSeedsSurfaced`) — same as a dropped
+  (`WalkthroughCoordinator.finishUpload`, `LocalStore.markSeedsSurfaced`) — same as a dropped
   ("verwerfen") seed. Seed audio only goes away via manual deletion: the Gefahrenzone "notes"
   category (`LocalStore.voiceNotesDir()`, i.e. `driveby_seeds/`) or a per-item delete from
   Verlauf.
