@@ -1,0 +1,29 @@
+{
+  "name": "EventRow",
+  "description": "Calendar event row. Three columns: time (56px, tabular nums) / colour bar (3px) / details. Background is the bar colour at 6% opacity, stroke at 20%. The same pattern is reused for the Tagesübersicht, the in-session event card, and the review screen.",
+  "variants": {
+    "link":    { "bar": "semantic.text.link",        "tintBg": "tint.link-6",        "tintBorder": "tint.link-20"        },
+    "success": { "bar": "semantic.status.success",   "tintBg": "tint.success-6",     "tintBorder": "tint.success-20"     },
+    "warn":    { "bar": "semantic.status.warning",   "tintBg": "tint.warning-6",     "tintBorder": "tint.warning-20"     },
+    "subdued": { "bar": "semantic.text.subdued",     "tintBg": "semantic.bg.container-inset", "tintBorder": "semantic.border.subdued" }
+  },
+  "sizes": {
+    "default": {
+      "timeColumn": 56,
+      "barWidth":   3,
+      "padding":    "spacing.3",
+      "radius":     "radius.md"
+    }
+  },
+  "rsvpMapping": {
+    "comment": "Server RSVP status → variant. Fall back to subdued if missing.",
+    "organizer": "link",
+    "accepted":  "success",
+    "tentative": "warn",
+    "default":   "subdued"
+  },
+  "platformNotes": {
+    "swiftui": "HStack(time, bar, body). barColor.opacity(0.06) for fill, .opacity(0.20) for stroke. EventRow used in DayOverview and Walkthrough.",
+    "web":     "Class .event-row.rsvp-{variant}; pre-applied tints in tokens.css."
+  }
+}

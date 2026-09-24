@@ -1,0 +1,15 @@
+{
+  "name": "Card",
+  "description": "Content container. Two flavours: standalone `card` (white on grey surface, 1px subdued stroke) and `inset` (no stroke, used inside sheets and modals).",
+  "variants": {
+    "default": { "bg": "semantic.bg.container",       "border": "semantic.border.subdued", "borderWidth": 1 },
+    "inset":   { "bg": "semantic.bg.container-inset", "border": "transparent",             "borderWidth": 0 }
+  },
+  "sizes": {
+    "md": { "padding": "spacing.4",  "radius": "radius.lg" }
+  },
+  "platformNotes": {
+    "swiftui": "RoundedRectangle fill + strokeBorder. Use Theme.color.bg.container / Theme.color.bg.containerInset.",
+    "web":     "Class .card / .card-inset on a div. Borders are flat — never apply box-shadow."
+  }
+}

@@ -1,0 +1,241 @@
+# XcodeGen spec for Voice Diary.
+#
+# Run `xcodegen generate` from this directory after each schema change to
+# regenerate `VoiceDiary.xcodeproj`. The generated project is gitignored
+# (see ../.gitignore) — `project.yml` is the source of truth.
+#
+# Install xcodegen:
+#     brew install xcodegen
+#
+# M9 Piper TTS test area: `scripts/fetch_piper_voices.sh` overwrites the
+# committed stub `project-piper.yml` with the sherpa-onnx framework deps +
+# the `PIPER_TTS` compilation flag. The `include:` below pulls that file
+# into every generation. Without the bootstrap, the stub is a no-op and
+# `PiperTTS.swift` falls back to its `#if PIPER_TTS` stub.
+
+include:
+  - project-piper.yml
+
+name: VoiceDiary
+options:
+  bundleIdPrefix: com.tomorrowflow
+  deploymentTarget:
+    iOS: "26.0"
+  # English is the development / Base language: every `Text("…")` in
+  # source uses the English string as its lookup key. German lives in
+  # Resources/Localizable.xcstrings as a translated localization, and
+  # the `AppLanguage` singleton flips Bundle.main at runtime between the
+  # two. CFBundleDevelopmentRegion derives from this.
+  developmentLanguage: en
+  # Declare the localizations we ship so iOS treats the bundle as a
+  # localized app (without this, `Bundle.main.preferredLocalizations`
+  # collapses to just the dev language).
+  knownRegions:
+    - en
+    - de
+    - Base
+  defaultConfig: Debug
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_EXISTENTIAL_ANY: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+    INFOPLIST_KEY_UILaunchScreen_Generation: YES
+    DEVELOPMENT_TEAM: 9T79756W9V
+
+packages:
+  FluidAudio:
+    url: https://github.com/FluidInference/FluidAudio
+    from: 0.14.4
+  # MLX Swift LM: Apple's on-device LLM runtime. Used by
+  # `GemmaDialogLLM` to run Gemma 4 E4B (4-bit) on iPhone when the
+  # user opts in. Apple FM remains the default. See SPEC §11 +
+  # `Sources/Dialog/DialogLLM.swift`.
+  #
+  # The LLM libraries moved from `mlx-swift-examples` to this dedicated
+  # package; pin to the first stable line that ships `ChatSession`.
+  MLXSwiftLM:
+    url: https://github.com/ml-explore/mlx-swift-lm
+    from: 3.31.3
+  # HuggingFace Hub client + tokenizers — required by the MLXHuggingFace
+  # `#huggingFaceLoadModelContainer` macro that GemmaDialogLLM uses to
+  # download + load the Gemma 4 E4B 4-bit weights from
+  # `mlx-community/gemma-4-e4b-it-4bit`. The macro expansion references
+  # `HuggingFace.HubClient` and `Tokenizers.AutoTokenizer` directly, so
+  # both must be available to the consumer target.
+  HuggingFace:
+    url: https://github.com/huggingface/swift-huggingface
+    from: 0.9.0
+  Tokenizers:
+    url: https://github.com/huggingface/swift-transformers
+    from: 1.3.3
+
+targets:
+  VoiceDiary:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      - path: Resources/Geist-Variable.ttf
+        buildPhase: resources
+      - path: Resources/GeistMono-Variable.ttf
+        buildPhase: resources
+      - path: Resources/Geist-OFL.txt
+        buildPhase: resources
+      - path: Resources/Assets.xcassets
+        buildPhase: resources
+      # String Catalog — English source + German translations. Xcode
+      # compiles this into `de.lproj/Localizable.strings` and
+      # `en.lproj/Localizable.strings` at build time. `AppLanguage`
+      # picks the right lproj at runtime via Bundle.main swap.
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
+      # Translations for Info.plist keys (mic + speech-recognition
+      # usage descriptions). iOS resolves these against the *system*
+      # locale at permission-prompt time, BEFORE our AppLanguage
+      # bundle swap can take effect, so English on EN devices and
+      # German on DE devices is the right behaviour here.
+      - path: Resources/InfoPlist.xcstrings
+        buildPhase: resources
+      - path: Resources/Models
+        buildPhase: resources
+        optional: true
+        # Folder reference so the Piper voice subtree under
+        # Resources/Models/Voices/{de_DE-thorsten-high,en_US-lessac-high,espeak-ng-data}/
+        # is copied into the app bundle preserving its directory structure.
+        # Without `type: folder`, Xcode flattens children into the bundle
+        # root and collides on duplicate `tokens.txt` / `MODEL_CARD`.
+        type: folder
+    info:
+      # IMPORTANT: this block is the source of truth for Config/Info.plist.
+      # XcodeGen regenerates the plist from `properties` on every run —
+      # any hand-added keys will be silently dropped. Add new keys HERE.
+      path: Config/Info.plist
+      properties:
+        CFBundleDisplayName: Voice Diary
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIBackgroundModes:
+          - audio
+        # Usage strings are English in the plist itself; the German
+        # translation lives in Resources/InfoPlist.xcstrings and is
+        # picked by iOS based on the *system* language (the permission
+        # prompt fires before our AppLanguage override has any say).
+        NSMicrophoneUsageDescription: "Voice Diary records your speech so you can reflect on the day chronologically."
+        # Speech recognition is used for the German wake-word path
+        # ("weiter / nächstes / fertig") via SFSpeechRecognizer with
+        # `requiresOnDeviceRecognition = true`. No audio leaves the
+        # device — the system permission prompt still fires regardless.
+        # English wake words run through FluidAudio's on-device
+        # streaming Parakeet model and don't trigger this prompt.
+        NSSpeechRecognitionUsageDescription: "Voice Diary recognises commands like \"next\" or \"done\" on-device so you can steer the walkthrough even with the screen locked. Nothing is sent to Apple."
+        ITSAppUsesNonExemptEncryption: false
+        UIAppFonts:
+          - "Geist-Variable.ttf"
+          - "GeistMono-Variable.ttf"
+        # Tailscale traffic (`*.ts.net`) is encrypted at the transport layer;
+        # we relax ATS only for that hostname, not arbitrary HTTP.
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            ts.net:
+              NSIncludesSubdomains: true
+              NSExceptionAllowsInsecureHTTPLoads: true
+        # Custom URL scheme used by the lock-screen widget Link to deep-link
+        # back into the app (`voicediary://capture/start`).
+        CFBundleURLTypes:
+          - CFBundleURLSchemes:
+              - voicediary
+            CFBundleURLName: com.tomorrowflow.voice-diary
+        # NSSupportsLiveActivities is required for ActivityKit Live Activities.
+        NSSupportsLiveActivities: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tomorrowflow.voice-diary
+        TARGETED_DEVICE_FAMILY: "1"  # iPhone only
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Config/VoiceDiary.entitlements
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    dependencies:
+      - package: FluidAudio
+      - package: MLXSwiftLM
+        product: MLXLLM
+      - package: MLXSwiftLM
+        product: MLXLMCommon
+      - package: MLXSwiftLM
+        product: MLXHuggingFace
+      - package: HuggingFace
+        product: HuggingFace
+      - package: Tokenizers
+        product: Tokenizers
+      - target: VoiceDiaryWidget
+        embed: true
+        codeSign: true
+
+  VoiceDiaryWidget:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: WidgetExtension
+      - path: Sources/Shared
+      # Design-system seam + generated tokens so the widget can use
+      # `Theme.color.status.*` instead of raw SwiftUI colours. The folder
+      # references only UIKit trait-based dynamic colours (no UIApplication
+      # / other extension-unavailable API), so it is safe in this
+      # app-extension target.
+      - path: Sources/DesignSystem
+      # Same catalog as the app, so widget strings (Live Activity +
+      # lock-screen widget) localize too. The extension process resolves
+      # against the *system* locale — the app's runtime bundle swap
+      # doesn't reach it, which is the correct behaviour for lock-screen
+      # surfaces (matches InfoPlist.xcstrings reasoning above).
+      - path: Resources/Localizable.xcstrings
+        buildPhase: resources
+    info:
+      path: WidgetExtension/Info.plist
+      properties:
+        CFBundleDisplayName: Voice Diary
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.tomorrowflow.voice-diary.widget
+        TARGETED_DEVICE_FAMILY: "1"
+        CODE_SIGN_STYLE: Automatic
+        SKIP_INSTALL: YES
+        CODE_SIGN_ENTITLEMENTS: WidgetExtension/VoiceDiaryWidget.entitlements
+        CURRENT_PROJECT_VERSION: "1"
+        MARKETING_VERSION: "0.1.0"
+
+  VoiceDiaryTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: Tests
+    dependencies:
+      - target: VoiceDiary
+
+schemes:
+  VoiceDiary:
+    build:
+      targets:
+        VoiceDiary: all
+        VoiceDiaryWidget: all
+        VoiceDiaryTests: [test]
+    test:
+      targets:
+        - VoiceDiaryTests
+    run:
+      config: Debug
+    profile:
+      config: Release
+    archive:
+      config: Release
