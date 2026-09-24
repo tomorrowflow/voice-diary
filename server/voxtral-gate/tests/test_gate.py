@@ -236,3 +236,32 @@ async def test_request_arriving_mid_sleep_waits_and_rewakes(
 
     assert engine.calls[-2:] == ["/sleep", "/wake_up"]
     assert engine.sleeping is False
+
+
+async def test_request_queued_on_boot_waits_out_the_startup_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request that arrives during boot must not be forwarded while the
+    SLEEP_ON_START /sleep RPC is still in flight."""
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
+    engine = FakeEngine(sleeping=False)
+    release_sleep = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sleep":
+            await release_sleep.wait()
+        return engine.handler(request)
+
+    g = EngineGate(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    g.note_start()
+    waker = asyncio.create_task(g.ensure_awake())
+    booter = asyncio.create_task(g.bootstrap())
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not waker.done()
+
+    release_sleep.set()
+    await asyncio.gather(booter, waker)
+
+    assert engine.calls[-2:] == ["/sleep", "/wake_up"]
+    assert engine.sleeping is False

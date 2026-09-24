@@ -160,10 +160,15 @@ class EngineGate:
             self._asleep = False
             logger.error("engine unreachable after %.0fs of boot polling", BOOT_TIMEOUT)
 
-        self._booted.set()
-
         if self._sleep_supported and SLEEP_ON_START and not self._asleep:
-            await self._sleep_now(reason="startup")
+            # Taken before releasing waiters so a request queued on boot
+            # waits out this sleep and then wakes the engine, rather than
+            # racing the /sleep RPC via ensure_awake's fast path.
+            async with self._lock:
+                self._booted.set()
+                await self._sleep_now(reason="startup")
+        else:
+            self._booted.set()
 
     async def ensure_awake(self) -> None:
         """Block until the engine can serve. Held open rather than failing
