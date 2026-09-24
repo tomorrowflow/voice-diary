@@ -14,11 +14,13 @@ from __future__ import annotations
 import httpx
 import pytest
 
+import asr_client as asr_client_module
 from asr_client import (
     AsrClient,
     AsrEngineError,
     AsrTimeoutError,
     AsrUnavailableError,
+    get_default_client,
 )
 
 
@@ -134,3 +136,20 @@ async def test_to_wav_16k_mono_raises_AsrEngineError_on_invalid_audio() -> None:
 
     with pytest.raises(AsrEngineError):
         await client.to_wav_16k_mono(b"not a real audio file", ".wav")
+
+
+# --- get_default_client -------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _reset_default_client():
+    asr_client_module._default_client = None
+    yield
+    asr_client_module._default_client = None
+
+
+def test_get_default_client_returns_same_instance_across_calls() -> None:
+    first = get_default_client()
+    second = get_default_client()
+
+    assert first is second
