@@ -2,6 +2,11 @@
 
 **Read SPEC.md first.** This file describes how to build, deploy, and operate the two components (`ios/` and `server/`).
 
+**Status note:** the milestone lists below (§4.3 for `server/`, §5.2 for `ios/`) are the original
+build plan, written before either track had code. Both tracks have since had substantial work
+land — see `git log`, `server/README.md`, and `ios/README.md` for what is actually done. Do not
+infer from a milestone appearing below that it hasn't started.
+
 ---
 
 ## 1. Repository layout
@@ -127,6 +132,10 @@ server/
 ```
 
 ### 4.3 Milestones
+
+Written as the original task breakdown, not a live status board. As of this writing, S1's n8n
+removal and audio pipeline, S2's MSAL/Graph client, and S3's `webapp/routers/` are all present on
+disk — see `server/README.md` for current state before treating any task below as unstarted.
 
 #### S1 — Remove n8n, add local audio processing
 
@@ -296,6 +305,11 @@ ios/
 ```
 
 ### 5.2 Milestones
+
+Written as the original task breakdown, not a live status board. `ios/Sources/` already has
+`Capture/`, `Dialog/`, `TTS/`, `Backend/`, `Storage/`, and `UI/` modules plus a widget extension —
+roughly M1–M10 have substantial code on disk. See `ios/README.md` for the maintained
+milestone-by-milestone status before treating any milestone below as unstarted.
 
 #### M1 — Xcode foundation
 

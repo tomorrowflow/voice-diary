@@ -4,12 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-**Design complete. Server code seeded. Implementation about to begin.**
+**Design complete. Both tracks are in active implementation — this is not a fresh scaffold.**
 
 - `SPEC.md` — full product + technical specification. Single source of truth for behavior.
-- `DEVELOPMENT.md` — milestone plan for both tracks (server S1–S4 + iOS M1–M12).
-- `server/webapp/` — already populated with a working FastAPI codebase (seeded from `diary-processor/webapp/` on 2026-04-24). ~2200 lines of `main.py`, 17 other Python modules, Postgres schema, HTMX templates.
-- `ios/` — empty. Populated in iOS M1.
+- `DEVELOPMENT.md` — milestone plan for both tracks (server S1–S4 + iOS M1–M12). Treat the
+  milestone list as the original build plan, not a live status board — check `git log`,
+  `ios/README.md`, and the directories below for what's actually built before assuming something
+  hasn't started.
+- `server/webapp/` — populated FastAPI codebase (seeded from `diary-processor/webapp/` on
+  2026-04-24), with n8n removed and iOS-specific routers (`webapp/routers/`), the MSAL Graph
+  client, and Whisper/ffmpeg wiring already added on top of the seed.
+- `ios/` — actively developed, not empty. Swift 6/SwiftUI app with capture, dialog, TTS, storage,
+  and UI modules on disk under `ios/Sources/`, plus a widget extension. See `ios/README.md` for
+  current status.
 
 Always read `SPEC.md` and `DEVELOPMENT.md` before making changes.
 
@@ -39,7 +46,7 @@ voice-diary/
 ├── SPEC.md                     (full product + technical spec)
 ├── DEVELOPMENT.md              (build, deploy, milestones)
 ├── LICENSE
-├── ios/                        (iOS app — empty until M1)
+├── ios/                        (iOS app — actively developed, see ios/README.md)
 │   └── README.md
 └── server/                     (FastAPI backend — populated, working)
     ├── README.md

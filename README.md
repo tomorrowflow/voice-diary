@@ -14,9 +14,9 @@ voice-diary/
 ├── SPEC.md             (full product + technical specification)
 ├── DEVELOPMENT.md      (build, deploy, and milestone plan for both tracks)
 ├── LICENSE
-├── ios/                (Swift 6 / SwiftUI — populated in iOS M1)
+├── ios/                (Swift 6 / SwiftUI — actively developed, see ios/README.md)
 │   └── README.md
-└── server/             (FastAPI — already populated, needs n8n cleanup + iOS routes)
+└── server/             (FastAPI — n8n removed, iOS routers added on top of the seed)
     ├── .env.example
     ├── docker-compose.yml
     ├── docs-archive/   (historical design docs from diary-processor)
@@ -41,8 +41,13 @@ Everything else (Postgres, Qdrant, Whisper, ffmpeg) ships in the server's Docker
 
 ## Status
 
-Design complete and server seeded from `diary-processor` as of 2026-04-24.
+Design complete; both tracks have been in active implementation for a while — this is not a
+fresh scaffold. `DEVELOPMENT.md`'s milestone lists describe the original build plan, not a live
+status board; check `git log`, `ios/README.md`, and the actual directories for current state.
 
-- Server track: implementation starts at S1 (n8n removal + local audio pipeline). See `DEVELOPMENT.md §4`.
-- iOS track: implementation starts at M1 (Xcode project foundation). See `DEVELOPMENT.md §5`.
+- Server track: S1 (n8n removal + local audio pipeline) is done — ffmpeg, a Whisper sidecar, and
+  iOS-facing routers (`webapp/routers/{calendar,sessions,email,lightrag,health}.py`) are on disk
+  on top of the `diary-processor` seed. See `DEVELOPMENT.md §4` for what's tracked as remaining.
+- iOS track: well past M1 — `ios/Sources/` has capture, dialog, TTS, storage and UI modules plus
+  a widget extension. See `ios/README.md` for current milestone-by-milestone status.
 - The prior `diary-processor` repo is archived; no data migration is carried over.
