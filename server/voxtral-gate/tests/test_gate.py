@@ -2,7 +2,7 @@
 
 Run inside the gate container so deps match prod:
 
-    docker compose run --rm --entrypoint pytest voxtral tests/test_gate.py
+    docker compose run --rm --no-deps --entrypoint pytest voxtral -q tests/test_gate.py
 
 The engine is an `httpx.MockTransport`, so no live vLLM is needed. What's
 under test is *when* the gate decides to sleep or wake, not the proxying
