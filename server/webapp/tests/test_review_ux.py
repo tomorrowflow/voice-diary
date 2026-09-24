@@ -13,12 +13,16 @@ Run: docker compose run --rm webapp pytest webapp/tests/test_review_ux.py
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 WEBAPP_DIR = Path(__file__).resolve().parent.parent
+
+# literal px values in a CSS declaration (var(--*) references don't match)
+_LITERAL_PX = re.compile(r"(?:^|[:\s])(?:-?\d+\.?\d*)px")
 
 
 def _render_review_html() -> str:
@@ -124,3 +128,23 @@ def test_selection_popup_types_listen_for_escape_and_arrow_keys():
 def test_selection_popup_types_have_focus_visible_style():
     css = (WEBAPP_DIR / "static" / "style.css").read_text()
     assert ".selection-popup-types button:focus-visible" in css
+
+
+# --- design tokens in the new UX-12 components ---------------------------
+
+
+def _css_rule(css: str, selector: str) -> str:
+    start = css.index(selector) + len(selector)
+    return css[start : css.index("}", start)]
+
+
+def test_ux12_components_do_not_hard_code_font_size_or_spacing():
+    # CLAUDE.md hard rule 1: colours, spacing, radius and font sizes in
+    # feature CSS go through var(--*), never literals. (Border hairline
+    # widths have no token and are out of scope.)
+    css = (WEBAPP_DIR / "static" / "style.css").read_text()
+    for selector in (".toast-action ", ".entity-list-empty "):
+        rule = _css_rule(css, selector)
+        for prop in ("font-size", "margin", "padding"):
+            for value in re.findall(prop + r":([^;]+);", rule):
+                assert not _LITERAL_PX.search(value), (selector, prop)
