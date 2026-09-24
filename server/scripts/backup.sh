@@ -43,8 +43,8 @@ fi
 # 2. Postgres dump (via the running webapp's pg sidecar)
 if $COMPOSE_CMD ps postgres >/dev/null 2>&1; then
   echo "→ Dumping Postgres..."
-  $COMPOSE_CMD exec -T postgres pg_dump -U diary -d diary_processor \
-      --no-owner --clean --if-exists \
+  $COMPOSE_CMD exec -T postgres sh -c \
+      'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --no-owner --clean --if-exists' \
       > "$WORKDIR/postgres.sql"
   echo "✓ postgres.sql ($(du -sh "$WORKDIR/postgres.sql" | cut -f1))"
 else
