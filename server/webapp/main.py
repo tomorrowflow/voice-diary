@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI):
     logger.info("LLM_CORRECTION_ENABLED = %s", os.getenv("LLM_CORRECTION_ENABLED", "(not set, falls back to LLM_VALIDATION_ENABLED)"))
     logger.info("FLUENCY_CHECK_ENABLED = %s", os.getenv("FLUENCY_CHECK_ENABLED", "(not set, defaults to true)"))
     logger.info("WHISPER_URL        = %s", WHISPER_URL)
-    logger.info("DATABASE_URL       = %s", os.getenv("DATABASE_URL", "(not set)"))
+    logger.info("DATABASE_URL       = %s", re.sub(r"://([^:@/]+):[^@]*@", r"://\1:***@", db.DATABASE_URL))
     logger.info("TZ                 = %s", os.getenv("TZ", "(not set)"))
     logger.info("HARVEST_ACCOUNT_ID = %s", HARVEST_ACCOUNT_ID or "(not set)")
     logger.info("HARVEST_ACCESS_TOKEN = %s", "***" + HARVEST_ACCESS_TOKEN[-4:] if len(HARVEST_ACCESS_TOKEN) > 4 else "(not set)")
