@@ -847,7 +847,7 @@ every knob turned into a setting. Only fields that are actually exposed in the a
 here; everything the team decided not to build a picker for lives in §12.2 instead.
 
 **Language & voice** (UX-13a)
-- App language: `System (recommended) | Deutsch` (default: `System`; Mehr → Language,
+- App language: `System (recommended) | Deutsch` (default: `System`; Mehr → Sprache,
   `LanguageSettingsView`) — one toggle, not the separate recording/response pickers this
   section used to describe. `System` follows the
   iPhone's language and falls back to English on any device whose system language isn't German;
