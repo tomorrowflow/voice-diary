@@ -18,6 +18,8 @@ import ipaddress
 import logging
 import os
 
+logger = logging.getLogger(__name__)
+
 _TAILSCALE_CGNAT = ipaddress.ip_network("100.64.0.0/10")
 
 
@@ -26,14 +28,14 @@ class BindGuardError(RuntimeError):
 
 
 def check_tailnet_bind(tailnet_ip: str | None) -> None:
-    if not tailnet_ip or not tailnet_ip.strip():
+    tailnet_ip = (tailnet_ip or "").strip()
+    if not tailnet_ip:
         raise BindGuardError(
             "TAILNET_IP is not set. Refusing to start: without it, "
             "docker-compose.yml's webapp port publish falls back to binding "
             "all interfaces, exposing every endpoint beyond the tailnet. Set "
             "TAILNET_IP in server/.env to this host's Tailscale IPv4 address."
         )
-    tailnet_ip = tailnet_ip.strip()
     try:
         addr = ipaddress.ip_address(tailnet_ip)
     except ValueError as exc:
@@ -53,7 +55,6 @@ def enforce_tailnet_bind() -> None:
     """Call once at process startup (main.py's lifespan). Logs the reason at
     ERROR before re-raising, so a misconfigured deploy fails loudly instead of
     silently serving on 0.0.0.0."""
-    logger = logging.getLogger(__name__)
     tailnet_ip = os.getenv("TAILNET_IP")
     try:
         check_tailnet_bind(tailnet_ip)
