@@ -39,7 +39,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import httpx
 from fastapi import FastAPI, Request
@@ -312,8 +312,9 @@ async def proxy(path: str, request: Request) -> StreamingResponse | JSONResponse
             gate.note_end()
             raise
 
+    release = gate.note_end if needs_engine else None
     try:
-        return await _forward(client, request, path, release=gate.note_end if needs_engine else None)
+        return await _forward(client, request, path, release=release)
     except BaseException:
         if needs_engine:
             gate.note_end()
@@ -325,7 +326,7 @@ async def _forward(
     request: Request,
     path: str,
     *,
-    release,
+    release: Callable[[], None] | None,
 ) -> StreamingResponse | JSONResponse:
     """Relay the request to the engine and stream the response back.
 
