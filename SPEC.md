@@ -866,8 +866,8 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
   event in an English session would be read in English.
 
 **Walkthrough**
-- **Sections** (Mehr → Walkthrough → Abschnitte): list of user-defined `general` sections. Each has `id` (stable UUID), `title` (header text + manifest field), `introText` (TTS opener line). Stored in `UserDefaults` under `walkthrough.generals.v1`.
-- **Reihenfolge** (Mehr → Walkthrough → Reihenfolge): ordered list of `WalkthroughSection` (`.general(id) | .calendarEvents | .voiceNote`; the `.voiceNote` case still encodes to JSON `kind: "drive_by"` for on-disk compatibility). Drag to reorder. The two system sections (`calendarEvents`, `voiceNote`) always appear once each; if missing from the stored order they're appended in default order on read. Stored in `UserDefaults` under `walkthrough.sectionOrder.v1`. Default order = `[.calendarEvents, .voiceNote]`.
+- **Sections** (Mehr → Abschnitte): list of user-defined `general` sections. Each has `id` (stable UUID), `title` (header text + manifest field), `introText` (TTS opener line). Stored in `UserDefaults` under `walkthrough.generals.v1`.
+- **Reihenfolge** (Mehr → Reihenfolge): ordered list of `WalkthroughSection` (`.general(id) | .calendarEvents | .voiceNote`; the `.voiceNote` case still encodes to JSON `kind: "drive_by"` for on-disk compatibility). Drag to reorder. The two system sections (`calendarEvents`, `voiceNote`) always appear once each; if missing from the stored order they're appended in default order on read. Stored in `UserDefaults` under `walkthrough.sectionOrder.v1`. Default order = `[.calendarEvents, .voiceNote]`.
 - Event filters (`WalkthroughSettingsView`): three independent toggles — Include all-day events,
   Include tentative events, Include not-accepted events. Not a single RSVP picker. All three
   default **off**, i.e. only accepted, timed events flow into the per-event loop by default.
