@@ -53,6 +53,7 @@ voice-diary/
     ├── .env.example            (n8n vars removed in S1)
     ├── docker-compose.yml      (Whisper service added in S1)
     ├── docs-archive/           (historical diary-processor design docs)
+    ├── voxtral-gate/           (lazy-wake proxy; frees ~19 GB VRAM when TTS is idle)
     └── webapp/                 (FastAPI app, ~2200 LOC, 17 Python modules)
         ├── Dockerfile
         ├── main.py             (~60 routes; see below for what to modify)
