@@ -750,7 +750,7 @@ The iOS app also consumes these read endpoints on `server` over Tailscale:
 | `GET /calendar/event/{graph_event_id}` | Full detail for a specific event (for enrichment "tell me more about this meeting"). | MS Graph |
 | `GET /health` | Tailscale reachability + upstream health probe. Returns `ok` only when LightRAG, Ollama, Whisper, and Postgres are reachable. | self |
 
-All endpoints require a simple bearer token set during onboarding. No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
+All endpoints require a simple bearer token entered in Mehr → Server (`DebugSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
 
 ---
 
