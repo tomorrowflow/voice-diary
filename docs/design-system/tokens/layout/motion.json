@@ -1,0 +1,30 @@
+{
+  "motion": {
+    "duration": {
+      "instant":  { "value": "0",   "type": "duration", "comment": "ms" },
+      "fast":     { "value": "150", "type": "duration" },
+      "default":  { "value": "300", "type": "duration" },
+      "slow":     { "value": "500", "type": "duration" }
+    },
+    "easing": {
+      "standard": { "value": "cubic-bezier(0.4, 0, 0.2, 1)", "type": "cubicBezier" },
+      "decelerate": { "value": "cubic-bezier(0, 0, 0.2, 1)", "type": "cubicBezier" },
+      "accelerate": { "value": "cubic-bezier(0.4, 0, 1, 1)", "type": "cubicBezier" }
+    },
+    "spring": {
+      "comment": "iOS-friendly spring presets (response, dampingFraction). Web consumers can ignore or use Framer Motion equivalents.",
+      "soft": {
+        "response":        { "value": "0.45", "type": "number" },
+        "dampingFraction": { "value": "0.85", "type": "number" }
+      },
+      "snappy": {
+        "response":        { "value": "0.30", "type": "number" },
+        "dampingFraction": { "value": "0.78", "type": "number" }
+      },
+      "bouncy": {
+        "response":        { "value": "0.55", "type": "number" },
+        "dampingFraction": { "value": "0.65", "type": "number" }
+      }
+    }
+  }
+}

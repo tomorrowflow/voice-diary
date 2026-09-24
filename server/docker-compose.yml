@@ -1,0 +1,152 @@
+services:
+  webapp:
+    build: ./webapp
+    ports:
+      # SEC-1: publish to the tailnet IP only, never all interfaces. Set
+      # TAILNET_IP in .env to this host's Tailscale IPv4 address.
+      - "${TAILNET_IP}:8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DATABASE_URL=postgresql://diary:diary@postgres:5432/diary_processor
+      - WHISPER_URL=${WHISPER_URL:-http://whisper:9000}
+      - VOXTRAL_BASE_URL=${VOXTRAL_BASE_URL:-http://voxtral:8001}
+      - VOXTRAL_MODEL=${VOXTRAL_MODEL:-mistralai/Voxtral-4B-TTS-2603}
+      # Raised from 30s: a request landing on a sleeping engine now pays a
+      # wake (~seconds) before synthesis starts.
+      - VOXTRAL_TIMEOUT_SECONDS=${VOXTRAL_TIMEOUT_SECONDS:-60}
+      - DATA_DIR=/data
+    volumes:
+      # Persists iOS session bundles + MSAL refresh-token cache across
+      # rebuilds. Gitignored on the host.
+      - ./data:/data
+      # Bootstrap + token-issue helpers live alongside the compose file
+      # rather than in the image (build context is ./webapp/).
+      - ./scripts:/app/scripts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      whisper:
+        condition: service_started
+    restart: unless-stopped
+
+  voxtral:
+    # Lazy-wake gate. Owns the `voxtral:8001` address webapp talks to and
+    # forwards to voxtral-engine, sleeping the engine after
+    # VOXTRAL_IDLE_SECONDS of no traffic and waking it (~seconds) on the
+    # next request. Liveness probes — webapp's /health hits GET /v1/models
+    # — pass through without waking anything. See voxtral-gate/gate.py.
+    build: ./voxtral-gate
+    environment:
+      - VOXTRAL_ENGINE_URL=http://voxtral-engine:8001
+      - VOXTRAL_IDLE_SECONDS=${VOXTRAL_IDLE_SECONDS:-300}
+      - VOXTRAL_SLEEP_LEVEL=${VOXTRAL_SLEEP_LEVEL:-1}
+      - VOXTRAL_SLEEP_ON_START=${VOXTRAL_SLEEP_ON_START:-true}
+    depends_on:
+      - voxtral-engine
+    restart: unless-stopped
+
+  voxtral-engine:
+    # Mistral's Voxtral-4B-TTS-2603 served by vLLM Omni. Exposes the
+    # OpenAI-compatible /v1/audio/speech endpoint that webapp's
+    # /api/tts/synthesize route proxies for the iOS app.
+    #
+    # CC BY-NC 4.0 weights — fine for personal use, see SPEC.md §4.
+    # Not bound to a host port — only the voxtral gate (same compose
+    # network) reaches the engine. HF model cache lives in a named volume
+    # so a restart does not re-download ~8 GB.
+    image: vllm/vllm-omni:v0.18.0
+    # The image ships with `vllm` + `vllm-omni` on PATH but no ENTRYPOINT/CMD
+    # set, so we spell out the binary + subcommand explicitly. The `--omni`
+    # flag is REQUIRED for Voxtral TTS — without it vLLM resolves the model
+    # as plain MistralForCausalLM and fails to load the `acoustic_transformer`
+    # weights. See https://huggingface.co/mistralai/Voxtral-4B-TTS-2603.
+    entrypoint: ["vllm", "serve"]
+    command:
+      - "${VOXTRAL_MODEL:-mistralai/Voxtral-4B-TTS-2603}"
+      - "--omni"
+      - "--port"
+      - "8001"
+      # Lets the gate offload weights to host RAM between sessions.
+      # Without it /sleep returns an error and the ~19 GB stays resident.
+      - "--enable-sleep-mode"
+    environment:
+      # Mistral models are gated on Hugging Face — accept the license
+      # at huggingface.co/mistralai/Voxtral-4B-TTS-2603 with the same
+      # account whose token you put here, then `docker compose up -d voxtral`.
+      HF_TOKEN: ${HF_TOKEN:-}
+      HUGGING_FACE_HUB_TOKEN: ${HF_TOKEN:-}
+      # Registers /sleep, /wake_up and /is_sleeping. vLLM calls these
+      # "development endpoints" — acceptable here because the engine has
+      # no host port and is reachable only by the gate on the compose
+      # network, and the stack as a whole is Tailscale-only (SPEC.md §6).
+      VLLM_SERVER_DEV_MODE: "1"
+    volumes:
+      - voxtral_models:/root/.cache/huggingface
+    # Pinned to GPU 1 — leaves GPU 0 free for Ollama / future workloads.
+    # Requires nvidia-container-toolkit on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ["1"]
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  whisper:
+    # CPU build:  onerahmet/openai-whisper-asr-webservice:latest
+    # GPU build:  onerahmet/openai-whisper-asr-webservice:latest-gpu
+    # Pick via WHISPER_IMAGE_TAG in .env (defaults to CPU).
+    image: onerahmet/openai-whisper-asr-webservice:${WHISPER_IMAGE_TAG:-latest}
+    environment:
+      ASR_MODEL: ${WHISPER_MODEL:-medium}
+      ASR_ENGINE: ${WHISPER_ENGINE:-faster_whisper}
+    volumes:
+      - whisper_models:/root/.cache/whisper
+    restart: unless-stopped
+    # Uncomment the following block when WHISPER_IMAGE_TAG=latest-gpu and
+    # nvidia-container-toolkit is installed on the host.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  qdrant:
+    image: qdrant/qdrant:v1.17.0
+    # No host port mapping — only webapp (same compose network) reaches Qdrant.
+    # To debug from the host, use `docker compose exec qdrant ...` or temporarily
+    # add `ports: ["127.0.0.1:6333:6333"]`.
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: diary
+      POSTGRES_PASSWORD: diary
+      POSTGRES_DB: diary_processor
+    # No host port mapping — webapp connects via the internal `postgres` hostname.
+    # For ad-hoc psql, use `docker compose exec postgres psql -U diary diary_processor`.
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./webapp/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./webapp/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U diary -d diary_processor"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  qdrant_data:
+  whisper_models:
+  voxtral_models:
