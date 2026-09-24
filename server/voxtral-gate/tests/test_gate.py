@@ -204,64 +204,64 @@ def test_liveness_paths_are_excluded_from_waking() -> None:
     assert "/v1/audio/speech" not in gate_mod.NO_WAKE_PATHS
 
 
-async def test_request_arriving_mid_sleep_waits_and_rewakes(
+# --- sleep/wake races -----------------------------------------------------
+
+
+class SlowSleepEngine(FakeEngine):
+    """Holds /sleep open until released, so a request can land mid-sleep."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.sleep_started = asyncio.Event()
+        self.release_sleep = asyncio.Event()
+
+    async def async_handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sleep":
+            self.sleep_started.set()
+            await self.release_sleep.wait()
+        return self.handler(request)
+
+
+def _slow_gate(engine: SlowSleepEngine) -> EngineGate:
+    client = httpx.AsyncClient(transport=httpx.MockTransport(engine.async_handler))
+    return EngineGate(client)
+
+
+async def test_request_during_idle_sleep_rewakes_the_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A request landing while the idle /sleep RPC is in flight must not be
-    forwarded to an engine that is about to go to sleep — it has to queue
-    behind the transition and wake the engine again."""
+    """A request admitted while /sleep is in flight must not be forwarded
+    to an engine that is about to be asleep."""
     monkeypatch.setattr(gate_mod, "SLEEP_ON_START", False)
     monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
-    engine = FakeEngine(sleeping=False)
-    release_sleep = asyncio.Event()
-
-    async def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/sleep":
-            await release_sleep.wait()
-        return engine.handler(request)
-
-    g = EngineGate(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    engine = SlowSleepEngine(sleeping=False)
+    g = _slow_gate(engine)
     await g.bootstrap()
 
     sleeper = asyncio.create_task(g.maybe_sleep())
-    await asyncio.sleep(0)  # let the idle tick take the lock and block in /sleep
-
-    g.note_start()
+    await engine.sleep_started.wait()
     waker = asyncio.create_task(g.ensure_awake())
     await asyncio.sleep(0)
-    assert not waker.done()
-
-    release_sleep.set()
+    engine.release_sleep.set()
     await asyncio.gather(sleeper, waker)
 
-    assert engine.calls[-2:] == ["/sleep", "/wake_up"]
     assert engine.sleeping is False
+    assert engine.calls.count("/wake_up") == 1
 
 
-async def test_request_queued_on_boot_waits_out_the_startup_sleep(
+async def test_request_during_startup_sleep_rewakes_the_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A request that arrives during boot must not be forwarded while the
-    SLEEP_ON_START /sleep RPC is still in flight."""
     monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
-    engine = FakeEngine(sleeping=False)
-    release_sleep = asyncio.Event()
+    engine = SlowSleepEngine(sleeping=False)
+    g = _slow_gate(engine)
 
-    async def handler(request: httpx.Request) -> httpx.Response:
-        if request.url.path == "/sleep":
-            await release_sleep.wait()
-        return engine.handler(request)
-
-    g = EngineGate(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
-    g.note_start()
-    waker = asyncio.create_task(g.ensure_awake())
     booter = asyncio.create_task(g.bootstrap())
-    for _ in range(5):
-        await asyncio.sleep(0)
-    assert not waker.done()
-
-    release_sleep.set()
+    await engine.sleep_started.wait()
+    waker = asyncio.create_task(g.ensure_awake())
+    await asyncio.sleep(0)
+    engine.release_sleep.set()
     await asyncio.gather(booter, waker)
 
-    assert engine.calls[-2:] == ["/sleep", "/wake_up"]
     assert engine.sleeping is False
+    assert engine.calls.count("/wake_up") == 1

@@ -124,7 +124,7 @@ These are working and carry over:
 - **Admin UI** — persons/terms/variations management.
 - **Harvest integration** (`harvest_llm.py`, `harvest_patterns.py`) — calendar → Harvest pattern matching and time-entry generation.
 - **Vector store** (`vector_store.py`) — Qdrant client for contextual learning.
-- **Postgres schema** (`schema.sql`) — 17 tables. No changes needed for iOS.
+- **Postgres schema** (`schema.sql`) — 17 carried-over tables, plus `session_ingests` (persisted iOS session ingest status).
 
 ## What needs modification in `server/webapp/main.py`
 

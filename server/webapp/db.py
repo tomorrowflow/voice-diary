@@ -1137,6 +1137,76 @@ async def clear_ingest_history():
     await pool.execute("DELETE FROM ingest_uploads")
 
 
+# --- Session ingest status (SRV-A6) ---
+#
+# Persisted mirror of routers/sessions.py's in-memory status map. That map
+# is a per-process cache for the polling-happy path; these rows are what
+# survives a restart and make pending_analysis segments retryable.
+
+
+async def create_session_status(
+    session_id: str, received_at: str, state: str, segments: list[dict]
+) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        """
+        INSERT INTO session_ingests (session_id, received_at, state, segments)
+        VALUES ($1, $2, $3, $4::jsonb)
+        ON CONFLICT (session_id) DO UPDATE
+        SET received_at = $2, state = $3, segments = $4::jsonb, updated_at = NOW()
+    """,
+        session_id,
+        received_at,
+        state,
+        json.dumps(segments),
+    )
+
+
+async def update_session_status(session_id: str, state: str, segments: list[dict]) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE session_ingests
+        SET state = $2, segments = $3::jsonb, updated_at = NOW()
+        WHERE session_id = $1
+    """,
+        session_id,
+        state,
+        json.dumps(segments),
+    )
+
+
+async def mark_session_failed(session_id: str) -> None:
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE session_ingests SET state = 'failed', updated_at = NOW() WHERE session_id = $1",
+        session_id,
+    )
+
+
+async def get_session_status(session_id: str) -> dict | None:
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        """
+        SELECT session_id, received_at, state, segments
+        FROM session_ingests
+        WHERE session_id = $1
+    """,
+        session_id,
+    )
+    if row is None:
+        return None
+    result = dict(row)
+    if isinstance(result["segments"], str):
+        result["segments"] = json.loads(result["segments"])
+    return result
+
+
+async def delete_session_status(session_id: str) -> None:
+    pool = await get_pool()
+    await pool.execute("DELETE FROM session_ingests WHERE session_id = $1", session_id)
+
+
 # --- Processed documents ---
 
 
