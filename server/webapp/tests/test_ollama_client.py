@@ -24,13 +24,12 @@ from ollama_client import (
 )
 
 
-def _client(handler, **kwargs) -> OllamaClient:
+def _client(handler) -> OllamaClient:
     return OllamaClient(
         base_url="http://ollama.test",
         model="qwen2.5:14b",
         timeout_seconds=5.0,
         transport=httpx.MockTransport(handler),
-        **kwargs,
     )
 
 
