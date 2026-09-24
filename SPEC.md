@@ -847,8 +847,9 @@ every knob turned into a setting. Only fields that are actually exposed in the a
 here; everything the team decided not to build a picker for lives in §12.2 instead.
 
 **Language & voice** (UX-13a)
-- App language: `System (recommended) | Deutsch` (default: `System`; Mehr → Language, `LanguageSettingsView`) — one toggle, not the
-  separate recording/response pickers this section used to describe. `System` follows the
+- App language: `System (recommended) | Deutsch` (default: `System`; Mehr → Language,
+  `LanguageSettingsView`) — one toggle, not the separate recording/response pickers this
+  section used to describe. `System` follows the
   iPhone's language and falls back to English on any device whose system language isn't German;
   `Deutsch` locks German regardless of the system setting. This toggle sets the surrounding
   opener's base language; whether an individual event title/attendee name inside that opener
@@ -860,8 +861,8 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
   `VoiceRegistry` switches on, so there's no separate engine picker.
 - **Detect language per event** toggle (`VoiceSettingsView`, stored in
   `WalkthroughSettingsStore.mixedLanguageSpeech`, default **on**): when on, an event opener
-  splices in the calendar title/attendee name using its own detected language (e.g. a German frame around an English title is spoken German /
-  English / German across the two voices — `OpenerTemplates.script`, `LanguageDetector`); when
+  splices in the calendar title/attendee name using its own detected language (e.g. a German
+  frame around an English title is spoken German / English / German across the two voices — `OpenerTemplates.script`, `LanguageDetector`); when
   off, the whole line collapses to the opener's base (App-language) voice, so a German-titled
   event in an English session would be read in English.
 
