@@ -20,6 +20,8 @@ from datetime import datetime
 
 import httpx
 
+from ollama_client import OllamaClient, OllamaTimeoutError
+
 logger = logging.getLogger(__name__)
 
 # --- Config ---
@@ -33,6 +35,14 @@ OLLAMA_ANALYSIS_TIMEOUT = float(os.getenv("OLLAMA_ANALYSIS_TIMEOUT", "300"))
 LIGHTRAG_URL = os.getenv("LIGHTRAG_URL", "http://192.168.2.16:9621")
 LIGHTRAG_API_KEY = os.getenv("LIGHTRAG_API_KEY", "")
 
+_ollama_client = OllamaClient(
+    base_url=OLLAMA_BASE_URL, model=OLLAMA_ANALYSIS_MODEL, timeout_seconds=OLLAMA_ANALYSIS_TIMEOUT
+)
+# Separate connect/read/write timeouts — analysis can take minutes.
+_OLLAMA_ANALYSIS_HTTP_TIMEOUT = httpx.Timeout(
+    connect=30.0, read=OLLAMA_ANALYSIS_TIMEOUT, write=30.0, pool=30.0
+)
+
 MONTH_NAMES_DE = [
     "Januar", "Februar", "März", "April", "Mai", "Juni",
     "Juli", "August", "September", "Oktober", "November", "Dezember",
@@ -41,19 +51,6 @@ WEEKDAY_NAMES_DE = [
     "Montag", "Dienstag", "Mittwoch", "Donnerstag",
     "Freitag", "Samstag", "Sonntag",
 ]
-
-
-def _extract_ollama_content(result: dict) -> str:
-    """Extract text content from Ollama /api/chat response."""
-    if isinstance(result, dict):
-        msg = result.get("message")
-        if isinstance(msg, dict) and msg.get("content"):
-            return msg["content"]
-        if result.get("text"):
-            return result["text"]
-        if result.get("response"):
-            return result["response"]
-    return ""
 
 
 # --- LightRAG queries ---
@@ -210,25 +207,15 @@ async def summarize_context(
     )
 
     try:
-        timeout = httpx.Timeout(connect=30.0, read=OLLAMA_ANALYSIS_TIMEOUT, write=30.0, pool=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": OLLAMA_ANALYSIS_MODEL,
-                    "stream": False,
-                    "options": {
-                        "temperature": 0.1,
-                        "num_ctx": OLLAMA_ANALYSIS_NUM_CTX,
-                    },
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            resp.raise_for_status()
-            content = _extract_ollama_content(resp.json())
-            if content and len(content) >= 50:
-                return content
-            return "Keine historischen Daten verfügbar."
+        result = await _ollama_client.chat(
+            [{"role": "user", "content": prompt}],
+            temperature=0.1,
+            num_ctx=OLLAMA_ANALYSIS_NUM_CTX,
+            timeout=_OLLAMA_ANALYSIS_HTTP_TIMEOUT,
+        )
+        if result.content and len(result.content) >= 50:
+            return result.content
+        return "Keine historischen Daten verfügbar."
     except Exception as e:
         logger.warning("Context summarization failed: %s (%s)", e, type(e).__name__)
         return "Keine historischen Daten verfügbar."
@@ -394,30 +381,15 @@ async def analyze_transcript(enriched_ctx: dict) -> dict:
     )
 
     try:
-        # Use separate connect/read/write timeouts — analysis can take minutes
-        timeout = httpx.Timeout(
-            connect=30.0,
-            read=OLLAMA_ANALYSIS_TIMEOUT,
-            write=30.0,
-            pool=30.0,
+        result = await _ollama_client.chat(
+            [{"role": "user", "content": prompt}],
+            format="json",
+            temperature=0.1,
+            num_ctx=OLLAMA_ANALYSIS_NUM_CTX,
+            timeout=_OLLAMA_ANALYSIS_HTTP_TIMEOUT,
         )
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": OLLAMA_ANALYSIS_MODEL,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0.1,
-                        "num_ctx": OLLAMA_ANALYSIS_NUM_CTX,
-                    },
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-            )
-            resp.raise_for_status()
-            content = _extract_ollama_content(resp.json())
-    except httpx.ReadTimeout:
+        content = result.content
+    except OllamaTimeoutError:
         logger.error("Main analysis timed out after %ss (model: %s)", OLLAMA_ANALYSIS_TIMEOUT, OLLAMA_ANALYSIS_MODEL)
         raise RuntimeError(f"LLM analysis timed out after {OLLAMA_ANALYSIS_TIMEOUT}s")
     except Exception as e:

@@ -18,7 +18,12 @@ import logging
 import os
 from typing import Literal
 
-import httpx
+from ollama_client import (
+    OllamaClient,
+    OllamaEngineError,
+    OllamaTimeoutError,
+    OllamaUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +31,8 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.2.17:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_ENRICHMENT_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:14b"))
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_ENRICHMENT_TIMEOUT", "60"))
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_ENRICHMENT_NUM_CTX", "32768"))
+
+_ollama_client = OllamaClient(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL, timeout_seconds=OLLAMA_TIMEOUT)
 
 
 ResponseLanguage = Literal["de", "en"]
@@ -71,30 +78,23 @@ async def summarise_for_speech(
         else f"Question: {query}\n\nSources:\n{sources_text}"
     )
 
-    payload = {
-        "model": OLLAMA_MODEL,
-        "stream": False,
-        "options": {"num_ctx": OLLAMA_NUM_CTX, "temperature": 0.2},
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
 
     try:
-        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-            resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-    except (httpx.NetworkError, httpx.TimeoutException) as exc:
+        result = await _ollama_client.chat(messages, num_ctx=OLLAMA_NUM_CTX, temperature=0.2)
+    except OllamaUnavailableError as exc:
         raise EnrichmentSummariserUnavailable(f"ollama_unreachable: {exc}") from exc
-    except httpx.HTTPStatusError as exc:
-        raise EnrichmentSummariserUnavailable(
-            f"ollama_status_{exc.response.status_code}"
-        ) from exc
+    except OllamaTimeoutError as exc:
+        raise EnrichmentSummariserUnavailable(f"ollama_timeout: {exc}") from exc
+    except OllamaEngineError as exc:
+        # status_code is None for mid-request transport errors and bad JSON.
+        reason = f"ollama_status_{exc.status_code}" if exc.status_code is not None else f"ollama_error: {exc}"
+        raise EnrichmentSummariserUnavailable(reason) from exc
 
-    msg = data.get("message") or {}
-    content = (msg.get("content") or "").strip()
+    content = result.content.strip()
     if not content:
         raise EnrichmentSummariserUnavailable("ollama_empty_response")
     # Drop any speaker labels / leading code fences — defence in depth.

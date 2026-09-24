@@ -12,7 +12,12 @@ import os
 import re
 import time
 
-import httpx
+from ollama_client import (
+    OllamaClient,
+    OllamaEngineError,
+    OllamaTimeoutError,
+    OllamaUnavailableError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -20,10 +25,13 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.2.17:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120"))
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "131072"))
+
 LLM_CORRECTION_ENABLED = os.getenv(
     "LLM_CORRECTION_ENABLED",
     os.getenv("LLM_VALIDATION_ENABLED", "true"),
 ).lower() == "true"
+
+_ollama_client = OllamaClient(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL, timeout_seconds=OLLAMA_TIMEOUT)
 
 SYSTEM_PROMPT = """\
 You are a German transcript correction assistant. The text is a CTO diary \
@@ -177,37 +185,24 @@ async def correct_transcript(
     t0 = time.monotonic()
 
     try:
-        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "messages": messages,
-                    "format": "json",
-                    "stream": False,
-                    "options": {"num_ctx": OLLAMA_NUM_CTX},
-                },
-            )
-            resp.raise_for_status()
-    except httpx.ConnectError:
+        result = await _ollama_client.chat(messages, format="json", num_ctx=OLLAMA_NUM_CTX)
+    except OllamaUnavailableError:
         logger.warning("Ollama unreachable at %s for transcript correction", OLLAMA_BASE_URL)
         return raw_text, []
-    except httpx.TimeoutException:
+    except OllamaTimeoutError:
         elapsed = time.monotonic() - t0
         logger.warning("Ollama transcript correction timed out after %.1fs", elapsed)
         return raw_text, []
-    except httpx.HTTPStatusError as e:
-        logger.warning("Ollama returned HTTP %d for transcript correction", e.response.status_code)
+    except OllamaEngineError as e:
+        logger.warning("Ollama error for transcript correction: %s", e)
         return raw_text, []
 
     elapsed = time.monotonic() - t0
     logger.info("Ollama transcript correction responded in %.1fs", elapsed)
 
-    try:
-        body = resp.json()
-        content = body.get("message", {}).get("content", "")
-    except (json.JSONDecodeError, AttributeError):
-        logger.warning("Failed to parse Ollama response for transcript correction")
+    content = result.content
+    if not content:
+        logger.warning("Empty Ollama response for transcript correction")
         return raw_text, []
 
     corrections = _parse_corrections(content)
