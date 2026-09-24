@@ -858,8 +858,8 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
   installed Apple Premium voices, bundled Piper voices, and reachable server (Voxtral) voices
   side by side; the selected row's prefix (`piper:` / `voxtral:` / neither) is what
   `VoiceRegistry` switches on, so there's no separate engine picker.
-- **Detect language per event** toggle (`WalkthroughSettingsStore.mixedLanguageSpeech`,
-  default **on**): when on, an event opener splices in the calendar title/attendee name using
+- **Detect language per event** toggle (`VoiceSettingsView`, stored in
+  `WalkthroughSettingsStore.mixedLanguageSpeech`, default **on**): when on, an event opener splices in the calendar title/attendee name using
   its own detected language (e.g. a German frame around an English title is spoken German /
   English / German across the two voices — `OpenerTemplates.script`, `LanguageDetector`); when
   off, the whole line collapses to the opener's base (App-language) voice, so a German-titled
