@@ -571,13 +571,14 @@ The server hands todos to the existing `document_processor.py` pipeline. The pip
 | Setting | Values |
 |---|---|
 | App language | `System (recommended) / Deutsch` (see §12.1) |
-| German voice | Thorsten (high) / Eva / Karlsson |
-| English voice | Lessac (high) / Alan (British) / Ryan |
+| German voice | Combined Apple Premium / Piper / Voxtral list (see §12.1); bundled Piper default: Thorsten (high) |
+| English voice | Combined Apple Premium / Piper / Voxtral list (see §12.1); bundled Piper default: Lessac (high) |
 
 The separate `Recording language` / `Response language` pickers this table used to list
 were collapsed into the single **App language** toggle (§12.1, `AppLanguage`): `System`
-resolves to `de` on a German device and `en` otherwise, `Deutsch` forces `de`. Per-utterance
-language detection still overrides the spoken voice independently — see §9.3.
+resolves to `de` on a German device and `en` otherwise, `Deutsch` forces `de`. Per-event
+language detection can still override the spoken voice, gated by the "Detect language per
+event" toggle (§12.1) — see §9.3.
 
 ### 9.3 Auto-detect behaviour
 
