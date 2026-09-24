@@ -5,6 +5,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import httpx
+import pytest
 
 from document_processor import (
     _split_diary_markdown,
@@ -228,8 +229,5 @@ async def test_analyze_transcript_read_timeout_raises_runtime_error():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ReadTimeout("timed out", request=request)
 
-    try:
+    with pytest.raises(RuntimeError, match="timed out"):
         await analyze_transcript(ENRICHED_CTX, transport=httpx.MockTransport(handler))
-        assert False, "expected RuntimeError"
-    except RuntimeError as e:
-        assert "timed out" in str(e)
