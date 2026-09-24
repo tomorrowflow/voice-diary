@@ -891,8 +891,9 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
 ### 12.2 Parked settings (not exposed yet)
 
 - Workday hours + evening diary notification schedule
-- Lull / empty-block / multi-day-gap thresholds — `LullDetector` ships fixed 3s/6s/15s
-  thresholds today; no slider UI exposes them
+- Lull / empty-block / multi-day-gap thresholds — `LullDetector` ships fixed
+  3s/6s/15s/24s thresholds today (`WalkthroughCoordinator` sets the 24s auto-advance on top of
+  the class default); no slider UI exposes them
 - Drive-by capture numerics (notification duration, auto-stop silence)
 - Retention pickers (raw audio / transcript / conversation-history windows) — no retention
   sweep exists in code; local data is only cleared manually today, via Mehr → Gefahrenzone
