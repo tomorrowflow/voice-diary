@@ -884,8 +884,8 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
   viewable and shareable per-report; delete-all and per-report delete.
 - There is no "About" grouping and no app-version / voice-model-version / Parakeet-model-version
   display anywhere in the app today — those fields this section used to list don't exist in
-  code. "Reset app" is the Danger Zone delete-all documented in §12.2/§13.2, not a separate
-  About-screen control.
+  code. "Reset app" is the Mehr → Gefahrenzone delete-all documented in §12.2/§13.2, not a
+  separate About-screen control.
 
 ### 12.2 Parked settings (not exposed yet)
 
