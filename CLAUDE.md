@@ -15,8 +15,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   2026-04-24), with n8n removed and iOS-specific routers (`webapp/routers/`), the MSAL Graph
   client, and Whisper/ffmpeg wiring already added on top of the seed.
 - `ios/` — actively developed, not empty. Swift 6/SwiftUI app with capture, dialog, TTS, storage,
-  and UI modules on disk under `ios/Sources/`, plus a widget extension. See `ios/README.md` for
-  current status.
+  and UI modules on disk under `ios/Sources/`, plus a widget extension. `ios/README.md`'s status
+  table lags the code — trust `git log` and `ios/Sources/` over it.
 
 Always read `SPEC.md` and `DEVELOPMENT.md` before making changes.
 

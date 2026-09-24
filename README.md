@@ -47,8 +47,9 @@ status board; check `git log`, `ios/README.md`, and the actual directories for c
 
 - Server track: work has landed well beyond the seed — S1's n8n removal and audio pipeline
   (ffmpeg + a Whisper sidecar), S2's MSAL Graph client, and the S2–S3 iOS-facing routers
-  (`webapp/routers/{calendar,sessions,email,lightrag,health}.py`) are all on disk on top of the
+  (`webapp/routers/{calendar,sessions,email,lightrag,health,tts}.py`) are all on disk on top of the
   `diary-processor` seed. See `DEVELOPMENT.md §4` for what's tracked as remaining.
 - iOS track: well past M1 — `ios/Sources/` has capture, dialog, TTS, storage and UI modules plus
-  a widget extension. See `ios/README.md` for current milestone-by-milestone status.
+  a widget extension. `ios/README.md`'s status table lags the code; trust `git log` and
+  `ios/Sources/` over it.
 - The prior `diary-processor` repo is archived; no data migration is carried over.
