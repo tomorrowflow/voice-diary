@@ -148,3 +148,11 @@ def test_ux12_components_do_not_hard_code_font_size_or_spacing():
         for prop in ("font-size", "margin", "padding"):
             for value in re.findall(prop + r":([^;]+);", rule):
                 assert not _LITERAL_PX.search(value), (selector, prop)
+
+
+def test_toast_action_only_clickable_while_toast_visible():
+    # .toast is pointer-events:none; the Undo button must not stay an
+    # invisible click target over the footer once the toast fades out.
+    css = (WEBAPP_DIR / "static" / "style.css").read_text()
+    assert "pointer-events" not in _css_rule(css, ".toast-action {")
+    assert ".toast.visible .toast-action { pointer-events: auto; }" in css
