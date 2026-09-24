@@ -73,16 +73,6 @@ def _sessions_data_dir() -> Path:
     return sessions_dir()
 
 
-_asr_client: asr_client.AsrClient | None = None
-
-
-def _get_asr_client() -> asr_client.AsrClient:
-    global _asr_client
-    if _asr_client is None:
-        _asr_client = asr_client.AsrClient()
-    return _asr_client
-
-
 # In-memory status map. Per-process is fine — the iOS client polls within
 # a single session; a restart loses status but the bundle on disk survives.
 _session_status: dict[str, SessionStatus] = {}
@@ -209,7 +199,7 @@ async def post_session(
 
     # Cheap pre-flight: Whisper is the one upstream we cannot work around.
     # If it's down we surface 503 early rather than persisting a useless bundle.
-    if not await _get_asr_client().reachable():
+    if not await asr_client.get_default_client().reachable():
         shutil.rmtree(session_dir, ignore_errors=True)
         async with _status_lock:
             _session_status.pop(session_id, None)
@@ -438,7 +428,7 @@ async def _process_segment(
     audio_bytes = audio_path.read_bytes()
     language = (segment.language or "de").split("-")[0]
 
-    client = _get_asr_client()
+    client = asr_client.get_default_client()
 
     # 1. ffmpeg → WAV
     wav_bytes = await client.to_wav_16k_mono(audio_bytes, Path(segment.audio_file).suffix or ".m4a")

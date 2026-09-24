@@ -43,17 +43,6 @@ HARVEST_ACCESS_TOKEN = os.getenv("HARVEST_ACCESS_TOKEN", "")
 HARVEST_ACCOUNT_ID = os.getenv("HARVEST_ACCOUNT_ID", "")
 HARVEST_USER_ID = os.getenv("HARVEST_USER_ID", "")
 
-_asr_client: asr_client.AsrClient | None = None
-
-
-def _get_asr_client() -> asr_client.AsrClient:
-    """Lazy singleton — instantiated on first request so env vars set by
-    `load_dotenv()` at app startup are in place."""
-    global _asr_client
-    if _asr_client is None:
-        _asr_client = asr_client.AsrClient()
-    return _asr_client
-
 BASE_DIR = Path(__file__).resolve().parent
 
 
@@ -1671,7 +1660,7 @@ async def _ingest_audio_to_transcript(
 ) -> tuple[int, str, str]:
     """Pipeline: ffmpeg → Whisper → persist. Returns (transcript_id, review_url, text)."""
     src_suffix = Path(filename).suffix.lower() or ".mp3"
-    client = _get_asr_client()
+    client = asr_client.get_default_client()
     wav_bytes = await client.to_wav_16k_mono(content, src_suffix)
     text = await client.transcribe(wav_bytes)
     if not text:

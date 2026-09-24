@@ -143,3 +143,22 @@ class AsrClient:
             timeout=timeout_seconds if timeout_seconds is not None else self._timeout,
             transport=self._transport,
         )
+
+
+# --- process-wide default ----------------------------------------------------
+
+
+_default_client: AsrClient | None = None
+
+
+def get_default_client() -> AsrClient:
+    """Return the shared process-wide `AsrClient`, constructing it on first use.
+
+    Deferred to first call so the env vars loaded by `load_dotenv()` at app
+    startup (`WHISPER_URL`, `WHISPER_TIMEOUT_SECONDS`) are in place before the
+    constructor reads them.
+    """
+    global _default_client
+    if _default_client is None:
+        _default_client = AsrClient()
+    return _default_client
