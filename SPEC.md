@@ -849,9 +849,9 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
 **Language & voice** (UX-13a)
 - App language: `System (recommended) | Deutsch` (default: `System`; Mehr → Sprache,
   `LanguageSettingsView`) — one toggle, not the separate recording/response pickers this
-  section used to describe. `System` follows the
-  iPhone's language and falls back to English on any device whose system language isn't German;
-  `Deutsch` locks German regardless of the system setting. This toggle sets the surrounding
+  section used to describe. `System` follows the iPhone's language and falls back to English on
+  any device whose system language isn't German; `Deutsch` locks German regardless of the system
+  setting. This toggle sets the surrounding
   opener's base language; whether an individual event title/attendee name inside that opener
   gets its own detected-language voice is controlled separately by "Detect language per event"
   below.
