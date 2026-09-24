@@ -86,6 +86,7 @@
   <div class="entity-sidebar">
     <div class="sidebar-header"><h2>Detected Entities</h2></div>
     <div class="entity-list" id="entity-list"></div>
+    <div class="entity-list-empty" id="entity-list-empty" style="display:none">No entities detected in this transcript. Select text to tag one manually.</div>
     <div class="llm-log-panel" id="llm-log-panel">
       <div class="llm-log-header" onclick="toggleLlmLog()">
         <span class="llm-log-title">
@@ -115,7 +116,7 @@
 
 <footer>
   <div class="footer-info">
-    <span id="correction-summary">Loading...</span>
+    <span id="correction-summary">No changes</span>
   </div>
   <div class="footer-actions">
     <button class="btn btn-ghost-danger" id="reset-btn" onclick="resetTranscript()">Reset</button>
@@ -125,6 +126,8 @@
     </button>
   </div>
 </footer>
+
+<div class="toast" id="toast"></div>
 
 <div class="modal-overlay" id="modalOverlay" onclick="if(event.target===this)resolveModal(null)">
   <div class="modal">
