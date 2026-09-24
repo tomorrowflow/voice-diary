@@ -266,7 +266,7 @@ def main() -> None:
         return
 
     asyncio.run(apply_statements(statements))
-    print(f"Applied {len(statements)} statements to {DATABASE_URL}", file=sys.stderr)
+    print(f"Applied {len(statements)} statements", file=sys.stderr)
 
 
 if __name__ == "__main__":
