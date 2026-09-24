@@ -322,7 +322,7 @@ async def validate_entities_stream(
 
     content = result.content
     if not content:
-        yield _sse_log("Failed to parse Ollama response body", "error")
+        yield _sse_log("Empty Ollama response body", "error")
         yield _sse_result(entities)
         return
 
