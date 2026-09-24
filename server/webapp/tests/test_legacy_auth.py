@@ -16,7 +16,6 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
-from fastapi import APIRouter
 from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
 from starlette.routing import Mount, Route
@@ -93,7 +92,7 @@ def test_health_stays_open_without_bearer() -> None:
     assert response.status_code != 401
 
 
-def _api_routes(router: APIRouter | object) -> Iterator[APIRoute]:
+def _api_routes(router: object) -> Iterator[APIRoute]:
     """Yield every APIRoute reachable from `router` or `app.routes`.
 
     `include_router` wraps each included router in a private `_IncludedRouter`
@@ -101,7 +100,7 @@ def _api_routes(router: APIRouter | object) -> Iterator[APIRoute]:
     that. Unknown route kinds raise instead of being skipped: a new route
     type must be classified here on purpose, never silently bypass the audit.
     """
-    for route in getattr(router, "routes", []):  # type: ignore[attr-defined]
+    for route in getattr(router, "routes", []):
         if isinstance(route, APIRoute):
             yield route
         elif hasattr(route, "original_router"):
