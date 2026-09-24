@@ -74,6 +74,29 @@ function modalAlert(title, message, opts) {
 }
 
 // ============================================================
+// TOAST
+// ============================================================
+
+function showToast(msg, isError, opts) {
+  opts = opts || {};
+  var t = document.getElementById('toast');
+  if (!t) return;
+  clearTimeout(t._timer);
+  if (opts.actionLabel && opts.onAction) {
+    t.innerHTML = escapeHtml(msg) + ' <button class="toast-action" type="button">' + escapeHtml(opts.actionLabel) + '</button>';
+    t.querySelector('.toast-action').onclick = function() {
+      clearTimeout(t._timer);
+      t.classList.remove('visible');
+      opts.onAction();
+    };
+  } else {
+    t.textContent = msg;
+  }
+  t.className = 'toast visible' + (isError ? ' error' : '');
+  t._timer = setTimeout(function() { t.classList.remove('visible'); }, opts.duration || 2500);
+}
+
+// ============================================================
 // RENDER
 // ============================================================
 
@@ -232,6 +255,9 @@ function renderTranscript() {
 function renderEntityList() {
   const el = document.getElementById('entity-list');
   if (!el) return;
+
+  var emptyEl = document.getElementById('entity-list-empty');
+  if (emptyEl) emptyEl.style.display = entities.length === 0 ? '' : 'none';
 
   // Build flat list with original indices
   var order = { ambiguous: 0, suggested: 1, 'new-entity': 2, 'auto-matched': 3, dismissed: 4 };
@@ -612,6 +638,7 @@ async function saveDraft() {
     var result = await resp.json();
     if (result.status === 'saved') {
       btnDone(btn, 'Saved', 'Save', 1500);
+      showToast('Draft saved');
     } else {
       modalAlert('Save Failed', 'Error: ' + JSON.stringify(result), { danger: true });
       btnReset(btn, 'Save');
@@ -964,6 +991,7 @@ var savedMultiWordSelection = null;
     popup.style.left = Math.min(rect.left, panelRect.right - 320) + 'px';
     popup.style.top = (rect.bottom + window.scrollY + 8) + 'px';
     popup.classList.add('visible');
+    focusFirstEntityTypeButton();
   });
 
   // Save multi-word selection before browser clears it on mousedown.
@@ -985,6 +1013,41 @@ var savedMultiWordSelection = null;
       hideSelectionPopup();
     }
   });
+})();
+
+function focusFirstEntityTypeButton() {
+  requestAnimationFrame(function() {
+    var first = document.querySelector('.selection-popup-types button');
+    if (first) first.focus();
+  });
+}
+
+// Roving keyboard navigation across the entity-type buttons: arrow keys
+// move focus, Escape closes the popup (native Enter/Space already
+// activates a focused button).
+function selectionPopupTypeKeydown(e) {
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    hideSelectionPopup();
+    return;
+  }
+
+  var buttons = Array.prototype.slice.call(document.querySelectorAll('.selection-popup-types button'));
+  var idx = buttons.indexOf(document.activeElement);
+  if (idx === -1) return;
+
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    e.preventDefault();
+    buttons[(idx + 1) % buttons.length].focus();
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    buttons[(idx - 1 + buttons.length) % buttons.length].focus();
+  }
+}
+
+(function() {
+  var typesEl = document.querySelector('.selection-popup-types');
+  if (typesEl) typesEl.addEventListener('keydown', selectionPopupTypeKeydown);
 })();
 
 function hideSelectionPopup() {
@@ -1014,6 +1077,8 @@ function resolveOffset(node, localOffset) {
   }
   return spanStart + localOffset;
 }
+
+var lastManualEntity = null; // {start, end} of the most recently manually-added entity, for undo
 
 function addManualEntity(type) {
   if (!pendingSelection) return;
@@ -1059,13 +1124,26 @@ function addManualEntity(type) {
     return e.start === newEntity.start && e.end === newEntity.end;
   });
   activeEntityIdx = newIdx;
+  lastManualEntity = { start: newEntity.start, end: newEntity.end };
   render();
+
+  showToast(type + ' added', false, { actionLabel: 'Undo', onAction: undoLastManualEntity });
 
   requestAnimationFrame(function() {
     requestAnimationFrame(function() {
       scrollSidebarToActiveCard();
     });
   });
+}
+
+function undoLastManualEntity() {
+  if (!lastManualEntity) return;
+  var idx = entities.findIndex(function(e) {
+    return e.status === 'new-entity' && e.match_type === 'manual'
+      && e.start === lastManualEntity.start && e.end === lastManualEntity.end;
+  });
+  lastManualEntity = null;
+  if (idx !== -1) removeEntity(idx);
 }
 
 // ============================================================
