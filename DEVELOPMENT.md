@@ -76,7 +76,11 @@ Dogfood early. Drive-by capture (iOS M2) + session ingest (Server S1) are usable
 
 The server has been **seeded from the existing `diary-processor/webapp/` codebase** (copied on 2026-04-24). It is already a working FastAPI app with entity detection, LightRAG ingest, review UI, admin UI, and Harvest integration. The server track is about removing n8n, adding local audio processing, and adding the iOS-specific routes — not building from scratch.
 
-### 4.1 Current layout (already on disk)
+### 4.1 Layout as seeded (2026-04-24)
+
+A snapshot of the tree as copied from `diary-processor`, before S1. The "needs …" / "to be
+removed" notes are the seed-time to-do list — n8n is gone, Whisper and `msal` are in, and the
+iOS routers exist; see §4.2–§4.3 and `server/README.md` for current state.
 
 ```
 server/
