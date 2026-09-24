@@ -78,8 +78,9 @@ def _whisper_url() -> str:
     import os as _os
     return _os.getenv("WHISPER_URL", "http://whisper:9000")
 
-# In-memory status map. Per-process is fine — the iOS client polls within
-# a single session; a restart loses status but the bundle on disk survives.
+# In-memory cache over the `session_ingests` table (SRV-A6). Fast path for
+# same-process polling; `db.get_session_status` backs a cache miss (e.g.
+# after a restart) so status and pending_analysis retryability survive.
 _session_status: dict[str, SessionStatus] = {}
 _status_lock = asyncio.Lock()
 
@@ -201,6 +202,14 @@ async def post_session(
             state="processing",
             segments=pending_results,
         )
+    # Persist before we answer 200 — the in-memory map above is a cache;
+    # this row is what survives a restart (SRV-A6).
+    await db.create_session_status(
+        session_id=session_id,
+        received_at=received_at,
+        state="processing",
+        segments=[r.model_dump() for r in pending_results],
+    )
 
     # Cheap pre-flight: Whisper is the one upstream we cannot work around.
     # If it's down we surface 503 early rather than persisting a useless bundle.
@@ -208,6 +217,7 @@ async def post_session(
         shutil.rmtree(session_dir, ignore_errors=True)
         async with _status_lock:
             _session_status.pop(session_id, None)
+        await db.delete_session_status(session_id)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="whisper_unavailable",
@@ -231,11 +241,22 @@ async def post_session(
 async def session_status(session_id: str) -> SessionStatus:
     async with _status_lock:
         status_obj = _session_status.get(session_id)
-    if status_obj is None:
+    if status_obj is not None:
+        return status_obj
+
+    # Cache miss — e.g. a restart cleared the in-memory map. Fall back to
+    # the persisted row (SRV-A6) before giving up.
+    persisted = await db.get_session_status(session_id)
+    if persisted is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="session_not_found",
         )
+    # `get_session_status` returns exactly SessionStatus's fields (segments as
+    # dicts), so model_validate reconstructs it without restating each field.
+    status_obj = SessionStatus.model_validate(persisted)
+    async with _status_lock:
+        _session_status.setdefault(session_id, status_obj)
     return status_obj
 
 
@@ -294,28 +315,44 @@ async def session_dates(
 # --- per-segment pipeline -------------------------------------------------
 
 
-async def _process_session_bg(parsed: Manifest, session_dir: Path) -> None:
-    """Background-task wrapper that updates the in-memory status map."""
-    try:
-        results = await _process_session(parsed, session_dir)
-        async with _status_lock:
-            current = _session_status.get(parsed.session_id)
-            if current is None:
-                return
-            failed = [r for r in results if r.status == "failed"]
-            state = "done"
-            if failed and len(failed) == len(results):
-                state = "failed"
-            elif failed:
-                state = "partial"
+def _derive_session_state(results: list[SegmentResult]) -> str:
+    failed_count = sum(1 for r in results if r.status == "failed")
+    if failed_count == 0:
+        return "done"
+    if failed_count == len(results):
+        return "failed"
+    return "partial"
+
+
+async def _persist_session_status(
+    session_id: str, state: str, segments: list[SegmentResult]
+) -> None:
+    """Write-through: update the in-memory cache (if present) and the
+    persisted row (SRV-A6) so status survives a restart."""
+    async with _status_lock:
+        current = _session_status.get(session_id)
+        if current is not None:
             current.state = state
-            current.segments = results
+            current.segments = segments
+    await db.update_session_status(
+        session_id=session_id,
+        state=state,
+        segments=[s.model_dump() for s in segments],
+    )
+
+
+async def _process_session_bg(parsed: Manifest, session_dir: Path) -> None:
+    """Background-task wrapper. `_process_session` persists status itself
+    (memory cache + db row) on success; this only handles the crash path."""
+    try:
+        await _process_session(parsed, session_dir)
     except Exception:  # pragma: no cover — defensive
         logger.exception("session %s background processing crashed", parsed.session_id)
         async with _status_lock:
             current = _session_status.get(parsed.session_id)
             if current is not None:
                 current.state = "failed"
+        await db.mark_session_failed(parsed.session_id)
 
 
 @dataclass
@@ -401,17 +438,9 @@ async def _process_session(parsed: Manifest, session_dir: Path) -> list[SegmentR
     # Preserve manifest segment order in the response.
     results = [results_by_id[seg.segment_id] for seg in parsed.segments]
 
-    async with _status_lock:
-        current = _session_status.get(parsed.session_id)
-        if current is not None:
-            failed_count = sum(1 for r in results if r.status == "failed")
-            if failed_count == 0:
-                current.state = "done"
-            elif failed_count == len(results):
-                current.state = "failed"
-            else:
-                current.state = "partial"
-            current.segments = results
+    await _persist_session_status(
+        parsed.session_id, _derive_session_state(results), results
+    )
     return results
 
 

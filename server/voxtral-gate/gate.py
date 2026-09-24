@@ -160,15 +160,12 @@ class EngineGate:
             self._asleep = False
             logger.error("engine unreachable after %.0fs of boot polling", BOOT_TIMEOUT)
 
-        if self._sleep_supported and SLEEP_ON_START and not self._asleep:
-            # Taken before releasing waiters so a request queued on boot
-            # waits out this sleep and then wakes the engine, rather than
-            # racing the /sleep RPC via ensure_awake's fast path.
+        self._booted.set()
+
+        if self._sleep_supported and SLEEP_ON_START:
             async with self._lock:
-                self._booted.set()
-                await self._sleep_now(reason="startup")
-        else:
-            self._booted.set()
+                if self._asleep is False and self._inflight == 0:
+                    await self._sleep_now(reason="startup")
 
     async def ensure_awake(self) -> None:
         """Block until the engine can serve. Held open rather than failing
@@ -177,14 +174,13 @@ class EngineGate:
 
         if not self._sleep_supported:
             return
-        # The lock-free fast path is only safe when no transition is in
-        # flight: during an idle /sleep RPC `_asleep` still reads False.
-        if self._asleep is False and not self._lock.locked():
-            return
 
+        # Checked under the lock, never before it: `_asleep` only flips to
+        # True once a /sleep RPC completes, so an unlocked read could pass a
+        # request through to an engine that is mid-sleep.
         async with self._lock:
             if self._asleep is False:
-                return  # another request woke it while we queued
+                return
             started = time.monotonic()
             resp = await self._client.post(
                 f"{ENGINE_URL}/wake_up", timeout=WAKE_TIMEOUT
