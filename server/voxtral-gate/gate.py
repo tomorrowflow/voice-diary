@@ -39,7 +39,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import AsyncIterator
+from typing import AsyncIterator, Callable
 
 import httpx
 from fastapi import FastAPI, Request
@@ -170,7 +170,11 @@ class EngineGate:
         fast — see the module docstring."""
         await asyncio.wait_for(self._booted.wait(), timeout=BOOT_TIMEOUT)
 
-        if not self._sleep_supported or self._asleep is False:
+        if not self._sleep_supported:
+            return
+        # The lock-free fast path is only safe when no transition is in
+        # flight: during an idle /sleep RPC `_asleep` still reads False.
+        if self._asleep is False and not self._lock.locked():
             return
 
         async with self._lock:
@@ -320,7 +324,7 @@ async def _forward(
     request: Request,
     path: str,
     *,
-    release,
+    release: Callable[[], None] | None,
 ) -> StreamingResponse | JSONResponse:
     """Relay the request to the engine and stream the response back.
 
