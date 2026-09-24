@@ -320,8 +320,8 @@ async def proxy(path: str, request: Request) -> StreamingResponse | JSONResponse
     try:
         return await _forward(client, request, path, release=release)
     except BaseException:
-        if needs_engine:
-            gate.note_end()
+        if release:
+            release()
         raise
 
 
