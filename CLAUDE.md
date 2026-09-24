@@ -50,14 +50,14 @@ voice-diary/
 │   └── README.md
 └── server/                     (FastAPI backend — populated, working)
     ├── README.md
-    ├── .env.example            (has n8n vars to remove in S1)
-    ├── docker-compose.yml      (needs Whisper service added in S1)
+    ├── .env.example            (n8n vars removed in S1)
+    ├── docker-compose.yml      (Whisper service added in S1)
     ├── docs-archive/           (historical diary-processor design docs)
     └── webapp/                 (FastAPI app, ~2200 LOC, 17 Python modules)
         ├── Dockerfile
         ├── main.py             (~60 routes; see below for what to modify)
         ├── db.py, document_processor.py, entity_detector.py, ...
-        ├── requirements.txt    (needs `msal` added in S2)
+        ├── requirements.txt    (`msal` added in S2)
         ├── schema.sql, seed.sql
         ├── skeleton/           (markdown used by prompts)
         ├── templates/          (HTMX review + admin UI)
