@@ -570,18 +570,22 @@ The server hands todos to the existing `document_processor.py` pipeline. The pip
 
 | Setting | Values |
 |---|---|
-| Recording language | Auto-detect / German / English |
-| Response language | Match input / Always German / Always English |
+| App language | `System (recommended) / Deutsch` (see §12.1) |
 | German voice | Thorsten (high) / Eva / Karlsson |
 | English voice | Lessac (high) / Alan (British) / Ryan |
+
+The separate `Recording language` / `Response language` pickers this table used to list
+were collapsed into the single **App language** toggle (§12.1, `AppLanguage`): `System`
+resolves to `de` on a German device and `en` otherwise, `Deutsch` forces `de`. Per-utterance
+language detection still overrides the spoken voice independently — see §9.3.
 
 ### 9.3 Auto-detect behaviour
 
 Parakeet v3 reports per-utterance language confidence. The app:
 - For events ≥ 10 words: use Parakeet's detected language.
-- For very short utterances (drive-by < 10 words or interjections): fall back to `Recording language` setting.
+- For very short utterances (drive-by < 10 words or interjections): fall back to the App-language default (`AppLanguage.bcp47` — `de` under `Deutsch`, otherwise the system-resolved code).
 - Per-turn, the detected input language is plumbed to the dialog LLM's system prompt.
-- The `Response language` setting determines which voice TTS uses and which language Apple FM is instructed to reply in.
+- The detected input language then drives which voice TTS uses and which language Apple FM is instructed to reply in, falling back to the App-language default when detection is inconclusive.
 
 ### 9.4 Voice bundling
 
