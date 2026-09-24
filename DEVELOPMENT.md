@@ -109,10 +109,10 @@ server/
 
 ### 4.2 Planned additions
 
-Files the server milestones were planned to create. All of these exist on disk by now — the
-listing is kept as the original plan; see `git log` and `server/README.md` for what actually
-shipped (plus additions the plan didn't name, e.g. `routers/auth.py`, `routers/tts.py`, and
-the `voxtral-gate/` lazy-wake proxy):
+Files the server milestones were planned to create. All of the code files exist on disk by now
+(`data/` is gitignored runtime state) — the listing is kept as the original plan; see `git log`
+and `server/README.md` for what actually shipped (plus additions the plan didn't name, e.g.
+`routers/auth.py`, `routers/tts.py`, and the `voxtral-gate/` lazy-wake proxy):
 
 ```
 server/
