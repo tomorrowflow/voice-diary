@@ -45,9 +45,10 @@ Design complete; both tracks have been in active implementation for a while — 
 fresh scaffold. `DEVELOPMENT.md`'s milestone lists describe the original build plan, not a live
 status board; check `git log`, `ios/README.md`, and the actual directories for current state.
 
-- Server track: S1 (n8n removal + local audio pipeline) is done — ffmpeg, a Whisper sidecar, and
-  iOS-facing routers (`webapp/routers/{calendar,sessions,email,lightrag,health}.py`) are on disk
-  on top of the `diary-processor` seed. See `DEVELOPMENT.md §4` for what's tracked as remaining.
+- Server track: work has landed well beyond the seed — S1's n8n removal and audio pipeline
+  (ffmpeg + a Whisper sidecar), S2's MSAL Graph client, and S3's iOS-facing routers
+  (`webapp/routers/{calendar,sessions,email,lightrag,health}.py`) are all on disk on top of the
+  `diary-processor` seed. See `DEVELOPMENT.md §4` for what's tracked as remaining.
 - iOS track: well past M1 — `ios/Sources/` has capture, dialog, TTS, storage and UI modules plus
   a widget extension. See `ios/README.md` for current milestone-by-milestone status.
 - The prior `diary-processor` repo is archived; no data migration is carried over.
