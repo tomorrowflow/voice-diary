@@ -11,8 +11,11 @@ import csv
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import import_nocodb
 from import_nocodb import SqlStatement, apply_statements, build_statements
 
 
@@ -40,6 +43,27 @@ def _make_csv_dir(tmp_path, *, persons, person_variations=(), terms=(), term_var
     )
     _write_csv(tmp_path / "term_variations.csv", ["variation", "approved"], term_variations)
     return tmp_path
+
+
+def test_missing_database_url_fails_loud(tmp_path, monkeypatch, capsys):
+    """SEC-4: without DATABASE_URL the tool must not fall back to the old
+    guessable diary:diary credential. It exits with a clear error instead,
+    like its other operator-facing failures (e.g. missing CSV files)."""
+    csv_dir = _make_csv_dir(tmp_path, persons=[["Anna", "Anna", "", "", "", "", "active", "0"]])
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(sys, "argv", ["import_nocodb.py", str(csv_dir)])
+    with pytest.raises(SystemExit) as excinfo:
+        import_nocodb.main()
+    assert excinfo.value.code == 1
+    assert "DATABASE_URL is not set" in capsys.readouterr().err
+
+
+def test_dry_run_does_not_need_database_url(tmp_path, monkeypatch, capsys):
+    csv_dir = _make_csv_dir(tmp_path, persons=[["Anna", "Anna", "", "", "", "", "active", "0"]])
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setattr(sys, "argv", ["import_nocodb.py", str(csv_dir), "--dry-run"])
+    import_nocodb.main()
+    assert "dry run, nothing applied" in capsys.readouterr().err
 
 
 def test_persons_insert_uses_placeholders_not_interpolated_value(tmp_path):

@@ -8,7 +8,7 @@ services:
     env_file:
       - .env
     environment:
-      - DATABASE_URL=postgresql://diary:diary@postgres:5432/diary_processor
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-diary}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env, e.g. via `openssl rand -hex 32`}@postgres:5432/${POSTGRES_DB:-diary_processor}
       - WHISPER_URL=${WHISPER_URL:-http://whisper:9000}
       - VOXTRAL_BASE_URL=${VOXTRAL_BASE_URL:-http://voxtral:8001}
       - VOXTRAL_MODEL=${VOXTRAL_MODEL:-mistralai/Voxtral-4B-TTS-2603}
@@ -129,17 +129,18 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: diary
-      POSTGRES_PASSWORD: diary
-      POSTGRES_DB: diary_processor
+      POSTGRES_USER: ${POSTGRES_USER:-diary}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env, e.g. via `openssl rand -hex 32`}
+      POSTGRES_DB: ${POSTGRES_DB:-diary_processor}
     # No host port mapping — webapp connects via the internal `postgres` hostname.
-    # For ad-hoc psql, use `docker compose exec postgres psql -U diary diary_processor`.
+    # For ad-hoc psql, use `docker compose exec postgres sh -c 'psql -U "$POSTGRES_USER" "$POSTGRES_DB"'`
+    # (the inner shell expands the container's own env; a bare $VAR would expand host-side, where it is unset).
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./webapp/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
       - ./webapp/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U diary -d diary_processor"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 5s
       retries: 5

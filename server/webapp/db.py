@@ -6,10 +6,14 @@ from typing import Optional
 
 _pool: Optional[asyncpg.Pool] = None
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://diary:diary@localhost:5432/diary_processor",
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is not set. docker-compose.yml assembles it from "
+        "POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB (see .env.example); "
+        "there is no built-in default because that previously hardcoded "
+        "guessable diary:diary credentials (SEC-4)."
+    )
 
 
 async def get_pool() -> asyncpg.Pool:
