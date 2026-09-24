@@ -8,8 +8,11 @@ into the query text.
 """
 
 import csv
+import importlib
 import os
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -40,6 +43,23 @@ def _make_csv_dir(tmp_path, *, persons, person_variations=(), terms=(), term_var
     )
     _write_csv(tmp_path / "term_variations.csv", ["variation", "approved"], term_variations)
     return tmp_path
+
+
+def test_missing_database_url_fails_loud(monkeypatch, capsys):
+    """SEC-4: without DATABASE_URL the tool must not fall back to the old
+    guessable diary:diary credential. It exits with a clear error instead,
+    like its other operator-facing failures (e.g. missing CSV files)."""
+    import import_nocodb
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    with pytest.raises(SystemExit) as excinfo:
+        importlib.reload(import_nocodb)
+    assert excinfo.value.code == 1
+    assert "DATABASE_URL is not set" in capsys.readouterr().err
+
+    # Leave the module in a sane state (conftest's URL) for later tests.
+    monkeypatch.undo()
+    importlib.reload(import_nocodb)
 
 
 def test_persons_insert_uses_placeholders_not_interpolated_value(tmp_path):
