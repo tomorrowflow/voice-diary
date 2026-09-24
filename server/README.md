@@ -190,7 +190,7 @@ Produces `voice-diary-YYYY-MM-DDThh-mm-ss.tar.gz` containing:
 2. Bring up the stack: `docker compose up -d`.
 3. Wait for Postgres to be ready, then load the dump:
    ```bash
-   docker compose exec -T postgres psql -U diary -d diary_processor < postgres.sql
+   docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < postgres.sql
    ```
 4. Restore Qdrant by copying `qdrant_snapshots/storage/` into the qdrant
    volume directory before bringing up the qdrant container, or use the
