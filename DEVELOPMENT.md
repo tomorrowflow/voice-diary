@@ -202,6 +202,9 @@ cd ~/Documents/GitHub/voice-diary/server
 # One-time setup:
 cp .env.example .env
 # Edit .env. Required vars (after n8n cleanup in S1):
+#   TAILNET_IP=<this host's Tailscale IPv4, from `tailscale ip -4`; the webapp
+#               publishes 8000 on this address only and refuses to start
+#               without it — SEC-1)
 #   DATABASE_URL=postgresql://diary:diary@postgres:5432/diary_processor
 #   OLLAMA_BASE_URL=http://<ollama-host>:11434
 #   OLLAMA_MODEL=qwen2.5:14b
