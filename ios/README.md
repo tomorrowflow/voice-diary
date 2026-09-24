@@ -4,6 +4,10 @@ Swift 6 / SwiftUI app for iPhone 17 Pro on iOS 26. The Xcode project is **genera
 
 ## Status
 
+> This table predates most of the iOS work and lags the code (e.g. the widget extension, Live
+> Activity, App Intents, dialog and TTS modules are all on disk). Trust `git log` and
+> `ios/Sources/` for current state.
+
 | Milestone | What's in this commit |
 |---|---|
 | M1 — Xcode foundation | ✅ project.yml, Package.swift, entitlements, scaffolding |

@@ -308,8 +308,8 @@ ios/
 
 Written as the original task breakdown, not a live status board. `ios/Sources/` already has
 `Capture/`, `Dialog/`, `TTS/`, `Backend/`, `Storage/`, and `UI/` modules plus a widget extension —
-roughly M1–M10 have substantial code on disk. See `ios/README.md` for the maintained
-milestone-by-milestone status before treating any milestone below as unstarted.
+roughly M1–M10 have substantial code on disk. `ios/README.md`'s status table lags the code, so
+check `git log` and `ios/Sources/` before treating any milestone below as unstarted.
 
 #### M1 — Xcode foundation
 
