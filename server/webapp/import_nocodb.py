@@ -9,7 +9,7 @@ parameters, never interpolated into SQL text.
 
 Usage:
     # Apply directly to the database (reads DATABASE_URL from the
-    # environment; defaults to postgresql://diary:diary@localhost:5432/diary_processor):
+    # environment; there is no default — export it first, see .env.example):
     python import_nocodb.py /path/to/csv/dir
 
     # Preview the statements and their bound params without touching the database:
@@ -32,10 +32,18 @@ from pathlib import Path
 
 import asyncpg
 
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://diary:diary@localhost:5432/diary_processor",
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    # No built-in default: that previously hardcoded guessable
+    # diary:diary credentials (SEC-4). Fail like the other operator-facing
+    # errors in this tool (e.g. missing CSV files): clear message, exit 1.
+    print(
+        "ERROR: DATABASE_URL is not set. Export the target database URL, "
+        "e.g. postgresql://<user>:<password>@localhost:5432/diary_processor "
+        "(see .env.example).",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 @dataclass
