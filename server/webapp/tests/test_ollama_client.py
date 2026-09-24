@@ -133,7 +133,7 @@ async def test_invalid_json_body_maps_to_OllamaEngineError() -> None:
         await client.chat([{"role": "user", "content": "hi"}])
 
 
-# --- construction -----------------------------------------------------------
+# --- timeouts & construction ----------------------------------------------
 
 
 async def test_chat_accepts_httpx_timeout_object_for_per_phase_timeouts() -> None:
