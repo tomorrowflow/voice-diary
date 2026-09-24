@@ -54,8 +54,8 @@ class AsrEngineError(AsrError):
 class AsrClient:
     """Pure async client. One instance is shared across callers.
 
-    Construction reads `WHISPER_URL` from the environment by default;
-    tests override it explicitly.
+    Construction reads `WHISPER_URL` and `WHISPER_TIMEOUT_SECONDS` from the
+    environment by default; tests override both explicitly.
     """
 
     def __init__(

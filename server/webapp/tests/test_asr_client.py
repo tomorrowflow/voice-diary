@@ -2,7 +2,7 @@
 
 Run inside the webapp container so deps + env match prod:
 
-    docker compose run --rm webapp pytest tests/test_asr_client.py
+    docker compose run --rm webapp pytest webapp/tests/test_asr_client.py
 
 The httpx transport is injected via `httpx.MockTransport` for the Whisper
 calls, so no live sidecar is needed. `to_wav_16k_mono` shells out to the
@@ -10,6 +10,9 @@ real `ffmpeg` binary (must be on PATH) against tiny generated fixtures.
 """
 
 from __future__ import annotations
+
+import io
+import wave
 
 import httpx
 import pytest
@@ -22,6 +25,13 @@ from asr_client import (
     AsrUnavailableError,
     get_default_client,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_default_client():
+    asr_client_module._default_client = None
+    yield
+    asr_client_module._default_client = None
 
 
 def _client(handler=None, *, timeout_seconds: float = 5.0) -> AsrClient:
@@ -112,10 +122,6 @@ async def test_reachable_returns_false_on_connection_failure() -> None:
 
 
 async def test_to_wav_16k_mono_converts_real_audio() -> None:
-    import wave
-
-    import io
-
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(2)
@@ -139,13 +145,6 @@ async def test_to_wav_16k_mono_raises_AsrEngineError_on_invalid_audio() -> None:
 
 
 # --- get_default_client -------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def _reset_default_client():
-    asr_client_module._default_client = None
-    yield
-    asr_client_module._default_client = None
 
 
 def test_get_default_client_returns_same_instance_across_calls() -> None:
