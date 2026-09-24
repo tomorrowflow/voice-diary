@@ -947,7 +947,7 @@ delete-all (wipes both audio directories, notes, and the upload queue) or remove
 30-days (sessions + notes past a 30-day cutoff). Diary entries already on the server are
 untouched by both.
 
-Independent of that manual sweep:
+Independent of that manual clearing:
 
 - **Drive-by seeds**: *not* deleted after ingest. A seed used in a walkthrough is marked
   "surfaced" (so it won't be offered again) but its audio file stays on disk
