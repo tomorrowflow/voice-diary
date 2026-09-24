@@ -2,7 +2,7 @@
 
 Run inside the gate container so deps match prod:
 
-    docker compose run --rm --entrypoint pytest voxtral tests/test_gate.py
+    docker compose run --rm --no-deps --entrypoint pytest voxtral -q tests/test_gate.py
 
 The engine is an `httpx.MockTransport`, so no live vLLM is needed. What's
 under test is *when* the gate decides to sleep or wake, not the proxying
@@ -202,3 +202,37 @@ def test_liveness_paths_are_excluded_from_waking() -> None:
     assert "/v1/models" in gate_mod.NO_WAKE_PATHS
     assert "/health" in gate_mod.NO_WAKE_PATHS
     assert "/v1/audio/speech" not in gate_mod.NO_WAKE_PATHS
+
+
+async def test_request_arriving_mid_sleep_waits_and_rewakes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A request landing while the idle /sleep RPC is in flight must not be
+    forwarded to an engine that is about to go to sleep — it has to queue
+    behind the transition and wake the engine again."""
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", False)
+    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
+    engine = FakeEngine(sleeping=False)
+    release_sleep = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/sleep":
+            await release_sleep.wait()
+        return engine.handler(request)
+
+    g = EngineGate(httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    await g.bootstrap()
+
+    sleeper = asyncio.create_task(g.maybe_sleep())
+    await asyncio.sleep(0)  # let the idle tick take the lock and block in /sleep
+
+    g.note_start()
+    waker = asyncio.create_task(g.ensure_awake())
+    await asyncio.sleep(0)
+    assert not waker.done()
+
+    release_sleep.set()
+    await asyncio.gather(sleeper, waker)
+
+    assert engine.calls[-2:] == ["/sleep", "/wake_up"]
+    assert engine.sleeping is False
