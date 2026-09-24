@@ -851,10 +851,9 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
   `LanguageSettingsView`) — one toggle, not the separate recording/response pickers this
   section used to describe. `System` follows the iPhone's language and falls back to English on
   any device whose system language isn't German; `Deutsch` locks German regardless of the system
-  setting. This toggle sets the surrounding
-  opener's base language; whether an individual event title/attendee name inside that opener
-  gets its own detected-language voice is controlled separately by "Detect language per event"
-  below.
+  setting. This toggle sets the surrounding opener's base language; whether an individual
+  event title/attendee name inside that opener gets its own detected-language voice is
+  controlled separately by "Detect language per event" below.
 - German voice / English voice: one combined list per language (`VoiceSettingsView`) —
   installed Apple Premium voices, bundled Piper voices, and reachable server (Voxtral) voices
   side by side; the selected row's prefix (`piper:` / `voxtral:` / neither) is what
@@ -862,9 +861,10 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
 - **Detect language per event** toggle (`VoiceSettingsView`, stored in
   `WalkthroughSettingsStore.mixedLanguageSpeech`, default **on**): when on, an event opener
   splices in the calendar title/attendee name using its own detected language (e.g. a German
-  frame around an English title is spoken German / English / German across the two voices — `OpenerTemplates.script`, `LanguageDetector`); when
-  off, the whole line collapses to the opener's base (App-language) voice, so a German-titled
-  event in an English session would be read in English.
+  frame around an English title is spoken German / English / German across the two voices —
+  `OpenerTemplates.script`, `LanguageDetector`); when off, the whole line collapses to the
+  opener's base (App-language) voice, so a German-titled event in an English session would be
+  read in English.
 
 **Walkthrough**
 - **Sections** (Mehr → Abschnitte): list of user-defined `general` sections. Each has `id` (stable UUID), `title` (header text + manifest field), `introText` (TTS opener line). Stored in `UserDefaults` under `walkthrough.generals.v1`.
