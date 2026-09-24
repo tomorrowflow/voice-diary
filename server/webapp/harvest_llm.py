@@ -7,13 +7,15 @@ import json
 import logging
 import os
 
-import httpx
+from ollama_client import OllamaClient
 
 logger = logging.getLogger(__name__)
 
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.2.17:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120"))
+
+_ollama_client = OllamaClient(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL, timeout_seconds=OLLAMA_TIMEOUT)
 
 # In-memory cache: (transcript_text_hash, date) -> result
 _cache: dict[tuple, list[dict]] = {}
@@ -33,26 +35,14 @@ async def extract_work_activities(transcript: str, date_str: str) -> list[dict]:
     prompt = _build_prompt(transcript, date_str)
 
     try:
-        async with httpx.AsyncClient(timeout=OLLAMA_TIMEOUT) as client:
-            resp = await client.post(
-                f"{OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": OLLAMA_MODEL,
-                    "messages": prompt,
-                    "format": "json",
-                    "stream": False,
-                },
-            )
-            resp.raise_for_status()
+        result = await _ollama_client.chat(prompt, format="json")
     except Exception as e:
         logger.warning("Ollama call failed for harvest LLM: %s", e)
         return []
 
     try:
-        body = resp.json()
-        content = body.get("message", {}).get("content", "")
-        data = json.loads(content)
-    except (json.JSONDecodeError, AttributeError) as e:
+        data = json.loads(result.content)
+    except json.JSONDecodeError as e:
         logger.warning("Failed to parse Ollama response: %s", e)
         return []
 
