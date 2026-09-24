@@ -2,7 +2,7 @@
 
 Run inside the webapp container so deps + env match prod:
 
-    docker compose run --rm webapp pytest tests/test_sessions.py
+    docker compose run --rm webapp pytest webapp/tests/test_sessions.py
 
 No live Postgres is needed: `db` calls are monkeypatched at the module
 level, so these exercise the router's caching/fallback logic in isolation.
@@ -10,9 +10,11 @@ level, so these exercise the router's caching/fallback logic in isolation.
 
 from __future__ import annotations
 
+import asyncio
 import json as jsonlib
 import os
 import sys
+from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -21,6 +23,7 @@ from fastapi.testclient import TestClient
 
 import db
 import routers.sessions as sessions_router
+from models import SegmentResult, SessionStatus
 
 
 BEARER = "test-token"
@@ -86,22 +89,16 @@ def test_status_still_404s_when_neither_cache_nor_db_has_the_session(monkeypatch
 
 
 def test_derive_session_state_all_processed_is_done():
-    from models import SegmentResult
-
     results = [SegmentResult(segment_id="s01", status="processed", transcript_id=1)]
     assert sessions_router._derive_session_state(results) == "done"
 
 
 def test_derive_session_state_all_failed_is_failed():
-    from models import SegmentResult
-
     results = [SegmentResult(segment_id="s01", status="failed", error="boom")]
     assert sessions_router._derive_session_state(results) == "failed"
 
 
 def test_derive_session_state_mixed_is_partial():
-    from models import SegmentResult
-
     results = [
         SegmentResult(segment_id="s01", status="processed", transcript_id=1),
         SegmentResult(segment_id="s02", status="failed", error="boom"),
@@ -110,8 +107,6 @@ def test_derive_session_state_mixed_is_partial():
 
 
 def test_persist_session_status_updates_cache_and_writes_through_to_db(monkeypatch):
-    from models import SegmentResult, SessionStatus
-
     _setup(monkeypatch)
     sessions_router._session_status["sess-x"] = SessionStatus(
         session_id="sess-x",
@@ -128,8 +123,6 @@ def test_persist_session_status_updates_cache_and_writes_through_to_db(monkeypat
     monkeypatch.setattr(db, "update_session_status", fake_update_session_status)
 
     new_results = [SegmentResult(segment_id="s01", status="processed", transcript_id=7)]
-    import asyncio
-
     asyncio.run(
         sessions_router._persist_session_status("sess-x", "done", new_results)
     )
@@ -142,9 +135,6 @@ def test_persist_session_status_updates_cache_and_writes_through_to_db(monkeypat
 
 
 def test_process_session_bg_marks_failed_in_db_on_crash(monkeypatch):
-    from dataclasses import dataclass
-    from models import SegmentResult, SessionStatus
-
     _setup(monkeypatch)
     sessions_router._session_status["sess-crash"] = SessionStatus(
         session_id="sess-crash",
@@ -167,8 +157,6 @@ def test_process_session_bg_marks_failed_in_db_on_crash(monkeypatch):
     @dataclass
     class _FakeManifest:
         session_id: str
-
-    import asyncio
 
     asyncio.run(sessions_router._process_session_bg(_FakeManifest("sess-crash"), None))
 
@@ -199,6 +187,14 @@ def _manifest(session_id: str) -> dict:
     }
 
 
+def _bundle(session_id: str) -> list[tuple]:
+    manifest = jsonlib.dumps(_manifest(session_id)).encode()
+    return [
+        ("manifest", ("manifest.json", manifest, "application/json")),
+        ("segments/s01.m4a", ("s01.m4a", b"fake-audio-bytes", "audio/mp4")),
+    ]
+
+
 def test_post_session_persists_status_row_before_returning(monkeypatch, tmp_path):
     """The accepted-response status must already be durable — not just in
     the process-local cache — before the client sees a 200."""
@@ -220,13 +216,7 @@ def test_post_session_persists_status_row_before_returning(monkeypatch, tmp_path
     monkeypatch.setattr(sessions_router, "_process_session_bg", fake_process_session_bg)
     monkeypatch.setattr(db, "create_session_status", fake_create_session_status)
 
-    manifest = _manifest("sess-post-1")
-    files = [
-        ("manifest", ("manifest.json", jsonlib.dumps(manifest).encode(), "application/json")),
-        ("segments/s01.m4a", ("s01.m4a", b"fake-audio-bytes", "audio/mp4")),
-    ]
-
-    resp = _client().post("/api/sessions", files=files, headers=_auth())
+    resp = _client().post("/api/sessions", files=_bundle("sess-post-1"), headers=_auth())
 
     assert resp.status_code == 200
     assert len(created) == 1
@@ -259,13 +249,7 @@ def test_post_session_deletes_persisted_row_when_whisper_unreachable(monkeypatch
     monkeypatch.setattr(db, "create_session_status", fake_create_session_status)
     monkeypatch.setattr(db, "delete_session_status", fake_delete_session_status)
 
-    manifest = _manifest("sess-post-2")
-    files = [
-        ("manifest", ("manifest.json", jsonlib.dumps(manifest).encode(), "application/json")),
-        ("segments/s01.m4a", ("s01.m4a", b"fake-audio-bytes", "audio/mp4")),
-    ]
-
-    resp = _client().post("/api/sessions", files=files, headers=_auth())
+    resp = _client().post("/api/sessions", files=_bundle("sess-post-2"), headers=_auth())
 
     assert resp.status_code == 503
     assert deleted == ["sess-post-2"]
