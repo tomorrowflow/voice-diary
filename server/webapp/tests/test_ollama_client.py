@@ -10,6 +10,8 @@ Ollama is needed.
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 
@@ -53,8 +55,6 @@ async def test_chat_forwards_model_messages_format_and_options() -> None:
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        import json
-
         captured["body"] = json.loads(request.read())
         return httpx.Response(200, json={"message": {"content": "ok"}})
 

@@ -26,12 +26,12 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120"))
 OLLAMA_NUM_CTX = int(os.getenv("OLLAMA_NUM_CTX", "131072"))
 
-_ollama_client = OllamaClient(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL, timeout_seconds=OLLAMA_TIMEOUT)
-
 LLM_CORRECTION_ENABLED = os.getenv(
     "LLM_CORRECTION_ENABLED",
     os.getenv("LLM_VALIDATION_ENABLED", "true"),
 ).lower() == "true"
+
+_ollama_client = OllamaClient(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL, timeout_seconds=OLLAMA_TIMEOUT)
 
 SYSTEM_PROMPT = """\
 You are a German transcript correction assistant. The text is a CTO diary \
@@ -185,9 +185,7 @@ async def correct_transcript(
     t0 = time.monotonic()
 
     try:
-        result = await _ollama_client.chat(
-            messages, format="json", num_ctx=OLLAMA_NUM_CTX, timeout=OLLAMA_TIMEOUT
-        )
+        result = await _ollama_client.chat(messages, format="json", num_ctx=OLLAMA_NUM_CTX)
     except OllamaUnavailableError:
         logger.warning("Ollama unreachable at %s for transcript correction", OLLAMA_BASE_URL)
         return raw_text, []
@@ -196,7 +194,7 @@ async def correct_transcript(
         logger.warning("Ollama transcript correction timed out after %.1fs", elapsed)
         return raw_text, []
     except OllamaEngineError as e:
-        logger.warning("Ollama returned HTTP %s for transcript correction", e.status_code)
+        logger.warning("Ollama error for transcript correction: %s", e)
         return raw_text, []
 
     elapsed = time.monotonic() - t0
