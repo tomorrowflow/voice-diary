@@ -23,13 +23,16 @@ def _write_csv(path, header, rows):
         writer.writerows(rows)
 
 
-def _make_csv_dir(tmp_path, *, canonical_name):
+PERSON_HEADER = ["canonical_name", "first_name", "last_name", "role", "department", "company", "status", "person_variations"]
+
+
+def _make_csv_dir(tmp_path, *, persons, person_variations=()):
+    _write_csv(tmp_path / "team_roster.csv", PERSON_HEADER, persons)
     _write_csv(
-        tmp_path / "team_roster.csv",
-        ["canonical_name", "first_name", "last_name", "role", "department", "company", "status", "person_variations"],
-        [[canonical_name, "First", "Last", "role", "dept", "co", "active", "0"]],
+        tmp_path / "person_variations.csv",
+        ["variation", "variation_type", "confidence", "approved"],
+        person_variations,
     )
-    _write_csv(tmp_path / "person_variations.csv", ["variation", "variation_type", "confidence", "approved"], [])
     _write_csv(
         tmp_path / "terms_roster.csv",
         ["canonical_term", "category", "context", "status", "term_variations"],
@@ -41,7 +44,7 @@ def _make_csv_dir(tmp_path, *, canonical_name):
 
 def test_persons_insert_uses_placeholders_not_interpolated_value(tmp_path):
     malicious = "O'Brien'; DROP TABLE persons;--"
-    csv_dir = _make_csv_dir(tmp_path, canonical_name=malicious)
+    csv_dir = _make_csv_dir(tmp_path, persons=[[malicious, "First", "Last", "role", "dept", "co", "active", "0"]])
 
     statements = build_statements(csv_dir)
 
@@ -49,6 +52,22 @@ def test_persons_insert_uses_placeholders_not_interpolated_value(tmp_path):
     assert malicious not in persons_stmt.query
     assert "$1" in persons_stmt.query
     assert persons_stmt.params[0] == malicious
+
+
+def test_person_variation_insert_uses_placeholders_for_canonical_and_variation(tmp_path):
+    malicious_variation = "x'); DELETE FROM persons;--"
+    csv_dir = _make_csv_dir(
+        tmp_path,
+        persons=[["Alice", "Alice", "A", "role", "dept", "co", "active", "1"]],
+        person_variations=[[malicious_variation, "asr_correction", "high", "1"]],
+    )
+
+    statements = build_statements(csv_dir)
+
+    var_stmt = next(s for s in statements if s.query.startswith("INSERT INTO person_variations"))
+    assert malicious_variation not in var_stmt.query
+    assert "Alice" not in var_stmt.query
+    assert var_stmt.params == ("Alice", malicious_variation, "asr_correction", "high", True)
 
 
 class _FakeTransaction:
@@ -72,33 +91,6 @@ class _FakeConnection:
 
     async def close(self):
         self.closed = True
-
-
-def test_person_variation_insert_uses_placeholders_for_canonical_and_variation(tmp_path):
-    malicious_variation = "x'); DELETE FROM persons;--"
-    _write_csv(
-        tmp_path / "team_roster.csv",
-        ["canonical_name", "first_name", "last_name", "role", "department", "company", "status", "person_variations"],
-        [["Alice", "Alice", "A", "role", "dept", "co", "active", "1"]],
-    )
-    _write_csv(
-        tmp_path / "person_variations.csv",
-        ["variation", "variation_type", "confidence", "approved"],
-        [[malicious_variation, "asr_correction", "high", "1"]],
-    )
-    _write_csv(
-        tmp_path / "terms_roster.csv",
-        ["canonical_term", "category", "context", "status", "term_variations"],
-        [],
-    )
-    _write_csv(tmp_path / "term_variations.csv", ["variation", "approved"], [])
-
-    statements = build_statements(tmp_path)
-
-    var_stmt = next(s for s in statements if s.query.startswith("INSERT INTO person_variations"))
-    assert malicious_variation not in var_stmt.query
-    assert "Alice" not in var_stmt.query
-    assert var_stmt.params == ("Alice", malicious_variation, "asr_correction", "high", True)
 
 
 async def test_apply_statements_executes_each_with_bound_params(monkeypatch):
