@@ -44,7 +44,7 @@ class OllamaEngineError(OllamaError):
         self.status_code = status_code
 
 
-# --- response shape --------------------------------------------------------
+# --- response shape -------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -56,7 +56,7 @@ class ChatResponse:
     raw: dict
 
 
-# --- client ------------------------------------------------------------
+# --- client ---------------------------------------------------------------
 
 
 class OllamaClient:
