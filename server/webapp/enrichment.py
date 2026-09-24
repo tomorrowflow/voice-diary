@@ -91,7 +91,7 @@ async def summarise_for_speech(
         raise EnrichmentSummariserUnavailable(f"ollama_timeout: {exc}") from exc
     except OllamaEngineError as exc:
         # status_code is None for mid-request transport errors and bad JSON.
-        reason = f"ollama_status_{exc.status_code}" if exc.status_code else f"ollama_error: {exc}"
+        reason = f"ollama_status_{exc.status_code}" if exc.status_code is not None else f"ollama_error: {exc}"
         raise EnrichmentSummariserUnavailable(reason) from exc
 
     content = result.content.strip()
