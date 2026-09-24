@@ -54,7 +54,7 @@ plain pass-through proxy: correct behaviour, just no VRAM reclaim.
 
 vLLM calls these "development endpoints". That's acceptable here because the
 engine has no host port and is reachable only by the gate on the compose
-network, and the stack as a whole is Tailscale-only (SPEC.md §6).
+network, and the stack as a whole is Tailscale-only (SPEC.md §3.2).
 
 ## Configuration
 
@@ -87,8 +87,8 @@ docker compose run --rm --no-deps --entrypoint pytest voxtral -q tests/test_gate
 
 ## Keeping it awake
 
-For a long dogfooding session where the wake latency is unwanted, either
-raise the idle window or pin it awake for the session:
+For a long dogfooding session where the wake latency is unwanted, raise the
+idle window for the session:
 
 ```bash
 VOXTRAL_IDLE_SECONDS=3600 docker compose up -d voxtral

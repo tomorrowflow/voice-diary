@@ -81,7 +81,7 @@ services:
       # Registers /sleep, /wake_up and /is_sleeping. vLLM calls these
       # "development endpoints" — acceptable here because the engine has
       # no host port and is reachable only by the gate on the compose
-      # network, and the stack as a whole is Tailscale-only (SPEC.md §6).
+      # network, and the stack as a whole is Tailscale-only (SPEC.md §3.2).
       VLLM_SERVER_DEV_MODE: "1"
     volumes:
       - voxtral_models:/root/.cache/huggingface
