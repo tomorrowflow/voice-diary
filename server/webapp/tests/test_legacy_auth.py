@@ -13,11 +13,17 @@ these tests never touch a real database.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
+from fastapi import APIRouter
+from fastapi.routing import APIRoute
 from fastapi.testclient import TestClient
+from starlette.routing import Mount, Route
 
 import db
 import main
+from routers.auth import require_bearer
 
 client = TestClient(main.app)
 
@@ -85,3 +91,35 @@ def test_legacy_route_accepts_correct_bearer(monkeypatch: pytest.MonkeyPatch) ->
 def test_health_stays_open_without_bearer() -> None:
     response = client.get("/health")
     assert response.status_code != 401
+
+
+def _api_routes(router: APIRouter | object) -> Iterator[APIRoute]:
+    """Yield every APIRoute reachable from `router` or `app.routes`.
+
+    `include_router` wraps each included router in a private `_IncludedRouter`
+    that holds the original router in `original_router`, so recurse through
+    that. Unknown route kinds raise instead of being skipped: a new route
+    type must be classified here on purpose, never silently bypass the audit.
+    """
+    for route in getattr(router, "routes", []):  # type: ignore[attr-defined]
+        if isinstance(route, APIRoute):
+            yield route
+        elif hasattr(route, "original_router"):
+            yield from _api_routes(route.original_router)
+        elif isinstance(route, (Mount, Route)):
+            continue  # static files + FastAPI docs routes — no handlers of ours
+        else:
+            raise AssertionError(f"unclassified route kind: {type(route).__name__}")
+
+
+def test_every_api_route_except_health_requires_bearer() -> None:
+    """Completeness guard: the sample cases above pin named routes, this
+    walks the whole route tree so a future route added without auth can't
+    silently reopen the port (SEC-2 acceptance).
+    """
+    ungated = {
+        route.path
+        for route in _api_routes(main.app)
+        if require_bearer not in [d.dependency for d in route.dependencies]
+    }
+    assert ungated == {"/health"}, f"routes without require_bearer: {sorted(ungated)}"
