@@ -45,6 +45,7 @@ import asr_client
 import db
 import document_processor
 import transcript_corrector
+import transcript_ingest
 from entity_detector import detect_entities
 from logging_setup import bind_session_id
 from paths import sessions_dir
@@ -461,15 +462,19 @@ async def _process_segment(
     audio_bytes = audio_path.read_bytes()
     language = (segment.language or "de").split("-")[0]
 
-    client = asr_client.get_default_client()
-
-    # 1. ffmpeg → WAV
-    wav_bytes = await client.to_wav_16k_mono(audio_bytes, Path(segment.audio_file).suffix or ".m4a")
-
-    # 2. Whisper
-    raw_transcript = await client.transcribe(wav_bytes, language=language)
-    if not raw_transcript:
-        raise RuntimeError("whisper_empty_transcript")
+    # 1-2-4. ffmpeg → Whisper → persist, via the core shared with main.py's
+    # /api/ingest/upload (SRV-A7).
+    filename = f"{manifest.session_id}::{segment.segment_id}{Path(segment.audio_file).suffix}"
+    transcribed = await transcript_ingest.transcribe_and_persist(
+        audio_bytes,
+        src_suffix=Path(segment.audio_file).suffix or ".m4a",
+        filename=filename,
+        date=manifest.date.isoformat(),
+        author="Florian Wolf",
+        language=language,
+    )
+    transcript_id = transcribed.transcript_id
+    raw_transcript = transcribed.raw_text
 
     # 3. Transcript correction (Ollama). Fall back to raw on failure.
     try:
@@ -483,14 +488,6 @@ async def _process_segment(
         )
         corrected_text = raw_transcript
 
-    # 4. Insert transcript row so the rest of the pipeline can reference it.
-    filename = f"{manifest.session_id}::{segment.segment_id}{Path(segment.audio_file).suffix}"
-    transcript_id = await db.create_transcript(
-        filename=filename,
-        date=manifest.date.isoformat(),
-        author="Florian Wolf",
-        raw_text=raw_transcript,
-    )
     if corrected_text != raw_transcript:
         await db.save_draft(transcript_id, corrected_text)
 

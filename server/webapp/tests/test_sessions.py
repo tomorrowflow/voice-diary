@@ -254,3 +254,70 @@ def test_post_session_deletes_persisted_row_when_whisper_unreachable(monkeypatch
     assert resp.status_code == 503
     assert deleted == ["sess-post-2"]
     assert "sess-post-2" not in sessions_router._session_status
+
+
+def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tmp_path):
+    """SRV-A7: `_process_segment`'s ffmpeg/Whisper/persist steps must go
+    through `transcript_ingest.transcribe_and_persist` (the same core
+    `main.py`'s `/api/ingest/upload` uses) instead of driving `asr_client`
+    and `db.create_transcript` inline."""
+    from models import Manifest
+    import transcript_ingest
+
+    session_dir = tmp_path / "sess-seg"
+    session_dir.mkdir()
+    (session_dir / "s01.m4a").write_bytes(b"fake-audio")
+
+    manifest_dict = _manifest("sess-seg")
+    manifest_dict["date"] = "2026-07-04"
+    manifest_dict["segments"][0]["audio_file"] = "s01.m4a"
+    manifest = Manifest.model_validate(manifest_dict)
+    segment = manifest.segments[0]
+
+    calls = []
+
+    async def fake_transcribe_and_persist(audio_bytes, *, src_suffix, filename, date, author, language="de"):
+        calls.append(
+            {
+                "audio_bytes": audio_bytes,
+                "src_suffix": src_suffix,
+                "filename": filename,
+                "date": date,
+                "author": author,
+                "language": language,
+            }
+        )
+        return transcript_ingest.TranscribedSegment(transcript_id=7, raw_text="hallo welt")
+
+    async def fake_correct_transcript(*, raw_text):
+        return raw_text, []
+
+    async def fake_load_person_dictionary():
+        return []
+
+    async def fake_load_term_dictionary():
+        return []
+
+    def fake_detect_entities(*, text, persons, terms):
+        return []
+
+    monkeypatch.setattr(sessions_router.transcript_ingest, "transcribe_and_persist", fake_transcribe_and_persist)
+    monkeypatch.setattr(sessions_router.transcript_corrector, "correct_transcript", fake_correct_transcript)
+    monkeypatch.setattr(db, "load_person_dictionary", fake_load_person_dictionary)
+    monkeypatch.setattr(db, "load_term_dictionary", fake_load_term_dictionary)
+    monkeypatch.setattr(sessions_router, "detect_entities", fake_detect_entities)
+
+    artifact = asyncio.run(
+        sessions_router._process_segment(
+            manifest=manifest, segment=segment, session_dir=session_dir
+        )
+    )
+
+    assert artifact.transcript_id == 7
+    assert artifact.raw_text == "hallo welt"
+    assert len(calls) == 1
+    assert calls[0]["filename"] == "sess-seg::s01.m4a"
+    assert calls[0]["date"] == "2026-07-04"
+    assert calls[0]["author"] == "Florian Wolf"
+    assert calls[0]["src_suffix"] == ".m4a"
+    assert calls[0]["language"] == "de"
