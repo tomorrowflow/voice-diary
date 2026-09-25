@@ -35,6 +35,7 @@ import harvest_patterns
 import harvest_llm
 import fluency_checker
 import transcript_corrector
+import transcript_ingest
 import vector_store
 from entity_detector import detect_entities
 from llm_validator import validate_entities_stream
@@ -1522,21 +1523,21 @@ async def ingest_clear_history():
 async def _ingest_audio_to_transcript(
     content: bytes, filename: str
 ) -> tuple[int, str, str]:
-    """Pipeline: ffmpeg → Whisper → persist. Returns (transcript_id, review_url, text)."""
+    """Pipeline: ffmpeg → Whisper → persist. Returns (transcript_id, review_url, text).
+
+    Delegates the shared transcribe+persist core to `transcript_ingest`
+    (SRV-A7) — the same core `routers/sessions.py` drives per segment.
+    """
     src_suffix = Path(filename).suffix.lower() or ".mp3"
-    client = asr_client.get_default_client()
-    wav_bytes = await client.to_wav_16k_mono(content, src_suffix)
-    text = await client.transcribe(wav_bytes)
-    if not text:
-        raise RuntimeError("Whisper returned an empty transcript")
-    transcript_id = await db.create_transcript(
+    result = await transcript_ingest.transcribe_and_persist(
+        content,
+        src_suffix=src_suffix,
         filename=filename,
         date=filename,
         author="Florian Wolf",
-        raw_text=text,
     )
-    review_url = f"/review/{transcript_id}"
-    return transcript_id, review_url, text
+    review_url = f"/review/{result.transcript_id}"
+    return result.transcript_id, review_url, result.raw_text
 
 
 @legacy_router.post("/api/ingest/upload")
