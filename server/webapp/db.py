@@ -487,6 +487,33 @@ async def mark_transcript_failed(transcript_id: int, error: str):
     )
 
 
+async def mark_transcript_resubmitted(transcript_id: int):
+    """Reset a failed transcript to 'submitted' so it can be re-processed."""
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE transcripts
+        SET status = 'submitted', processing_error = NULL,
+            processed_at = NULL, submitted_at = NOW()
+        WHERE id = $1
+    """,
+        transcript_id,
+    )
+
+
+async def list_recent_transcript_statuses() -> list[dict]:
+    """Status for transcripts submitted in the last 24h (for polling UI)."""
+    pool = await get_pool()
+    rows = await pool.fetch("""
+        SELECT id, status, submitted_at, processed_at, processing_error
+        FROM transcripts
+        WHERE status IN ('submitted', 'failed', 'processed')
+          AND submitted_at > NOW() - INTERVAL '24 hours'
+        ORDER BY id
+    """)
+    return [dict(r) for r in rows]
+
+
 # --- Review log ---
 
 
@@ -1141,6 +1168,16 @@ async def clear_ingest_history():
     await pool.execute("DELETE FROM ingest_uploads")
 
 
+async def reset_ingest_upload_for_retry(upload_id: int):
+    """Put an ingest upload back into 'uploading' state before a retry."""
+    pool = await get_pool()
+    await pool.execute(
+        "UPDATE ingest_uploads SET status = 'uploading', error_message = NULL, "
+        "completed_at = NULL WHERE id = $1",
+        upload_id,
+    )
+
+
 # --- Session ingest status (SRV-A6) ---
 #
 # Persisted mirror of routers/sessions.py's in-memory status map. That map
@@ -1309,6 +1346,16 @@ async def get_document_versions(transcript_id: int) -> list[dict]:
         transcript_id,
     )
     return [dict(r) for r in rows]
+
+
+async def get_latest_document_ids_by_transcript() -> dict[int, int]:
+    """Map transcript_id -> latest processed_documents.id, for the transcript list page."""
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT transcript_id, MAX(id) AS latest_doc_id "
+        "FROM processed_documents GROUP BY transcript_id"
+    )
+    return {r["transcript_id"]: r["latest_doc_id"] for r in rows}
 
 
 async def load_entity_dismissals() -> list[str]:

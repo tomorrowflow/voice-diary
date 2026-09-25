@@ -196,12 +196,7 @@ async def index(request: Request):
     """Transcript list page."""
     transcripts = await db.list_transcripts()
     # Batch-fetch which transcripts have processed documents
-    pool = await db.get_pool()
-    doc_rows = await pool.fetch(
-        "SELECT transcript_id, MAX(id) AS latest_doc_id "
-        "FROM processed_documents GROUP BY transcript_id"
-    )
-    doc_map = {r["transcript_id"]: r["latest_doc_id"] for r in doc_rows}
+    doc_map = await db.get_latest_document_ids_by_transcript()
     rows = []
     for t in transcripts:
         d = t["date"]
@@ -763,14 +758,7 @@ async def delete_transcripts(request: Request):
 @legacy_router.get("/api/transcripts/status")
 async def transcripts_status():
     """Return current status for recently submitted transcripts (last 24h)."""
-    pool = await db.get_pool()
-    rows = await pool.fetch("""
-        SELECT id, status, submitted_at, processed_at, processing_error
-        FROM transcripts
-        WHERE status IN ('submitted', 'failed', 'processed')
-          AND submitted_at > NOW() - INTERVAL '24 hours'
-        ORDER BY id
-    """)
+    rows = await db.list_recent_transcript_statuses()
     result = []
     for r in rows:
         processing_seconds = None
@@ -799,16 +787,7 @@ async def retry_transcript(transcript_id: int):
     if transcript["status"] != "failed":
         return JSONResponse({"error": "transcript is not in failed state"}, 400)
 
-    pool = await db.get_pool()
-    await pool.execute(
-        """
-        UPDATE transcripts
-        SET status = 'submitted', processing_error = NULL,
-            processed_at = NULL, submitted_at = NOW()
-        WHERE id = $1
-        """,
-        transcript_id,
-    )
+    await db.mark_transcript_resubmitted(transcript_id)
     return {"status": "submitted", "process_url": f"/process/{transcript_id}"}
 
 
@@ -1611,11 +1590,7 @@ async def ingest_retry(upload_id: int, file: UploadFile = File(...)):
     content = await file.read()
     filename = file.filename or "upload.mp3"
 
-    pool = await db.get_pool()
-    await pool.execute(
-        "UPDATE ingest_uploads SET status = 'uploading', error_message = NULL, completed_at = NULL WHERE id = $1",
-        upload_id,
-    )
+    await db.reset_ingest_upload_for_retry(upload_id)
 
     try:
         transcript_id, review_url, text = await _ingest_audio_to_transcript(
