@@ -430,11 +430,11 @@ Exit: skip a day, catch up next evening. Drive-bys from morning surface in match
 #### M11 — Settings & onboarding
 
 - Full settings UI (all sections in SPEC §12).
-- Onboarding: UX-6a's first-run gate (#30) — server setup + explicit permission priming. The rest of the original SPEC §14 flow (voice preview, workday hours, widget install, Action Button deep link, first drive-by tutorial) was dropped at the 2026-07-04 grill and is intentionally not being built (DOC-8).
+- Onboarding: UX-6a's first-run gate (#30) — server setup + explicit permission priming. The rest of the original SPEC §14 flow (voice preview, workday hours, widget install, Action Button deep link, first drive-by tutorial) was dropped at the 2026-07-04 grill and is intentionally not being built (DOC-8). UX-6a is implemented but still parked on `sandcastle/issue-30`, not yet on `main`; `ios/Sources/UI/Onboarding/` on `main` is still the stub.
 - Reset-app action.
 - Every screen built with `Theme.*` and `DSButtonStyle`; status indicators use the colour-coded `StatusBadge` pattern from `DebugSettingsView`.
 
-Exit: clean install → onboarding → ready to capture — **met** by UX-6a's minimal first-run gate (#30): server setup + explicit permission priming. The full §14 wizard is intentionally out of scope (DOC-8), not a gap against this exit criterion.
+Exit: clean install → onboarding → ready to capture — **re-scoped, not yet met**. The bar is UX-6a's minimal first-run gate (#30): server setup + explicit permission priming; the full §14 wizard is intentionally out of scope (DOC-8) and not a gap against this criterion. Met once #30 merges to `main`.
 
 #### M12 — Polish
 
