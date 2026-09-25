@@ -282,3 +282,17 @@ German is the primary language. English is a first-class second language. The us
 - **iOS unit tests**: opener template selection, manifest encoding, state machine transitions, wake-word matcher.
 - **iOS integration tests**: `ServerClient` against a local `docker compose up` of `server/`.
 - **Manual scenarios per milestone** in DEVELOPMENT.md §7. Run them before merging anything to main.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in GitHub Issues for `tomorrowflow/voice-diary` (via `gh`). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Canonical defaults, except the agent-ready role maps to the existing `Sandcastle` label. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
