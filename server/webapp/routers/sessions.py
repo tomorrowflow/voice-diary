@@ -462,13 +462,13 @@ async def _process_segment(
     audio_bytes = audio_path.read_bytes()
     language = (segment.language or "de").split("-")[0]
 
-    # 1-2-4. ffmpeg → Whisper → persist, via the core shared with main.py's
-    # /api/ingest/upload (SRV-A7).
-    filename = f"{manifest.session_id}::{segment.segment_id}{Path(segment.audio_file).suffix}"
+    # 1-2. ffmpeg → Whisper → persisted transcript row, via the core shared
+    # with main.py's /api/ingest/upload (SRV-A7).
+    suffix = Path(segment.audio_file).suffix
     transcribed = await transcript_ingest.transcribe_and_persist(
         audio_bytes,
-        src_suffix=Path(segment.audio_file).suffix or ".m4a",
-        filename=filename,
+        src_suffix=suffix or ".m4a",
+        filename=f"{manifest.session_id}::{segment.segment_id}{suffix}",
         date=manifest.date.isoformat(),
         author="Florian Wolf",
         language=language,
@@ -491,7 +491,7 @@ async def _process_segment(
     if corrected_text != raw_transcript:
         await db.save_draft(transcript_id, corrected_text)
 
-    # 5. Entity detection. The 4-pass detector already covers fuzzy + first-name
+    # 4. Entity detection. The 4-pass detector already covers fuzzy + first-name
     # disambiguation. For calendar_event segments we additionally seed the
     # corrected text with the manifest's canonical attendee names so the
     # detector resolves them deterministically (Graph already gave us the
