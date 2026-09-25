@@ -434,7 +434,7 @@ async def analyze_transcript(
             json_mode=True,
             transport=transport,
         )
-    except httpx.ReadTimeout:
+    except httpx.TimeoutException:
         logger.error("Main analysis timed out after %ss (model: %s)", OLLAMA_ANALYSIS_TIMEOUT, OLLAMA_ANALYSIS_MODEL)
         raise RuntimeError(f"LLM analysis timed out after {OLLAMA_ANALYSIS_TIMEOUT}s")
     except Exception as e:
