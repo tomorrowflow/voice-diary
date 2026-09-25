@@ -790,8 +790,8 @@ async def transcripts_status():
 async def retry_transcript(transcript_id: int):
     """Reset a failed transcript so it can be re-processed.
 
-    Local pipeline replaces the old n8n forward: the user re-runs the
-    SSE pipeline at /process/{id} after this call resets state.
+    The user re-runs the SSE pipeline at /process/{id} after this call
+    resets state.
     """
     transcript = await db.get_transcript(transcript_id)
     if not transcript:
