@@ -5,7 +5,8 @@ Every LLM-calling module (`llm_validator`, `fluency_checker`, `harvest_llm`,
 own `httpx.AsyncClient`, hand-build the `/api/chat` payload, and re-parse
 Ollama's response and error shapes independently. `OllamaClient` is the one
 place that owns the wire format, timeouts, and error classification, mirroring
-`voxtral_client.VoxtralClient`.
+`voxtral_client.VoxtralClient`. (`document_processor` has since moved to the
+OpenAI-compatible `/v1/chat/completions` shape and no longer uses this client.)
 
 Testability: the httpx transport is injectable via the constructor's
 `transport` argument, so tests drive the client against a
