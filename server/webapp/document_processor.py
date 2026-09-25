@@ -9,7 +9,6 @@ Steps:
 5. (Optional) Ingest into LightRAG
 """
 
-import asyncio
 import json
 import logging
 import math
@@ -19,6 +18,9 @@ import time
 from datetime import datetime
 
 import httpx
+
+from lightrag_client import DEFAULT_BASE_URL as LIGHTRAG_DEFAULT_URL
+from lightrag_client import LightRAGClient, LightRAGError
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +37,16 @@ OLLAMA_ANALYSIS_MODEL = os.getenv(
     "OLLAMA_ANALYSIS_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
 )
 OLLAMA_ANALYSIS_TIMEOUT = float(os.getenv("OLLAMA_ANALYSIS_TIMEOUT", "300"))
-LIGHTRAG_URL = os.getenv("LIGHTRAG_URL", "http://192.168.2.16:9621")
+# Startup-log values only (see main.py); requests go through `_lightrag_client`.
+LIGHTRAG_URL = os.getenv("LIGHTRAG_URL", LIGHTRAG_DEFAULT_URL)
 LIGHTRAG_API_KEY = os.getenv("LIGHTRAG_API_KEY", "")
+
+# Module-level client — same one-instance-per-caller pattern as
+# `_ollama_client` in enrichment.py/llm_validator.py/etc. Base URL and API
+# key are resolved fresh per call (DB setting, falling back to the
+# LIGHTRAG_URL/LIGHTRAG_API_KEY env vars) since they're editable at runtime
+# via the admin settings UI.
+_lightrag_client = LightRAGClient()
 
 MONTH_NAMES_DE = [
     "Januar", "Februar", "März", "April", "Mai", "Juni",
@@ -93,105 +103,26 @@ async def _call_llm(
 # --- LightRAG queries ---
 
 
-async def get_lightrag_url() -> str:
-    """Get LightRAG URL from DB settings, falling back to env/default."""
-    try:
-        import db
-        url = await db.get_setting("lightrag_url", LIGHTRAG_URL)
-        return url.rstrip("/")
-    except Exception:
-        return LIGHTRAG_URL.rstrip("/")
-
-
-async def get_lightrag_api_key() -> str:
-    """Get LightRAG API key from DB settings, falling back to env."""
-    try:
-        import db
-        return await db.get_setting("lightrag_api_key", LIGHTRAG_API_KEY)
-    except Exception:
-        return LIGHTRAG_API_KEY
-
-
-def _lightrag_headers(api_key: str) -> dict:
-    """Build headers for LightRAG requests."""
-    headers = {}
-    if api_key:
-        headers["X-API-Key"] = api_key
-    return headers
-
-
-async def lightrag_request_with_retry(
-    client: httpx.AsyncClient,
-    url: str,
-    *,
-    method: str = "POST",
-    json: dict | None = None,
-    headers: dict | None = None,
-    max_attempts: int = 3,
-) -> httpx.Response:
-    """Send a request to LightRAG with exponential backoff on transient failures.
-
-    Retries connect/read/write errors, timeouts, and 5xx responses (1s, 2s, 4s).
-    4xx responses are surfaced immediately — those indicate a bad payload or
-    auth problem and won't recover from a retry.
-    """
-    last_exc: Exception | None = None
-    for attempt in range(1, max_attempts + 1):
-        try:
-            resp = await client.request(method, url, json=json, headers=headers)
-            resp.raise_for_status()
-            return resp
-        except httpx.HTTPStatusError as e:
-            transient = 500 <= e.response.status_code < 600
-            if not transient or attempt >= max_attempts:
-                raise
-            last_exc = e
-        except (httpx.TransportError, httpx.TimeoutException) as e:
-            if attempt >= max_attempts:
-                raise
-            last_exc = e
-
-        delay = 2 ** (attempt - 1)
-        logger.warning(
-            "LightRAG %s %s attempt %d/%d failed (%s) — retrying in %ds",
-            method, url, attempt, max_attempts, last_exc, delay,
-        )
-        await asyncio.sleep(delay)
-
-    # Loop always returns or raises; this is a defensive fallback.
-    raise last_exc or RuntimeError("LightRAG retry exhausted without exception")
-
-
-async def query_lightrag_context(date_str: str) -> str:
+async def query_lightrag_context(date_str: str, *, client: LightRAGClient | None = None) -> str:
     """Query LightRAG for recent 14-day context summary."""
-    url = await get_lightrag_url()
-    api_key = await get_lightrag_api_key()
     query = (
         f"Fasse die wichtigsten Themen, Entscheidungen und TODOs der letzten "
         f"14 Tage vor dem {date_str} in maximal 5 Stichpunkten zusammen. "
         f"Fokus auf: wiederkehrende Themen, offene Aufgaben, wichtige Erkenntnisse."
     )
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await client.post(
-                f"{url}/query",
-                json={"query": query, "mode": "mix", "top_k": 5},
-                headers=_lightrag_headers(api_key),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("response", "") or ""
-    except Exception as e:
+        return await (client or _lightrag_client).query(query, mode="mix", top_k=5)
+    except LightRAGError as e:
         logger.warning("LightRAG recent context query failed: %s", e)
         return ""
 
 
-async def query_lightrag_entity_history(persons: list[str], date_str: str) -> str:
+async def query_lightrag_entity_history(
+    persons: list[str], date_str: str, *, client: LightRAGClient | None = None
+) -> str:
     """Query LightRAG for person history."""
     if not persons:
         return ""
-    url = await get_lightrag_url()
-    api_key = await get_lightrag_api_key()
     person_list = ", ".join(persons)
     query = (
         f"Für jede dieser Personen: {person_list} - gib mir maximal 3 Stichpunkte: "
@@ -199,16 +130,8 @@ async def query_lightrag_entity_history(persons: list[str], date_str: str) -> st
         f"Themen oder Charakterzüge."
     )
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await client.post(
-                f"{url}/query",
-                json={"query": query, "mode": "mix", "top_k": 3},
-                headers=_lightrag_headers(api_key),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return data.get("response", "") or ""
-    except Exception as e:
+        return await (client or _lightrag_client).query(query, mode="mix", top_k=3)
+    except LightRAGError as e:
         logger.warning("LightRAG entity history query failed: %s", e)
         return ""
 
@@ -779,7 +702,9 @@ def diary_to_interchange_jsonl(doc_id: str, markdown: str, metadata: dict) -> st
     return "\n".join(lines)
 
 
-async def ingest_to_lightrag(markdown: str, metadata: dict) -> dict:
+async def ingest_to_lightrag(
+    markdown: str, metadata: dict, *, client: LightRAGClient | None = None
+) -> dict:
     """POST document to LightRAG /documents/text.
 
     Performs a pre-ingestion skeleton sync to flush any pending bone
@@ -794,23 +719,15 @@ async def ingest_to_lightrag(markdown: str, metadata: dict) -> dict:
     except Exception as e:
         logger.warning("Pre-ingestion skeleton sync failed (continuing): %s", e)
 
-    url = await get_lightrag_url()
-    api_key = await get_lightrag_api_key()
     date_str = metadata.get("date", "unknown")
     diary_id = f"diary:{date_str}"
     try:
-        async with httpx.AsyncClient(timeout=300.0) as client:
-            resp = await lightrag_request_with_retry(
-                client,
-                f"{url}/documents/text",
-                json={
-                    "id": diary_id,
-                    "file_source": f"diary-{date_str}.md",
-                    "text": diary_to_interchange_jsonl(diary_id, markdown, metadata),
-                },
-                headers=_lightrag_headers(api_key),
-            )
-            return resp.json()
-    except Exception as e:
+        return await (client or _lightrag_client).insert_document(
+            doc_id=diary_id,
+            file_source=f"diary-{date_str}.md",
+            text=diary_to_interchange_jsonl(diary_id, markdown, metadata),
+            timeout_seconds=300.0,
+        )
+    except LightRAGError as e:
         logger.error("LightRAG ingest failed: %s", e)
         raise

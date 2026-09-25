@@ -11,8 +11,12 @@ from document_processor import (
     _split_diary_markdown,
     analyze_transcript,
     diary_to_interchange_jsonl,
+    ingest_to_lightrag,
+    query_lightrag_context,
+    query_lightrag_entity_history,
     summarize_context,
 )
+from lightrag_client import LightRAGClient
 
 
 SIMPLE_MARKDOWN = """\
@@ -231,3 +235,80 @@ async def test_analyze_transcript_read_timeout_raises_runtime_error():
 
     with pytest.raises(RuntimeError, match="timed out"):
         await analyze_transcript(ENRICHED_CTX, transport=httpx.MockTransport(handler))
+
+
+# --- LightRAG queries: routed through lightrag_client.LightRAGClient -------
+
+
+def _lightrag_client(handler) -> LightRAGClient:
+    return LightRAGClient(
+        base_url="http://lightrag.test", api_key="", transport=httpx.MockTransport(handler)
+    )
+
+
+async def test_query_lightrag_context_returns_response_text():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/query"
+        return httpx.Response(200, json={"response": "kontext-zusammenfassung"})
+
+    result = await query_lightrag_context("2026-05-10", client=_lightrag_client(handler))
+
+    assert result == "kontext-zusammenfassung"
+
+
+async def test_query_lightrag_context_returns_empty_string_on_failure():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    result = await query_lightrag_context("2026-05-10", client=_lightrag_client(handler))
+
+    assert result == ""
+
+
+async def test_query_lightrag_entity_history_skips_http_call_when_no_persons():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("should not be called with an empty persons list")
+
+    result = await query_lightrag_entity_history([], "2026-05-10", client=_lightrag_client(handler))
+
+    assert result == ""
+
+
+async def test_query_lightrag_entity_history_forwards_persons_and_returns_response():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"response": "Thomas ist CTO."})
+
+    result = await query_lightrag_entity_history(
+        ["Thomas", "Anna"], "2026-05-10", client=_lightrag_client(handler)
+    )
+
+    assert result == "Thomas ist CTO."
+    assert "Thomas, Anna" in captured["body"]["query"]
+
+
+async def test_ingest_to_lightrag_posts_interchange_jsonl(monkeypatch):
+    import skeleton_sync
+
+    async def fake_sync_incremental(triggered_by: str):
+        return skeleton_sync.SyncStats()
+
+    monkeypatch.setattr(skeleton_sync, "sync_incremental", fake_sync_incremental)
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/documents/text"
+        captured["body"] = json.loads(request.read())
+        return httpx.Response(200, json={"status": "ok"})
+
+    result = await ingest_to_lightrag(
+        SIMPLE_MARKDOWN, {"date": "2026-05-10"}, client=_lightrag_client(handler)
+    )
+
+    assert result == {"status": "ok"}
+    assert captured["body"]["id"] == "diary:2026-05-10"
+    assert captured["body"]["file_source"] == "diary-2026-05-10.md"
+    assert "metadata" not in captured["body"]

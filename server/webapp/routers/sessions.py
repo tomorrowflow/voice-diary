@@ -635,6 +635,14 @@ async def _run_session_document_processor(
     enriched = document_processor.build_enriched_context(
         transcript_record, merged_entities, context_summary
     )
+    # Trust boundary: `combined_text` is transcribed speech (untrusted
+    # input) flowing into Ollama, and `analysis`/`markdown` are its
+    # unvalidated output — a prompt-injection surface into the
+    # knowledge-graph narrative. Accepted risk for a single-user tool
+    # (no other reader of the LightRAG-ingested markdown); see SEC-6 /
+    # docs/REVIEW-2026-07-04.md. Unlike `harvest_llm.extract_work_activities`,
+    # this path has no structured fields (category, hours, ...) to
+    # allowlist or bound — it's freeform narrative markdown end to end.
     analysis = await document_processor.analyze_transcript(enriched)
     markdown = document_processor.generate_narrative_document(enriched, analysis)
 

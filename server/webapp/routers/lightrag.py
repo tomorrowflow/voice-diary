@@ -14,14 +14,18 @@ import logging
 from datetime import date, timedelta
 from typing import Literal
 
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from document_processor import _lightrag_headers, get_lightrag_api_key, get_lightrag_url
 from enrichment import (
     EnrichmentSummariserUnavailable,
     summarise_for_speech,
+)
+from lightrag_client import (
+    LightRAGClient,
+    LightRAGEngineError,
+    LightRAGTimeoutError,
+    LightRAGUnavailableError,
 )
 from routers.auth import require_bearer
 
@@ -29,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 
 router = APIRouter(dependencies=[Depends(require_bearer)])
+
+_lightrag_client = LightRAGClient()
 
 
 ResponseLanguage = Literal["de", "en"]
@@ -65,27 +71,17 @@ class OpenTodosResponse(BaseModel):
 
 
 async def _query_lightrag(query: str, *, mode: str, top_k: int) -> str:
-    url = await get_lightrag_url()
-    api_key = await get_lightrag_api_key()
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(
-                f"{url}/query",
-                json={"query": query, "mode": mode, "top_k": top_k},
-                headers=_lightrag_headers(api_key),
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            return (data.get("response") or "").strip()
-    except (httpx.NetworkError, httpx.TimeoutException) as exc:
+        return await _lightrag_client.query(query, mode=mode, top_k=top_k, timeout_seconds=120.0)
+    except (LightRAGUnavailableError, LightRAGTimeoutError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"lightrag_unavailable: {exc}",
         ) from exc
-    except httpx.HTTPStatusError as exc:
+    except LightRAGEngineError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"lightrag_status_{exc.response.status_code}",
+            detail=f"lightrag_status_{exc.status_code}" if exc.status_code else "lightrag_bad_response",
         ) from exc
 
 

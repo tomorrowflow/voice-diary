@@ -221,9 +221,9 @@ Used for three jobs, all short-context:
 
 Not used for: heavy summarisation, long-context synthesis, any retrieval. Those go to the server.
 
-### 4.2 Fallback plan
+### 4.2 Gemma 4 E4B — opt-in dialog backend
 
-If Apple Foundation Models turns out to be German-weak or tonally wrong in real use, swap the dialog LLM to **Gemma 4 E4B (4-bit MLX Swift)**. Apache 2.0, ~3 GB in bundle, requires `com.apple.developer.kernel.increased-memory-limit` entitlement. The dialog manager's interface should be abstracted so the swap is a single-file change, not a rewrite.
+Apple Foundation Models is German-weak on free-form speech. **Gemma 4 E4B (4-bit MLX Swift)** is implemented as an opt-in dialog LLM backend (`GemmaDialogLLM.swift`) that a user selects via Settings → Mehr → Dialog-Modell; once selected it is the *primary* model for every session (German being the reason to pick it), with Apple FM as its automatic fallback on any `LLMError` (`DialogLLMResolver` / `ChainDialogLLM`, §11). Apache 2.0, ~5 GB resident weights downloaded on first use, requires the `com.apple.developer.kernel.increased-memory-limit` entitlement. The dialog LLM interface (`DialogLLM` protocol) is abstracted so both backends share one set of prompt builders. Scene-phase suspend/resume (`VoiceDiaryApp.swift`) drops the resident weights and blocks reload while backgrounded, so the app falls through to Apple FM instead of risking a jetsam kill. Full detail in §11 (Dialog-LLM resolver).
 
 ---
 
@@ -1026,7 +1026,6 @@ Parked for now, listed for continuity:
 - **Weekly retrospective** — dedicated extension that reads open todos aloud on a configured day and walks confirmation.
 - **Apple Watch capture** — drive-by from wrist.
 - **Full offline walkthrough** — local LightRAG mirror on device for offline enrichment.
-- **Gemma 4 E4B swap** — if Apple Foundation Models prove insufficient for German nuance.
 - **Voice persona design** — the AI is currently anonymous. Could have a name, tone, consistency across sessions.
 - **Geolocation tagging** — attach coarse location to drive-by seeds if useful.
 - **Enrichment wake-word customization** — let users pick their own trigger.

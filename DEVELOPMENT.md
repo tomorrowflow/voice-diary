@@ -332,7 +332,7 @@ check `git log` and `ios/Sources/` before treating any milestone below as unstar
 
 - `project.yml` (XcodeGen) is the source of truth; `VoiceDiary.xcodeproj` is generated and gitignored.
 - Bundle ID `com.tomorrowflow.voice-diary` (or user's preferred).
-- Entitlements: Microphone, Background Audio, App Groups (for widget later). `com.apple.developer.kernel.increased-memory-limit` only if switching to Gemma 4 E4B fallback.
+- Entitlements: Microphone, Background Audio, App Groups (for widget later). `com.apple.developer.kernel.increased-memory-limit` for the opt-in Gemma 4 E4B dialog backend.
 - SwiftPM: add `FluidInference/FluidAudio` for Parakeet.
 - Add `k2-fsa/sherpa-onnx` iOS xcframework as a binary framework.
 - Bundle Piper voice models and espeak-ng data in `Resources/Models/`.
@@ -535,7 +535,7 @@ From M3 onward, the user should use whatever works every day. Missing features a
 
 | Risk | Likelihood | Mitigation |
 |---|---|---|
-| Apple Foundation Models is German-weak | Medium | Dialog LLM interface abstracted. Swap to Gemma 4 E4B via MLX Swift is a single-file change. |
+| Apple Foundation Models is German-weak | Medium | Gemma 4 E4B via MLX Swift is implemented as an opt-in dialog backend chosen for its stronger German; once selected in Settings → Mehr → Dialog-Modell it is primary for every session, with Apple FM as automatic fallback (SPEC §4.2, §11). |
 | Piper Thorsten voice feels monotone | Medium | Evaluate `thorsten_emotional`; Piper is still the only open German option. |
 | Parakeet wake-word misses in noisy environments | Medium | Tunable Levenshtein threshold; fallback physical button. |
 | Exchange token revocation | Low | `msgraph_bootstrap.py` can be re-run at any time without disturbing other data. |
@@ -552,7 +552,6 @@ Parked features from SPEC §16 that should be revisited after 4 weeks of daily u
 - Weekly retrospective extension.
 - Apple Watch capture.
 - Full offline walkthrough (local LightRAG mirror).
-- Gemma 4 E4B swap (only if Apple FM disappoints).
 - Voice persona design.
 - Harvest time-tracking in the briefing.
 - Enrichment wake-word customization.

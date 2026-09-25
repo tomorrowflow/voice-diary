@@ -112,6 +112,8 @@ from routers.lightrag import router as lightrag_router  # noqa: E402
 from routers.sessions import router as sessions_router  # noqa: E402
 from routers.health import router as health_router  # noqa: E402
 from routers.tts import router as tts_router  # noqa: E402
+from routers.dictionary import router as dictionary_router  # noqa: E402
+from routers.admin import router as admin_router  # noqa: E402
 
 app.include_router(calendar_router)
 app.include_router(email_router)
@@ -119,6 +121,8 @@ app.include_router(lightrag_router)
 app.include_router(sessions_router)
 app.include_router(health_router)
 app.include_router(tts_router)
+app.include_router(dictionary_router)
+app.include_router(admin_router)
 
 # Legacy review/admin/data routes (SEC-2, docs/REVIEW-2026-07-04.md §3).
 # These share the same published port as the routers above, so the same
@@ -1179,139 +1183,8 @@ async def admin_page(request: Request):
     )
 
 
-@legacy_router.put("/api/admin/persons/{person_id}")
-async def admin_update_person(person_id: int, request: Request):
-    body = await request.json()
-    await db.update_person(
-        person_id,
-        first_name=body.get("first_name", ""),
-        last_name=body.get("last_name", ""),
-        role=body.get("role", ""),
-        department=body.get("department", ""),
-        company=body.get("company", ""),
-        context=body.get("context", ""),
-        status=body.get("status", "active"),
-    )
-    return {"status": "ok"}
-
-
-@legacy_router.delete("/api/admin/persons/{person_id}")
-async def admin_delete_person(person_id: int):
-    await db.delete_person(person_id)
-    return {"status": "ok"}
-
-
-@legacy_router.post("/api/admin/persons")
-async def admin_create_person(request: Request):
-    body = await request.json()
-    first = body.get("first_name", "").strip()
-    last = body.get("last_name", "").strip()
-    canonical = f"{first} {last}".strip()
-    pid = await db.create_person(
-        canonical_name=canonical,
-        first_name=first,
-        last_name=last,
-        role=body.get("role", ""),
-        company=body.get("company", ""),
-        context=body.get("context", ""),
-    )
-    return {"status": "ok", "id": pid, "canonical_name": canonical}
-
-
-@legacy_router.post("/api/admin/persons/{person_id}/variations")
-async def admin_add_person_variation(person_id: int, request: Request):
-    body = await request.json()
-    await db.save_person_variation(
-        person_id, body["text"], body.get("type", "asr_correction")
-    )
-    # Return the newly created variation's ID
-    pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT id FROM person_variations WHERE person_id = $1 AND variation = $2",
-        person_id,
-        body["text"],
-    )
-    return {"status": "ok", "id": row["id"] if row else None}
-
-
-@legacy_router.delete("/api/admin/persons/{person_id}/variations/{variation_id}")
-async def admin_delete_person_variation(person_id: int, variation_id: int):
-    await db.delete_person_variation(variation_id)
-    return {"status": "ok"}
-
-
-@legacy_router.put("/api/admin/terms/{term_id}")
-async def admin_update_term(term_id: int, request: Request):
-    body = await request.json()
-    await db.update_term(
-        term_id,
-        canonical_term=body.get("canonical_term", ""),
-        category=body.get("category", ""),
-        context=body.get("context", ""),
-        status=body.get("status", "active"),
-    )
-    return {"status": "ok"}
-
-
-@legacy_router.delete("/api/admin/terms/{term_id}")
-async def admin_delete_term(term_id: int):
-    await db.delete_term(term_id)
-    return {"status": "ok"}
-
-
-@legacy_router.post("/api/admin/terms")
-async def admin_create_term(request: Request):
-    body = await request.json()
-    name = body.get("canonical_term", "").strip()
-    tid = await db.create_term(
-        canonical_term=name,
-        category=body.get("category", "term"),
-        context=body.get("context", ""),
-    )
-    return {"status": "ok", "id": tid, "canonical_term": name}
-
-
-@legacy_router.post("/api/admin/terms/{term_id}/variations")
-async def admin_add_term_variation(term_id: int, request: Request):
-    body = await request.json()
-    await db.save_term_variation(term_id, body["text"])
-    pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT id FROM term_variations WHERE term_id = $1 AND variation = $2",
-        term_id,
-        body["text"],
-    )
-    return {"status": "ok", "id": row["id"] if row else None}
-
-
-@legacy_router.delete("/api/admin/terms/{term_id}/variations/{variation_id}")
-async def admin_delete_term_variation(term_id: int, variation_id: int):
-    await db.delete_term_variation(variation_id)
-    return {"status": "ok"}
-
-
-# ─── Vector Store Admin ────────────────────────────────────────────────
-
-
-@legacy_router.get("/api/admin/vector-status")
-async def vector_status():
-    """Return Qdrant collection stats and connection status."""
-    return await vector_store.get_collection_stats()
-
-
-@legacy_router.post("/api/admin/backfill-vectors")
-async def backfill_vectors(recreate: bool = False):
-    """Backfill vector store from existing review_log and text_corrections.
-
-    Args:
-        recreate: If true, delete and recreate collections before backfill
-                  (needed after embedding model/pooling changes).
-    """
-    if recreate:
-        await vector_store.init_collections(recreate=True)
-    pool = await db.get_pool()
-    result = await vector_store.backfill_from_review_log(pool)
-    return result
+# Persons/terms/variations/vector-store CRUD routes live in
+# routers/dictionary.py (SRV-A5).
 
 
 # ─── Harvest ─────────────────────────────────────────────────────────
@@ -1824,173 +1697,8 @@ async def skeleton_render(bone_id: str):
     return {"bone_id": bone_id, "content": content}
 
 
-# ─── Org Units CRUD ────────────────────────────────────────────────
-
-
-@legacy_router.get("/api/admin/org-units")
-async def admin_list_org_units():
-    return await db.list_org_units()
-
-
-@legacy_router.post("/api/admin/org-units")
-async def admin_create_org_unit(request: Request):
-    body = await request.json()
-    oid = await db.create_org_unit(
-        name=body["name"],
-        entity_type=body["entity_type"],
-        parent_id=body.get("parent_id"),
-        description=body.get("description", ""),
-        properties=body.get("properties"),
-        aliases=body.get("aliases", []),
-    )
-    return {"status": "ok", "id": oid}
-
-
-@legacy_router.put("/api/admin/org-units/{org_id}")
-async def admin_update_org_unit(org_id: int, request: Request):
-    body = await request.json()
-    await db.update_org_unit(org_id, **body)
-    return {"status": "ok"}
-
-
-@legacy_router.delete("/api/admin/org-units/{org_id}")
-async def admin_delete_org_unit(org_id: int):
-    await db.delete_org_unit(org_id)
-    return {"status": "ok"}
-
-
-# ─── Entity Relationships CRUD ─────────────────────────────────────
-
-
-@legacy_router.get("/api/admin/relationships")
-async def admin_list_relationships():
-    return await db.list_entity_relationships()
-
-
-@legacy_router.post("/api/admin/relationships")
-async def admin_create_relationship(request: Request):
-    body = await request.json()
-    rid = await db.create_entity_relationship(
-        source_type=body["source_type"],
-        source_id=body["source_id"],
-        relationship_type=body["relationship_type"],
-        target_type=body["target_type"],
-        target_id=body["target_id"],
-        context=body.get("context", ""),
-        bidirectional=body.get("bidirectional", False),
-    )
-    return {"status": "ok", "id": rid}
-
-
-@legacy_router.delete("/api/admin/relationships/{rel_id}")
-async def admin_delete_relationship(rel_id: int):
-    await db.delete_entity_relationship(rel_id)
-    return {"status": "ok"}
-
-
-# ─── Role Assignments CRUD ─────────────────────────────────────────
-
-
-@legacy_router.get("/api/admin/role-assignments")
-async def admin_list_role_assignments(person_id: int = None):
-    return await db.list_role_assignments(person_id)
-
-
-@legacy_router.post("/api/admin/role-assignments")
-async def admin_create_role_assignment(request: Request):
-    body = await request.json()
-    rid = await db.create_role_assignment(
-        person_id=body["person_id"],
-        role_name=body["role_name"],
-        org_unit_id=body.get("org_unit_id"),
-        scope=body.get("scope", ""),
-        role_entity_name=body.get("role_entity_name"),
-        start_date=body.get("start_date"),
-        end_date=body.get("end_date"),
-    )
-    return {"status": "ok", "id": rid}
-
-
-@legacy_router.put("/api/admin/role-assignments/{ra_id}")
-async def admin_update_role_assignment(ra_id: int, request: Request):
-    body = await request.json()
-    await db.update_role_assignment(ra_id, **body)
-    return {"status": "ok"}
-
-
-@legacy_router.delete("/api/admin/role-assignments/{ra_id}")
-async def admin_delete_role_assignment(ra_id: int):
-    await db.delete_role_assignment(ra_id)
-    return {"status": "ok"}
-
-
-# ─── Static Entities CRUD ──────────────────────────────────────────
-
-
-@legacy_router.get("/api/admin/static-entities")
-async def admin_list_static_entities():
-    return await db.list_static_entities()
-
-
-@legacy_router.post("/api/admin/static-entities")
-async def admin_create_static_entity(request: Request):
-    body = await request.json()
-    sid = await db.create_static_entity(
-        name=body["name"],
-        entity_type=body["entity_type"],
-        description=body.get("description", ""),
-        properties=body.get("properties"),
-        aliases=body.get("aliases", []),
-    )
-    return {"status": "ok", "id": sid}
-
-
-@legacy_router.put("/api/admin/static-entities/{entity_id}")
-async def admin_update_static_entity(entity_id: int, request: Request):
-    body = await request.json()
-    await db.update_static_entity(entity_id, **body)
-    return {"status": "ok"}
-
-
-@legacy_router.delete("/api/admin/static-entities/{entity_id}")
-async def admin_delete_static_entity(entity_id: int):
-    await db.delete_static_entity(entity_id)
-    return {"status": "ok"}
-
-
-# ─── Initiatives CRUD ──────────────────────────────────────────────
-
-
-@legacy_router.get("/api/admin/initiatives")
-async def admin_list_initiatives():
-    return await db.list_initiatives()
-
-
-@legacy_router.post("/api/admin/initiatives")
-async def admin_create_initiative(request: Request):
-    body = await request.json()
-    iid = await db.create_initiative(
-        name=body["name"],
-        initiative_type=body["initiative_type"],
-        description=body.get("description", ""),
-        properties=body.get("properties"),
-        aliases=body.get("aliases", []),
-        owner_person_id=body.get("owner_person_id"),
-    )
-    return {"status": "ok", "id": iid}
-
-
-@legacy_router.put("/api/admin/initiatives/{init_id}")
-async def admin_update_initiative(init_id: int, request: Request):
-    body = await request.json()
-    await db.update_initiative(init_id, **body)
-    return {"status": "ok"}
-
-
-@legacy_router.delete("/api/admin/initiatives/{init_id}")
-async def admin_delete_initiative(init_id: int):
-    await db.delete_initiative(init_id)
-    return {"status": "ok"}
+# Org-units/relationships/role-assignments/static-entities/initiatives CRUD
+# routes live in routers/admin.py (SRV-A5).
 
 
 # Must stay last: include_router copies routes at call time, so any
