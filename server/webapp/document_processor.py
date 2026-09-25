@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 # Ollama-native /api/chat, so it must stay an Ollama instance. The OpenAI
 # shape is what later lets this call alone target another compatible base
 # URL (e.g. Blindfold — see docs/adr/0001-blindfolded-cloud-egress-opt-in.md).
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.2.17:11434")
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.2.17:11434").rstrip("/")
 OLLAMA_ANALYSIS_MODEL = os.getenv(
     "OLLAMA_ANALYSIS_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
 )
