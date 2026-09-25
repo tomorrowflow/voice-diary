@@ -430,11 +430,11 @@ Exit: skip a day, catch up next evening. Drive-bys from morning surface in match
 #### M11 — Settings & onboarding
 
 - Full settings UI (all sections in SPEC §12).
-- Onboarding: Tailscale reachability check, bearer token paste, voice preview, Action Button deep link, first drive-by tutorial.
+- Onboarding: UX-6a's first-run gate (#30) — server setup + explicit permission priming. The rest of the original SPEC §14 flow (voice preview, workday hours, widget install, Action Button deep link, first drive-by tutorial) was dropped at the 2026-07-04 grill and is intentionally not being built (DOC-8). UX-6a is implemented but still parked on `sandcastle/issue-30`, not yet on `main`; `ios/Sources/UI/Onboarding/` on `main` is still the stub.
 - Reset-app action.
 - Every screen built with `Theme.*` and `DSButtonStyle`; status indicators use the colour-coded `StatusBadge` pattern from `DebugSettingsView`.
 
-Exit: clean install → onboarding → ready to capture without editing any file manually.
+Exit: clean install → onboarding → ready to capture without editing any file manually. **Re-scoped, not yet met** — the bar is UX-6a's first-run gate (#30), not the dropped §14 wizard (DOC-8); met once #30 merges to `main`.
 
 #### M12 — Polish
 
