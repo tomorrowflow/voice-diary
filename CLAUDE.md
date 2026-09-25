@@ -162,7 +162,7 @@ Both the iOS app and the server's HTMX UI consume one set of tokens, generated b
 | Layer | Engine |
 |---|---|
 | STT | Parakeet v3 via `FluidInference/FluidAudio` |
-| TTS | Piper via `k2-fsa/sherpa-onnx` iOS xcframework (`de_DE-thorsten-high` + `en_US-lessac-high` bundled) |
+| TTS | Piper via `k2-fsa/sherpa-onnx` iOS xcframework (`de_DE-thorsten-high` + `en_US-lessac-high` bundled), offline default. Voxtral (server-side, opt-in per language) is the higher-quality alternative — falls back to Piper/Apple on any failure. See SPEC §4. |
 | Dialog LLM | Apple Foundation Models (iOS 26) |
 | Wake-word detection | Streaming regex on Parakeet output |
 | Audio encoding | AAC-LC (16 kHz, mono, 64 kbps) in M4A |
@@ -178,6 +178,7 @@ Gemma 4 E4B via MLX Swift is the documented fallback if Apple Foundation Models 
 | Database | PostgreSQL 16 (Docker sidecar) |
 | Vector store | Qdrant (Docker sidecar) |
 | ASR | Whisper HTTP service (Docker sidecar, added in S1) |
+| TTS | Voxtral (`mistralai/Voxtral-4B-TTS-2603`) via vLLM Omni (Docker sidecar, GPU 1, behind the `voxtral-gate` lazy-wake proxy), proxied through `/api/tts/synthesize`. Opt-in per language, not bound to a host port. CC BY-NC 4.0 weights — personal-tool use only. |
 | Audio conversion | ffmpeg installed in webapp container |
 | LLM | Ollama (external, reachable by URL) |
 | Knowledge graph | LightRAG (external, reachable by URL) |
