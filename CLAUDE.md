@@ -163,11 +163,11 @@ Both the iOS app and the server's HTMX UI consume one set of tokens, generated b
 |---|---|
 | STT | Parakeet v3 via `FluidInference/FluidAudio` |
 | TTS | Piper via `k2-fsa/sherpa-onnx` iOS xcframework (`de_DE-thorsten-high` + `en_US-lessac-high` bundled), offline default. Voxtral (server-side, opt-in per language) is the higher-quality alternative — falls back to Piper/Apple on any failure. See SPEC §4. |
-| Dialog LLM | Apple Foundation Models (iOS 26) |
+| Dialog LLM | Apple Foundation Models (iOS 26, default) + Gemma 4 E4B (4-bit MLX Swift, opt-in, stronger German) |
 | Wake-word detection | Streaming regex on Parakeet output |
 | Audio encoding | AAC-LC (16 kHz, mono, 64 kbps) in M4A |
 
-Gemma 4 E4B via MLX Swift is the documented fallback if Apple Foundation Models proves insufficient. Keep the dialog LLM interface abstracted so the swap is a single-file change.
+Gemma 4 E4B via MLX Swift is implemented (`GemmaDialogLLM.swift`), not a future fallback. It's an opt-in dialog backend chosen for its stronger German; once selected it's primary for every session (no per-language routing), wired through `DialogLLMResolver`/`ChainDialogLLM` with Apple FM as its own fallback, plus scene-phase suspend/resume (`VoiceDiaryApp.swift`) so the ~5 GB of resident MLX weights don't get jetsam'd in the background. Apple FM stays the default until the user opts in via Settings → Mehr → Dialog-Modell. See SPEC §4.2 and §11.
 
 ## Server stack
 

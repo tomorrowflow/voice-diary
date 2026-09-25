@@ -17,6 +17,27 @@ OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "120"))
 
 _ollama_client = OllamaClient(base_url=OLLAMA_BASE_URL, model=OLLAMA_MODEL, timeout_seconds=OLLAMA_TIMEOUT)
 
+# `extract_work_activities` crosses a trust boundary: the transcript it
+# receives is transcribed user speech (effectively untrusted text) that
+# flows into the LLM prompt — a prompt-injection surface — and the LLM's
+# output then surfaces as Harvest time-entry fields in the review UI.
+# So `category` is allowlisted to the exact values the prompt offers the
+# model, and `description` is length-bounded. Accepted risk for a
+# single-user tool; see SEC-6 / docs/REVIEW-2026-07-04.md.
+# Tuple (not set) so the prompt lists categories in a stable order.
+ALLOWED_CATEGORIES = (
+    "development",
+    "meeting",
+    "documentation",
+    "planning",
+    "review",
+    "operations",
+    "communication",
+    "other",
+)
+DEFAULT_CATEGORY = "other"
+MAX_DESCRIPTION_LENGTH = 500
+
 # In-memory cache: (transcript_text_hash, date) -> result
 _cache: dict[tuple, list[dict]] = {}
 
@@ -55,9 +76,9 @@ async def extract_work_activities(transcript: str, date_str: str) -> list[dict]:
         if not isinstance(item, dict):
             continue
         activities.append({
-            "description": item.get("description", ""),
+            "description": _parse_description(item.get("description")),
             "estimated_hours": _parse_hours(item.get("estimated_hours", 1.0)),
-            "category": item.get("category", "other"),
+            "category": _parse_category(item.get("category")),
         })
 
     _cache[cache_key] = activities
@@ -71,6 +92,24 @@ def _parse_hours(val) -> float:
         return max(0.25, round(h * 4) / 4)
     except (ValueError, TypeError):
         return 1.0
+
+
+def _parse_category(val) -> str:
+    """Allowlist the category against the values offered in the prompt.
+
+    The model is free text underneath `format: json`; anything outside
+    the allowlist (including prompt-injection attempts riding along in
+    the transcript) collapses to the default category.
+    """
+    if isinstance(val, str) and val in ALLOWED_CATEGORIES:
+        return val
+    return DEFAULT_CATEGORY
+
+
+def _parse_description(val) -> str:
+    """Bound the description length before it reaches Harvest / the UI."""
+    text = val if isinstance(val, str) else ""
+    return text[:MAX_DESCRIPTION_LENGTH]
 
 
 def _build_prompt(transcript: str, date_str: str) -> list[dict]:
@@ -88,8 +127,7 @@ def _build_prompt(transcript: str, date_str: str) -> list[dict]:
         "- description: Brief German description suitable for a Harvest time entry note "
         "(customer-compatible, professional)\n"
         "- estimated_hours: How long this activity likely took (number, round to 0.25h)\n"
-        "- category: One of: development, meeting, documentation, planning, review, "
-        "operations, communication, other\n\n"
+        f"- category: One of: {', '.join(ALLOWED_CATEGORIES)}\n\n"
         "Respond with JSON:\n"
         '{"activities": [{"description": "...", "estimated_hours": 1.0, "category": "development"}]}\n\n'
         "Rules:\n"

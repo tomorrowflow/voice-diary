@@ -10,18 +10,13 @@ import logging
 import time
 from dataclasses import asdict, dataclass, field
 
-import httpx
-
 import bone_generator
 import db
-from document_processor import (
-    get_lightrag_api_key,
-    get_lightrag_url,
-    _lightrag_headers,
-    lightrag_request_with_retry,
-)
+from lightrag_client import LightRAGClient, LightRAGError
 
 logger = logging.getLogger(__name__)
+
+_lightrag_client = LightRAGClient()
 
 # Prevent concurrent syncs
 _sync_lock = asyncio.Lock()
@@ -65,36 +60,22 @@ def _bone_metadata(bone_id: str) -> dict:
     }
 
 
-async def _lightrag_insert(url: str, api_key: str, bone_id: str, content: str):
+async def _lightrag_insert(bone_id: str, content: str):
     """Insert a bone document into LightRAG with an explicit ID."""
     async with _lightrag_semaphore:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await lightrag_request_with_retry(
-                client,
-                f"{url}/documents/text",
-                json={
-                    "text": content,
-                    "id": bone_id,
-                    "file_source": bone_id,
-                    "metadata": _bone_metadata(bone_id),
-                },
-                headers=_lightrag_headers(api_key),
-            )
-            return resp.json()
+        return await _lightrag_client.insert_document(
+            doc_id=bone_id,
+            text=content,
+            file_source=bone_id,
+            metadata=_bone_metadata(bone_id),
+            timeout_seconds=120.0,
+        )
 
 
-async def _lightrag_delete(url: str, api_key: str, bone_id: str):
+async def _lightrag_delete(bone_id: str):
     """Delete a bone document from LightRAG by doc ID."""
     async with _lightrag_semaphore:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await lightrag_request_with_retry(
-                client,
-                f"{url}/documents/delete_document",
-                method="DELETE",
-                json={"doc_ids": [bone_id]},
-                headers=_lightrag_headers(api_key),
-            )
-            return resp.json()
+        return await _lightrag_client.delete_documents([bone_id], timeout_seconds=60.0)
 
 
 # ── Sync state DB operations ───────────────────────────────────────
@@ -189,8 +170,6 @@ async def sync_full(triggered_by: str = "manual", force: bool = False) -> SyncSt
     """
     if force:
         pool = await db.get_pool()
-        url = await get_lightrag_url()
-        api_key = await get_lightrag_api_key()
 
         # Delete all existing bones from LightRAG
         existing_bones = await pool.fetch(
@@ -200,16 +179,11 @@ async def sync_full(triggered_by: str = "manual", force: bool = False) -> SyncSt
             bone_ids = [r["bone_id"] for r in existing_bones]
             logger.info("Force sync: deleting %d bones from LightRAG", len(bone_ids))
             try:
-                # Batch delete — send all IDs at once
-                async with httpx.AsyncClient(timeout=120.0) as client:
-                    resp = await client.request(
-                        "DELETE",
-                        f"{url}/documents/delete_document",
-                        json={"doc_ids": bone_ids},
-                        headers=_lightrag_headers(api_key),
-                    )
-                    resp.raise_for_status()
-            except Exception as e:
+                # Batch delete — send all IDs at once, no retry (best-effort).
+                await _lightrag_client.delete_documents(
+                    bone_ids, timeout_seconds=120.0, retry_attempts=1
+                )
+            except LightRAGError as e:
                 logger.warning("Force sync: bulk delete failed, continuing: %s", e)
 
         # Clear sync state
@@ -233,8 +207,6 @@ async def _sync_impl(mode: str, triggered_by: str) -> SyncStats:
     start = time.monotonic()
     stats = SyncStats()
     pool = await db.get_pool()
-    url = await get_lightrag_url()
-    api_key = await get_lightrag_api_key()
 
     # Generate all bones from current DB state
     all_bones = await bone_generator.generate_all_bones(pool)
@@ -262,12 +234,12 @@ async def _sync_impl(mode: str, triggered_by: str) -> SyncStats:
         try:
             if ex:
                 # Changed — delete old, insert new
-                await _lightrag_delete(url, api_key, bid)
-                await _lightrag_insert(url, api_key, bid, content)
+                await _lightrag_delete(bid)
+                await _lightrag_insert(bid, content)
                 stats.updated += 1
             else:
                 # New bone
-                await _lightrag_insert(url, api_key, bid, content)
+                await _lightrag_insert(bid, content)
                 stats.created += 1
 
             await _upsert_sync_state(
@@ -287,7 +259,7 @@ async def _sync_impl(mode: str, triggered_by: str) -> SyncStats:
         orphan_ids = set(existing.keys()) - generated_ids
         for bid in orphan_ids:
             try:
-                await _lightrag_delete(url, api_key, bid)
+                await _lightrag_delete(bid)
                 await _mark_deleted(pool, bid)
                 stats.deleted += 1
             except Exception as e:
@@ -311,8 +283,6 @@ async def _sync_impl(mode: str, triggered_by: str) -> SyncStats:
 async def sync_single_bone(target_bone_id: str) -> str:
     """Sync a single bone. Returns 'created', 'updated', 'unchanged', or 'deleted'."""
     pool = await db.get_pool()
-    url = await get_lightrag_url()
-    api_key = await get_lightrag_api_key()
 
     # Generate all bones and find the target
     all_bones = await bone_generator.generate_all_bones(pool)
@@ -323,8 +293,8 @@ async def sync_single_bone(target_bone_id: str) -> str:
     if content is None:
         # Source record was deleted or deactivated
         try:
-            await _lightrag_delete(url, api_key, target_bone_id)
-        except Exception:
+            await _lightrag_delete(target_bone_id)
+        except LightRAGError:
             pass
         await _mark_deleted(pool, target_bone_id)
         return "deleted"
@@ -339,9 +309,9 @@ async def sync_single_bone(target_bone_id: str) -> str:
         return "unchanged"
 
     if existing:
-        await _lightrag_delete(url, api_key, target_bone_id)
+        await _lightrag_delete(target_bone_id)
 
-    await _lightrag_insert(url, api_key, target_bone_id, content)
+    await _lightrag_insert(target_bone_id, content)
 
     parts = target_bone_id.split(":", 2)
     category = parts[1] if len(parts) >= 2 else "unknown"
