@@ -217,7 +217,7 @@ cd ~/Documents/GitHub/voice-diary/server
 
 # One-time setup:
 cp .env.example .env
-# Edit .env. Required vars (after n8n cleanup in S1):
+# Edit .env. Required vars:
 #   TAILNET_IP=<this host's Tailscale IPv4, from `tailscale ip -4`; the webapp
 #               publishes 8000 on this address only and refuses to start
 #               without it — SEC-1)
@@ -228,14 +228,20 @@ cp .env.example .env
 #   LIGHTRAG_API_KEY=...
 #   QDRANT_URL=http://qdrant:6333
 #   WHISPER_URL=http://whisper:9000
+#   WHISPER_IMAGE_TAG=latest        (CPU) or latest-gpu (also uncomment the
+#                                    whisper deploy.resources block)
 #   HARVEST_ACCESS_TOKEN=...
 #   HARVEST_ACCOUNT_ID=...
+#   HARVEST_USER_ID=...
 #   MSGRAPH_CLIENT_ID=<entra app client id>
 #   MSGRAPH_TENANT_ID=<entra tenant id>
 #   IOS_BEARER_TOKEN=<generate with openssl rand -hex 32>
+#   HF_TOKEN=<accept the license at huggingface.co/mistralai/Voxtral-4B-TTS-2603,
+#             then generate a token; required for the voxtral-engine service
+#             to pull the gated Voxtral weights>
 #   TZ=Europe/Berlin
 
-# Microsoft Graph OAuth (once, after S2):
+# Microsoft Graph OAuth (once):
 docker compose run --rm webapp python scripts/msgraph_bootstrap.py
 
 # Start the stack:

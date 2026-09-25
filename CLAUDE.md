@@ -177,7 +177,7 @@ Gemma 4 E4B via MLX Swift is implemented (`GemmaDialogLLM.swift`), not a future 
 | Runtime | Python 3.12 in Docker |
 | Database | PostgreSQL 16 (Docker sidecar) |
 | Vector store | Qdrant (Docker sidecar) |
-| ASR | Whisper HTTP service (Docker sidecar, added in S1) |
+| ASR | Whisper HTTP service (Docker sidecar) |
 | TTS | Voxtral (`mistralai/Voxtral-4B-TTS-2603`) via vLLM Omni (Docker sidecar, GPU 1, behind the `voxtral-gate` lazy-wake proxy), proxied through `/api/tts/synthesize`. Opt-in per language, not bound to a host port. CC BY-NC 4.0 weights — personal-tool use only. |
 | Audio conversion | ffmpeg installed in webapp container |
 | LLM | Ollama (external, reachable by URL) |
