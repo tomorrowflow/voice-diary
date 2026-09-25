@@ -9,6 +9,8 @@ so no real ffmpeg/Whisper/Postgres is needed.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 import asr_client
@@ -44,8 +46,6 @@ def test_transcribe_and_persist_returns_transcript_id_and_raw_text(monkeypatch):
 
     monkeypatch.setattr(db, "create_transcript", fake_create_transcript)
 
-    import asyncio
-
     result = asyncio.run(
         transcribe_and_persist(
             b"raw-audio-bytes",
@@ -72,8 +72,6 @@ def test_transcribe_and_persist_raises_on_empty_transcript(monkeypatch):
         raise AssertionError("should not persist an empty transcript")
 
     monkeypatch.setattr(db, "create_transcript", fail_create_transcript)
-
-    import asyncio
 
     with pytest.raises(RuntimeError):
         asyncio.run(
