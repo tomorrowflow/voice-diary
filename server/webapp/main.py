@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import re
-import tempfile
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from datetime import date as date_module, datetime, timedelta
@@ -27,6 +26,7 @@ from sse_starlette.sse import EventSourceResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+import asr_client
 import bind_guard
 import db
 import document_processor
@@ -1667,64 +1667,14 @@ async def ingest_clear_history():
     return {"status": "ok"}
 
 
-async def _ffmpeg_to_wav_16k_mono(src_bytes: bytes, src_suffix: str) -> bytes:
-    """Run ffmpeg to convert arbitrary input audio to 16 kHz mono PCM WAV.
-
-    Whisper's ASR webservice handles many formats directly, but normalising
-    here keeps the contract narrow and matches the audio constants in
-    `.planning/codebase/CONVENTIONS.md`.
-    """
-    tmpdir = Path(tempfile.mkdtemp(prefix="ingest-"))
-    src_path = tmpdir / f"in{src_suffix or '.bin'}"
-    wav_path = tmpdir / "out.wav"
-    try:
-        src_path.write_bytes(src_bytes)
-        proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y", "-i", str(src_path),
-            "-ar", "16000", "-ac", "1", "-f", "wav", str(wav_path),
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            tail = stderr.decode("utf-8", errors="replace")[-500:]
-            raise RuntimeError(f"ffmpeg failed (exit {proc.returncode}): {tail}")
-        return wav_path.read_bytes()
-    finally:
-        for p in (src_path, wav_path):
-            try:
-                p.unlink()
-            except OSError:
-                pass
-        try:
-            tmpdir.rmdir()
-        except OSError:
-            pass
-
-
-async def _whisper_transcribe(wav_bytes: bytes, language: str = "de") -> str:
-    """POST WAV bytes to the Whisper sidecar and return the transcript text."""
-    async with httpx.AsyncClient(timeout=600.0) as client:
-        resp = await client.post(
-            f"{WHISPER_URL.rstrip('/')}/asr",
-            params={"task": "transcribe", "language": language, "output": "json"},
-            files={"audio_file": ("audio.wav", wav_bytes, "audio/wav")},
-        )
-        resp.raise_for_status()
-        try:
-            data = resp.json()
-        except json.JSONDecodeError:
-            return resp.text.strip()
-        return (data.get("text") or "").strip()
-
-
 async def _ingest_audio_to_transcript(
     content: bytes, filename: str
 ) -> tuple[int, str, str]:
     """Pipeline: ffmpeg → Whisper → persist. Returns (transcript_id, review_url, text)."""
     src_suffix = Path(filename).suffix.lower() or ".mp3"
-    wav_bytes = await _ffmpeg_to_wav_16k_mono(content, src_suffix)
-    text = await _whisper_transcribe(wav_bytes)
+    client = asr_client.get_default_client()
+    wav_bytes = await client.to_wav_16k_mono(content, src_suffix)
+    text = await client.transcribe(wav_bytes)
     if not text:
         raise RuntimeError("Whisper returned an empty transcript")
     transcript_id = await db.create_transcript(
@@ -1760,14 +1710,14 @@ async def ingest_upload(file: UploadFile = File(...)):
                 "preview": text[:500],
             },
         }
-    except httpx.TimeoutException:
+    except asr_client.AsrTimeoutError:
         await db.mark_ingest_failed(upload_id, "Whisper request timed out")
         return JSONResponse(
             {"status": "error", "message": "Whisper request timed out", "upload_id": upload_id, "filename": filename},
             504,
         )
-    except httpx.HTTPStatusError as e:
-        msg = f"Whisper returned {e.response.status_code}"
+    except (asr_client.AsrUnavailableError, asr_client.AsrEngineError) as e:
+        msg = str(e)
         await db.mark_ingest_failed(upload_id, msg)
         return JSONResponse(
             {"status": "error", "message": msg, "upload_id": upload_id, "filename": filename},
