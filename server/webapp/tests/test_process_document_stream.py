@@ -33,7 +33,7 @@ def _collect(agen):
 
 
 def test_happy_path_relays_narrative_steps_then_saves_and_emits_document(monkeypatch):
-    async def fake_build_day_narrative(text, entities, date, *, ports=None, on_step=None):
+    async def fake_build_day_narrative(text, entities, date, *, author=None, ports=None, on_step=None):
         on_step("step", {"step": "context", "state": "active"})
         on_step("step", {"step": "context", "state": "done"})
         return narrative.NarrativeResult(
@@ -66,7 +66,7 @@ def test_happy_path_relays_narrative_steps_then_saves_and_emits_document(monkeyp
 
 
 def test_analysis_failure_stops_before_any_save(monkeypatch):
-    async def fake_build_day_narrative(text, entities, date, *, ports=None, on_step=None):
+    async def fake_build_day_narrative(text, entities, date, *, author=None, ports=None, on_step=None):
         on_step("step", {"step": "analysis", "state": "error"})
         on_step("log", {"message": "Analysis failed: boom", "level": "error"})
         on_step("error", {"message": "Analysis failed: boom"})
@@ -86,7 +86,7 @@ def test_analysis_failure_stops_before_any_save(monkeypatch):
 
 
 def test_save_failure_emits_document_error_event(monkeypatch):
-    async def fake_build_day_narrative(text, entities, date, *, ports=None, on_step=None):
+    async def fake_build_day_narrative(text, entities, date, *, author=None, ports=None, on_step=None):
         return narrative.NarrativeResult(
             context_summary="", enriched_context={}, analysis={}, markdown="# doc", metadata={},
         )
