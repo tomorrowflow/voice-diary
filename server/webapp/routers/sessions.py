@@ -43,7 +43,7 @@ from starlette.datastructures import UploadFile
 
 import asr_client
 import db
-import document_processor
+import narrative
 import transcript_corrector
 import transcript_ingest
 from entity_detector import detect_entities
@@ -593,13 +593,16 @@ async def _run_session_document_processor(
     artifacts: list[_SegmentArtifact],
     todos_by_segment: dict[str, list[Todo]],
 ) -> None:
-    """Run the document_processor pipeline once per session.
+    """Run the shared narrative stage once per session, then the
+    session-specific parts around it.
 
     Concatenates all transcribed segments (with per-segment headers so the
     analysis LLM can still reason about meeting boundaries), unions the
-    detected entities, runs LightRAG context + Ollama analysis + narrative
-    generation a single time, then ingests one combined document into
-    LightRAG under `diary:{date}`.
+    detected entities, and delegates context → summary → analysis →
+    narrative markdown → metadata to `narrative.build_day_narrative` (the
+    same stage `main.py`'s SSE review flow uses — SRV-A1/#50). The todo
+    block and the multi-transcript save stay session-specific, since the
+    SSE path has neither.
 
     The combined narrative is saved as a `processed_documents` row against
     every segment's transcript_id so any segment-level read path keeps
@@ -613,29 +616,6 @@ async def _run_session_document_processor(
     combined_text = _build_combined_transcript(artifacts)
     merged_entities = _merge_entities([art.entities for art in artifacts])
 
-    person_names = [
-        e.get("text") or e.get("canonical", "")
-        for e in merged_entities
-        if (e.get("type") or e.get("entity_type", "")) == "PERSON"
-    ]
-    recent_ctx, entity_hist = await asyncio.gather(
-        document_processor.query_lightrag_context(date_str),
-        document_processor.query_lightrag_entity_history(person_names, date_str),
-    )
-    context_summary = await document_processor.summarize_context(
-        recent_ctx, entity_hist, date_str
-    )
-
-    transcript_record = {
-        "id": None,
-        "raw_text": combined_text,
-        "corrected_text": combined_text,
-        "date": manifest.date,
-        "author": "Florian Wolf",
-    }
-    enriched = document_processor.build_enriched_context(
-        transcript_record, merged_entities, context_summary
-    )
     # Trust boundary: `combined_text` is transcribed speech (untrusted
     # input) flowing into Ollama, and `analysis`/`markdown` are its
     # unvalidated output — a prompt-injection surface into the
@@ -644,14 +624,12 @@ async def _run_session_document_processor(
     # docs/REVIEW-2026-07-04.md. Unlike `harvest_llm.extract_work_activities`,
     # this path has no structured fields (category, hours, ...) to
     # allowlist or bound — it's freeform narrative markdown end to end.
-    analysis = await document_processor.analyze_transcript(enriched)
-    markdown = document_processor.generate_narrative_document(enriched, analysis)
+    result = await narrative.build_day_narrative(combined_text, merged_entities, date_str)
 
+    markdown = result.markdown
     todo_block = _format_session_todo_block(manifest, artifacts, todos_by_segment)
     if todo_block:
         markdown = f"{markdown.rstrip()}\n{todo_block}\n"
-
-    metadata = document_processor.build_document_metadata(enriched)
 
     # Save the combined document against every segment's transcript so any
     # transcript-id-keyed read path returns the canonical day narrative.
@@ -660,13 +638,13 @@ async def _run_session_document_processor(
         saved = await db.save_processed_document(
             transcript_id=art.transcript_id,
             document_markdown=markdown,
-            analysis_json=analysis,
-            context_summary=context_summary,
-            metadata=metadata,
+            analysis_json=result.analysis,
+            context_summary=result.context_summary,
+            metadata=result.metadata,
         )
         doc_ids.append(saved["id"])
 
-    await document_processor.ingest_to_lightrag(markdown, metadata)
+    await narrative.sync_and_ingest(markdown, result.metadata)
 
     # Only reached once ingest succeeds — a failure above propagates to the
     # caller, which leaves these rows unmarked and the segments
