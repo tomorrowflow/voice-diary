@@ -737,6 +737,29 @@ Processing (per-segment Whisper re-transcription + entity normalization, then a 
 - Queue is first-in-first-out by `session_id` (which is the session start timestamp).
 - User-facing UI shows queue status ("2 sessions pending upload") — non-intrusive.
 
+### 10.6.1 Retrying a `pending_analysis` session
+
+A session-level analysis or LightRAG ingest failure never loses data — the raw + corrected
+transcripts (and their detected entities) are already in Postgres — but by itself it also never
+recovers. Two mechanisms retry it:
+
+- **`POST /api/sessions/{session_id}/retry-analysis`** (bearer-token) — rebuilds the session's
+  narrative input from what's persisted: the manifest on disk (segment order, headers, todos) plus
+  each `pending_analysis` segment's transcript row (corrected text where present, else raw;
+  entities from `entities_json`), then re-runs the shared narrative stage
+  (`narrative.build_day_narrative` + `narrative.sync_and_ingest`). If a `processed_documents` row
+  already exists for every pending segment and isn't marked ingested (an ingest-only failure —
+  analysis succeeded, only LightRAG failed), it re-ingests that saved narrative instead of
+  re-running analysis. Returns the updated `SessionStatus`. `404` if the session is unknown, `409`
+  if none of its segments are actually `pending_analysis`.
+- **Startup sweep** — on app start, the server retries every session with a `pending_analysis`
+  segment, one at a time, best-effort. A session's retry failing is logged and leaves it
+  `pending_analysis` (retryable again on the next start, or via the route above); it does not block
+  the rest of the sweep or app startup.
+
+A segment that failed before transcription (no transcript row) is out of scope for both — that
+needs the audio re-uploaded, not a narrative retry.
+
 ### 10.7 Other backend endpoints
 
 The iOS app also consumes these read endpoints on `server` over Tailscale:
