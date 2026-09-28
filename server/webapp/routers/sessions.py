@@ -603,7 +603,11 @@ async def _run_session_document_processor(
 
     The combined narrative is saved as a `processed_documents` row against
     every segment's transcript_id so any segment-level read path keeps
-    working.
+    working. Each of those rows is marked `lightrag_ingested` once the
+    LightRAG ingest succeeds — mirroring `main.py`'s manual
+    `/api/documents/{id}/ingest` route — so `/process/{id}` doesn't show an
+    already-ingested day as pending and the re-ingest button doesn't re-post
+    it.
     """
     date_str = manifest.date.isoformat()
     combined_text = _build_combined_transcript(artifacts)
@@ -651,16 +655,24 @@ async def _run_session_document_processor(
 
     # Save the combined document against every segment's transcript so any
     # transcript-id-keyed read path returns the canonical day narrative.
+    doc_ids: list[int] = []
     for art in artifacts:
-        await db.save_processed_document(
+        saved = await db.save_processed_document(
             transcript_id=art.transcript_id,
             document_markdown=markdown,
             analysis_json=analysis,
             context_summary=context_summary,
             metadata=metadata,
         )
+        doc_ids.append(saved["id"])
 
     await document_processor.ingest_to_lightrag(markdown, metadata)
+
+    # Only reached once ingest succeeds — a failure above propagates to the
+    # caller, which leaves these rows unmarked and the segments
+    # `pending_analysis` so they stay retryable.
+    for doc_id in doc_ids:
+        await db.mark_document_ingested(doc_id)
 
 
 def _build_combined_transcript(artifacts: list[_SegmentArtifact]) -> str:
