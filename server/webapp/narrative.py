@@ -20,8 +20,8 @@ Failure policy (SRV, issue #50):
   try/except turns the same raise into `pending_analysis`.
 
 `sync_and_ingest` is the explicit (still best-effort) skeleton-sync-then-
-ingest step for the sessions path; the HTMX path doesn't call it (it ingests
-via the existing manual `/api/documents/{id}/ingest` button).
+ingest step. The sessions path runs it right after saving; the HTMX path
+runs it only from the manual `/api/documents/{id}/ingest` button.
 """
 
 from __future__ import annotations
@@ -79,12 +79,14 @@ async def build_day_narrative(
     entities: list[dict],
     date: str,
     *,
+    author: str | None = None,
     ports: NarrativePorts | None = None,
     on_step: OnStep | None = None,
 ) -> NarrativeResult:
     """Run context query -> summary -> enrichment -> analysis -> narrative
     markdown -> metadata for a day's transcript text, emitting SSE-shaped
-    progress via `on_step` if given.
+    progress via `on_step` if given. `author` falls back to
+    `document_processor.build_enriched_context`'s default when omitted.
 
     Raises whatever `document_processor.analyze_transcript` raises (after
     emitting the matching error events) — analysis failure is the one step
@@ -123,7 +125,7 @@ async def build_day_narrative(
     await _emit(on_step, "summary", {"summary": context_summary})
     await _emit(on_step, "step", {"step": "summary", "state": "done"})
 
-    transcript_record = {"corrected_text": text, "date": date}
+    transcript_record = {"corrected_text": text, "date": date, "author": author}
     enriched = document_processor.build_enriched_context(transcript_record, entities, context_summary)
 
     await _emit(on_step, "step", {"step": "analysis", "state": "active"})

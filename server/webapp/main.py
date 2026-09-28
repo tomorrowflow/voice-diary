@@ -493,10 +493,14 @@ async def process_document_stream(transcript_id: int):
     date_str = str(transcript["date"]) if transcript.get("date") else ""
     text = transcript.get("corrected_text") or transcript.get("raw_text", "")
 
-    return EventSourceResponse(_process_document_events(transcript_id, text, entities, date_str))
+    return EventSourceResponse(
+        _process_document_events(transcript_id, text, entities, date_str, author=transcript.get("author"))
+    )
 
 
-async def _process_document_events(transcript_id: int, text: str, entities: list[dict], date_str: str):
+async def _process_document_events(
+    transcript_id: int, text: str, entities: list[dict], date_str: str, *, author: str | None = None
+):
     """Bridges `narrative.build_day_narrative`'s callback-shaped `on_step`
     progress into this endpoint's async-generator SSE shape: the narrative
     stage runs as a background task while this generator drains its step
@@ -512,7 +516,9 @@ async def _process_document_events(transcript_id: int, text: str, entities: list
 
     async def run_narrative():
         try:
-            return await narrative.build_day_narrative(text, entities, date_str, on_step=on_step)
+            return await narrative.build_day_narrative(
+                text, entities, date_str, author=author, on_step=on_step
+            )
         finally:
             queue.put_nowait(_done)
 

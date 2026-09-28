@@ -18,7 +18,6 @@ import json
 import httpx
 import pytest
 
-import narrative
 from lightrag_client import LightRAGClient
 from narrative import NarrativePorts, build_day_narrative, sync_and_ingest
 
@@ -87,6 +86,20 @@ async def test_happy_path_returns_full_narrative_result():
     assert result.analysis == ANALYSIS_JSON
     assert "2026" in result.markdown
     assert result.metadata["date"] == "2026-05-10"
+
+
+async def test_author_reaches_enriched_context_and_defaults_when_omitted():
+    def ports():
+        return NarrativePorts(
+            lightrag_client=_lightrag_client(lambda r: httpx.Response(200, json={"response": "hist"})),
+            llm_transport=httpx.MockTransport(_llm_handler(summary_response=_ok_summary(), analysis_response=_ok_analysis())),
+        )
+
+    explicit = await build_day_narrative("text", ENTITIES, "2026-05-10", author="Jane Doe", ports=ports())
+    default = await build_day_narrative("text", ENTITIES, "2026-05-10", ports=ports())
+
+    assert explicit.enriched_context["diary_author"] == "Jane Doe"
+    assert default.enriched_context["diary_author"] == "Florian Wolf"
 
 
 async def test_happy_path_emits_sse_shaped_step_events_in_order():
@@ -212,11 +225,12 @@ async def test_sync_and_ingest_swallows_skeleton_sync_failure_and_still_ingests(
     assert result == {"status": "ok"}
 
 
-async def test_ingest_failure_leaves_saved_document_unmarked(monkeypatch):
+async def test_sync_and_ingest_propagates_ingest_failure(monkeypatch):
     """The decided failure policy (#50): a LightRAG ingest failure must
-    leave already-saved `processed_documents` rows unmarked and retryable —
-    it must not raise past the caller in a way that skips `mark_ingested`
-    only, it must make sure `mark_ingested` is simply never reached."""
+    propagate, so the sessions caller never reaches `mark_document_ingested`
+    and the already-saved rows stay unmarked and retryable. The caller-side
+    bookkeeping is covered by
+    `test_sessions.py::test_run_session_document_processor_leaves_documents_unmarked_on_ingest_failure`."""
     import skeleton_sync
 
     async def fake_sync_incremental(triggered_by: str):
@@ -227,19 +241,7 @@ async def test_ingest_failure_leaves_saved_document_unmarked(monkeypatch):
     def failing_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(500, json={"error": "lightrag unreachable"})
 
-    # Mirrors the caller's shape (sessions.py): save first, then ingest.
-    saved_ids = [101, 102]
-    marked_ids: list[int] = []
-
-    async def fake_mark_ingested(doc_id: int) -> None:
-        marked_ids.append(doc_id)
-
-    with pytest.raises(Exception):
+    with pytest.raises(Exception, match="500"):
         await sync_and_ingest(
             "# markdown", {"date": "2026-05-10"}, lightrag_client=_lightrag_client(failing_handler)
         )
-        for doc_id in saved_ids:
-            await fake_mark_ingested(doc_id)
-
-    assert saved_ids == [101, 102]  # the save already happened, stays as-is
-    assert marked_ids == []  # never reached because ingest raised first
