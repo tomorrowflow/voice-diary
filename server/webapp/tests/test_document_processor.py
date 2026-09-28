@@ -289,14 +289,7 @@ async def test_query_lightrag_entity_history_forwards_persons_and_returns_respon
     assert "Thomas, Anna" in captured["body"]["query"]
 
 
-async def test_ingest_to_lightrag_posts_interchange_jsonl(monkeypatch):
-    import skeleton_sync
-
-    async def fake_sync_incremental(triggered_by: str):
-        return skeleton_sync.SyncStats()
-
-    monkeypatch.setattr(skeleton_sync, "sync_incremental", fake_sync_incremental)
-
+async def test_ingest_to_lightrag_posts_interchange_jsonl():
     captured: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -312,3 +305,25 @@ async def test_ingest_to_lightrag_posts_interchange_jsonl(monkeypatch):
     assert captured["body"]["id"] == "diary:2026-05-10"
     assert captured["body"]["file_source"] == "diary-2026-05-10.md"
     assert "metadata" not in captured["body"]
+
+
+async def test_ingest_to_lightrag_no_longer_syncs_skeleton_bones_itself(monkeypatch):
+    """SRV-A1/#50 (T3): the skeleton sync used to be a hidden side effect of
+    `ingest_to_lightrag`. It's now `narrative.sync_and_ingest`'s explicit
+    step, so `ingest_to_lightrag` itself must not touch `skeleton_sync` at
+    all — this would raise if it still did."""
+    import skeleton_sync
+
+    async def fail_if_called(triggered_by: str):
+        raise AssertionError("ingest_to_lightrag must not call skeleton_sync itself")
+
+    monkeypatch.setattr(skeleton_sync, "sync_incremental", fail_if_called)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"status": "ok"})
+
+    result = await ingest_to_lightrag(
+        SIMPLE_MARKDOWN, {"date": "2026-05-10"}, client=_lightrag_client(handler)
+    )
+
+    assert result == {"status": "ok"}

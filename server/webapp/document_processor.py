@@ -707,18 +707,9 @@ async def ingest_to_lightrag(
 ) -> dict:
     """POST document to LightRAG /documents/text.
 
-    Performs a pre-ingestion skeleton sync to flush any pending bone
-    documents before ingesting the diary entry.
+    Does not sync the skeleton bones itself — that's an explicit step the
+    caller runs first (see `narrative.sync_and_ingest`, SRV-A1/#50).
     """
-    # Pre-ingestion: sync pending skeleton bones (best-effort)
-    try:
-        import skeleton_sync
-        sync_stats = await skeleton_sync.sync_incremental(triggered_by="pre-ingestion")
-        if sync_stats.has_changes():
-            logger.info("Pre-ingestion skeleton sync: %s", sync_stats.to_dict())
-    except Exception as e:
-        logger.warning("Pre-ingestion skeleton sync failed (continuing): %s", e)
-
     date_str = metadata.get("date", "unknown")
     diary_id = f"diary:{date_str}"
     try:
