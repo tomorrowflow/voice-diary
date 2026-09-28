@@ -38,7 +38,6 @@ import fluency_checker
 import narrative
 import transcript_ingest
 import vector_store
-from correction import apply_text_corrections
 from llm_validator import validate_entities_stream
 
 WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
@@ -130,9 +129,6 @@ app.include_router(admin_router)
 # These share the same published port as the routers above, so the same
 # bearer token gates them — `/health` is the only intentionally open route.
 legacy_router = APIRouter(dependencies=[Depends(require_bearer)])
-
-
-# ─── Text correction pre-processing ──────────────────────────────────
 
 
 # ─── Pages ───────────────────────────────────────────────────────────
@@ -227,7 +223,7 @@ async def review_page(request: Request, transcript_id: int):
         # Pre-process: apply learned text corrections (fast, no LLM)
         text_corrections = await db.load_text_corrections()
         if text_corrections:
-            raw_text, applied_corrections = apply_text_corrections(
+            raw_text, applied_corrections = correction.apply_text_corrections(
                 raw_text, text_corrections
             )
 
