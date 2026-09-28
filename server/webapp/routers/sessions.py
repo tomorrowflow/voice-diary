@@ -238,27 +238,167 @@ async def post_session(
     )
 
 
-@router.get("/api/sessions/{session_id}/status", response_model=SessionStatus)
-async def session_status(session_id: str) -> SessionStatus:
+async def _lookup_session_status(session_id: str) -> SessionStatus | None:
+    """Cache-then-db lookup shared by the status and retry-analysis routes.
+
+    A cache miss (e.g. after a restart) falls back to the persisted row
+    (SRV-A6) and repopulates the cache from it.
+    """
     async with _status_lock:
         status_obj = _session_status.get(session_id)
     if status_obj is not None:
         return status_obj
 
-    # Cache miss — e.g. a restart cleared the in-memory map. Fall back to
-    # the persisted row (SRV-A6) before giving up.
     persisted = await db.get_session_status(session_id)
     if persisted is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="session_not_found",
-        )
+        return None
     # `get_session_status` returns exactly SessionStatus's fields (segments as
     # dicts), so model_validate reconstructs it without restating each field.
     status_obj = SessionStatus.model_validate(persisted)
     async with _status_lock:
         _session_status.setdefault(session_id, status_obj)
     return status_obj
+
+
+@router.get("/api/sessions/{session_id}/status", response_model=SessionStatus)
+async def session_status(session_id: str) -> SessionStatus:
+    status_obj = await _lookup_session_status(session_id)
+    if status_obj is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="session_not_found",
+        )
+    return status_obj
+
+
+@router.post("/api/sessions/{session_id}/retry-analysis", response_model=SessionStatus)
+async def retry_analysis(session_id: str) -> SessionStatus:
+    """Retry a session stuck in `pending_analysis` (issue #52).
+
+    Rebuilds the session-level narrative input from what's persisted (the
+    manifest on disk plus each segment's transcript row) and re-runs the
+    shared narrative stage. 404 if the session is unknown; 409 if none of
+    its segments are actually `pending_analysis`.
+    """
+    status_obj = await _lookup_session_status(session_id)
+    if status_obj is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="session_not_found",
+        )
+
+    pending = [s for s in status_obj.segments if s.status == "pending_analysis"]
+    if not pending:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="session_not_retryable",
+        )
+
+    updated = await _retry_session_analysis(session_id, status_obj)
+    return updated
+
+
+async def _retry_session_analysis(session_id: str, status_obj: SessionStatus) -> SessionStatus:
+    """Rebuild the session-level narrative input from what's persisted and
+    re-run the narrative stage for every `pending_analysis` segment.
+
+    The manifest (segment order, headers, todos) comes back from the
+    on-disk `manifest.json` written by `post_session`. Each segment's
+    transcript (corrected text where present, entities) comes back from its
+    `transcripts` row. If analysis already completed and saved a document
+    for every pending segment but the LightRAG ingest failed, we re-ingest
+    that saved narrative instead of re-running analysis
+    (`_retry_via_saved_document`).
+    """
+    session_dir = _sessions_data_dir() / _slug_session_id(session_id)
+    manifest_path = session_dir / "manifest.json"
+    if not manifest_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="session_manifest_missing",
+        )
+    parsed = Manifest.model_validate(json.loads(manifest_path.read_bytes()))
+    segments_by_id = {seg.segment_id: seg for seg in parsed.segments}
+
+    artifacts: list[_SegmentArtifact] = []
+    for seg_result in status_obj.segments:
+        if seg_result.status != "pending_analysis" or seg_result.transcript_id is None:
+            continue
+        segment = segments_by_id.get(seg_result.segment_id)
+        if segment is None:
+            continue
+        transcript = await db.get_transcript(seg_result.transcript_id)
+        if transcript is None:
+            continue
+        artifacts.append(
+            _SegmentArtifact(
+                segment=segment,
+                transcript_id=seg_result.transcript_id,
+                raw_text=transcript.get("raw_text") or "",
+                corrected_text=(
+                    transcript.get("corrected_text") or transcript.get("raw_text") or ""
+                ),
+                entities=_parse_entities_json(transcript.get("entities_json")),
+            )
+        )
+
+    if not artifacts:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="session_not_retryable",
+        )
+
+    if not await _retry_via_saved_document(artifacts):
+        todos_by_segment = _todos_grouped_by_segment(parsed)
+        await _run_session_document_processor(
+            manifest=parsed, artifacts=artifacts, todos_by_segment=todos_by_segment,
+        )
+
+    retried_ids = {art.segment.segment_id for art in artifacts}
+    updated_segments = [
+        SegmentResult(segment_id=r.segment_id, status="processed", transcript_id=r.transcript_id)
+        if r.segment_id in retried_ids
+        else r
+        for r in status_obj.segments
+    ]
+    new_state = _derive_session_state(updated_segments)
+    await _persist_session_status(session_id, new_state, updated_segments)
+
+    async with _status_lock:
+        return _session_status[session_id]
+
+
+async def _retry_via_saved_document(artifacts: list[_SegmentArtifact]) -> bool:
+    """Ingest-only retry shortcut.
+
+    If analysis already completed and saved a `processed_documents` row for
+    every artifact but the LightRAG ingest itself failed (rows exist,
+    unmarked), re-ingest that saved narrative rather than re-running
+    analysis. Returns `False` (no-op) if any artifact has no saved document
+    yet, or already has one marked ingested.
+    """
+    docs: list[dict] = []
+    for art in artifacts:
+        doc = await db.get_latest_processed_document(art.transcript_id)
+        if doc is None or doc.get("lightrag_ingested"):
+            return False
+        docs.append(doc)
+
+    metadata = docs[0]["metadata"]
+    if isinstance(metadata, str):
+        metadata = json.loads(metadata)
+    await narrative.sync_and_ingest(docs[0]["document_markdown"], metadata)
+    for doc in docs:
+        await db.mark_document_ingested(doc["id"])
+    return True
+
+
+def _parse_entities_json(raw: object) -> list[dict]:
+    if not raw:
+        return []
+    if isinstance(raw, str):
+        return json.loads(raw)
+    return raw
 
 
 @router.get("/api/sessions/dates")

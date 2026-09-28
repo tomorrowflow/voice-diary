@@ -525,6 +525,134 @@ def test_run_session_document_processor_marks_each_saved_document_ingested_on_su
     assert marked_ids == saved_docs == [101, 102]
 
 
+def test_retry_analysis_404s_for_unknown_session(monkeypatch):
+    """#52: retrying a session the server has never heard of (neither cache
+    nor persisted row) must 404, matching the status endpoint's behaviour."""
+    _setup(monkeypatch)
+
+    async def fake_get_session_status(session_id: str) -> dict | None:
+        return None
+
+    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+
+    resp = _client().post("/api/sessions/unknown/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 404
+
+
+def test_retry_analysis_409s_when_no_segment_is_pending_analysis(monkeypatch):
+    """#52: a session with no `pending_analysis` segment (e.g. fully `done`,
+    or still `processing`) is not in a retryable state."""
+    _setup(monkeypatch)
+
+    async def fake_get_session_status(session_id: str) -> dict | None:
+        return {
+            "session_id": "sess-done",
+            "received_at": "2026-07-01T10:00:00Z",
+            "state": "done",
+            "segments": [
+                {"segment_id": "s01", "status": "processed", "transcript_id": 1, "error": None},
+            ],
+        }
+
+    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+
+    resp = _client().post("/api/sessions/sess-done/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 409
+
+
+def test_retry_analysis_rebuilds_narrative_from_persisted_transcripts_and_marks_done(
+    monkeypatch, tmp_path
+):
+    """#52: the happy path — analysis never completed (no saved document
+    yet), so retry must reload the manifest from disk, reload each pending
+    segment's transcript + entities from Postgres, re-run the full narrative
+    stage, and flip the segment (and session) to done."""
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    session_id = "sess-retry-full"
+    session_dir = sessions_router._sessions_data_dir() / sessions_router._slug_session_id(session_id)
+    session_dir.mkdir(parents=True)
+    (session_dir / "manifest.json").write_text(jsonlib.dumps(_manifest(session_id)))
+
+    async def fake_get_session_status(sid: str) -> dict | None:
+        return {
+            "session_id": session_id,
+            "received_at": "2026-07-01T10:00:00Z",
+            "state": "partial",
+            "segments": [
+                {
+                    "segment_id": "s01",
+                    "status": "pending_analysis",
+                    "transcript_id": 5,
+                    "error": "analysis_pending: lightrag unreachable",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+
+    async def fake_get_transcript(transcript_id: int) -> dict | None:
+        assert transcript_id == 5
+        return {
+            "id": 5,
+            "raw_text": "hallo welt",
+            "corrected_text": "Hallo Welt",
+            "entities_json": jsonlib.dumps([{"type": "PERSON", "text": "Anna"}]),
+        }
+
+    monkeypatch.setattr(db, "get_transcript", fake_get_transcript)
+
+    async def fake_get_latest_processed_document(transcript_id: int) -> dict | None:
+        return None
+
+    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest_processed_document)
+
+    async def fake_ingest(markdown, metadata, *, client=None):
+        return None
+
+    _fake_document_processor_pipeline(monkeypatch, ingest=fake_ingest)
+
+    saved_docs: list[int] = []
+
+    async def fake_save_processed_document(
+        *, transcript_id, document_markdown, analysis_json, context_summary, metadata
+    ):
+        saved_docs.append(transcript_id)
+        return {"id": 900 + transcript_id, "version": 1, "created_at": None}
+
+    monkeypatch.setattr(db, "save_processed_document", fake_save_processed_document)
+
+    marked_ids: list[int] = []
+
+    async def fake_mark_document_ingested(doc_id: int):
+        marked_ids.append(doc_id)
+        return {"id": doc_id, "lightrag_ingested_at": None}
+
+    monkeypatch.setattr(db, "mark_document_ingested", fake_mark_document_ingested)
+
+    persisted_updates: list[tuple] = []
+
+    async def fake_update_session_status(session_id: str, state: str, segments: list[dict]):
+        persisted_updates.append((session_id, state, segments))
+
+    monkeypatch.setattr(db, "update_session_status", fake_update_session_status)
+
+    resp = _client().post(f"/api/sessions/{session_id}/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "done"
+    assert body["segments"] == [
+        {"segment_id": "s01", "status": "processed", "transcript_id": 5, "error": None}
+    ]
+    assert saved_docs == [5]
+    assert marked_ids == [905]
+    assert persisted_updates == [(session_id, "done", body["segments"])]
+
+
 def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_failure(monkeypatch):
     """T1/#49: a failed LightRAG ingest must not mark the already-saved rows
     ingested — they stay retryable (existing `pending_analysis` behaviour in
