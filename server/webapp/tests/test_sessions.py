@@ -321,3 +321,134 @@ def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tm
     assert calls[0]["author"] == "Florian Wolf"
     assert calls[0]["src_suffix"] == ".m4a"
     assert calls[0]["language"] == "de"
+
+
+def _fake_document_processor_pipeline(monkeypatch, *, ingest=None):
+    """Stub every `document_processor` step `_run_session_document_processor`
+    calls before/around `ingest_to_lightrag`, so tests can focus on the
+    save/mark bookkeeping around it."""
+    import document_processor
+
+    async def fake_query_lightrag_context(date_str, *, client=None):
+        return ""
+
+    async def fake_query_lightrag_entity_history(names, date_str, *, client=None):
+        return ""
+
+    async def fake_summarize_context(recent_ctx, entity_hist, date_str):
+        return ""
+
+    def fake_build_enriched_context(transcript_record, entities, context_summary):
+        return {}
+
+    async def fake_analyze_transcript(enriched):
+        return {}
+
+    def fake_generate_narrative_document(enriched, analysis):
+        return "# narrative"
+
+    def fake_build_document_metadata(enriched):
+        return {}
+
+    monkeypatch.setattr(document_processor, "query_lightrag_context", fake_query_lightrag_context)
+    monkeypatch.setattr(document_processor, "query_lightrag_entity_history", fake_query_lightrag_entity_history)
+    monkeypatch.setattr(document_processor, "summarize_context", fake_summarize_context)
+    monkeypatch.setattr(document_processor, "build_enriched_context", fake_build_enriched_context)
+    monkeypatch.setattr(document_processor, "analyze_transcript", fake_analyze_transcript)
+    monkeypatch.setattr(document_processor, "generate_narrative_document", fake_generate_narrative_document)
+    monkeypatch.setattr(document_processor, "build_document_metadata", fake_build_document_metadata)
+
+    if ingest is not None:
+        monkeypatch.setattr(document_processor, "ingest_to_lightrag", ingest)
+
+
+def test_run_session_document_processor_marks_each_saved_document_ingested_on_success(monkeypatch):
+    """T1/#49: after a successful LightRAG ingest, every `processed_documents`
+    row saved for the session must be marked ingested — otherwise the day
+    shows as "not ingested" on `/process/{id}` forever."""
+    from models import Manifest
+
+    async def fake_ingest(markdown, metadata):
+        return None
+
+    _fake_document_processor_pipeline(monkeypatch, ingest=fake_ingest)
+
+    saved_docs = []
+
+    async def fake_save_processed_document(*, transcript_id, document_markdown, analysis_json, context_summary, metadata):
+        doc_id = 100 + transcript_id
+        saved_docs.append(doc_id)
+        return {"id": doc_id, "version": 1, "created_at": None}
+
+    marked_ids = []
+
+    async def fake_mark_document_ingested(doc_id):
+        marked_ids.append(doc_id)
+        return {"id": doc_id, "lightrag_ingested_at": None}
+
+    monkeypatch.setattr(db, "save_processed_document", fake_save_processed_document)
+    monkeypatch.setattr(db, "mark_document_ingested", fake_mark_document_ingested)
+
+    manifest = Manifest.model_validate(_manifest("sess-mark"))
+    segment = manifest.segments[0]
+    artifacts = [
+        sessions_router._SegmentArtifact(
+            segment=segment, transcript_id=1, raw_text="hallo", corrected_text="hallo",
+        ),
+        sessions_router._SegmentArtifact(
+            segment=segment, transcript_id=2, raw_text="welt", corrected_text="welt",
+        ),
+    ]
+
+    asyncio.run(
+        sessions_router._run_session_document_processor(
+            manifest=manifest, artifacts=artifacts, todos_by_segment={},
+        )
+    )
+
+    assert sorted(marked_ids) == sorted(saved_docs)
+    assert marked_ids == [101, 102]
+
+
+def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_failure(monkeypatch):
+    """T1/#49: a failed LightRAG ingest must not mark the already-saved rows
+    ingested — they stay retryable (existing `pending_analysis` behaviour in
+    the caller)."""
+    from models import Manifest
+
+    async def fake_ingest_that_fails(markdown, metadata):
+        raise RuntimeError("lightrag unreachable")
+
+    _fake_document_processor_pipeline(monkeypatch, ingest=fake_ingest_that_fails)
+
+    async def fake_save_processed_document(*, transcript_id, document_markdown, analysis_json, context_summary, metadata):
+        return {"id": 100 + transcript_id, "version": 1, "created_at": None}
+
+    marked_ids = []
+
+    async def fake_mark_document_ingested(doc_id):
+        marked_ids.append(doc_id)
+        return {"id": doc_id, "lightrag_ingested_at": None}
+
+    monkeypatch.setattr(db, "save_processed_document", fake_save_processed_document)
+    monkeypatch.setattr(db, "mark_document_ingested", fake_mark_document_ingested)
+
+    manifest = Manifest.model_validate(_manifest("sess-mark-fail"))
+    segment = manifest.segments[0]
+    artifacts = [
+        sessions_router._SegmentArtifact(
+            segment=segment, transcript_id=1, raw_text="hallo", corrected_text="hallo",
+        ),
+    ]
+
+    try:
+        asyncio.run(
+            sessions_router._run_session_document_processor(
+                manifest=manifest, artifacts=artifacts, todos_by_segment={},
+            )
+        )
+        assert False, "expected ingest failure to propagate"
+    except RuntimeError:
+        pass
+
+    assert marked_ids == []
