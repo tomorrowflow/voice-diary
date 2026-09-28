@@ -298,6 +298,32 @@ async def retry_analysis(session_id: str) -> SessionStatus:
     return updated
 
 
+async def retry_stuck_sessions_on_startup() -> None:
+    """Best-effort startup sweep (issue #52).
+
+    Retries every session with a `pending_analysis` segment, one at a
+    time (bounded by the sessions table, sequential so a heavy analysis
+    call doesn't pile up concurrently with others). A session's retry
+    failing is logged and left `pending_analysis` — the manual retry route,
+    or the next startup, can pick it up again. Must never raise, since
+    `main.py`'s lifespan runs this without blocking app start.
+    """
+    try:
+        session_ids = await db.list_pending_analysis_session_ids()
+    except Exception:  # noqa: BLE001 — best-effort, never blocks startup
+        logger.exception("startup retry sweep: failed to list pending_analysis sessions")
+        return
+
+    for session_id in session_ids:
+        try:
+            status_obj = await _lookup_session_status(session_id)
+            if status_obj is None:
+                continue
+            await _retry_session_analysis(session_id, status_obj)
+        except Exception:  # noqa: BLE001 — one session's failure must not stop the rest
+            logger.exception("startup retry sweep: session %s retry failed", session_id)
+
+
 async def _retry_session_analysis(session_id: str, status_obj: SessionStatus) -> SessionStatus:
     """Rebuild the session-level narrative input from what's persisted and
     re-run the narrative stage for every `pending_analysis` segment.
