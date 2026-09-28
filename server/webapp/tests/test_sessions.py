@@ -290,8 +290,8 @@ def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tm
         )
         return transcript_ingest.TranscribedSegment(transcript_id=7, raw_text="hallo welt")
 
-    async def fake_correct_transcript(*, raw_text):
-        return raw_text, []
+    async def fake_correct_and_detect_entities(raw_text, *, persons, terms, text_corrections=None, dismissals=None, on_step=None):
+        return sessions_router.correction.CorrectionResult(corrected_text=raw_text)
 
     async def fake_load_person_dictionary():
         return []
@@ -299,14 +299,18 @@ def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tm
     async def fake_load_term_dictionary():
         return []
 
-    def fake_detect_entities(*, text, persons, terms):
+    async def fake_load_text_corrections():
+        return []
+
+    async def fake_load_entity_dismissals():
         return []
 
     monkeypatch.setattr(sessions_router.transcript_ingest, "transcribe_and_persist", fake_transcribe_and_persist)
-    monkeypatch.setattr(sessions_router.transcript_corrector, "correct_transcript", fake_correct_transcript)
+    monkeypatch.setattr(sessions_router.correction, "correct_and_detect_entities", fake_correct_and_detect_entities)
     monkeypatch.setattr(db, "load_person_dictionary", fake_load_person_dictionary)
     monkeypatch.setattr(db, "load_term_dictionary", fake_load_term_dictionary)
-    monkeypatch.setattr(sessions_router, "detect_entities", fake_detect_entities)
+    monkeypatch.setattr(db, "load_text_corrections", fake_load_text_corrections)
+    monkeypatch.setattr(db, "load_entity_dismissals", fake_load_entity_dismissals)
 
     artifact = asyncio.run(
         sessions_router._process_segment(
@@ -322,6 +326,110 @@ def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tm
     assert calls[0]["author"] == "Florian Wolf"
     assert calls[0]["src_suffix"] == ".m4a"
     assert calls[0]["language"] == "de"
+
+
+def test_process_segment_uses_shared_correction_module(monkeypatch, tmp_path):
+    """#51: `_process_segment` must delegate dictionary corrections, LLM
+    correction and entity detection/dismissal filtering to
+    `correction.correct_and_detect_entities` — the same chain the HTMX
+    review flow runs — instead of calling `transcript_corrector` and
+    `detect_entities` directly (which skipped dictionary corrections,
+    few-shot examples and dismissal filtering for iOS sessions)."""
+    from models import Manifest
+    import correction as correction_module
+    import transcript_ingest
+    from entity_detector import DetectedEntity
+
+    session_dir = tmp_path / "sess-corr"
+    session_dir.mkdir()
+    (session_dir / "s01.m4a").write_bytes(b"fake-audio")
+
+    manifest_dict = _manifest("sess-corr")
+    manifest_dict["segments"][0]["audio_file"] = "s01.m4a"
+    manifest = Manifest.model_validate(manifest_dict)
+    segment = manifest.segments[0]
+
+    async def fake_transcribe_and_persist(audio_bytes, *, src_suffix, filename, date, author, language="de"):
+        return transcript_ingest.TranscribedSegment(transcript_id=9, raw_text="hallo welt")
+
+    text_corrections = [{"original_text": "welt", "corrected_text": "Welt"}]
+    dismissals = ["Baumarkt"]
+    persons = [{"canonical_name": "Anna"}]
+    terms = [{"canonical_name": "Sprint"}]
+
+    calls = []
+
+    async def fake_correct_and_detect_entities(
+        raw_text, *, persons, terms, text_corrections=None, dismissals=None, on_step=None
+    ):
+        calls.append(
+            {
+                "raw_text": raw_text,
+                "persons": persons,
+                "terms": terms,
+                "text_corrections": text_corrections,
+                "dismissals": dismissals,
+                "on_step": on_step,
+            }
+        )
+        entity = DetectedEntity(
+            start=0, end=4, original_text="Anna", canonical="Anna",
+            entity_type="PERSON", match_type="exact", confidence="high",
+            status="auto-matched",
+        )
+        return correction_module.CorrectionResult(
+            corrected_text="hallo Welt", entities=[entity],
+        )
+
+    async def fake_load_person_dictionary():
+        return persons
+
+    async def fake_load_term_dictionary():
+        return terms
+
+    async def fake_load_text_corrections():
+        return text_corrections
+
+    async def fake_load_entity_dismissals():
+        return dismissals
+
+    saved_drafts = []
+
+    async def fake_save_draft(transcript_id, text):
+        saved_drafts.append((transcript_id, text))
+
+    monkeypatch.setattr(sessions_router.transcript_ingest, "transcribe_and_persist", fake_transcribe_and_persist)
+    monkeypatch.setattr(sessions_router.correction, "correct_and_detect_entities", fake_correct_and_detect_entities)
+    monkeypatch.setattr(db, "load_person_dictionary", fake_load_person_dictionary)
+    monkeypatch.setattr(db, "load_term_dictionary", fake_load_term_dictionary)
+    monkeypatch.setattr(db, "load_text_corrections", fake_load_text_corrections)
+    monkeypatch.setattr(db, "load_entity_dismissals", fake_load_entity_dismissals)
+    monkeypatch.setattr(db, "save_draft", fake_save_draft)
+
+    artifact = asyncio.run(
+        sessions_router._process_segment(
+            manifest=manifest, segment=segment, session_dir=session_dir
+        )
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["raw_text"] == "hallo welt"
+    assert calls[0]["persons"] == persons
+    assert calls[0]["terms"] == terms
+    assert calls[0]["text_corrections"] == text_corrections
+    assert calls[0]["dismissals"] == dismissals
+
+    assert artifact.corrected_text == "hallo Welt"
+    assert saved_drafts == [(9, "hallo Welt")]
+    assert artifact.entities == [
+        {
+            "start": 0, "end": 4, "original_text": "Anna", "canonical": "Anna",
+            "entity_type": "PERSON", "match_type": "exact", "confidence": "high",
+            "status": "auto-matched", "dictionary_id": None, "source": "term",
+            "role": "", "candidates": [], "llm_validated": False, "llm_reason": "",
+            "llm_suggested": False, "text": "Anna", "type": "PERSON",
+        }
+    ]
 
 
 def _fake_document_processor_pipeline(monkeypatch, *, ingest=None):

@@ -6,8 +6,10 @@ pipeline:
 
     AAC-LC m4a  →  ffmpeg → 16 kHz mono WAV
                 →  Whisper sidecar
-                →  transcript_corrector (Ollama)
-                →  entity_detector (4-pass with calendar_ref shortcut)
+                →  correction (dictionary + few-shot LLM correction, shared
+                   with the HTMX review flow — #51)
+                →  entity_detector (4-pass with calendar_ref shortcut) +
+                   dismissal filtering
                 →  document_processor (LightRAG context + analysis + ingest)
 
 For ≤ 5 segments we process synchronously and return the per-segment
@@ -42,11 +44,10 @@ from fastapi import (
 from starlette.datastructures import UploadFile
 
 import asr_client
+import correction
 import db
 import narrative
-import transcript_corrector
 import transcript_ingest
-from entity_detector import detect_entities
 from logging_setup import bind_session_id
 from paths import sessions_dir
 from models import (
@@ -476,41 +477,38 @@ async def _process_segment(
     transcript_id = transcribed.transcript_id
     raw_transcript = transcribed.raw_text
 
-    # 3. Transcript correction (Ollama). Fall back to raw on failure.
-    try:
-        corrected_text, _corrections = await transcript_corrector.correct_transcript(
-            raw_text=raw_transcript,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "transcript_corrector failed for %s/%s: %s — using raw transcript",
-            manifest.session_id, segment.segment_id, exc,
-        )
-        corrected_text = raw_transcript
-
-    if corrected_text != raw_transcript:
-        await db.save_draft(transcript_id, corrected_text)
-
-    # 4. Entity detection. The 4-pass detector already covers fuzzy + first-name
-    # disambiguation. For calendar_event segments we additionally seed the
-    # corrected text with the manifest's canonical attendee names so the
-    # detector resolves them deterministically (Graph already gave us the
-    # truth — no need to fuzzy-match again).
+    # 3-4. Dictionary corrections → vector few-shot LLM correction (falls
+    # back to the pre-LLM text on failure) → entity detection → dismissal
+    # filtering — the same non-interactive chain the HTMX review flow runs
+    # (#51). For calendar_event segments we additionally seed the persons
+    # dict with the manifest's canonical attendee names so the detector
+    # resolves them deterministically (Graph already gave us the truth — no
+    # need to fuzzy-match again).
     persons_dict = await db.load_person_dictionary()
     terms_dict = await db.load_term_dictionary()
     if isinstance(segment, CalendarEventSegment):
         seed_persons = _attendees_to_canonical_names(segment.calendar_ref.attendees)
         if seed_persons:
             persons_dict = _seed_persons_into_dict(persons_dict, seed_persons)
-    detected = detect_entities(
-        text=corrected_text,
+    text_corrections = await db.load_text_corrections()
+    dismissals = await db.load_entity_dismissals()
+
+    result = await correction.correct_and_detect_entities(
+        raw_transcript,
         persons=persons_dict,
         terms=terms_dict,
+        text_corrections=text_corrections,
+        dismissals=dismissals,
     )
+    corrected_text = result.corrected_text
+
+    if corrected_text != raw_transcript:
+        await db.save_draft(transcript_id, corrected_text)
+
     # Convert dataclass instances to dicts in the shape document_processor
     # expects (the HTMX review flow stores `text` for the canonical name).
     entities: list[dict] = []
-    for d in detected:
+    for d in result.entities:
         item = d.to_dict()
         item["text"] = d.canonical or d.original_text
         item["type"] = d.entity_type
