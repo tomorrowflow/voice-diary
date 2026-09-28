@@ -28,6 +28,7 @@ from fastapi.templating import Jinja2Templates
 
 import asr_client
 import bind_guard
+import correction
 import db
 import document_processor
 import llm_validator
@@ -35,10 +36,9 @@ import harvest_patterns
 import harvest_llm
 import fluency_checker
 import narrative
-import transcript_corrector
 import transcript_ingest
 import vector_store
-from entity_detector import detect_entities
+from correction import apply_text_corrections
 from llm_validator import validate_entities_stream
 
 WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
@@ -133,36 +133,6 @@ legacy_router = APIRouter(dependencies=[Depends(require_bearer)])
 
 
 # ─── Text correction pre-processing ──────────────────────────────────
-
-
-def apply_text_corrections(
-    raw_text: str, corrections: list[dict]
-) -> tuple[str, list[dict]]:
-    """Apply learned word corrections to raw transcript text.
-
-    Returns (corrected_text, list_of_applied_corrections).
-    Corrections are sorted longest-first and matched with word boundaries.
-    """
-    applied = []
-    result = raw_text
-    # corrections already sorted longest-first from DB query
-    for corr in corrections:
-        original = corr["original_text"]
-        replacement = corr["corrected_text"]
-        case_sensitive = corr.get("case_sensitive", False)
-        flags = 0 if case_sensitive else re.IGNORECASE
-        pattern = r"\b" + re.escape(original) + r"\b"
-        new_result, count = re.subn(pattern, replacement, result, flags=flags)
-        if count > 0:
-            applied.append(
-                {
-                    "original": original,
-                    "corrected": replacement,
-                    "count": count,
-                }
-            )
-            result = new_result
-    return result, applied
 
 
 # ─── Pages ───────────────────────────────────────────────────────────
@@ -283,7 +253,11 @@ async def review_page(request: Request, transcript_id: int):
 
 @legacy_router.get("/api/transcripts/{transcript_id}/process")
 async def process_transcript_stream(transcript_id: int):
-    """SSE endpoint: combined pipeline — LLM correction, entity detection, LLM validation."""
+    """SSE endpoint: runs the shared correction chain
+    (`correction.correct_and_detect_entities`, #51), then the two
+    review-UI-only steps that don't affect what's persisted — fluency check
+    and LLM entity validation (decision D2, handoff 01 re-check: they only
+    produce hints for this UI, so the iOS session path has no use for them)."""
     transcript = await db.get_transcript(transcript_id)
     if not transcript:
         return JSONResponse({"error": "not found"}, 404)
@@ -296,140 +270,131 @@ async def process_transcript_stream(transcript_id: int):
 
     raw_text = transcript["raw_text"]
 
-    async def event_generator():
-        nonlocal raw_text
+    return EventSourceResponse(
+        _process_transcript_events(raw_text, persons, terms, text_corrections, dismissals)
+    )
 
-        yield {"event": "log", "data": json.dumps({"message": "Applying dictionary corrections...", "level": "info"})}
 
-        # Phase 0: Apply dictionary text corrections (fast)
-        applied_corrections = []
-        if text_corrections:
-            raw_text, applied_corrections = apply_text_corrections(
-                raw_text, text_corrections
+async def _process_transcript_events(
+    raw_text: str,
+    persons: list[dict],
+    terms: list[dict],
+    text_corrections: list[dict],
+    dismissals: list[str],
+):
+    """Bridges `correction.correct_and_detect_entities`'s callback-shaped
+    `on_step` progress into this endpoint's async-generator SSE shape (the
+    same background-task + queue bridge `_process_document_events` uses for
+    `narrative.build_day_narrative`), then runs fluency + LLM validation
+    inline — same event names/payload shapes as before extraction. One
+    accepted behaviour change: the "Detecting entities..." / "Found N
+    entities" log lines now arrive during the bundled correction+detection
+    call, ahead of the `correction` event, instead of just ahead of the
+    `entities` event — the `correction`/`fluency`/`entities` state events
+    themselves keep their original order and shape.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    _done = object()
+
+    def on_step(event: str, data: dict) -> None:
+        queue.put_nowait((event, data))
+
+    async def run_correction():
+        try:
+            return await correction.correct_and_detect_entities(
+                raw_text,
+                persons=persons,
+                terms=terms,
+                text_corrections=text_corrections,
+                dismissals=dismissals,
+                on_step=on_step,
             )
+        finally:
+            queue.put_nowait(_done)
 
-        # Phase 1: LLM transcript correction
-        llm_corrections = []
-        if transcript_corrector.LLM_CORRECTION_ENABLED:
-            # Query vector store for similar past corrections
-            correction_examples = []
-            if vector_store.VECTOR_SEARCH_ENABLED:
-                yield {"event": "log", "data": json.dumps({"message": "Querying vector store for similar corrections...", "level": "info"})}
-                # Sample up to 5 passages (~200 chars each) from the transcript
-                passage_len = 200
-                passages = [
-                    raw_text[i : i + passage_len]
-                    for i in range(0, len(raw_text), passage_len)
-                ][:5]
-                seen = set()
-                for passage in passages:
-                    results = await vector_store.find_similar_corrections(passage, limit=3)
-                    for r in results:
-                        key = f"{r['original_text']}|{r['corrected_text']}"
-                        if key not in seen:
-                            seen.add(key)
-                            correction_examples.append(r)
-                correction_examples = correction_examples[:10]
-                if correction_examples:
-                    yield {"event": "log", "data": json.dumps({"message": f"Found {len(correction_examples)} similar past corrections", "level": "ok"})}
+    task = asyncio.create_task(run_correction())
 
-            yield {"event": "log", "data": json.dumps({"message": "Calling Ollama for transcript correction...", "level": "info"})}
-            raw_text, llm_corrections = await transcript_corrector.correct_transcript(
-                raw_text, correction_examples=correction_examples or None
-            )
-            if llm_corrections:
-                yield {"event": "log", "data": json.dumps({"message": f"Applied {len(llm_corrections)} LLM correction(s)", "level": "ok"})}
-            else:
-                yield {"event": "log", "data": json.dumps({"message": "No LLM corrections needed", "level": "info"})}
+    while True:
+        item = await queue.get()
+        if item is _done:
+            break
+        event, data = item
+        yield {"event": event, "data": json.dumps(data)}
+
+    result = await task
+    text = result.corrected_text
+
+    # Send corrected text + corrections to client
+    yield {
+        "event": "correction",
+        "data": json.dumps({
+            "text": text,
+            "corrections": result.llm_corrections,
+            "applied_corrections": result.applied_corrections,
+        }),
+    }
+
+    # Phase 1.5: Fluency check (HTMX-only)
+    fluency_issues = []
+    if fluency_checker.FLUENCY_CHECK_ENABLED:
+        yield {"event": "log", "data": json.dumps({"message": "Checking transcript fluency...", "level": "info"})}
+        fluency_issues = await fluency_checker.check_fluency(text)
+        if fluency_issues:
+            yield {"event": "log", "data": json.dumps({"message": f"Found {len(fluency_issues)} fluency issue(s)", "level": "warn"})}
         else:
-            yield {"event": "log", "data": json.dumps({"message": "LLM transcript correction disabled", "level": "info"})}
+            yield {"event": "log", "data": json.dumps({"message": "No fluency issues found", "level": "info"})}
+    else:
+        yield {"event": "log", "data": json.dumps({"message": "Fluency check disabled", "level": "info"})}
 
-        # Send corrected text + corrections to client
-        yield {
-            "event": "correction",
-            "data": json.dumps({
-                "text": raw_text,
-                "corrections": llm_corrections,
-                "applied_corrections": applied_corrections,
-            }),
-        }
+    yield {
+        "event": "fluency",
+        "data": json.dumps({"issues": fluency_issues}),
+    }
 
-        # Phase 1.5: Fluency check
-        fluency_issues = []
-        if fluency_checker.FLUENCY_CHECK_ENABLED:
-            yield {"event": "log", "data": json.dumps({"message": "Checking transcript fluency...", "level": "info"})}
-            fluency_issues = await fluency_checker.check_fluency(raw_text)
-            if fluency_issues:
-                yield {"event": "log", "data": json.dumps({"message": f"Found {len(fluency_issues)} fluency issue(s)", "level": "warn"})}
-            else:
-                yield {"event": "log", "data": json.dumps({"message": "No fluency issues found", "level": "info"})}
+    entities = result.entities
+
+    # Send entities to client
+    yield {
+        "event": "entities",
+        "data": json.dumps([asdict(e) for e in entities]),
+    }
+
+    # Phase 3: LLM entity validation (HTMX-only)
+    entity_usage_samples = None
+    if vector_store.VECTOR_SEARCH_ENABLED and llm_validator.LLM_VALIDATION_ENABLED:
+        yield {"event": "log", "data": json.dumps({"message": "Querying vector store for entity usage samples...", "level": "info"})}
+        entity_usage_samples = {}
+        for ent in entities:
+            if ent.status in ("suggested", "ambiguous") or ent.confidence in ("medium", "low"):
+                # Get context snippet for this entity
+                ctx = text[max(0, ent.start - 50) : min(len(text), ent.end + 50)]
+                key = f"{ent.canonical}|{ent.entity_type}"
+                if key not in entity_usage_samples:
+                    samples = await vector_store.find_entity_usage_samples(
+                        ent.canonical, ent.entity_type, context=ctx, limit=5
+                    )
+                    if samples:
+                        entity_usage_samples[key] = samples
+                # For ambiguous entities, also fetch samples for each candidate
+                if ent.status == "ambiguous" and ent.candidates:
+                    for cand in ent.candidates:
+                        cand_key = f"{cand['canonical']}|{ent.entity_type}"
+                        if cand_key not in entity_usage_samples:
+                            cand_samples = await vector_store.find_entity_usage_samples(
+                                cand["canonical"], ent.entity_type, context=ctx, limit=3
+                            )
+                            if cand_samples:
+                                entity_usage_samples[cand_key] = cand_samples
+
+        total_samples = sum(len(v) for v in entity_usage_samples.values())
+        if total_samples:
+            yield {"event": "log", "data": json.dumps({"message": f"Retrieved {total_samples} entity usage samples for {len(entity_usage_samples)} entities", "level": "ok"})}
         else:
-            yield {"event": "log", "data": json.dumps({"message": "Fluency check disabled", "level": "info"})}
+            entity_usage_samples = None
 
-        yield {
-            "event": "fluency",
-            "data": json.dumps({"issues": fluency_issues}),
-        }
-
-        # Phase 2: Entity detection on corrected text
-        yield {"event": "log", "data": json.dumps({"message": "Detecting entities...", "level": "info"})}
-        entities = detect_entities(raw_text, persons, terms)
-
-        # Filter out dismissed entity patterns
-        if dismissals:
-            dismissals_lower = {d.lower() for d in dismissals}
-            entities = [
-                e
-                for e in entities
-                if e.original_text.lower() not in dismissals_lower
-            ]
-
-        yield {"event": "log", "data": json.dumps({"message": f"Found {len(entities)} entities", "level": "ok"})}
-
-        # Send entities to client
-        yield {
-            "event": "entities",
-            "data": json.dumps([asdict(e) for e in entities]),
-        }
-
-        # Phase 3: LLM entity validation
-        entity_usage_samples = None
-        if vector_store.VECTOR_SEARCH_ENABLED and llm_validator.LLM_VALIDATION_ENABLED:
-            yield {"event": "log", "data": json.dumps({"message": "Querying vector store for entity usage samples...", "level": "info"})}
-            entity_usage_samples = {}
-            for ent in entities:
-                if ent.status in ("suggested", "ambiguous") or ent.confidence in ("medium", "low"):
-                    # Get context snippet for this entity
-                    ctx = raw_text[max(0, ent.start - 50) : min(len(raw_text), ent.end + 50)]
-                    key = f"{ent.canonical}|{ent.entity_type}"
-                    if key not in entity_usage_samples:
-                        samples = await vector_store.find_entity_usage_samples(
-                            ent.canonical, ent.entity_type, context=ctx, limit=5
-                        )
-                        if samples:
-                            entity_usage_samples[key] = samples
-                    # For ambiguous entities, also fetch samples for each candidate
-                    if ent.status == "ambiguous" and ent.candidates:
-                        for cand in ent.candidates:
-                            cand_key = f"{cand['canonical']}|{ent.entity_type}"
-                            if cand_key not in entity_usage_samples:
-                                cand_samples = await vector_store.find_entity_usage_samples(
-                                    cand["canonical"], ent.entity_type, context=ctx, limit=3
-                                )
-                                if cand_samples:
-                                    entity_usage_samples[cand_key] = cand_samples
-
-            total_samples = sum(len(v) for v in entity_usage_samples.values())
-            if total_samples:
-                yield {"event": "log", "data": json.dumps({"message": f"Retrieved {total_samples} entity usage samples for {len(entity_usage_samples)} entities", "level": "ok"})}
-            else:
-                entity_usage_samples = None
-
-        yield {"event": "log", "data": json.dumps({"message": "Validating entities with LLM...", "level": "info"})}
-        async for event in validate_entities_stream(raw_text, entities, entity_usage_samples=entity_usage_samples):
-            yield event
-
-    return EventSourceResponse(event_generator())
+    yield {"event": "log", "data": json.dumps({"message": "Validating entities with LLM...", "level": "info"})}
+    async for event in validate_entities_stream(text, entities, entity_usage_samples=entity_usage_samples):
+        yield event
 
 
 # ─── Document Processing ──────────────────────────────────────────────
