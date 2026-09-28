@@ -34,6 +34,7 @@ import llm_validator
 import harvest_patterns
 import harvest_llm
 import fluency_checker
+import narrative
 import transcript_corrector
 import transcript_ingest
 import vector_store
@@ -469,7 +470,10 @@ async def process_page(request: Request, transcript_id: int):
 
 @legacy_router.get("/api/transcripts/{transcript_id}/process-document")
 async def process_document_stream(transcript_id: int):
-    """SSE endpoint: runs the full document processing pipeline."""
+    """SSE endpoint: runs the shared narrative stage (`narrative.build_day_narrative`,
+    SRV-A1/#50), then saves the result — the one step that's specific to
+    this review-UI flow (the sessions path saves against every segment's
+    transcript instead)."""
     transcript = await db.get_transcript(transcript_id)
     if not transcript:
         return JSONResponse({"error": "not found"}, 404)
@@ -487,102 +491,78 @@ async def process_document_stream(transcript_id: int):
             entities = entities_raw
 
     date_str = str(transcript["date"]) if transcript.get("date") else ""
-    person_names = [
-        e.get("text") or e.get("canonical", "")
-        for e in entities
-        if (e.get("type") or e.get("entity_type", "")) == "PERSON"
-    ]
+    text = transcript.get("corrected_text") or transcript.get("raw_text", "")
 
-    async def event_generator():
-        # Step 1: Query LightRAG context (parallel)
-        yield {"event": "step", "data": json.dumps({"step": "context", "state": "active"})}
-        yield {"event": "log", "data": json.dumps({"message": "Querying LightRAG for context...", "level": "info"})}
+    return EventSourceResponse(_process_document_events(transcript_id, text, entities, date_str))
 
+
+async def _process_document_events(transcript_id: int, text: str, entities: list[dict], date_str: str):
+    """Bridges `narrative.build_day_narrative`'s callback-shaped `on_step`
+    progress into this endpoint's async-generator SSE shape: the narrative
+    stage runs as a background task while this generator drains its step
+    queue, so the client still sees `step`/`log`/... events arrive as they
+    happen (e.g. during the several-minute analysis call) instead of all at
+    once at the end.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    _done = object()
+
+    def on_step(event: str, data: dict) -> None:
+        queue.put_nowait((event, data))
+
+    async def run_narrative():
         try:
-            recent_ctx, entity_hist = await asyncio.gather(
-                document_processor.query_lightrag_context(date_str),
-                document_processor.query_lightrag_entity_history(person_names, date_str),
-            )
-        except Exception as e:
-            recent_ctx, entity_hist = "", ""
-            yield {"event": "log", "data": json.dumps({"message": f"LightRAG query failed: {e}", "level": "error"})}
+            return await narrative.build_day_narrative(text, entities, date_str, on_step=on_step)
+        finally:
+            queue.put_nowait(_done)
 
-        yield {"event": "context", "data": json.dumps({"recent": recent_ctx[:200], "entities": entity_hist[:200]})}
-        yield {"event": "step", "data": json.dumps({"step": "context", "state": "done"})}
+    task = asyncio.create_task(run_narrative())
 
-        # Step 2: Summarize context
-        yield {"event": "step", "data": json.dumps({"step": "summary", "state": "active"})}
-        yield {"event": "log", "data": json.dumps({"message": "Summarizing context via LLM...", "level": "info"})}
+    while True:
+        item = await queue.get()
+        if item is _done:
+            break
+        event, data = item
+        yield {"event": event, "data": json.dumps(data)}
 
-        try:
-            context_summary = await document_processor.summarize_context(
-                recent_ctx, entity_hist, date_str
-            )
-        except Exception as e:
-            context_summary = "Keine historischen Daten verfügbar."
-            yield {"event": "log", "data": json.dumps({"message": f"Summarization failed: {e}", "level": "error"})}
+    try:
+        result = await task
+    except Exception:
+        # narrative.build_day_narrative already emitted the matching
+        # `step`/`log`/`error` events (analysis failure) before raising.
+        return
 
-        yield {"event": "summary", "data": json.dumps({"summary": context_summary})}
-        yield {"event": "step", "data": json.dumps({"step": "summary", "state": "done"})}
+    # Save the narrative — specific to this review-UI flow; the sessions
+    # path saves the same markdown against every segment's transcript.
+    yield {"event": "step", "data": json.dumps({"step": "document", "state": "active"})}
+    yield {"event": "log", "data": json.dumps({"message": "Generating narrative document...", "level": "info"})}
 
-        # Build enriched context
-        enriched = document_processor.build_enriched_context(
-            transcript, entities, context_summary
+    try:
+        doc_row = await db.save_processed_document(
+            transcript_id=transcript_id,
+            document_markdown=result.markdown,
+            analysis_json=result.analysis,
+            context_summary=result.context_summary,
+            metadata=result.metadata,
         )
+        doc_id = doc_row["id"]
+        version = doc_row["version"]
+    except Exception as e:
+        yield {"event": "step", "data": json.dumps({"step": "document", "state": "error"})}
+        yield {"event": "error", "data": json.dumps({"message": f"Failed to save document: {e}"})}
+        return
 
-        # Step 3: Analyze transcript
-        yield {"event": "step", "data": json.dumps({"step": "analysis", "state": "active"})}
-        yield {"event": "log", "data": json.dumps({"message": "Analyzing transcript via LLM (this may take a while)...", "level": "info"})}
-
-        try:
-            analysis = await document_processor.analyze_transcript(enriched)
-        except Exception as e:
-            error_msg = str(e) or type(e).__name__
-            logger.error("Document analysis failed for transcript %s: %s", transcript_id, error_msg)
-            yield {"event": "step", "data": json.dumps({"step": "analysis", "state": "error"})}
-            yield {"event": "log", "data": json.dumps({"message": f"Analysis failed: {error_msg}", "level": "error"})}
-            yield {"event": "error", "data": json.dumps({"message": f"Analysis failed: {error_msg}"})}
-            return
-
-        yield {"event": "analysis", "data": json.dumps({"analysis": analysis})}
-        yield {"event": "step", "data": json.dumps({"step": "analysis", "state": "done"})}
-
-        # Step 4: Generate document
-        yield {"event": "step", "data": json.dumps({"step": "document", "state": "active"})}
-        yield {"event": "log", "data": json.dumps({"message": "Generating narrative document...", "level": "info"})}
-
-        markdown = document_processor.generate_narrative_document(enriched, analysis)
-        metadata = document_processor.build_document_metadata(enriched)
-
-        # Save to database
-        try:
-            doc_row = await db.save_processed_document(
-                transcript_id=transcript_id,
-                document_markdown=markdown,
-                analysis_json=analysis,
-                context_summary=context_summary,
-                metadata=metadata,
-            )
-            doc_id = doc_row["id"]
-            version = doc_row["version"]
-        except Exception as e:
-            yield {"event": "step", "data": json.dumps({"step": "document", "state": "error"})}
-            yield {"event": "error", "data": json.dumps({"message": f"Failed to save document: {e}"})}
-            return
-
-        yield {
-            "event": "document",
-            "data": json.dumps({
-                "doc_id": doc_id,
-                "version": version,
-                "markdown": markdown,
-                "metadata": metadata,
-            }),
-        }
-        yield {"event": "step", "data": json.dumps({"step": "document", "state": "done"})}
-        yield {"event": "done", "data": json.dumps({"doc_id": doc_id})}
-
-    return EventSourceResponse(event_generator())
+    yield {
+        "event": "document",
+        "data": json.dumps({
+            "doc_id": doc_id,
+            "version": version,
+            "markdown": result.markdown,
+            "metadata": result.metadata,
+        }),
+    }
+    yield {"event": "step", "data": json.dumps({"step": "document", "state": "done"})}
+    yield {"event": "done", "data": json.dumps({"doc_id": doc_id})}
 
 
 @legacy_router.get("/api/documents/{doc_id}")
@@ -628,7 +608,7 @@ async def ingest_document(doc_id: int):
 
     metadata = doc["metadata"] or {}
     try:
-        await document_processor.ingest_to_lightrag(doc["document_markdown"], metadata)
+        await narrative.sync_and_ingest(doc["document_markdown"], metadata)
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, 500)
 

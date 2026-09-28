@@ -605,7 +605,7 @@ Total ~220 MB voice models in bundle. If bundle size is a concern later, voices 
 
 ## 10. Ingest contract
 
-The iOS app talks only to the server (`server/webapp/` — the merged FastAPI app). All routes below live in the same app. The server runs a two-phase pipeline in-process: per segment it does ffmpeg → whisper → transcript_corrector → entity_detector and persists the transcript; then once per session it concatenates all segments (with per-segment headers preserving meeting title, time range, and attendees), runs `document_processor` (LightRAG context query + Ollama analysis + narrative generation) a single time, and ingests one combined document into LightRAG under id `diary:{date}`. The combined narrative is saved as a `processed_documents` row against every segment's transcript so segment-keyed read paths keep working.
+The iOS app talks only to the server (`server/webapp/` — the merged FastAPI app). All routes below live in the same app. The server runs a two-phase pipeline in-process: per segment it does ffmpeg → whisper → transcript_corrector → entity_detector and persists the transcript; then once per session it concatenates all segments (with per-segment headers preserving meeting title, time range, and attendees), runs the shared narrative stage (`narrative.build_day_narrative`: LightRAG context query + Ollama analysis + narrative generation, the same stage the HTMX review UI's SSE endpoint uses) a single time, then the explicit skeleton-sync-then-ingest step (`narrative.sync_and_ingest`), ingesting one combined document into LightRAG under id `diary:{date}`. The combined narrative is saved as a `processed_documents` row against every segment's transcript so segment-keyed read paths keep working.
 
 ### 10.1 Endpoint
 
