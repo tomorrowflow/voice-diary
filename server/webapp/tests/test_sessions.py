@@ -305,12 +305,16 @@ def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tm
     async def fake_load_entity_dismissals():
         return []
 
+    async def fake_save_draft(transcript_id, text, raw_text=None, entities_json=None):
+        pass
+
     monkeypatch.setattr(sessions_router.transcript_ingest, "transcribe_and_persist", fake_transcribe_and_persist)
     monkeypatch.setattr(sessions_router.correction, "correct_and_detect_entities", fake_correct_and_detect_entities)
     monkeypatch.setattr(db, "load_person_dictionary", fake_load_person_dictionary)
     monkeypatch.setattr(db, "load_term_dictionary", fake_load_term_dictionary)
     monkeypatch.setattr(db, "load_text_corrections", fake_load_text_corrections)
     monkeypatch.setattr(db, "load_entity_dismissals", fake_load_entity_dismissals)
+    monkeypatch.setattr(db, "save_draft", fake_save_draft)
 
     artifact = asyncio.run(
         sessions_router._process_segment(
@@ -395,8 +399,8 @@ def test_process_segment_uses_shared_correction_module(monkeypatch, tmp_path):
 
     saved_drafts = []
 
-    async def fake_save_draft(transcript_id, text):
-        saved_drafts.append((transcript_id, text))
+    async def fake_save_draft(transcript_id, text, raw_text=None, entities_json=None):
+        saved_drafts.append((transcript_id, text, entities_json))
 
     monkeypatch.setattr(sessions_router.transcript_ingest, "transcribe_and_persist", fake_transcribe_and_persist)
     monkeypatch.setattr(sessions_router.correction, "correct_and_detect_entities", fake_correct_and_detect_entities)
@@ -420,7 +424,10 @@ def test_process_segment_uses_shared_correction_module(monkeypatch, tmp_path):
     assert calls[0]["dismissals"] == dismissals
 
     assert artifact.corrected_text == "hallo Welt"
-    assert saved_drafts == [(9, "hallo Welt")]
+    assert len(saved_drafts) == 1
+    assert saved_drafts[0][0] == 9
+    assert saved_drafts[0][1] == "hallo Welt"
+    assert jsonlib.loads(saved_drafts[0][2]) == artifact.entities
     assert artifact.entities == [
         {
             "start": 0, "end": 4, "original_text": "Anna", "canonical": "Anna",
@@ -430,6 +437,77 @@ def test_process_segment_uses_shared_correction_module(monkeypatch, tmp_path):
             "llm_suggested": False, "text": "Anna", "type": "PERSON",
         }
     ]
+
+
+def test_process_segment_persists_entities_even_when_correction_leaves_text_unchanged(
+    monkeypatch, tmp_path
+):
+    """#52: `_process_segment` only called `db.save_draft` when correction
+    changed the text, so detected entities were never persisted for the iOS
+    session path — a retry rebuilding the session narrative from Postgres
+    would always see an empty entity list. `save_draft` must always run
+    with `entities_json` so a later retry can reload what was detected."""
+    from models import Manifest
+    import correction as correction_module
+    import transcript_ingest
+    from entity_detector import DetectedEntity
+
+    session_dir = tmp_path / "sess-entities"
+    session_dir.mkdir()
+    (session_dir / "s01.m4a").write_bytes(b"fake-audio")
+
+    manifest_dict = _manifest("sess-entities")
+    manifest_dict["segments"][0]["audio_file"] = "s01.m4a"
+    manifest = Manifest.model_validate(manifest_dict)
+    segment = manifest.segments[0]
+
+    async def fake_transcribe_and_persist(audio_bytes, *, src_suffix, filename, date, author, language="de"):
+        return transcript_ingest.TranscribedSegment(transcript_id=11, raw_text="hallo Anna")
+
+    async def fake_correct_and_detect_entities(
+        raw_text, *, persons, terms, text_corrections=None, dismissals=None, on_step=None
+    ):
+        entity = DetectedEntity(
+            start=6, end=10, original_text="Anna", canonical="Anna",
+            entity_type="PERSON", match_type="exact", confidence="high",
+            status="auto-matched",
+        )
+        # Correction leaves the text unchanged — only entity detection ran.
+        return correction_module.CorrectionResult(corrected_text=raw_text, entities=[entity])
+
+    async def fake_load_dict():
+        return []
+
+    async def fake_load_corrections():
+        return []
+
+    monkeypatch.setattr(sessions_router.transcript_ingest, "transcribe_and_persist", fake_transcribe_and_persist)
+    monkeypatch.setattr(sessions_router.correction, "correct_and_detect_entities", fake_correct_and_detect_entities)
+    monkeypatch.setattr(db, "load_person_dictionary", fake_load_dict)
+    monkeypatch.setattr(db, "load_term_dictionary", fake_load_dict)
+    monkeypatch.setattr(db, "load_text_corrections", fake_load_corrections)
+    monkeypatch.setattr(db, "load_entity_dismissals", fake_load_corrections)
+
+    saved_drafts = []
+
+    async def fake_save_draft(transcript_id, text, raw_text=None, entities_json=None):
+        saved_drafts.append((transcript_id, text, entities_json))
+
+    monkeypatch.setattr(db, "save_draft", fake_save_draft)
+
+    artifact = asyncio.run(
+        sessions_router._process_segment(
+            manifest=manifest, segment=segment, session_dir=session_dir
+        )
+    )
+
+    assert artifact.corrected_text == "hallo Anna"
+    assert len(saved_drafts) == 1
+    saved_transcript_id, saved_text, saved_entities_json = saved_drafts[0]
+    assert saved_transcript_id == 11
+    assert saved_text == "hallo Anna"
+    assert jsonlib.loads(saved_entities_json) == artifact.entities
+    assert artifact.entities[0]["text"] == "Anna"
 
 
 def _fake_document_processor_pipeline(monkeypatch, *, ingest=None):
@@ -523,6 +601,257 @@ def test_run_session_document_processor_marks_each_saved_document_ingested_on_su
     )
 
     assert marked_ids == saved_docs == [101, 102]
+
+
+def test_retry_analysis_404s_for_unknown_session(monkeypatch):
+    """#52: retrying a session the server has never heard of (neither cache
+    nor persisted row) must 404, matching the status endpoint's behaviour."""
+    _setup(monkeypatch)
+
+    async def fake_get_session_status(session_id: str) -> dict | None:
+        return None
+
+    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+
+    resp = _client().post("/api/sessions/unknown/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 404
+
+
+def test_retry_analysis_409s_when_no_segment_is_pending_analysis(monkeypatch):
+    """#52: a session with no `pending_analysis` segment (e.g. fully `done`,
+    or still `processing`) is not in a retryable state."""
+    _setup(monkeypatch)
+
+    async def fake_get_session_status(session_id: str) -> dict | None:
+        return {
+            "session_id": "sess-done",
+            "received_at": "2026-07-01T10:00:00Z",
+            "state": "done",
+            "segments": [
+                {"segment_id": "s01", "status": "processed", "transcript_id": 1, "error": None},
+            ],
+        }
+
+    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+
+    resp = _client().post("/api/sessions/sess-done/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 409
+
+
+def test_retry_analysis_ingest_only_failure_reingests_without_rerunning_analysis(
+    monkeypatch, tmp_path
+):
+    """#52 acceptance: when analysis already succeeded and saved a document
+    (only the LightRAG ingest failed), retry must re-ingest that saved
+    narrative and mark it ingested — not re-run the LLM analysis."""
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    session_id = "sess-retry-ingest-only"
+    session_dir = sessions_router._sessions_data_dir() / sessions_router._slug_session_id(session_id)
+    session_dir.mkdir(parents=True)
+    (session_dir / "manifest.json").write_text(jsonlib.dumps(_manifest(session_id)))
+
+    async def fake_get_session_status(sid: str) -> dict | None:
+        return {
+            "session_id": session_id,
+            "received_at": "2026-07-01T10:00:00Z",
+            "state": "partial",
+            "segments": [
+                {
+                    "segment_id": "s01",
+                    "status": "pending_analysis",
+                    "transcript_id": 5,
+                    "error": "analysis_pending: lightrag unreachable",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+
+    async def fake_get_transcript(transcript_id: int) -> dict | None:
+        return {"id": 5, "raw_text": "hallo welt", "corrected_text": "Hallo Welt", "entities_json": None}
+
+    monkeypatch.setattr(db, "get_transcript", fake_get_transcript)
+
+    saved_document = {
+        "id": 42,
+        "document_markdown": "# already analyzed narrative",
+        "metadata": {"date": "2026-07-01", "author": "Florian Wolf"},
+        "lightrag_ingested": False,
+    }
+
+    async def fake_get_latest_processed_document(transcript_id: int) -> dict | None:
+        assert transcript_id == 5
+        return saved_document
+
+    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest_processed_document)
+
+    import document_processor
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("analysis must not re-run on an ingest-only retry")
+
+    monkeypatch.setattr(document_processor, "analyze_transcript", fail_if_called)
+
+    sync_calls = []
+
+    async def fake_sync_and_ingest(markdown, metadata, *, lightrag_client=None):
+        sync_calls.append((markdown, metadata))
+        return {}
+
+    monkeypatch.setattr(sessions_router.narrative, "sync_and_ingest", fake_sync_and_ingest)
+
+    marked_ids: list[int] = []
+
+    async def fake_mark_document_ingested(doc_id: int):
+        marked_ids.append(doc_id)
+        return {"id": doc_id, "lightrag_ingested_at": None}
+
+    monkeypatch.setattr(db, "mark_document_ingested", fake_mark_document_ingested)
+
+    async def fake_update_session_status(session_id: str, state: str, segments: list[dict]):
+        return None
+
+    monkeypatch.setattr(db, "update_session_status", fake_update_session_status)
+
+    resp = _client().post(f"/api/sessions/{session_id}/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "done"
+    assert body["segments"][0]["status"] == "processed"
+    assert sync_calls == [("# already analyzed narrative", {"date": "2026-07-01", "author": "Florian Wolf"})]
+    assert marked_ids == [42]
+
+
+def test_retry_analysis_rebuilds_narrative_from_persisted_transcripts_and_marks_done(
+    monkeypatch, tmp_path
+):
+    """#52: the happy path — analysis never completed (no saved document
+    yet), so retry must reload the manifest from disk, reload each pending
+    segment's transcript + entities from Postgres, re-run the full narrative
+    stage, and flip the segment (and session) to done."""
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    session_id = "sess-retry-full"
+    session_dir = sessions_router._sessions_data_dir() / sessions_router._slug_session_id(session_id)
+    session_dir.mkdir(parents=True)
+    (session_dir / "manifest.json").write_text(jsonlib.dumps(_manifest(session_id)))
+
+    async def fake_get_session_status(sid: str) -> dict | None:
+        return {
+            "session_id": session_id,
+            "received_at": "2026-07-01T10:00:00Z",
+            "state": "partial",
+            "segments": [
+                {
+                    "segment_id": "s01",
+                    "status": "pending_analysis",
+                    "transcript_id": 5,
+                    "error": "analysis_pending: lightrag unreachable",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+
+    async def fake_get_transcript(transcript_id: int) -> dict | None:
+        assert transcript_id == 5
+        return {
+            "id": 5,
+            "raw_text": "hallo welt",
+            "corrected_text": "Hallo Welt",
+            "entities_json": jsonlib.dumps([{"type": "PERSON", "text": "Anna"}]),
+        }
+
+    monkeypatch.setattr(db, "get_transcript", fake_get_transcript)
+
+    async def fake_get_latest_processed_document(transcript_id: int) -> dict | None:
+        return None
+
+    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest_processed_document)
+
+    async def fake_ingest(markdown, metadata, *, client=None):
+        return None
+
+    _fake_document_processor_pipeline(monkeypatch, ingest=fake_ingest)
+
+    saved_docs: list[int] = []
+
+    async def fake_save_processed_document(
+        *, transcript_id, document_markdown, analysis_json, context_summary, metadata
+    ):
+        saved_docs.append(transcript_id)
+        return {"id": 900 + transcript_id, "version": 1, "created_at": None}
+
+    monkeypatch.setattr(db, "save_processed_document", fake_save_processed_document)
+
+    marked_ids: list[int] = []
+
+    async def fake_mark_document_ingested(doc_id: int):
+        marked_ids.append(doc_id)
+        return {"id": doc_id, "lightrag_ingested_at": None}
+
+    monkeypatch.setattr(db, "mark_document_ingested", fake_mark_document_ingested)
+
+    persisted_updates: list[tuple] = []
+
+    async def fake_update_session_status(session_id: str, state: str, segments: list[dict]):
+        persisted_updates.append((session_id, state, segments))
+
+    monkeypatch.setattr(db, "update_session_status", fake_update_session_status)
+
+    resp = _client().post(f"/api/sessions/{session_id}/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "done"
+    assert body["segments"] == [
+        {"segment_id": "s01", "status": "processed", "transcript_id": 5, "error": None}
+    ]
+    assert saved_docs == [5]
+    assert marked_ids == [905]
+    assert persisted_updates == [(session_id, "done", body["segments"])]
+
+
+def test_retry_stuck_sessions_on_startup_retries_each_pending_session_and_keeps_going_on_failure(
+    monkeypatch,
+):
+    """#52: the startup sweep must be bounded/sequential/best-effort — one
+    session's retry blowing up must not stop the rest from being tried, and
+    a failure is logged and left `pending_analysis`, not re-raised."""
+    _setup(monkeypatch)
+
+    async def fake_list_pending_analysis_session_ids():
+        return ["sess-a", "sess-b", "sess-c"]
+
+    monkeypatch.setattr(db, "list_pending_analysis_session_ids", fake_list_pending_analysis_session_ids)
+
+    attempted: list[str] = []
+
+    async def fake_retry_session_analysis(session_id, status_obj):
+        attempted.append(session_id)
+        if session_id == "sess-b":
+            raise RuntimeError("lightrag unreachable")
+        return status_obj
+
+    monkeypatch.setattr(sessions_router, "_retry_session_analysis", fake_retry_session_analysis)
+
+    async def fake_lookup(session_id):
+        return SessionStatus(
+            session_id=session_id, received_at="2026-07-01T10:00:00Z",
+            state="partial", segments=[],
+        )
+
+    monkeypatch.setattr(sessions_router, "_lookup_session_status", fake_lookup)
+
+    asyncio.run(sessions_router.retry_stuck_sessions_on_startup())
+
+    assert attempted == ["sess-a", "sess-b", "sess-c"]
 
 
 def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_failure(monkeypatch):

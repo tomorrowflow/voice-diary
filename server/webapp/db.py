@@ -1248,6 +1248,27 @@ async def delete_session_status(session_id: str) -> None:
     await pool.execute("DELETE FROM session_ingests WHERE session_id = $1", session_id)
 
 
+async def list_pending_analysis_session_ids() -> list[str]:
+    """Session ids with at least one segment stuck in `pending_analysis`.
+
+    Backs the startup retry sweep (#52). Deliberately doesn't filter on
+    `state`: `_derive_session_state` only counts `failed` segments, so a
+    session whose analysis failed is persisted as `done` while its
+    segments are still `pending_analysis`. The segment filter runs in
+    Python — this table is small (one row per session).
+    """
+    pool = await get_pool()
+    rows = await pool.fetch("SELECT session_id, segments FROM session_ingests")
+    result = []
+    for row in rows:
+        segments = row["segments"]
+        if isinstance(segments, str):
+            segments = json.loads(segments)
+        if any(s.get("status") == "pending_analysis" for s in segments):
+            result.append(row["session_id"])
+    return result
+
+
 # --- Processed documents ---
 
 
