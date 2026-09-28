@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -406,8 +407,7 @@ def test_run_session_document_processor_marks_each_saved_document_ingested_on_su
         )
     )
 
-    assert sorted(marked_ids) == sorted(saved_docs)
-    assert marked_ids == [101, 102]
+    assert marked_ids == saved_docs == [101, 102]
 
 
 def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_failure(monkeypatch):
@@ -441,14 +441,11 @@ def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_fail
         ),
     ]
 
-    try:
+    with pytest.raises(RuntimeError, match="lightrag unreachable"):
         asyncio.run(
             sessions_router._run_session_document_processor(
                 manifest=manifest, artifacts=artifacts, todos_by_segment={},
             )
         )
-        assert False, "expected ingest failure to propagate"
-    except RuntimeError:
-        pass
 
     assert marked_ids == []
