@@ -642,9 +642,6 @@ async def _process_segment(
     )
     corrected_text = result.corrected_text
 
-    if corrected_text != raw_transcript:
-        await db.save_draft(transcript_id, corrected_text)
-
     # Convert dataclass instances to dicts in the shape document_processor
     # expects (the HTMX review flow stores `text` for the canonical name).
     entities: list[dict] = []
@@ -653,6 +650,11 @@ async def _process_segment(
         item["text"] = d.canonical or d.original_text
         item["type"] = d.entity_type
         entities.append(item)
+
+    # Always persist, even when correction left the text unchanged —
+    # otherwise the detected entities are lost and a retry-analysis (#52)
+    # rebuilding the session narrative from Postgres would see none.
+    await db.save_draft(transcript_id, corrected_text, entities_json=json.dumps(entities))
 
     return _SegmentArtifact(
         segment=segment,
