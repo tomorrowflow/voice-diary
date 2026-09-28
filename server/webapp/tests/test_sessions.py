@@ -818,6 +818,42 @@ def test_retry_analysis_rebuilds_narrative_from_persisted_transcripts_and_marks_
     assert persisted_updates == [(session_id, "done", body["segments"])]
 
 
+def test_retry_stuck_sessions_on_startup_retries_each_pending_session_and_keeps_going_on_failure(
+    monkeypatch,
+):
+    """#52: the startup sweep must be bounded/sequential/best-effort — one
+    session's retry blowing up must not stop the rest from being tried, and
+    a failure is logged and left `pending_analysis`, not re-raised."""
+    _setup(monkeypatch)
+
+    async def fake_list_pending_analysis_session_ids():
+        return ["sess-a", "sess-b", "sess-c"]
+
+    monkeypatch.setattr(db, "list_pending_analysis_session_ids", fake_list_pending_analysis_session_ids)
+
+    attempted: list[str] = []
+
+    async def fake_retry_session_analysis(session_id, status_obj):
+        attempted.append(session_id)
+        if session_id == "sess-b":
+            raise RuntimeError("lightrag unreachable")
+        return status_obj
+
+    monkeypatch.setattr(sessions_router, "_retry_session_analysis", fake_retry_session_analysis)
+
+    async def fake_lookup(session_id):
+        return SessionStatus(
+            session_id=session_id, received_at="2026-07-01T10:00:00Z",
+            state="partial", segments=[],
+        )
+
+    monkeypatch.setattr(sessions_router, "_lookup_session_status", fake_lookup)
+
+    asyncio.run(sessions_router.retry_stuck_sessions_on_startup())
+
+    assert attempted == ["sess-a", "sess-b", "sess-c"]
+
+
 def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_failure(monkeypatch):
     """T1/#49: a failed LightRAG ingest must not mark the already-saved rows
     ingested — they stay retryable (existing `pending_analysis` behaviour in

@@ -94,6 +94,15 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("VECTOR_SEARCH_ENABLED = false, skipping Qdrant")
 
+    # Best-effort startup sweep (#52): retry sessions left in
+    # pending_analysis by a prior crash/restart. Fire-and-forget so a slow
+    # LLM/LightRAG retry never delays the app coming up; kept on app.state
+    # so the task isn't garbage-collected mid-flight.
+    from routers.sessions import retry_stuck_sessions_on_startup
+    app.state.startup_retry_sweep_task = asyncio.create_task(
+        retry_stuck_sessions_on_startup()
+    )
+
     yield
     await vector_store.close()
     await db.close_pool()

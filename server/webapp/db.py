@@ -1248,6 +1248,28 @@ async def delete_session_status(session_id: str) -> None:
     await pool.execute("DELETE FROM session_ingests WHERE session_id = $1", session_id)
 
 
+async def list_pending_analysis_session_ids() -> list[str]:
+    """Session ids with at least one segment stuck in `pending_analysis`.
+
+    Backs the startup retry sweep (#52). Filters in Python rather than via
+    jsonb containment in SQL — `segments` mixes per-segment keys
+    (transcript_id, error) that would make a partial-match `@>` query
+    fragile, and this table is small (one row per session, not per day).
+    """
+    pool = await get_pool()
+    rows = await pool.fetch(
+        "SELECT session_id, segments FROM session_ingests WHERE state != 'done'"
+    )
+    result = []
+    for row in rows:
+        segments = row["segments"]
+        if isinstance(segments, str):
+            segments = json.loads(segments)
+        if any(s.get("status") == "pending_analysis" for s in segments):
+            result.append(row["session_id"])
+    return result
+
+
 # --- Processed documents ---
 
 
