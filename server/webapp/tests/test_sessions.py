@@ -325,10 +325,13 @@ def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tm
 
 
 def _fake_document_processor_pipeline(monkeypatch, *, ingest=None):
-    """Stub every `document_processor` step `_run_session_document_processor`
-    calls before/around `ingest_to_lightrag`, so tests can focus on the
-    save/mark bookkeeping around it."""
+    """Stub every `document_processor` step `narrative.build_day_narrative`
+    calls before/around `ingest_to_lightrag` (via `narrative.sync_and_ingest`),
+    so tests can focus on the save/mark bookkeeping around it. Also stubs
+    `skeleton_sync.sync_incremental` — `sync_and_ingest` calls it for real
+    now that it's an explicit step (SRV-A1/#50, T3), and there's no DB here."""
     import document_processor
+    import skeleton_sync
 
     async def fake_query_lightrag_context(date_str, *, client=None):
         return ""
@@ -336,13 +339,13 @@ def _fake_document_processor_pipeline(monkeypatch, *, ingest=None):
     async def fake_query_lightrag_entity_history(names, date_str, *, client=None):
         return ""
 
-    async def fake_summarize_context(recent_ctx, entity_hist, date_str):
+    async def fake_summarize_context(recent_ctx, entity_hist, date_str, *, transport=None):
         return ""
 
     def fake_build_enriched_context(transcript_record, entities, context_summary):
         return {}
 
-    async def fake_analyze_transcript(enriched):
+    async def fake_analyze_transcript(enriched, *, transport=None):
         return {}
 
     def fake_generate_narrative_document(enriched, analysis):
@@ -351,6 +354,9 @@ def _fake_document_processor_pipeline(monkeypatch, *, ingest=None):
     def fake_build_document_metadata(enriched):
         return {}
 
+    async def fake_sync_incremental(triggered_by: str):
+        return skeleton_sync.SyncStats()
+
     monkeypatch.setattr(document_processor, "query_lightrag_context", fake_query_lightrag_context)
     monkeypatch.setattr(document_processor, "query_lightrag_entity_history", fake_query_lightrag_entity_history)
     monkeypatch.setattr(document_processor, "summarize_context", fake_summarize_context)
@@ -358,6 +364,7 @@ def _fake_document_processor_pipeline(monkeypatch, *, ingest=None):
     monkeypatch.setattr(document_processor, "analyze_transcript", fake_analyze_transcript)
     monkeypatch.setattr(document_processor, "generate_narrative_document", fake_generate_narrative_document)
     monkeypatch.setattr(document_processor, "build_document_metadata", fake_build_document_metadata)
+    monkeypatch.setattr(skeleton_sync, "sync_incremental", fake_sync_incremental)
 
     if ingest is not None:
         monkeypatch.setattr(document_processor, "ingest_to_lightrag", ingest)
@@ -369,7 +376,7 @@ def test_run_session_document_processor_marks_each_saved_document_ingested_on_su
     shows as "not ingested" on `/process/{id}` forever."""
     from models import Manifest
 
-    async def fake_ingest(markdown, metadata):
+    async def fake_ingest(markdown, metadata, *, client=None):
         return None
 
     _fake_document_processor_pipeline(monkeypatch, ingest=fake_ingest)
@@ -416,7 +423,7 @@ def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_fail
     the caller)."""
     from models import Manifest
 
-    async def fake_ingest_that_fails(markdown, metadata):
+    async def fake_ingest_that_fails(markdown, metadata, *, client=None):
         raise RuntimeError("lightrag unreachable")
 
     _fake_document_processor_pipeline(monkeypatch, ingest=fake_ingest_that_fails)
