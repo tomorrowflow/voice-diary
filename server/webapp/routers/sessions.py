@@ -287,15 +287,13 @@ async def retry_analysis(session_id: str) -> SessionStatus:
             detail="session_not_found",
         )
 
-    pending = [s for s in status_obj.segments if s.status == "pending_analysis"]
-    if not pending:
+    if not any(s.status == "pending_analysis" for s in status_obj.segments):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="session_not_retryable",
         )
 
-    updated = await _retry_session_analysis(session_id, status_obj)
-    return updated
+    return await _retry_session_analysis(session_id, status_obj)
 
 
 async def retry_stuck_sessions_on_startup() -> None:
