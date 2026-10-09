@@ -2,13 +2,22 @@ import AVFoundation
 import Foundation
 import Synchronization
 
-// Server-mediated Voxtral TTS engine. Slice 01 scope: speak only — no
-// prefetch, no fallback policy, no VoiceRegistry routing. The debug
-// button in `DebugSettingsView` calls `speak(_:voice:language:)` with
-// an explicit voice id; the protocol-conforming `speak(_:language:)`
-// reads `VoicePreferences.selectedVoiceID(for:)` and strips the
-// `voxtral:` prefix. When no preference is set, a small default voice
-// id is used so the debug button works on a fresh install.
+// Server-mediated Voxtral TTS engine. `VoiceRegistry.engine(for:)`
+// routes here when the user's selected voice id for a language carries
+// the `voxtral:` prefix. The protocol-conforming `speak(_:language:)`
+// reads `VoicePreferences.selectedVoiceID(for:)` and strips that
+// prefix; `speak(_:voice:language:)` takes an explicit voice id (used
+// by the voice picker's preview in `VoiceSettingsView`). When no
+// Voxtral voice is selected, a small default voice id is used.
+//
+// If synthesis fails, `performSpeak` asks `TTSFallbackPolicy.decide`
+// what to do and re-dispatches the same utterance to `PiperTTS` or
+// `AppleSpeechTTS`, so a server hiccup never leaves the walkthrough
+// silent. A cancelled synth skips the fallback.
+//
+// There is no Voxtral-specific prefetch: the engine inherits the
+// `TTSEngine` default `prefetch`/`play`, which just records the text
+// and plays it through a fresh `speak(_:language:)`.
 //
 // Concurrent callers are serialized via a `Mutex<Task<Void, Never>?>`
 // pattern mirrored from `PiperTTS`, so two taps on the debug button
