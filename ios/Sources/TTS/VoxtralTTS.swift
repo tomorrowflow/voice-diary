@@ -29,7 +29,7 @@ public final class VoxtralTTS: NSObject, TTSEngine, @unchecked Sendable {
 
     /// Voice id used when nothing else is available. Native German
     /// reference voice — see `voice_embedding/de_male.pt` in the model
-    /// repo. Slice 02's picker lets the user override per language.
+    /// repo. The user can override it per language in `VoiceSettingsView`.
     public static let fallbackVoice = "de_male"
 
     public static let voiceIDPrefix = "voxtral:"

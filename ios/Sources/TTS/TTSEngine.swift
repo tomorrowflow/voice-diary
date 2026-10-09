@@ -1,9 +1,10 @@
 import AVFoundation
 import Foundation
 
-// Common interface for any TTS backend. M5 ships with `AppleSpeechTTS`
-// (uses the built-in `AVSpeechSynthesizer`). M9 swaps in Piper via
-// sherpa-onnx for higher-quality voices — same protocol, different backend.
+// Common interface for any TTS backend. Implementations: `AppleSpeechTTS`
+// (the built-in `AVSpeechSynthesizer`), `PiperTTS` (bundled VITS voices via
+// sherpa-onnx) and `VoxtralTTS` (server-mediated). `VoiceRegistry` picks the
+// engine per language from the user's selected voice.
 
 public protocol TTSEngine: AnyObject, Sendable {
     /// Speak the given text in the given language. Returns once playback

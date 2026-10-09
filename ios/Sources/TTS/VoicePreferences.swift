@@ -41,9 +41,9 @@ public enum VoicePreferences {
         }
         if stored.hasPrefix(voxtralPrefix) {
             // Server-hosted Voxtral voice. We can't validate availability
-            // here (catalog lives on the server) — slice 02's catalog
-            // client is the place to reconcile against the server's
-            // current list. Return as-is.
+            // here (catalog lives on the server; `VoiceCatalogClient`
+            // only caches the list for the picker and does not prune
+            // stored selections). Return as-is.
             return stored
         }
         // Apple voice — drop the preference if the user uninstalled it
