@@ -18,9 +18,10 @@ import Foundation
 //
 // Voxtral routing makes no on-device reachability check at registry
 // time — that would add a network hop to every utterance and the
-// non-throwing `speak(...)` already logs+swallows failures. Slice 05
-// will add a `TTSFallbackPolicy` that re-dispatches a failed Voxtral
-// utterance through Piper or Apple within the same call.
+// non-throwing `speak(...)` already logs+swallows failures. A failed
+// Voxtral utterance is re-dispatched through Piper or Apple within the
+// same call by `VoxtralTTS` itself, using `TTSFallbackPolicy`
+// (see `VoxtralTTS.performSpeak` and `TTSFallbackPolicy.swift`).
 
 public enum VoiceRegistry {
     public static func engine(for language: String) -> any TTSEngine {
