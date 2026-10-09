@@ -95,32 +95,6 @@ public final class VoxtralTTS: NSObject, TTSEngine, @unchecked Sendable {
         }
     }
 
-    /// Synthesize and play; re-throws any `VoxtralError` from the
-    /// client so the debug surface can show it to the user. Production
-    /// code uses the non-throwing `speak(...)` variants, which log and
-    /// swallow because a walkthrough must never stall on a single TTS
-    /// failure.
-    public func speakOrThrow(text: String, voice: String, language: String) async throws {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        let url = try await client.synthesize(
-            VoxtralTTSClient.Request(text: trimmed, language: language, voice: voice)
-        )
-        // Reuse the same serialized playback path so the debug button
-        // can't overlap with a concurrent `speak(...)` call.
-        let myTask: Task<Void, Never> = serialQueue.withLock { state in
-            let previous = state
-            let new = Task { [weak self] in
-                _ = await previous?.value
-                guard let self else { return }
-                await self.play(url: url)
-            }
-            state = new
-            return new
-        }
-        await myTask.value
-    }
-
     // MARK: - Internals
 
     private func performSpeak(text: String, voice: String, language: String) async {
