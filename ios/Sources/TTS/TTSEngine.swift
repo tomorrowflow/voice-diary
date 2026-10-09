@@ -38,7 +38,7 @@ public protocol TTSEngine: AnyObject, Sendable {
 public extension TTSEngine {
     /// Default prefetch — no real synth, the handle just carries the
     /// text + language for later dispatch through `speak(_:language:)`.
-    /// Apple uses this; Piper overrides.
+    /// Apple and Voxtral use this; Piper overrides.
     func prefetch(_ text: String, language: String) async -> PrefetchedUtterance {
         PrefetchedUtterance(
             text: text,

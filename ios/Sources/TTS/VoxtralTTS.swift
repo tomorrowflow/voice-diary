@@ -12,8 +12,12 @@ import Synchronization
 //
 // If synthesis fails, `performSpeak` asks `TTSFallbackPolicy.decide`
 // what to do and re-dispatches the same utterance to `PiperTTS` or
-// `AppleSpeechTTS`, so a server hiccup never leaves the walkthrough
-// silent. A cancelled synth skips the fallback.
+// `AppleSpeechTTS` before `speak` returns, so a failed synth doesn't
+// leave the walkthrough silent. Only synthesis failures fall back
+// (playback errors are logged and the utterance is dropped), and a
+// cancelled synth skips the fallback. `cancel()` stops Voxtral's own
+// queue and playback only; a fallback engine must be cancelled via its
+// own `cancel()`.
 //
 // There is no Voxtral-specific prefetch: the engine inherits the
 // `TTSEngine` default `prefetch`/`play`, which just records the text
