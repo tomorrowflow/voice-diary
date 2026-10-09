@@ -20,8 +20,9 @@ import Synchronization
 // and plays it through a fresh `speak(_:language:)`.
 //
 // Concurrent callers are serialized via a `Mutex<Task<Void, Never>?>`
-// pattern mirrored from `PiperTTS`, so two taps on the debug button
-// can't spin up overlapping `AVAudioPlayer` instances.
+// pattern mirrored from `PiperTTS`, so repeated voice previews or
+// overlapping walkthrough turns can't spin up overlapping
+// `AVAudioPlayer` instances.
 
 public final class VoxtralTTS: NSObject, TTSEngine, @unchecked Sendable {
     public static let shared = VoxtralTTS()
