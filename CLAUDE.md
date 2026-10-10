@@ -213,12 +213,13 @@ curl -H "Authorization: Bearer $IOS_BEARER_TOKEN" http://<tailnet-host>:8000/hea
 
 # Tests (run inside the webapp container so deps + env match prod).
 # The image only copies webapp/ to /app and some tests read other repo files,
-# so mount the repo and run from /repo/server; --no-deps skips postgres,
+# so mount the repo (-v ..:/repo, resolved from server/) and run from
+# /repo/server; no $(...), which agent sandboxes reject. --no-deps skips postgres,
 # qdrant and whisper. Needs a .env; on a fresh clone this stub is enough:
 #   printf 'POSTGRES_PASSWORD=test\nTAILNET_IP=127.0.0.1\n' > .env
-docker compose run --rm --no-deps -v "$(git rev-parse --show-toplevel)":/repo -w /repo/server webapp pytest webapp/tests/                  # full suite
-docker compose run --rm --no-deps -v "$(git rev-parse --show-toplevel)":/repo -w /repo/server webapp pytest webapp/tests/test_sessions.py  # single file
-docker compose run --rm --no-deps -v "$(git rev-parse --show-toplevel)":/repo -w /repo/server webapp pytest webapp/tests/test_sessions.py::test_post_session_happy_path  # single test
+docker compose run --rm --no-deps -v ..:/repo -w /repo/server webapp pytest webapp/tests/                  # full suite
+docker compose run --rm --no-deps -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_sessions.py  # single file
+docker compose run --rm --no-deps -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_sessions.py::test_derive_session_state_all_processed_is_done  # single test
 ```
 
 ### iOS (after M1)
