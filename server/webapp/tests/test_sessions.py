@@ -818,6 +818,177 @@ def test_retry_analysis_rebuilds_narrative_from_persisted_transcripts_and_marks_
     assert persisted_updates == [(session_id, "done", body["segments"])]
 
 
+def _stub_pending_session_for_retry(monkeypatch, tmp_path, session_id: str) -> list[tuple]:
+    """Persisted single-segment `pending_analysis` session with its manifest
+    on disk and transcript row; returns the list `update_session_status`
+    calls are recorded into."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    session_dir = sessions_router._sessions_data_dir() / sessions_router._slug_session_id(session_id)
+    session_dir.mkdir(parents=True)
+    (session_dir / "manifest.json").write_text(jsonlib.dumps(_manifest(session_id)))
+
+    async def fake_get_session_status(sid: str) -> dict | None:
+        return {
+            "session_id": session_id,
+            "received_at": "2026-07-01T10:00:00Z",
+            "state": "done",
+            "segments": [
+                {
+                    "segment_id": "s01",
+                    "status": "pending_analysis",
+                    "transcript_id": 5,
+                    "error": "analysis_pending: first failure",
+                },
+            ],
+        }
+
+    async def fake_get_transcript(transcript_id: int) -> dict | None:
+        return {"id": 5, "raw_text": "hallo welt", "corrected_text": "Hallo Welt", "entities_json": None}
+
+    persisted_updates: list[tuple] = []
+
+    async def fake_update_session_status(session_id: str, state: str, segments: list[dict]):
+        persisted_updates.append((session_id, state, segments))
+
+    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+    monkeypatch.setattr(db, "get_transcript", fake_get_transcript)
+    monkeypatch.setattr(db, "update_session_status", fake_update_session_status)
+    return persisted_updates
+
+
+def test_retry_analysis_returns_pending_status_when_analysis_fails_again(monkeypatch, tmp_path):
+    """BUG-56/#56: the narrative stage failing again on retry must not 500 —
+    the segments stay `pending_analysis` with an `analysis_pending: …` error
+    (same shape as `_process_session`), the status is persisted, and the
+    route returns it with 200."""
+    _setup(monkeypatch)
+    session_id = "sess-retry-analysis-fails"
+    persisted_updates = _stub_pending_session_for_retry(monkeypatch, tmp_path, session_id)
+
+    async def fake_get_latest_processed_document(transcript_id: int) -> dict | None:
+        return None
+
+    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest_processed_document)
+
+    async def failing_run_processor(**kwargs):
+        raise RuntimeError("ollama unreachable")
+
+    monkeypatch.setattr(sessions_router, "_run_session_document_processor", failing_run_processor)
+
+    resp = _client().post(f"/api/sessions/{session_id}/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    expected_segments = [
+        {
+            "segment_id": "s01",
+            "status": "pending_analysis",
+            "transcript_id": 5,
+            "error": "analysis_pending: ollama unreachable",
+        }
+    ]
+    assert body["segments"] == expected_segments
+    assert persisted_updates == [(session_id, body["state"], expected_segments)]
+    # Still retryable afterwards: the cached status is the updated one.
+    status_resp = _client().get(f"/api/sessions/{session_id}/status", headers=_auth())
+    assert status_resp.json()["segments"] == expected_segments
+
+
+def test_retry_analysis_returns_pending_status_when_ingest_fails_again(monkeypatch, tmp_path):
+    """BUG-56/#56: same as above for the ingest-only shortcut — a saved
+    document whose LightRAG re-ingest fails again stays unmarked, the segment
+    stays `pending_analysis` with the new error, and the route returns 200."""
+    _setup(monkeypatch)
+    session_id = "sess-retry-ingest-fails"
+    persisted_updates = _stub_pending_session_for_retry(monkeypatch, tmp_path, session_id)
+
+    async def fake_get_latest_processed_document(transcript_id: int) -> dict | None:
+        return {
+            "id": 42,
+            "document_markdown": "# already analyzed narrative",
+            "metadata": {"date": "2026-07-01"},
+            "lightrag_ingested": False,
+        }
+
+    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest_processed_document)
+
+    async def failing_sync_and_ingest(markdown, metadata, *, lightrag_client=None):
+        raise RuntimeError("lightrag unreachable")
+
+    monkeypatch.setattr(sessions_router.narrative, "sync_and_ingest", failing_sync_and_ingest)
+
+    marked_ids: list[int] = []
+
+    async def fake_mark_document_ingested(doc_id: int):
+        marked_ids.append(doc_id)
+
+    monkeypatch.setattr(db, "mark_document_ingested", fake_mark_document_ingested)
+
+    resp = _client().post(f"/api/sessions/{session_id}/retry-analysis", headers=_auth())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    expected_segments = [
+        {
+            "segment_id": "s01",
+            "status": "pending_analysis",
+            "transcript_id": 5,
+            "error": "analysis_pending: lightrag unreachable",
+        }
+    ]
+    assert body["segments"] == expected_segments
+    assert marked_ids == []
+    assert persisted_updates == [(session_id, body["state"], expected_segments)]
+
+
+def test_retry_stuck_sessions_on_startup_logs_one_line_per_session_whose_retry_fails_again(
+    monkeypatch, caplog
+):
+    """BUG-56/#56: a narrative failure no longer raises out of the retry, so
+    the sweep must notice the still-pending segments itself and log exactly
+    one line per such session (and none for sessions that recovered)."""
+    import logging
+
+    _setup(monkeypatch)
+
+    async def fake_list_pending_analysis_session_ids():
+        return ["sess-recovers", "sess-fails"]
+
+    monkeypatch.setattr(db, "list_pending_analysis_session_ids", fake_list_pending_analysis_session_ids)
+
+    async def fake_lookup(session_id):
+        return SessionStatus(
+            session_id=session_id, received_at="2026-07-01T10:00:00Z",
+            state="done", segments=[],
+        )
+
+    monkeypatch.setattr(sessions_router, "_lookup_session_status", fake_lookup)
+
+    async def fake_retry_session_analysis(session_id, status_obj):
+        if session_id == "sess-fails":
+            segment = SegmentResult(
+                segment_id="s01", status="pending_analysis", transcript_id=5,
+                error="analysis_pending: ollama unreachable",
+            )
+        else:
+            segment = SegmentResult(segment_id="s01", status="processed", transcript_id=5)
+        return SessionStatus(
+            session_id=session_id, received_at="2026-07-01T10:00:00Z",
+            state="done", segments=[segment],
+        )
+
+    monkeypatch.setattr(sessions_router, "_retry_session_analysis", fake_retry_session_analysis)
+
+    with caplog.at_level(logging.INFO, logger=sessions_router.logger.name):
+        asyncio.run(sessions_router.retry_stuck_sessions_on_startup())
+
+    sweep_lines = [r for r in caplog.records if "startup retry sweep" in r.getMessage()]
+    assert len(sweep_lines) == 1
+    assert "sess-fails" in sweep_lines[0].getMessage()
+    assert "ollama unreachable" in sweep_lines[0].getMessage()
+    assert sweep_lines[0].exc_info is None
+
+
 def test_retry_stuck_sessions_on_startup_retries_each_pending_session_and_keeps_going_on_failure(
     monkeypatch,
 ):
