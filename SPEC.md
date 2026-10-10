@@ -750,8 +750,10 @@ recovers. Two mechanisms retry it:
   (`narrative.build_day_narrative` + `narrative.sync_and_ingest`). If a `processed_documents` row
   already exists for every pending segment and isn't marked ingested (an ingest-only failure —
   analysis succeeded, only LightRAG failed), it re-ingests that saved narrative instead of
-  re-running analysis. Returns the updated `SessionStatus`. `404` if the session is unknown, `409`
-  if none of its segments are actually `pending_analysis`.
+  re-running analysis. Returns the updated `SessionStatus`. If the retry fails again (analysis or
+  ingest), the segments stay `pending_analysis` with the new `analysis_pending: …` error, that
+  status is persisted, and it is returned with `200` — not a `5xx`. `404` if the session is
+  unknown, `409` if none of its segments are actually `pending_analysis`.
 - **Startup sweep** — on app start, the server retries every session with a `pending_analysis`
   segment, one at a time, best-effort. A session's retry failing is logged and leaves it
   `pending_analysis` (retryable again on the next start, or via the route above); it does not block
