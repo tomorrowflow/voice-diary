@@ -412,7 +412,11 @@ async def _retry_session_analysis(session_id: str, status_obj: SessionStatus) ->
                 corrected_text=(
                     transcript.get("corrected_text") or transcript.get("raw_text") or ""
                 ),
-                entities=_parse_entities_json(transcript.get("entities_json")),
+                # Pre-BUG-55 rows have the pipeline's entities in `entities_json`.
+                entities=_parse_entities_json(
+                    transcript.get("detected_entities_json")
+                    or transcript.get("entities_json")
+                ),
             )
         )
 
@@ -747,8 +751,11 @@ async def _process_segment(
 
     # Always persist, even when correction left the text unchanged —
     # otherwise the detected entities are lost and a retry-analysis (#52)
-    # rebuilding the session narrative from Postgres would see none.
-    await db.save_draft(transcript_id, corrected_text, entities_json=json.dumps(entities))
+    # rebuilding the session narrative from Postgres would see none. Goes to
+    # `detected_entities_json`, not `save_draft`: status='saved' and
+    # `entities_json` are reserved for human review (BUG-55), and the review
+    # page skips SSE processing for transcripts that carry them.
+    await db.save_detected_entities(transcript_id, corrected_text, json.dumps(entities))
 
     return _SegmentArtifact(
         segment=segment,
