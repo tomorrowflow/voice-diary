@@ -1791,6 +1791,46 @@
         }
       }
     },
+    "Not enough storage to finish saving. Your audio is saved on this iPhone. Free up space in Settings › General › iPhone Storage, then try again." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht genug Speicherplatz, um das Speichern abzuschließen. Deine Aufnahme ist auf diesem iPhone gesichert. Gib unter Einstellungen › Allgemein › iPhone-Speicher Platz frei und versuche es dann erneut."
+          }
+        }
+      }
+    },
+    "Not enough storage to finish the recording. Free up space in Settings › General › iPhone Storage, then try again." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht genug Speicherplatz, um die Aufnahme abzuschließen. Gib unter Einstellungen › Allgemein › iPhone-Speicher Platz frei und versuche es dann erneut."
+          }
+        }
+      }
+    },
+    "Not enough storage to resume. Your earlier audio is saved. Free up space in Settings › General › iPhone Storage, then try again." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht genug Speicherplatz zum Fortsetzen. Deine bisherige Aufnahme ist gesichert. Gib unter Einstellungen › Allgemein › iPhone-Speicher Platz frei und versuche es dann erneut."
+          }
+        }
+      }
+    },
+    "Not enough storage to start recording. Free up space in Settings › General › iPhone Storage, then try again." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Nicht genug Speicherplatz, um die Aufnahme zu starten. Gib unter Einstellungen › Allgemein › iPhone-Speicher Platz frei und versuche es dann erneut."
+          }
+        }
+      }
+    },
     "Paused" : {
       "localizations" : {
         "de" : {
