@@ -55,6 +55,12 @@ public struct WalkthroughView: View {
                     .animation(.easeInOut(duration: 0.25),
                                value: coordinator.voxtralPreflightWarning)
 
+                if coordinator.recordingWasInterrupted {
+                    InterruptionBanner(onDismiss: { coordinator.dismissInterruptionNotice() })
+                        .padding(.horizontal, Theme.spacing.md)
+                        .padding(.top, Theme.spacing.sm)
+                }
+
                 // The model-load banner used to live here; the floating
                 // bottom CTA carries that signal now (label + spinner +
                 // disabled state) so we don't double up.
