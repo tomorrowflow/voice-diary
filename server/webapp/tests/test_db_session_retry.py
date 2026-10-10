@@ -82,3 +82,38 @@ def test_list_pending_analysis_session_ids_includes_sessions_persisted_as_done(m
 
     assert result == ["sess-analysis-failed"]
     assert "state" not in pool.queries[0]
+
+
+def test_failed_retry_status_stays_persisted_and_swept_as_pending_analysis(monkeypatch):
+    """BUG-56/#56: a retry that fails again persists the segments as
+    `pending_analysis` with an `analysis_pending: …` error to `session_ingests`
+    — and the startup sweep's query must keep finding that session."""
+    segments = [
+        {
+            "segment_id": "s01",
+            "status": "pending_analysis",
+            "transcript_id": 3,
+            "error": "analysis_pending: lightrag unreachable",
+        }
+    ]
+    executed: list[tuple] = []
+
+    class _Pool(_FakePool):
+        async def execute(self, query, *args):
+            executed.append((query, args))
+
+    pool = _Pool([{"session_id": "sess-retry-failed", "segments": json.dumps(segments)}])
+
+    async def fake_get_pool():
+        return pool
+
+    monkeypatch.setattr(db, "get_pool", fake_get_pool)
+
+    asyncio.run(db.update_session_status("sess-retry-failed", "done", segments))
+
+    query, args = executed[0]
+    assert "UPDATE session_ingests" in query
+    assert args[0] == "sess-retry-failed"
+    assert args[1] == "done"
+    assert json.loads(args[2]) == segments
+    assert asyncio.run(db.list_pending_analysis_session_ids()) == ["sess-retry-failed"]

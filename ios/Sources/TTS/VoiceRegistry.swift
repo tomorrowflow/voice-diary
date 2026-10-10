@@ -17,11 +17,10 @@ import Foundation
 // explicitly, but the walkthrough keeps speaking.
 //
 // Voxtral routing makes no on-device reachability check at registry
-// time — that would add a network hop to every utterance and the
-// non-throwing `speak(...)` already logs+swallows failures. A failed
-// Voxtral utterance is re-dispatched through Piper or Apple within the
-// same call by `VoxtralTTS` itself, using `TTSFallbackPolicy`
-// (see `VoxtralTTS.performSpeak` and `TTSFallbackPolicy.swift`).
+// time — that would add a network hop to every utterance. Instead,
+// `VoxtralTTS` handles failure itself: when synthesis fails it applies
+// `TTSFallbackPolicy` and re-dispatches the utterance through Piper or
+// Apple within the same call.
 
 public enum VoiceRegistry {
     public static func engine(for language: String) -> any TTSEngine {
