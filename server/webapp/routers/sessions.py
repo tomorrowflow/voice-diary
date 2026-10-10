@@ -317,9 +317,21 @@ async def retry_stuck_sessions_on_startup() -> None:
             status_obj = await _lookup_session_status(session_id)
             if status_obj is None:
                 continue
-            await _retry_session_analysis(session_id, status_obj)
-        except Exception:  # noqa: BLE001 — one session's failure must not stop the rest
-            logger.exception("startup retry sweep: session %s retry failed", session_id)
+            retried = await _retry_session_analysis(session_id, status_obj)
+        except Exception as exc:  # noqa: BLE001 — one session's failure must not stop the rest
+            logger.warning("startup retry sweep: session %s retry failed: %s", session_id, exc)
+            continue
+        # A narrative failure doesn't raise — it comes back as segments still
+        # `pending_analysis` with an `analysis_pending: …` error.
+        errors = [
+            s.error for s in retried.segments
+            if s.status == "pending_analysis" and s.error and s.error.startswith("analysis_pending:")
+        ]
+        if errors:
+            logger.warning(
+                "startup retry sweep: session %s retry failed again, left pending_analysis: %s",
+                session_id, errors[0],
+            )
 
 
 async def _retry_session_analysis(session_id: str, status_obj: SessionStatus) -> SessionStatus:
@@ -372,19 +384,36 @@ async def _retry_session_analysis(session_id: str, status_obj: SessionStatus) ->
             detail="session_not_retryable",
         )
 
-    if not await _retry_via_saved_document(artifacts):
-        todos_by_segment = _todos_grouped_by_segment(parsed)
-        await _run_session_document_processor(
-            manifest=parsed, artifacts=artifacts, todos_by_segment=todos_by_segment,
-        )
-
     retried_ids = {art.segment.segment_id for art in artifacts}
-    updated_segments = [
-        SegmentResult(segment_id=r.segment_id, status="processed", transcript_id=r.transcript_id)
-        if r.segment_id in retried_ids
-        else r
-        for r in status_obj.segments
-    ]
+    try:
+        if not await _retry_via_saved_document(artifacts):
+            todos_by_segment = _todos_grouped_by_segment(parsed)
+            await _run_session_document_processor(
+                manifest=parsed, artifacts=artifacts, todos_by_segment=todos_by_segment,
+            )
+    except Exception as exc:  # noqa: BLE001
+        # Same handling as `_process_session`: the transcripts are safe in
+        # Postgres, so keep the segments `pending_analysis` (retryable again)
+              # and report that status rather than a 500. The sweep logs it per session;
+        # the route returns it to the caller.
+        updated_segments = [
+            SegmentResult(
+                segment_id=r.segment_id,
+                status="pending_analysis",
+                transcript_id=r.transcript_id,
+                error=f"analysis_pending: {exc}",
+            )
+            if r.segment_id in retried_ids
+            else r
+            for r in status_obj.segments
+        ]
+    else:
+        updated_segments = [
+            SegmentResult(segment_id=r.segment_id, status="processed", transcript_id=r.transcript_id)
+            if r.segment_id in retried_ids
+            else r
+            for r in status_obj.segments
+        ]
     new_state = _derive_session_state(updated_segments)
     await _persist_session_status(session_id, new_state, updated_segments)
 
