@@ -48,6 +48,12 @@ public final class CaptureCoordinator {
     public private(set) var statusLine: String = ""
     public private(set) var lastNote: VoiceNote?
     public private(set) var lastError: String?
+    /// True when a system interruption (call / Siri / alarm) cut the
+    /// recording short at any point in the current or just-finished
+    /// session. Latched at pause/stop time because `AudioEngine` clears
+    /// its own flag on the next `start()`. Surfaced as a banner by
+    /// `CaptureView`; cleared by `start()` or `dismissInterruptionNotice()`.
+    public private(set) var recordingWasInterrupted: Bool = false
 
     private let engine = AudioEngine()
     private var timer: Timer?
@@ -117,6 +123,7 @@ public final class CaptureCoordinator {
         guard !isRecording else { return }
         lastError = nil
         statusLine = ""
+        recordingWasInterrupted = false
         let sid = UUID()
         self.sessionID = sid
         Diag.log(session: sid, "capture.start mem=\(MemoryReport.formatted())")
@@ -184,6 +191,7 @@ public final class CaptureCoordinator {
                 "drive-by pause engine stop: \(String(describing: error), privacy: .public)"
             )
         }
+        await latchInterruption()
         if let url = chunkURL {
             // Verify the chunk file is present and non-empty before
             // appending — if `engine.stop()` failed above the writer
@@ -273,7 +281,19 @@ public final class CaptureCoordinator {
             if !isPaused, let url = currentAudioURL {
                 let chunkStart = currentChunkStartedAt ?? startedAt ?? Date()
                 let chunkDuration = Date().timeIntervalSince(chunkStart)
-                _ = try await engine.stop()
+                do {
+                    _ = try await engine.stop()
+                } catch {
+                    // An interruption already closed the writer, so
+                    // `stop()` throws `notRunning` with the audio intact.
+                    // Keep the chunk instead of discarding the session.
+                    let interrupted = await engine.wasInterrupted
+                    guard InterruptionNotice.shouldTolerateStopError(error, wasInterrupted: interrupted) else {
+                        throw error
+                    }
+                    Diag.log(session: sessionID, "capture.stop.interrupted_chunk_kept url=\(url.lastPathComponent)")
+                }
+                await latchInterruption()
                 var transcript: ParakeetManager.Transcript?
                 do {
                     transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
@@ -369,6 +389,18 @@ public final class CaptureCoordinator {
             resetAfterStop()
             self.sessionID = nil
             await endLiveActivity()
+        }
+    }
+
+    /// Dismisses the interruption banner without starting a new recording.
+    public func dismissInterruptionNotice() {
+        recordingWasInterrupted = false
+    }
+
+    private func latchInterruption() async {
+        if await engine.wasInterrupted {
+            recordingWasInterrupted = true
+            Diag.log(session: sessionID, "capture.interrupted")
         }
     }
 
