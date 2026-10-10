@@ -1249,22 +1249,28 @@ async def delete_session_status(session_id: str) -> None:
 
 
 async def list_pending_analysis_session_ids() -> list[str]:
-    """Session ids with at least one segment stuck in `pending_analysis`.
+    """Session ids the startup retry sweep should look at.
 
-    Backs the startup retry sweep (#52). Deliberately doesn't filter on
-    `state`: `_derive_session_state` only counts `failed` segments, so a
-    session whose analysis failed is persisted as `done` while its
-    segments are still `pending_analysis`. The segment filter runs in
-    Python — this table is small (one row per session).
+    Backs the sweep (#52): sessions with at least one segment stuck in
+    `pending_analysis`, plus (BUG-53/#53) every session still `processing`
+    — the process that was running it died before finishing, so its
+    segments need recovering even if none is `pending_analysis` yet. The
+    caller skips sessions that are active in the current process. Doesn't
+    otherwise filter on `state`: `_derive_session_state` only counts
+    `failed` segments, so a session whose analysis failed is persisted as
+    `done` while its segments are still `pending_analysis`. The filter runs
+    in Python — this table is small (one row per session).
     """
     pool = await get_pool()
-    rows = await pool.fetch("SELECT session_id, segments FROM session_ingests")
+    rows = await pool.fetch("SELECT session_id, state, segments FROM session_ingests")
     result = []
     for row in rows:
         segments = row["segments"]
         if isinstance(segments, str):
             segments = json.loads(segments)
-        if any(s.get("status") == "pending_analysis" for s in segments):
+        if row.get("state") == "processing" or any(
+            s.get("status") == "pending_analysis" for s in segments
+        ):
             result.append(row["session_id"])
     return result
 
