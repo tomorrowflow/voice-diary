@@ -30,6 +30,11 @@ public final class WalkthroughCoordinator {
     public private(set) var lastSpoken: String = ""
     public private(set) var elapsedSeconds: Int = 0
     public private(set) var error: String?
+    /// True once a system interruption (call / Siri / alarm) cut a
+    /// segment short during this walkthrough. The truncated segment is
+    /// kept; `WalkthroughView` shows `InterruptionNotice.message` until
+    /// dismissed. Reset when a session begins.
+    public private(set) var recordingWasInterrupted: Bool = false
     public private(set) var sessionID: String?
     public var selectedDate: Date = Date()
     public private(set) var previewEvents: [ServerCalendarEvent] = []
@@ -342,6 +347,7 @@ public final class WalkthroughCoordinator {
             Task { await preflightVoxtral() }
         }
         error = nil
+        recordingWasInterrupted = false
         events = previewEvents
         segments = []
         segmentURLs = [:]
@@ -734,6 +740,7 @@ public final class WalkthroughCoordinator {
         // hand the existing dir + session_id to the engine instead of
         // making fresh ones.
         error = nil
+        recordingWasInterrupted = false
         events = previewEvents
         segments = []
         segmentURLs = [:]
@@ -2535,6 +2542,7 @@ public final class WalkthroughCoordinator {
         do { _ = try await engine.stop() } catch {
             Log.audio.warning("walkthrough engine stop: \(String(describing: error), privacy: .public)")
         }
+        await latchInterruption()
 
         // Trim the matched command word out of the segment file *before*
         // spawning the finalise task, so Parakeet sees the cleaned file;
@@ -2677,7 +2685,20 @@ public final class WalkthroughCoordinator {
         elapsedSeconds = 0
         lullDetector.stop()
         _ = try? await engine.stop()
+        await latchInterruption()
         try? await Task.sleep(nanoseconds: 300_000_000)
+    }
+
+    /// Dismisses the interruption banner.
+    public func dismissInterruptionNotice() {
+        recordingWasInterrupted = false
+    }
+
+    /// Latches `AudioEngine.wasInterrupted` into `recordingWasInterrupted`.
+    /// Must run right after a segment's `engine.stop()` — the engine clears
+    /// its flag on the next `start()`.
+    private func latchInterruption() async {
+        if await engine.wasInterrupted { recordingWasInterrupted = true }
     }
 
     // MARK: - Ingest ----------------------------------------------------

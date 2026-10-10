@@ -39,6 +39,15 @@ public struct CaptureView: View {
                         // disabled + loading label, mirroring the
                         // walkthrough's Sitzung-starten button.
 
+                        if coordinator.recordingWasInterrupted {
+                            InterruptionBanner(
+                                onContinue: coordinator.isRecording ? nil : {
+                                    Task { await coordinator.start() }
+                                },
+                                onDismiss: { coordinator.dismissInterruptionNotice() }
+                            )
+                        }
+
                         if let lastError = coordinator.lastError {
                             Text(lastError)
                                 .font(Theme.font.footnote)

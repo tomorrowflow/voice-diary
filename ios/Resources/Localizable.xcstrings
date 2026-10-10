@@ -757,6 +757,26 @@
         }
       }
     },
+    "Continue recording" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weiter aufnehmen"
+          }
+        }
+      }
+    },
+    "Dismiss" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Schließen"
+          }
+        }
+      }
+    },
     "Download asset" : {
       "localizations" : {
         "de" : {
@@ -2068,6 +2088,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Aufnahme vorhanden"
+          }
+        }
+      }
+    },
+    "Recording was interrupted — do you want to continue?" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahme wurde unterbrochen — willst du weitermachen?"
           }
         }
       }
