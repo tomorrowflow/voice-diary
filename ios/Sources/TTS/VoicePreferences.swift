@@ -6,16 +6,17 @@ import Foundation
 //   • An `AVSpeechSynthesisVoice.identifier` (Apple Premium voice), e.g.
 //     "com.apple.voice.premium.de-DE.Markus".
 //   • A Piper voice ID prefixed with `piper:`, e.g. "piper:de_DE-thorsten-high".
+//   • A Voxtral voice ID prefixed with `voxtral:`, e.g. "voxtral:de_male".
 //
-// `VoiceRegistry.engine(for:)` inspects the prefix to route to either
-// `AppleSpeechTTS` or `PiperTTS`. Storing both kinds in the same key
-// removes the need for a separate engine picker — the chosen voice
-// determines both the engine *and* which voice within it.
+// `VoiceRegistry.engine(for:)` inspects the prefix to route to
+// `AppleSpeechTTS`, `PiperTTS` or `VoxtralTTS`. Storing all kinds in the
+// same key removes the need for a separate engine picker — the chosen
+// voice determines both the engine *and* which voice within it.
 //
 // Stored in plain UserDefaults — these are presentation preferences,
 // not secrets, and we want them to survive app launches without going
-// near Keychain. AppleSpeechTTS / PiperTTS re-read the preference on
-// every utterance so changes take effect immediately.
+// near Keychain. The engines re-read the preference on every utterance
+// so changes take effect immediately.
 
 public enum VoicePreferences {
     private static let prefix = "voicediary.tts.voice."
@@ -41,9 +42,9 @@ public enum VoicePreferences {
         }
         if stored.hasPrefix(voxtralPrefix) {
             // Server-hosted Voxtral voice. We can't validate availability
-            // here (catalog lives on the server) — slice 02's catalog
-            // client is the place to reconcile against the server's
-            // current list. Return as-is.
+            // here (catalog lives on the server; `VoiceCatalogClient`
+            // only caches the list for the picker and does not prune
+            // stored selections). Return as-is.
             return stored
         }
         // Apple voice — drop the preference if the user uninstalled it

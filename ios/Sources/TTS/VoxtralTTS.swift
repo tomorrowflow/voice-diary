@@ -2,24 +2,38 @@ import AVFoundation
 import Foundation
 import Synchronization
 
-// Server-mediated Voxtral TTS engine. Slice 01 scope: speak only — no
-// prefetch, no fallback policy, no VoiceRegistry routing. The debug
-// button in `DebugSettingsView` calls `speak(_:voice:language:)` with
-// an explicit voice id; the protocol-conforming `speak(_:language:)`
-// reads `VoicePreferences.selectedVoiceID(for:)` and strips the
-// `voxtral:` prefix. When no preference is set, a small default voice
-// id is used so the debug button works on a fresh install.
+// Server-mediated Voxtral TTS engine. `VoiceRegistry.engine(for:)`
+// routes here when the user's selected voice id for a language carries
+// the `voxtral:` prefix. The protocol-conforming `speak(_:language:)`
+// reads `VoicePreferences.selectedVoiceID(for:)` and strips that
+// prefix; `speak(_:voice:language:)` takes an explicit voice id (used
+// by the voice picker's preview in `VoiceSettingsView`). When no
+// Voxtral voice is selected, a small default voice id is used.
+//
+// If synthesis fails, `performSpeak` asks `TTSFallbackPolicy.decide`
+// what to do and re-dispatches the same utterance to `PiperTTS` or
+// `AppleSpeechTTS` before `speak` returns, so a failed synth doesn't
+// leave the walkthrough silent. Only synthesis failures fall back
+// (playback errors are logged and the utterance is dropped), and a
+// cancelled synth skips the fallback. `cancel()` stops Voxtral's own
+// queue and playback only; a fallback engine must be cancelled via its
+// own `cancel()`.
+//
+// There is no Voxtral-specific prefetch: the engine inherits the
+// `TTSEngine` default `prefetch`/`play`, which just records the text
+// and plays it through a fresh `speak(_:language:)`.
 //
 // Concurrent callers are serialized via a `Mutex<Task<Void, Never>?>`
-// pattern mirrored from `PiperTTS`, so two taps on the debug button
-// can't spin up overlapping `AVAudioPlayer` instances.
+// pattern mirrored from `PiperTTS`, so repeated voice previews or
+// overlapping walkthrough turns can't spin up overlapping
+// `AVAudioPlayer` instances.
 
 public final class VoxtralTTS: NSObject, TTSEngine, @unchecked Sendable {
     public static let shared = VoxtralTTS()
 
     /// Voice id used when nothing else is available. Native German
     /// reference voice — see `voice_embedding/de_male.pt` in the model
-    /// repo. Slice 02's picker lets the user override per language.
+    /// repo. The user can override it per language in `VoiceSettingsView`.
     public static let fallbackVoice = "de_male"
 
     public static let voiceIDPrefix = "voxtral:"
