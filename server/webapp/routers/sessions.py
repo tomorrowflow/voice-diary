@@ -91,6 +91,10 @@ _status_lock = asyncio.Lock()
 # single-process app, so an in-process set is enough.
 _sessions_in_flight: set[str] = set()
 
+_INTERRUPTED_ERROR = (
+    "interrupted: no transcript was persisted before the server stopped processing this session"
+)
+
 
 async def _try_begin_session_run(session_id: str) -> bool:
     """Claim `session_id` for a run; False if one is already in flight."""
@@ -216,41 +220,48 @@ async def post_session(
         for seg in parsed.segments
     ]
 
-    async with _status_lock:
-        _session_status[session_id] = SessionStatus(
+    # Claim the session before its `processing` row exists, not when the
+    # background task starts: the startup sweep treats an unclaimed
+    # `processing` row as orphaned by a dead process, and a retry arriving
+    # before the task is scheduled must still see it busy.
+    # `_process_session_bg` releases the claim.
+    await _try_begin_session_run(session_id)
+    try:
+        async with _status_lock:
+            _session_status[session_id] = SessionStatus(
+                session_id=session_id,
+                received_at=received_at,
+                state="processing",
+                segments=pending_results,
+            )
+        # Persist before we answer 200 — the in-memory map above is a cache;
+        # this row is what survives a restart (SRV-A6).
+        await db.create_session_status(
             session_id=session_id,
             received_at=received_at,
             state="processing",
-            segments=pending_results,
+            segments=[r.model_dump() for r in pending_results],
         )
-    # Persist before we answer 200 — the in-memory map above is a cache;
-    # this row is what survives a restart (SRV-A6).
-    await db.create_session_status(
-        session_id=session_id,
-        received_at=received_at,
-        state="processing",
-        segments=[r.model_dump() for r in pending_results],
-    )
 
-    # Cheap pre-flight: Whisper is the one upstream we cannot work around.
-    # If it's down we surface 503 early rather than persisting a useless bundle.
-    if not await _whisper_reachable():
-        shutil.rmtree(session_dir, ignore_errors=True)
-        async with _status_lock:
-            _session_status.pop(session_id, None)
-        await db.delete_session_status(session_id)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="whisper_unavailable",
-        )
+        # Cheap pre-flight: Whisper is the one upstream we cannot work around.
+        # If it's down we surface 503 early rather than persisting a useless bundle.
+        if not await _whisper_reachable():
+            shutil.rmtree(session_dir, ignore_errors=True)
+            async with _status_lock:
+                _session_status.pop(session_id, None)
+            await db.delete_session_status(session_id)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="whisper_unavailable",
+            )
+    except BaseException:
+        await _end_session_run(session_id)
+        raise
 
     # Always process asynchronously. iOS polls /api/sessions/{id}/status
     # if it wants per-segment results; the upload itself returns immediately
     # so URLSession's idle timeout doesn't fire on long Ollama/LightRAG
-    # passes (SPEC §10.5). Claim the session now, not when the task starts, so
-    # a retry arriving before the task is scheduled still sees it busy;
-    # `_process_session_bg` releases it.
-    await _try_begin_session_run(session_id)
+    # passes (SPEC §10.5).
     background_tasks.add_task(_process_session_bg, parsed, session_dir)
 
     return SessionAccepted(
@@ -334,7 +345,9 @@ async def retry_stuck_sessions_on_startup() -> None:
 
     Retries every session with a `pending_analysis` segment, one at a
     time (bounded by the sessions table, sequential so a heavy analysis
-    call doesn't pile up concurrently with others). A session's retry
+    call doesn't pile up concurrently with others). Also picks up sessions
+    left `processing` by a prior process (BUG-53/#53); sessions active in
+    this process hold the in-flight claim and are skipped. A session's retry
     failing is logged and left `pending_analysis` — the manual retry route,
     or the next startup, can pick it up again. Must never raise, since
     `main.py`'s lifespan runs this without blocking app start.
@@ -353,7 +366,19 @@ async def retry_stuck_sessions_on_startup() -> None:
             status_obj = await _lookup_session_status(session_id)
             if status_obj is None:
                 continue
+            if status_obj.state == "processing":
+                # We hold the in-flight claim, so no run in this process owns
+                # this session: it was interrupted. Segments without a
+                # persisted transcript can never be retried.
+                status_obj = await _fail_untranscribed_segments(session_id, status_obj)
             retried = await _retry_session_analysis(session_id, status_obj)
+        except HTTPException as exc:
+            # Nothing to retry (no transcripts, manifest gone): an expected
+            # outcome for an interrupted session, so one line, no traceback.
+            logger.warning(
+                "startup retry sweep: session %s not retryable: %s", session_id, exc.detail,
+            )
+            continue
         except Exception as exc:  # noqa: BLE001 — one session's failure must not stop the rest
             logger.warning("startup retry sweep: session %s retry failed: %s", session_id, exc)
             continue
@@ -457,6 +482,24 @@ async def _retry_session_analysis(session_id: str, status_obj: SessionStatus) ->
 
     async with _status_lock:
         return _session_status[session_id]
+
+
+async def _fail_untranscribed_segments(session_id: str, status_obj: SessionStatus) -> SessionStatus:
+    """Settle an interrupted session's segments that never got a transcript.
+
+    Phase 1 persists a segment's transcript ID as soon as it is done with it
+    (`_persist_phase_1_progress`), so a `pending_analysis` segment without
+    one was cut off mid-transcription; mark it `failed` with a clear error.
+    """
+    segments = [
+        SegmentResult(segment_id=r.segment_id, status="failed", error=_INTERRUPTED_ERROR)
+        if r.status == "pending_analysis" and r.transcript_id is None
+        else r
+        for r in status_obj.segments
+    ]
+    state = _derive_session_state(segments)
+    await _persist_session_status(session_id, state, segments)
+    return status_obj.model_copy(update={"state": state, "segments": segments})
 
 
 async def _retry_via_saved_document(artifacts: list[_SegmentArtifact]) -> bool:
@@ -573,6 +616,26 @@ async def _persist_session_status(
     )
 
 
+async def _persist_phase_1_progress(
+    parsed: Manifest, results_by_id: dict[str, SegmentResult]
+) -> None:
+    """Persist each segment's phase-1 outcome (transcript ID or failure) while
+    the session is still `processing` (BUG-53/#53), so a crash before the
+    final write doesn't strand `session_ingests` rows with null transcript
+    IDs. Best-effort: the final write in `_process_session` still lands."""
+    segments = [
+        results_by_id.get(seg.segment_id)
+        or SegmentResult(segment_id=seg.segment_id, status="pending_analysis")
+        for seg in parsed.segments
+    ]
+    try:
+        await _persist_session_status(parsed.session_id, "processing", segments)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "session %s: could not persist phase 1 progress: %s", parsed.session_id, exc,
+        )
+
+
 async def _process_session_bg(parsed: Manifest, session_dir: Path) -> None:
     """Background-task wrapper. `_process_session` persists status itself
     (memory cache + db row) on success; this only handles the crash path.
@@ -641,6 +704,7 @@ async def _process_session(parsed: Manifest, session_dir: Path) -> list[SegmentR
             results_by_id[seg.segment_id] = SegmentResult(
                 segment_id=seg.segment_id, status="failed", error=str(exc),
             )
+        await _persist_phase_1_progress(parsed, results_by_id)
 
     # Phase 2 — session-level analysis + LightRAG ingest (only if anything transcribed)
     if artifacts:

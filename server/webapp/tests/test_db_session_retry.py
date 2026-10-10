@@ -81,7 +81,45 @@ def test_list_pending_analysis_session_ids_includes_sessions_persisted_as_done(m
     result = asyncio.run(db.list_pending_analysis_session_ids())
 
     assert result == ["sess-analysis-failed"]
-    assert "state" not in pool.queries[0]
+    assert "WHERE" not in pool.queries[0]
+
+
+def test_list_pending_analysis_session_ids_includes_processing_sessions(monkeypatch):
+    """BUG-53/#53: a session still `processing` in the table was left behind by
+    a prior process (the sweep skips ones active in this process), so it is a
+    sweep candidate even when no segment is `pending_analysis` yet."""
+    rows = [
+        {
+            "session_id": "sess-interrupted",
+            "state": "processing",
+            "segments": json.dumps(
+                [{"segment_id": "s01", "status": "pending_analysis", "transcript_id": None, "error": None}]
+            ),
+        },
+        {
+            "session_id": "sess-processing-nothing-pending",
+            "state": "processing",
+            "segments": json.dumps(
+                [{"segment_id": "s01", "status": "failed", "transcript_id": None, "error": "boom"}]
+            ),
+        },
+        {
+            "session_id": "sess-done",
+            "state": "done",
+            "segments": json.dumps(
+                [{"segment_id": "s01", "status": "processed", "transcript_id": 1, "error": None}]
+            ),
+        },
+    ]
+
+    async def fake_get_pool():
+        return _FakePool(rows)
+
+    monkeypatch.setattr(db, "get_pool", fake_get_pool)
+
+    result = asyncio.run(db.list_pending_analysis_session_ids())
+
+    assert result == ["sess-interrupted", "sess-processing-nothing-pending"]
 
 
 def test_failed_retry_status_stays_persisted_and_swept_as_pending_analysis(monkeypatch):
