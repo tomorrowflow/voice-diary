@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+import httpx
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -43,6 +44,7 @@ def _auth() -> dict:
 def _setup(monkeypatch):
     monkeypatch.setenv("IOS_BEARER_TOKEN", BEARER)
     sessions_router._session_status.clear()
+    getattr(sessions_router, "_sessions_in_flight", set()).clear()
 
 
 def test_status_falls_back_to_persisted_row_when_not_in_memory_cache(monkeypatch):
@@ -1023,6 +1025,301 @@ def test_retry_stuck_sessions_on_startup_retries_each_pending_session_and_keeps_
     asyncio.run(sessions_router.retry_stuck_sessions_on_startup())
 
     assert attempted == ["sess-a", "sess-b", "sess-c"]
+
+
+# --- BUG-54/#54: per-session in-flight guard ------------------------------
+
+
+def _async_client() -> httpx.AsyncClient:
+    """In-loop client, so several requests can be in flight at once (the
+    sync `TestClient` serialises them)."""
+    app = FastAPI()
+    app.include_router(sessions_router.router)
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+def _latched_processor(monkeypatch):
+    """Replace the narrative stage with a fake that records each run and
+    blocks until `release` is set. Returns `(calls, started, release)`."""
+    calls: list[dict] = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def latched_run_processor(**kwargs):
+        calls.append(kwargs)
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(sessions_router, "_run_session_document_processor", latched_run_processor)
+    return calls, started, release
+
+
+def _no_saved_document(monkeypatch):
+    async def fake_get_latest_processed_document(transcript_id: int) -> dict | None:
+        return None
+
+    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest_processed_document)
+
+
+def test_concurrent_retry_analysis_runs_narrative_once_and_409s_the_other(monkeypatch, tmp_path):
+    """A double tap: while the first retry is in flight, the second gets
+    409 `session_busy`, and the narrative stage ran exactly once."""
+    _setup(monkeypatch)
+    session_id = "sess-retry-double-tap"
+    _stub_pending_session_for_retry(monkeypatch, tmp_path, session_id)
+    _no_saved_document(monkeypatch)
+
+    async def scenario():
+        calls, started, release = _latched_processor(monkeypatch)
+        url = f"/api/sessions/{session_id}/retry-analysis"
+        async with _async_client() as client:
+            first = asyncio.create_task(client.post(url, headers=_auth()))
+            try:
+                await asyncio.wait_for(started.wait(), 5)
+                second = await asyncio.wait_for(client.post(url, headers=_auth()), 2)
+            finally:
+                release.set()
+            first_resp = await first
+        return calls, first_resp, second
+
+    calls, first_resp, second = asyncio.run(scenario())
+
+    assert second.status_code == 409
+    assert second.json()["detail"] == "session_busy"
+    assert first_resp.status_code == 200
+    assert len(calls) == 1
+
+
+def test_retry_analysis_409s_session_busy_during_original_ingest(monkeypatch, tmp_path):
+    """A manual retry that overlaps the original background ingest gets the
+    same 409 `session_busy`; the guard is released once the ingest ends."""
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    session_id = "sess-retry-vs-ingest"
+
+    async def fake_whisper_reachable() -> bool:
+        return True
+
+    async def fake_create_session_status(session_id, received_at, state, segments) -> None:
+        return None
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def latched_process_session(parsed, session_dir):
+        started.set()
+        await release.wait()
+        return []
+
+    monkeypatch.setattr(sessions_router, "_whisper_reachable", fake_whisper_reachable)
+    monkeypatch.setattr(db, "create_session_status", fake_create_session_status)
+    monkeypatch.setattr(sessions_router, "_process_session", latched_process_session)
+
+    async def scenario():
+        url = f"/api/sessions/{session_id}/retry-analysis"
+        async with _async_client() as client:
+            post = asyncio.create_task(
+                client.post("/api/sessions", files=_bundle(session_id), headers=_auth())
+            )
+            try:
+                await asyncio.wait_for(started.wait(), 5)
+                during = await client.post(url, headers=_auth())
+            finally:
+                release.set()
+            post_resp = await post
+            after = await client.post(url, headers=_auth())
+        return during, post_resp, after
+
+    during, post_resp, after = asyncio.run(scenario())
+
+    assert post_resp.status_code == 200
+    assert during.status_code == 409
+    assert during.json()["detail"] == "session_busy"
+    # Released: the session is just not retryable (nothing pending with a
+    # transcript), no longer busy.
+    assert after.status_code == 409
+    assert after.json()["detail"] == "session_not_retryable"
+
+
+@pytest.mark.parametrize("bg_crashes", [False, True])
+def test_original_ingest_releases_guard_on_success_and_failure(monkeypatch, tmp_path, bg_crashes):
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    session_id = f"sess-bg-release-{bg_crashes}"
+
+    async def fake_whisper_reachable() -> bool:
+        return True
+
+    async def fake_create_session_status(session_id, received_at, state, segments) -> None:
+        return None
+
+    async def fake_mark_session_failed(session_id) -> None:
+        return None
+
+    async def fake_process_session(parsed, session_dir):
+        if bg_crashes:
+            raise RuntimeError("boom")
+        return []
+
+    monkeypatch.setattr(sessions_router, "_whisper_reachable", fake_whisper_reachable)
+    monkeypatch.setattr(db, "create_session_status", fake_create_session_status)
+    monkeypatch.setattr(db, "mark_session_failed", fake_mark_session_failed)
+    monkeypatch.setattr(sessions_router, "_process_session", fake_process_session)
+
+    async def scenario():
+        async with _async_client() as client:
+            await client.post("/api/sessions", files=_bundle(session_id), headers=_auth())
+            return await client.post(
+                f"/api/sessions/{session_id}/retry-analysis", headers=_auth()
+            )
+
+    resp = asyncio.run(scenario())
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "session_not_retryable"
+
+
+def test_retry_analysis_releases_guard_after_success(monkeypatch, tmp_path):
+    _setup(monkeypatch)
+    session_id = "sess-retry-release-ok"
+    _stub_pending_session_for_retry(monkeypatch, tmp_path, session_id)
+    _no_saved_document(monkeypatch)
+
+    async def ok_run_processor(**kwargs):
+        return None
+
+    monkeypatch.setattr(sessions_router, "_run_session_document_processor", ok_run_processor)
+
+    async def scenario():
+        url = f"/api/sessions/{session_id}/retry-analysis"
+        async with _async_client() as client:
+            first = await client.post(url, headers=_auth())
+            second = await client.post(url, headers=_auth())
+        return first, second
+
+    first, second = asyncio.run(scenario())
+
+    assert first.status_code == 200
+    # Processed now: not retryable, but crucially not "busy".
+    assert second.status_code == 409
+    assert second.json()["detail"] == "session_not_retryable"
+
+
+def test_retry_analysis_releases_guard_after_failure(monkeypatch, tmp_path):
+    """Both a narrative failure (200 with pending segments) and an exception
+    escaping the retry (missing manifest -> 404) must release the guard."""
+    _setup(monkeypatch)
+    session_id = "sess-retry-release-fail"
+    _stub_pending_session_for_retry(monkeypatch, tmp_path, session_id)
+    _no_saved_document(monkeypatch)
+
+    async def failing_run_processor(**kwargs):
+        raise RuntimeError("ollama unreachable")
+
+    monkeypatch.setattr(sessions_router, "_run_session_document_processor", failing_run_processor)
+
+    manifest_path = (
+        sessions_router._sessions_data_dir()
+        / sessions_router._slug_session_id(session_id)
+        / "manifest.json"
+    )
+
+    async def scenario():
+        url = f"/api/sessions/{session_id}/retry-analysis"
+        async with _async_client() as client:
+            first = await client.post(url, headers=_auth())
+            second = await client.post(url, headers=_auth())
+            manifest_text = manifest_path.read_text()
+            manifest_path.unlink()
+            missing = await client.post(url, headers=_auth())
+            manifest_path.write_text(manifest_text)
+            third = await client.post(url, headers=_auth())
+        return first, second, missing, third
+
+    first, second, missing, third = asyncio.run(scenario())
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "session_manifest_missing"
+    assert third.status_code == 200
+
+
+def test_startup_sweep_skips_session_with_retry_in_flight(monkeypatch, tmp_path, caplog):
+    """The sweep must not start a second narrative run for a session that is
+    already busy (here: a manual retry holding the latch)."""
+    import logging
+
+    _setup(monkeypatch)
+    session_id = "sess-sweep-busy"
+    _stub_pending_session_for_retry(monkeypatch, tmp_path, session_id)
+    _no_saved_document(monkeypatch)
+
+    async def fake_list_pending_analysis_session_ids():
+        return [session_id]
+
+    monkeypatch.setattr(db, "list_pending_analysis_session_ids", fake_list_pending_analysis_session_ids)
+
+    async def scenario():
+        calls, started, release = _latched_processor(monkeypatch)
+        async with _async_client() as client:
+            retry = asyncio.create_task(
+                client.post(f"/api/sessions/{session_id}/retry-analysis", headers=_auth())
+            )
+            try:
+                await asyncio.wait_for(started.wait(), 5)
+                await asyncio.wait_for(sessions_router.retry_stuck_sessions_on_startup(), 2)
+            finally:
+                release.set()
+            retry_resp = await retry
+        return calls, retry_resp
+
+    with caplog.at_level(logging.INFO, logger=sessions_router.logger.name):
+        calls, retry_resp = asyncio.run(scenario())
+
+    assert retry_resp.status_code == 200
+    assert len(calls) == 1
+    assert any(
+        "busy" in r.getMessage() and session_id in r.getMessage() for r in caplog.records
+    )
+
+
+def test_startup_sweep_releases_guard_after_success_and_failure(monkeypatch):
+    _setup(monkeypatch)
+
+    async def fake_list_pending_analysis_session_ids():
+        return ["sess-ok", "sess-boom"]
+
+    monkeypatch.setattr(db, "list_pending_analysis_session_ids", fake_list_pending_analysis_session_ids)
+
+    async def fake_lookup(session_id):
+        return SessionStatus(
+            session_id=session_id, received_at="2026-07-01T10:00:00Z",
+            state="partial", segments=[],
+        )
+
+    async def fake_retry_session_analysis(session_id, status_obj):
+        if session_id == "sess-boom":
+            raise RuntimeError("lightrag unreachable")
+        return status_obj
+
+    monkeypatch.setattr(sessions_router, "_lookup_session_status", fake_lookup)
+    monkeypatch.setattr(sessions_router, "_retry_session_analysis", fake_retry_session_analysis)
+
+    async def scenario():
+        await sessions_router.retry_stuck_sessions_on_startup()
+        # A second sweep reaches both sessions again only if neither stayed claimed.
+        attempted: list[str] = []
+
+        async def recording_retry(session_id, status_obj):
+            attempted.append(session_id)
+            return status_obj
+
+        monkeypatch.setattr(sessions_router, "_retry_session_analysis", recording_retry)
+        await sessions_router.retry_stuck_sessions_on_startup()
+        return attempted
+
+    assert asyncio.run(scenario()) == ["sess-ok", "sess-boom"]
 
 
 def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_failure(monkeypatch):
