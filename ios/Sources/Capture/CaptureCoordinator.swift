@@ -155,7 +155,7 @@ public final class CaptureCoordinator {
             // call covers every entry point.
             WakePing.shared.playCaptureStart()
         } catch {
-            lastError = "\(error)"
+            lastError = CaptureErrorMessage.message(for: error, context: .start)
             persistRecordingState(active: false, startedAt: nil)
             Diag.log(session: sid, "capture.start.failed err=\(String(describing: error))")
             self.sessionID = nil
@@ -244,7 +244,7 @@ public final class CaptureCoordinator {
             try await engine.prepareSession()
             try await engine.start(outputURL: url)
         } catch {
-            lastError = "\(error)"
+            lastError = CaptureErrorMessage.message(for: error, context: .resume)
             return
         }
         currentAudioURL = url
@@ -334,7 +334,7 @@ public final class CaptureCoordinator {
                 // `sessionDir` intact so a future recovery path can find them.
                 // Surface the error in the UI but leave `isRecording = false`
                 // so the user is not stuck in a permanent "recording" state.
-                lastError = "\(error)"
+                lastError = CaptureErrorMessage.message(for: error, context: .finishAudioSaved)
                 statusLine = ""
                 isRecording = false
                 isPaused = false
@@ -363,7 +363,7 @@ public final class CaptureCoordinator {
                 transcriptPreview: note.transcript.isEmpty ? nil : note.transcript
             )
         } catch {
-            lastError = "\(error)"
+            lastError = CaptureErrorMessage.message(for: error, context: .finish)
             statusLine = ""
             Diag.log(session: sessionID, "capture.stop.failed err=\(String(describing: error))")
             resetAfterStop()
@@ -404,12 +404,24 @@ public final class CaptureCoordinator {
     }
 
     private func writeMetadata(note: VoiceNote, into dir: URL) throws {
+        try Self.writeMetadata(note: note, into: dir)
+    }
+
+    /// `write` is a seam so tests can simulate a full disk; it only ever
+    /// touches `metadata.json`, never the audio chunks beside it.
+    static func writeMetadata(
+        note: VoiceNote,
+        into dir: URL,
+        write: (Data, URL) throws -> Void = { data, url in
+            try data.write(to: url, options: [.atomic, .completeFileProtection])
+        }
+    ) throws {
         let json = dir.appending(path: "metadata.json")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let data = try encoder.encode(note)
-        try data.write(to: json, options: [.atomic, .completeFileProtection])
+        try write(data, json)
     }
 
     private func persistRecordingState(active: Bool, startedAt: Date?) {
