@@ -307,7 +307,7 @@ def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tm
     async def fake_load_entity_dismissals():
         return []
 
-    async def fake_save_draft(transcript_id, text, raw_text=None, entities_json=None):
+    async def fake_save_detected_entities(transcript_id, text, detected_entities_json):
         pass
 
     monkeypatch.setattr(sessions_router.transcript_ingest, "transcribe_and_persist", fake_transcribe_and_persist)
@@ -316,7 +316,7 @@ def test_process_segment_uses_shared_transcribe_and_persist_core(monkeypatch, tm
     monkeypatch.setattr(db, "load_term_dictionary", fake_load_term_dictionary)
     monkeypatch.setattr(db, "load_text_corrections", fake_load_text_corrections)
     monkeypatch.setattr(db, "load_entity_dismissals", fake_load_entity_dismissals)
-    monkeypatch.setattr(db, "save_draft", fake_save_draft)
+    monkeypatch.setattr(db, "save_detected_entities", fake_save_detected_entities)
 
     artifact = asyncio.run(
         sessions_router._process_segment(
@@ -401,8 +401,8 @@ def test_process_segment_uses_shared_correction_module(monkeypatch, tmp_path):
 
     saved_drafts = []
 
-    async def fake_save_draft(transcript_id, text, raw_text=None, entities_json=None):
-        saved_drafts.append((transcript_id, text, entities_json))
+    async def fake_save_detected_entities(transcript_id, text, detected_entities_json):
+        saved_drafts.append((transcript_id, text, detected_entities_json))
 
     monkeypatch.setattr(sessions_router.transcript_ingest, "transcribe_and_persist", fake_transcribe_and_persist)
     monkeypatch.setattr(sessions_router.correction, "correct_and_detect_entities", fake_correct_and_detect_entities)
@@ -410,7 +410,7 @@ def test_process_segment_uses_shared_correction_module(monkeypatch, tmp_path):
     monkeypatch.setattr(db, "load_term_dictionary", fake_load_term_dictionary)
     monkeypatch.setattr(db, "load_text_corrections", fake_load_text_corrections)
     monkeypatch.setattr(db, "load_entity_dismissals", fake_load_entity_dismissals)
-    monkeypatch.setattr(db, "save_draft", fake_save_draft)
+    monkeypatch.setattr(db, "save_detected_entities", fake_save_detected_entities)
 
     artifact = asyncio.run(
         sessions_router._process_segment(
@@ -492,10 +492,10 @@ def test_process_segment_persists_entities_even_when_correction_leaves_text_unch
 
     saved_drafts = []
 
-    async def fake_save_draft(transcript_id, text, raw_text=None, entities_json=None):
-        saved_drafts.append((transcript_id, text, entities_json))
+    async def fake_save_detected_entities(transcript_id, text, detected_entities_json):
+        saved_drafts.append((transcript_id, text, detected_entities_json))
 
-    monkeypatch.setattr(db, "save_draft", fake_save_draft)
+    monkeypatch.setattr(db, "save_detected_entities", fake_save_detected_entities)
 
     artifact = asyncio.run(
         sessions_router._process_segment(
