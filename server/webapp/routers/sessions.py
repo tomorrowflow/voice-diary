@@ -84,6 +84,26 @@ async def _whisper_reachable() -> bool:
 # after a restart) so status and pending_analysis retryability survive.
 _session_status: dict[str, SessionStatus] = {}
 _status_lock = asyncio.Lock()
+# Sessions with a narrative run in flight (original background ingest, a
+# manual retry-analysis, or the startup sweep). A second run of the same
+# session would save another `processed_documents` version per transcript and
+# ingest `diary:{date}` into LightRAG twice. Guarded by `_status_lock`;
+# single-process app, so an in-process set is enough.
+_sessions_in_flight: set[str] = set()
+
+
+async def _try_begin_session_run(session_id: str) -> bool:
+    """Claim `session_id` for a run; False if one is already in flight."""
+    async with _status_lock:
+        if session_id in _sessions_in_flight:
+            return False
+        _sessions_in_flight.add(session_id)
+        return True
+
+
+async def _end_session_run(session_id: str) -> None:
+    async with _status_lock:
+        _sessions_in_flight.discard(session_id)
 
 
 # --- multipart parsing ----------------------------------------------------
@@ -227,7 +247,10 @@ async def post_session(
     # Always process asynchronously. iOS polls /api/sessions/{id}/status
     # if it wants per-segment results; the upload itself returns immediately
     # so URLSession's idle timeout doesn't fire on long Ollama/LightRAG
-    # passes (SPEC §10.5).
+    # passes (SPEC §10.5). Claim the session now, not when the task starts, so
+    # a retry arriving before the task is scheduled still sees it busy;
+    # `_process_session_bg` releases it.
+    await _try_begin_session_run(session_id)
     background_tasks.add_task(_process_session_bg, parsed, session_dir)
 
     return SessionAccepted(
@@ -278,7 +301,9 @@ async def retry_analysis(session_id: str) -> SessionStatus:
     Rebuilds the session-level narrative input from what's persisted (the
     manifest on disk plus each segment's transcript row) and re-runs the
     shared narrative stage. 404 if the session is unknown; 409 if none of
-    its segments are actually `pending_analysis`.
+    its segments are actually `pending_analysis`; 409 `session_busy` if a
+    run for the session (original ingest, another retry, the startup sweep)
+    is already in flight.
     """
     status_obj = await _lookup_session_status(session_id)
     if status_obj is None:
@@ -287,13 +312,21 @@ async def retry_analysis(session_id: str) -> SessionStatus:
             detail="session_not_found",
         )
 
-    if not any(s.status == "pending_analysis" for s in status_obj.segments):
+    if not await _try_begin_session_run(session_id):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="session_not_retryable",
+            detail="session_busy",
         )
+    try:
+        if not any(s.status == "pending_analysis" for s in status_obj.segments):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="session_not_retryable",
+            )
 
-    return await _retry_session_analysis(session_id, status_obj)
+        return await _retry_session_analysis(session_id, status_obj)
+    finally:
+        await _end_session_run(session_id)
 
 
 async def retry_stuck_sessions_on_startup() -> None:
@@ -313,6 +346,9 @@ async def retry_stuck_sessions_on_startup() -> None:
         return
 
     for session_id in session_ids:
+        if not await _try_begin_session_run(session_id):
+            logger.info("startup retry sweep: session %s busy, skipping", session_id)
+            continue
         try:
             status_obj = await _lookup_session_status(session_id)
             if status_obj is None:
@@ -321,6 +357,8 @@ async def retry_stuck_sessions_on_startup() -> None:
         except Exception as exc:  # noqa: BLE001 — one session's failure must not stop the rest
             logger.warning("startup retry sweep: session %s retry failed: %s", session_id, exc)
             continue
+        finally:
+            await _end_session_run(session_id)
         # A narrative failure doesn't raise — it comes back as segments still
         # `pending_analysis` with an `analysis_pending: …` error.
         errors = [
@@ -537,7 +575,8 @@ async def _persist_session_status(
 
 async def _process_session_bg(parsed: Manifest, session_dir: Path) -> None:
     """Background-task wrapper. `_process_session` persists status itself
-    (memory cache + db row) on success; this only handles the crash path."""
+    (memory cache + db row) on success; this only handles the crash path.
+    Releases the in-flight claim `post_session` took, on success or failure."""
     try:
         await _process_session(parsed, session_dir)
     except Exception:  # pragma: no cover — defensive
@@ -547,6 +586,8 @@ async def _process_session_bg(parsed: Manifest, session_dir: Path) -> None:
             if current is not None:
                 current.state = "failed"
         await db.mark_session_failed(parsed.session_id)
+    finally:
+        await _end_session_run(parsed.session_id)
 
 
 @dataclass

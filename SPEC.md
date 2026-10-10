@@ -753,11 +753,19 @@ recovers. Two mechanisms retry it:
   re-running analysis. Returns the updated `SessionStatus`. If the retry fails again (analysis or
   ingest), the segments stay `pending_analysis` with the new `analysis_pending: …` error, that
   status is persisted, and it is returned with `200` — not a `5xx`. `404` if the session is
-  unknown, `409` if none of its segments are actually `pending_analysis`.
+  unknown, `409` if none of its segments are actually `pending_analysis`. `409` with detail
+  `session_busy` if another narrative run for the same session is already in flight — a concurrent
+  retry (double tap), the original background ingest, or the startup sweep; nothing is run and the
+  caller can retry once the other run has finished.
 - **Startup sweep** — on app start, the server retries every session with a `pending_analysis`
   segment, one at a time, best-effort. A session's retry failing is logged and leaves it
   `pending_analysis` (retryable again on the next start, or via the route above); it does not block
-  the rest of the sweep or app startup.
+  the rest of the sweep or app startup. A session that is already busy (see `session_busy` above)
+  is skipped.
+
+All three paths share one in-process, per-session in-flight guard (single-process app), released
+when the run ends whether it succeeded or failed. Without it, overlapping runs would each save
+another `processed_documents` version per transcript and ingest `diary:{date}` into LightRAG twice.
 
 A segment that failed before transcription (no transcript row) is out of scope for both — that
 needs the audio re-uploaded, not a narrative retry.
