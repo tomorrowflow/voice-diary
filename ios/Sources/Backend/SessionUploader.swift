@@ -175,11 +175,10 @@ public actor SessionUploader {
                 //   * notConfigured — no URL/token yet; skip but don't
                 //     increment the attempt counter so the entry retries
                 //     immediately once the server is configured.
-                //   * permanent 4xx (400/404/409/422) — the server will
-                //     never accept this payload; mark failed-permanent so
-                //     future flushes skip it instead of looping forever.
-                //   * everything else (5xx, network, timeout, auth) —
-                //     reschedule with exponential backoff as before.
+                //   * everything else — see `UploadOutcome.classify`:
+                //     already-ingested counts as success, permanent 4xx
+                //     is marked failed-permanent so future flushes skip
+                //     it, and the rest reschedule with exponential backoff.
                 // After classifying, `continue` to the next due entry
                 // rather than returning — one bad entry must not block
                 // the rest of the queue.
@@ -190,26 +189,23 @@ public actor SessionUploader {
                     // Every entry will fail the same way — no point
                     // continuing the loop. Break so we don't spin.
                     break
-                } else if isPermanentClientError(error) {
+                }
+                switch UploadOutcome.classify(error) {
+                case .uploaded:
+                    queue.removeAll { $0.id == entry.id }
+                    persist()
+                    Log.upload.notice(
+                        "upload.already_ingested sid=\(entry.id, privacy: .public)"
+                    )
+                case .permanent:
                     markPermanentFailure(entry: entry, error: error)
-                } else {
+                case .retry:
                     rescheduleAfterFailure(entry: entry, error: error)
                 }
                 // Continue the loop so subsequent due entries are tried.
                 continue
             }
         }
-    }
-
-    /// Returns true for non-retryable client errors: HTTP 400, 404, 409,
-    /// 422. Auth errors (401, 403) and rate-limiting / timeout (408, 429)
-    /// are NOT permanent — they may succeed once the server is accessible
-    /// or credentials are refreshed.
-    private func isPermanentClientError(_ error: any Error) -> Bool {
-        guard case ServerClientError.http(let status, _) = error else {
-            return false
-        }
-        return [400, 404, 409, 422].contains(status)
     }
 
     private func markPermanentFailure(entry: QueueEntry, error: any Error) {
@@ -295,6 +291,32 @@ public actor SessionUploader {
         } catch {
             Log.upload.error("load failed: \(String(describing: error), privacy: .public)")
             queue = []
+        }
+    }
+}
+
+/// How a failed upload attempt should be treated by the queue.
+enum UploadOutcome: Equatable {
+    /// The server already holds the session — drop the entry like a 2xx.
+    case uploaded
+    /// The server will never accept this payload; keep for diagnostics.
+    case permanent
+    /// Transient or fixable (5xx, network, auth, 408, 429); back off.
+    case retry
+
+    /// HTTP 409 from `POST /api/sessions` means the session was already
+    /// ingested (the original 2xx was lost in transit), so it is success.
+    /// 400, 404, 422 are permanent. Auth errors (401, 403) and
+    /// rate-limiting / timeout (408, 429) are NOT permanent — they may
+    /// succeed once the server is accessible or credentials are refreshed.
+    static func classify(_ error: any Error) -> UploadOutcome {
+        guard case ServerClientError.http(let status, _) = error else {
+            return .retry
+        }
+        switch status {
+        case 409: return .uploaded
+        case 400, 404, 422: return .permanent
+        default: return .retry
         }
     }
 }
