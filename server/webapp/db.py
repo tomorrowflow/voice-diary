@@ -435,6 +435,31 @@ async def save_draft(
         )
 
 
+async def save_detected_entities(
+    transcript_id: int,
+    corrected_text: str,
+    detected_entities_json: str,
+):
+    """Persist the pipeline's corrected text and detected entities.
+
+    Unlike `save_draft`, this leaves `status` and the human-reviewed
+    `entities_json` untouched, so a pipeline-ingested transcript still opens
+    in the review UI as unreviewed (full SSE processing).
+    """
+    pool = await get_pool()
+    await pool.execute(
+        """
+        UPDATE transcripts
+        SET corrected_text = $2,
+            detected_entities_json = $3::jsonb
+        WHERE id = $1
+    """,
+        transcript_id,
+        corrected_text,
+        detected_entities_json,
+    )
+
+
 async def submit_transcript(transcript_id: int, corrected_text: str):
     pool = await get_pool()
     await pool.execute(
