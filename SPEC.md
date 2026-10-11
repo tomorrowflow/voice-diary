@@ -761,7 +761,12 @@ recovers. Two mechanisms retry it:
   segment, one at a time, best-effort. A session's retry failing is logged and leaves it
   `pending_analysis` (retryable again on the next start, or via the route above); it does not block
   the rest of the sweep or app startup. A session that is already busy (see `session_busy` above)
-  is skipped.
+  is skipped. The sweep also covers sessions left `processing` by a process that died mid-run:
+  phase 1 persists each segment's `pending_analysis` + `transcript_id` (or `failed` + error) to
+  `session_ingests` as it finishes, so such a session keeps the IDs of everything transcribed
+  before the crash. The sweep marks its segments without a transcript `failed` (`interrupted: no
+  transcript was persisted …`) and retries the rest. A session that cannot be retried (no
+  transcript at all, manifest missing) is logged as one line, without a traceback.
 
 All three paths share one in-process, per-session in-flight guard (single-process app), released
 when the run ends whether it succeeded or failed. Without it, overlapping runs would each save

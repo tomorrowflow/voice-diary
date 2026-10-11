@@ -1322,6 +1322,372 @@ def test_startup_sweep_releases_guard_after_success_and_failure(monkeypatch):
     assert asyncio.run(scenario()) == ["sess-ok", "sess-boom"]
 
 
+# --- BUG-53/#53: persist segment transcript IDs as phase 1 finishes -------
+
+
+def _two_segment_manifest(session_id: str) -> dict:
+    manifest = _manifest(session_id)
+    manifest["segments"].append(
+        {
+            "segment_id": "s02",
+            "segment_type": "drive_by",
+            "audio_file": "segments/s02.m4a",
+            "captured_at": "2026-07-01T11:00:00Z",
+        }
+    )
+    return manifest
+
+
+class _FakeSessionIngests:
+    """In-memory stand-in for the `session_ingests` row of one session."""
+
+    def __init__(self, session_id: str, state: str, segments: list[dict]):
+        self.session_id = session_id
+        self.row = {
+            "session_id": session_id,
+            "received_at": "2026-07-01T10:00:00Z",
+            "state": state,
+            "segments": segments,
+        }
+        self.updates: list[tuple[str, list[dict]]] = []
+
+    def install(self, monkeypatch) -> None:
+        async def get_session_status(sid: str) -> dict | None:
+            return self.row if sid == self.session_id else None
+
+        async def update_session_status(session_id: str, state: str, segments: list[dict]) -> None:
+            self.row = {**self.row, "state": state, "segments": segments}
+            self.updates.append((state, segments))
+
+        monkeypatch.setattr(db, "get_session_status", get_session_status)
+        monkeypatch.setattr(db, "update_session_status", update_session_status)
+
+
+def _write_manifest(monkeypatch, tmp_path, session_id: str, manifest: dict):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    session_dir = sessions_router._sessions_data_dir() / sessions_router._slug_session_id(session_id)
+    session_dir.mkdir(parents=True)
+    (session_dir / "manifest.json").write_text(jsonlib.dumps(manifest))
+    return session_dir
+
+
+def _stub_sweep_dependencies(monkeypatch, *, transcript_ids: set[int], sweep_ids: list[str]):
+    """Persisted transcript rows for `transcript_ids`, no saved documents, a
+    sweep that lists `sweep_ids`, and a recording narrative stage; returns
+    the list it records each run's transcript IDs into."""
+
+    async def fake_get_transcript(transcript_id: int) -> dict | None:
+        if transcript_id not in transcript_ids:
+            return None
+        return {"id": transcript_id, "raw_text": "hallo", "corrected_text": "Hallo", "entities_json": None}
+
+    async def fake_get_latest_processed_document(transcript_id: int) -> dict | None:
+        return None
+
+    async def fake_list_pending_analysis_session_ids() -> list[str]:
+        return list(sweep_ids)
+
+    processed: list[list[int]] = []
+
+    async def fake_run_processor(*, manifest, artifacts, todos_by_segment):
+        processed.append([a.transcript_id for a in artifacts])
+
+    monkeypatch.setattr(db, "get_transcript", fake_get_transcript)
+    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest_processed_document)
+    monkeypatch.setattr(db, "list_pending_analysis_session_ids", fake_list_pending_analysis_session_ids)
+    monkeypatch.setattr(sessions_router, "_run_session_document_processor", fake_run_processor)
+    return processed
+
+
+def _segment_row(segment_id: str, status: str, transcript_id: int | None = None, error: str | None = None):
+    return {"segment_id": segment_id, "status": status, "transcript_id": transcript_id, "error": error}
+
+
+def test_process_session_persists_each_segment_as_phase_1_finishes(monkeypatch, tmp_path):
+    """BUG-53/#53: a transcribed segment's `pending_analysis` + transcript_id
+    (or a failed segment's `failed` + error) must hit `session_ingests` as
+    soon as phase 1 is done with it — not only at the end of the session."""
+    from models import Manifest
+
+    _setup(monkeypatch)
+    session_id = "sess-phase1-persist"
+    parsed = Manifest.model_validate(_two_segment_manifest(session_id))
+    ingests = _FakeSessionIngests(
+        session_id, "processing", [_segment_row("s01", "pending_analysis"), _segment_row("s02", "pending_analysis")]
+    )
+    ingests.install(monkeypatch)
+
+    async def fake_process_segment(*, manifest, segment, session_dir):
+        if segment.segment_id == "s02":
+            raise RuntimeError("whisper exploded")
+        return sessions_router._SegmentArtifact(
+            segment=segment, transcript_id=11, raw_text="hallo", corrected_text="hallo",
+        )
+
+    seen_at_phase_2: list[list[tuple]] = []
+
+    async def fake_run_processor(*, manifest, artifacts, todos_by_segment):
+        seen_at_phase_2.append(list(ingests.updates))
+
+    monkeypatch.setattr(sessions_router, "_process_segment", fake_process_segment)
+    monkeypatch.setattr(sessions_router, "_run_session_document_processor", fake_run_processor)
+
+    asyncio.run(sessions_router._process_session(parsed, tmp_path))
+
+    after_s01 = (
+        "processing",
+        [_segment_row("s01", "pending_analysis", 11), _segment_row("s02", "pending_analysis")],
+    )
+    after_s02 = (
+        "processing",
+        [_segment_row("s01", "pending_analysis", 11), _segment_row("s02", "failed", error="whisper exploded")],
+    )
+    # Both segment writes had already happened when phase 2 started.
+    assert seen_at_phase_2 == [[after_s01, after_s02]]
+    # …and the final write still lands, with the usual derived state.
+    assert ingests.updates[-1] == (
+        "partial",
+        [_segment_row("s01", "processed", 11), _segment_row("s02", "failed", error="whisper exploded")],
+    )
+
+
+def test_process_session_updates_status_cache_per_segment(monkeypatch, tmp_path):
+    from models import Manifest
+
+    _setup(monkeypatch)
+    session_id = "sess-phase1-cache"
+    parsed = Manifest.model_validate(_two_segment_manifest(session_id))
+    sessions_router._session_status[session_id] = SessionStatus(
+        session_id=session_id, received_at="2026-07-01T10:00:00Z", state="processing",
+        segments=[SegmentResult(segment_id=s.segment_id, status="pending_analysis") for s in parsed.segments],
+    )
+    _FakeSessionIngests(session_id, "processing", []).install(monkeypatch)
+
+    async def fake_process_segment(*, manifest, segment, session_dir):
+        return sessions_router._SegmentArtifact(
+            segment=segment, transcript_id=21, raw_text="hallo", corrected_text="hallo",
+        )
+
+    cache_at_phase_2: list[list[SegmentResult]] = []
+
+    async def fake_run_processor(*, manifest, artifacts, todos_by_segment):
+        cache_at_phase_2.append(list(sessions_router._session_status[session_id].segments))
+
+    monkeypatch.setattr(sessions_router, "_process_segment", fake_process_segment)
+    monkeypatch.setattr(sessions_router, "_run_session_document_processor", fake_run_processor)
+
+    asyncio.run(sessions_router._process_session(parsed, tmp_path))
+
+    assert cache_at_phase_2 == [
+        [
+            SegmentResult(segment_id="s01", status="pending_analysis", transcript_id=21),
+            SegmentResult(segment_id="s02", status="pending_analysis", transcript_id=21),
+        ]
+    ]
+
+
+def test_sweep_recovers_session_after_crash_between_phase_1_and_phase_2(monkeypatch, tmp_path):
+    """BUG-53/#53: the process dying during phase 2 used to strand the row as
+    `processing` with null transcript IDs. With the IDs persisted per segment,
+    the next startup's sweep finds the session and finishes the narrative."""
+    from models import Manifest
+
+    _setup(monkeypatch)
+    session_id = "sess-crash-phase-2"
+    manifest = _two_segment_manifest(session_id)
+    parsed = Manifest.model_validate(manifest)
+    session_dir = _write_manifest(monkeypatch, tmp_path, session_id, manifest)
+    ingests = _FakeSessionIngests(
+        session_id, "processing", [_segment_row("s01", "pending_analysis"), _segment_row("s02", "pending_analysis")]
+    )
+    ingests.install(monkeypatch)
+
+    class _ProcessDied(BaseException):
+        """Escapes `except Exception`, like the process being killed."""
+
+    transcript_ids = {"s01": 31, "s02": 32}
+
+    async def fake_process_segment(*, manifest, segment, session_dir):
+        return sessions_router._SegmentArtifact(
+            segment=segment, transcript_id=transcript_ids[segment.segment_id],
+            raw_text="hallo", corrected_text="hallo",
+        )
+
+    async def dying_run_processor(*, manifest, artifacts, todos_by_segment):
+        raise _ProcessDied()
+
+    monkeypatch.setattr(sessions_router, "_process_segment", fake_process_segment)
+    monkeypatch.setattr(sessions_router, "_run_session_document_processor", dying_run_processor)
+    with pytest.raises(_ProcessDied):
+        asyncio.run(sessions_router._process_session(parsed, session_dir))
+    assert ingests.row["state"] == "processing"
+
+    # "Restart": empty cache and in-flight set, a healthy narrative stage.
+    _setup(monkeypatch)
+    processed = _stub_sweep_dependencies(monkeypatch, transcript_ids={31, 32}, sweep_ids=[session_id])
+
+    asyncio.run(sessions_router.retry_stuck_sessions_on_startup())
+
+    assert processed == [[31, 32]]
+    assert ingests.row["state"] == "done"
+    assert ingests.row["segments"] == [_segment_row("s01", "processed", 31), _segment_row("s02", "processed", 32)]
+
+
+def test_sweep_fails_untranscribed_segments_of_interrupted_session_and_retries_the_rest(
+    monkeypatch, tmp_path
+):
+    """BUG-53/#53: crash mid phase 1 — s01 was transcribed (id persisted), s02
+    never got one. s02 becomes `failed` with a clear error; s01 is retried."""
+    _setup(monkeypatch)
+    session_id = "sess-crash-phase-1"
+    _write_manifest(monkeypatch, tmp_path, session_id, _two_segment_manifest(session_id))
+    ingests = _FakeSessionIngests(
+        session_id, "processing", [_segment_row("s01", "pending_analysis", 41), _segment_row("s02", "pending_analysis")]
+    )
+    ingests.install(monkeypatch)
+    processed = _stub_sweep_dependencies(monkeypatch, transcript_ids={41}, sweep_ids=[session_id])
+
+    asyncio.run(sessions_router.retry_stuck_sessions_on_startup())
+
+    assert processed == [[41]]
+    final_state, final_segments = ingests.updates[-1]
+    assert final_state == "partial"
+    assert final_segments[0] == _segment_row("s01", "processed", 41)
+    assert final_segments[1]["segment_id"] == "s02"
+    assert final_segments[1]["status"] == "failed"
+    assert final_segments[1]["transcript_id"] is None
+    assert "interrupted" in final_segments[1]["error"]
+    assert "no transcript" in final_segments[1]["error"]
+
+
+def test_sweep_skips_processing_session_active_in_this_process(monkeypatch, tmp_path):
+    """BUG-53/#53: a `processing` row with null transcript IDs is normal while
+    this process is still working on it — the sweep must neither fail its
+    segments nor start a second run."""
+    _setup(monkeypatch)
+    session_id = "sess-active-here"
+    _write_manifest(monkeypatch, tmp_path, session_id, _two_segment_manifest(session_id))
+    ingests = _FakeSessionIngests(
+        session_id, "processing", [_segment_row("s01", "pending_analysis"), _segment_row("s02", "pending_analysis")]
+    )
+    ingests.install(monkeypatch)
+    processed = _stub_sweep_dependencies(monkeypatch, transcript_ids=set(), sweep_ids=[session_id])
+
+    async def scenario():
+        assert await sessions_router._try_begin_session_run(session_id)
+        await sessions_router.retry_stuck_sessions_on_startup()
+        # The sweep must not have released a claim it never took.
+        assert session_id in sessions_router._sessions_in_flight
+
+    asyncio.run(scenario())
+
+    assert ingests.updates == []
+    assert ingests.row["state"] == "processing"
+    assert processed == []
+
+
+def test_post_session_claims_the_session_before_its_processing_row_exists(monkeypatch, tmp_path):
+    """BUG-53/#53: the sweep treats an unclaimed `processing` row as an orphan,
+    so a fresh upload must hold its in-flight claim from the moment the row is
+    created — otherwise the sweep could fail the segments of a live session."""
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    claimed_when_row_created: list[bool] = []
+
+    async def fake_create_session_status(session_id, received_at, state, segments) -> None:
+        claimed_when_row_created.append(session_id in sessions_router._sessions_in_flight)
+
+    async def fake_whisper_reachable() -> bool:
+        return True
+
+    async def fake_process_session_bg(parsed, session_dir) -> None:
+        await sessions_router._end_session_run(parsed.session_id)
+
+    monkeypatch.setattr(db, "create_session_status", fake_create_session_status)
+    monkeypatch.setattr(sessions_router, "_whisper_reachable", fake_whisper_reachable)
+    monkeypatch.setattr(sessions_router, "_process_session_bg", fake_process_session_bg)
+
+    resp = _client().post("/api/sessions", headers=_auth(), files=_bundle("sess-claim-first"))
+
+    assert resp.status_code == 200
+    assert claimed_when_row_created == [True]
+
+
+def test_post_session_releases_claim_when_whisper_is_unreachable(monkeypatch, tmp_path):
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+
+    async def fake_create_session_status(session_id, received_at, state, segments) -> None:
+        return None
+
+    async def fake_delete_session_status(session_id) -> None:
+        return None
+
+    async def fake_whisper_reachable() -> bool:
+        return False
+
+    monkeypatch.setattr(db, "create_session_status", fake_create_session_status)
+    monkeypatch.setattr(db, "delete_session_status", fake_delete_session_status)
+    monkeypatch.setattr(sessions_router, "_whisper_reachable", fake_whisper_reachable)
+
+    resp = _client().post("/api/sessions", headers=_auth(), files=_bundle("sess-claim-release"))
+
+    assert resp.status_code == 503
+    assert sessions_router._sessions_in_flight == set()
+
+
+def test_sweep_logs_one_line_without_traceback_for_non_retryable_session(
+    monkeypatch, tmp_path, caplog
+):
+    """BUG-53/#53: an interrupted session where no segment ever got a
+    transcript can't be retried. The sweep marks it failed and says so in one
+    warning line — no traceback."""
+    import logging
+
+    _setup(monkeypatch)
+    session_id = "sess-nothing-transcribed"
+    _write_manifest(monkeypatch, tmp_path, session_id, _two_segment_manifest(session_id))
+    ingests = _FakeSessionIngests(
+        session_id, "processing", [_segment_row("s01", "pending_analysis"), _segment_row("s02", "pending_analysis")]
+    )
+    ingests.install(monkeypatch)
+    processed = _stub_sweep_dependencies(monkeypatch, transcript_ids=set(), sweep_ids=[session_id])
+
+    with caplog.at_level(logging.INFO, logger=sessions_router.logger.name):
+        asyncio.run(sessions_router.retry_stuck_sessions_on_startup())
+
+    assert processed == []
+    assert ingests.row["state"] == "failed"
+    assert [s["status"] for s in ingests.row["segments"]] == ["failed", "failed"]
+    sweep_lines = [r for r in caplog.records if "startup retry sweep" in r.getMessage()]
+    assert len(sweep_lines) == 1
+    assert session_id in sweep_lines[0].getMessage()
+    assert "not retryable" in sweep_lines[0].getMessage()
+    assert sweep_lines[0].exc_info is None
+
+
+def test_sweep_logs_one_line_without_traceback_when_manifest_is_missing(monkeypatch, tmp_path, caplog):
+    import logging
+
+    _setup(monkeypatch)
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    session_id = "sess-no-manifest"
+    ingests = _FakeSessionIngests(
+        session_id, "done", [_segment_row("s01", "pending_analysis", 51, "analysis_pending: boom")]
+    )
+    ingests.install(monkeypatch)
+    _stub_sweep_dependencies(monkeypatch, transcript_ids={51}, sweep_ids=[session_id])
+
+    with caplog.at_level(logging.INFO, logger=sessions_router.logger.name):
+        asyncio.run(sessions_router.retry_stuck_sessions_on_startup())
+
+    sweep_lines = [r for r in caplog.records if "startup retry sweep" in r.getMessage()]
+    assert len(sweep_lines) == 1
+    assert session_id in sweep_lines[0].getMessage()
+    assert "not retryable" in sweep_lines[0].getMessage()
+    assert sweep_lines[0].exc_info is None
+
+
 def test_run_session_document_processor_leaves_documents_unmarked_on_ingest_failure(monkeypatch):
     """T1/#49: a failed LightRAG ingest must not mark the already-saved rows
     ingested — they stay retryable (existing `pending_analysis` behaviour in
