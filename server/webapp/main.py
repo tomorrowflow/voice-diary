@@ -104,6 +104,10 @@ async def lifespan(app: FastAPI):
     )
 
     yield
+    # Stop the sweep before the pool it queries goes away.
+    sweep_task = app.state.startup_retry_sweep_task
+    sweep_task.cancel()
+    await asyncio.gather(sweep_task, return_exceptions=True)
     await vector_store.close()
     await db.close_pool()
 
@@ -256,6 +260,13 @@ async def review_page(request: Request, transcript_id: int):
     )
 
 
+async def _cancel_bridge_task(task: asyncio.Task) -> None:
+    """Cancel a still-running SSE bridge task and wait for it to unwind."""
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 @legacy_router.get("/api/transcripts/{transcript_id}/process")
 async def process_transcript_stream(transcript_id: int):
     """SSE endpoint: runs the shared correction chain
@@ -319,14 +330,19 @@ async def _process_transcript_events(
 
     task = asyncio.create_task(run_correction())
 
-    while True:
-        item = await queue.get()
-        if item is _done:
-            break
-        event, data = item
-        yield {"event": event, "data": json.dumps(data)}
+    try:
+        while True:
+            item = await queue.get()
+            if item is _done:
+                break
+            event, data = item
+            yield {"event": event, "data": json.dumps(data)}
 
-    result = await task
+        result = await task
+    finally:
+        # Client disconnect closes the generator mid-drain; don't leave the
+        # correction chain running with nobody listening.
+        await _cancel_bridge_task(task)
     text = result.corrected_text
 
     # Send corrected text + corrections to client
@@ -494,19 +510,30 @@ async def _process_document_events(
 
     task = asyncio.create_task(run_narrative())
 
-    while True:
-        item = await queue.get()
-        if item is _done:
-            break
-        event, data = item
-        yield {"event": event, "data": json.dumps(data)}
-
+    error_relayed = False
     try:
-        result = await task
-    except Exception:
-        # narrative.build_day_narrative already emitted the matching
-        # `step`/`log`/`error` events (analysis failure) before raising.
-        return
+        while True:
+            item = await queue.get()
+            if item is _done:
+                break
+            event, data = item
+            error_relayed = error_relayed or event == "error"
+            yield {"event": event, "data": json.dumps(data)}
+
+        try:
+            result = await task
+        except Exception as e:
+            if error_relayed:
+                # narrative.build_day_narrative already emitted the matching
+                # `step`/`log`/`error` events (analysis failure) before raising.
+                return
+            logger.exception("process-document: narrative stage failed for transcript %s", transcript_id)
+            yield {"event": "error", "data": json.dumps({"message": f"Document generation failed: {e}"})}
+            return
+    finally:
+        # Client disconnect closes the generator mid-drain; stop the
+        # narrative task (several-minute LLM call) instead of orphaning it.
+        await _cancel_bridge_task(task)
 
     # Save the narrative — specific to this review-UI flow; the sessions
     # path saves the same markdown against every segment's transcript.
