@@ -469,9 +469,9 @@ xcodebuild -scheme VoiceDiary \
            -configuration Debug \
            build
 
-# Tests
-xcodebuild test -scheme VoiceDiary -destination 'platform=iOS Simulator,name=iPhone 17 Pro'
 ```
+
+Test commands live in §7.4.
 
 The app reads its `server` URL + bearer token from Keychain, set during onboarding.
 
@@ -495,7 +495,7 @@ Rough cadence: ~2 weeks for S1 + M1–M3 (foundation dogfoodable), ~2 weeks for 
 
 ### 7.1 Server (`server/`)
 
-- **Unit tests**: FastAPI test client against each router. Mock MSAL, LightRAG, and Ollama clients.
+- **Unit tests**: FastAPI test client against each router. Mock MSAL, LightRAG, and Ollama clients. Commands: §7.4.
 - **Integration tests**: real `docker compose up`, hit endpoints with `httpx`, verify side effects (files written, LightRAG entries created, transcript rows inserted).
 - **Manual smoke tests** per milestone: bootstrap OAuth, hit each endpoint with `curl`, verify responses.
 
@@ -508,6 +508,51 @@ Rough cadence: ~2 weeks for S1 + M1–M3 (foundation dogfoodable), ~2 weeks for 
 ### 7.3 Dogfood
 
 From M3 onward, the user should use whatever works every day. Missing features are fine; finding what feels wrong in real use is the whole point.
+
+### 7.4 Running the tests
+
+This is the only place the test commands are documented; other files link here.
+
+**Server** — runs inside the webapp container so dependencies and environment match prod. The image
+only copies `webapp/` to `/app` and some tests read other repo files, so the repo is mounted
+(`-v ..:/repo`, resolved from `server/`) and pytest runs from `/repo/server`. `--no-deps` skips
+postgres, qdrant, and whisper. Avoid `$(...)`, which agent sandboxes reject. A `.env` is required;
+on a fresh clone the stub below is enough.
+
+```bash
+cd server && printf 'POSTGRES_PASSWORD=test\nTAILNET_IP=127.0.0.1\n' > .env && docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/ -q -p no:cacheprovider
+```
+
+To narrow the run, replace `webapp/tests/` with a file (`webapp/tests/test_sessions.py`) or a test
+id (`webapp/tests/test_sessions.py::test_derive_session_state_all_processed_is_done`).
+
+**iOS** — macOS with Xcode 16.2+ and XcodeGen only (`xcodebuild` does not run on Linux). The Xcode
+project is generated and gitignored, and `project.yml` includes `project-piper.yml` (gitignored,
+normally written by `ios/scripts/fetch_piper_voices.sh`). On a checkout without the Piper bootstrap,
+create a no-op stub and an empty `Resources/Models` first (the bundle folder reference), then
+generate, boot the simulator, and test:
+
+```bash
+cd ios
+printf '{}\n' > project-piper.yml
+mkdir -p Resources/Models
+xcodegen generate
+xcrun simctl boot "iPhone 17" || true
+xcrun simctl bootstatus "iPhone 17" -b
+xcodebuild test -scheme VoiceDiary \
+  -destination 'platform=iOS Simulator,name=iPhone 17' \
+  -skipMacroValidation \
+  -derivedDataPath ~/Library/Caches/vd-derived-data
+```
+
+- `-skipMacroValidation` is needed because `#huggingFaceLoadModelContainer` (MLXHuggingFace) is a
+  package macro that otherwise requires a one-time trust prompt in Xcode.
+- Keep `-derivedDataPath` on a Mac-local disk, not a network or synced volume.
+- iPhone 17 Pro is the target *device*; tests run on the plain iPhone 17 simulator because the
+  iPhone 17 Pro simulator is not available. Add `-only-testing:VoiceDiaryTests/<Class>` to run a
+  single test class.
+- If the Piper bootstrap has already been run, skip the stub and `mkdir` steps; do not overwrite
+  the real `project-piper.yml`.
 
 ---
 
