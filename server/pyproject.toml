@@ -1,0 +1,25 @@
+# Ruff policy for all server Python (server/webapp, server/scripts, server/voxtral-gate).
+# Check-only: lint findings are reported, never auto-fixed or reformatted by the hook.
+# The pinned ruff version lives in the root .pre-commit-config.yaml.
+#
+# The component pyproject.toml files (server/webapp, server/voxtral-gate) only carry
+# pytest settings and have no [tool.ruff] table, so ruff skips them and this file is
+# the single Ruff config for every server Python file.
+
+[tool.ruff]
+target-version = "py312"   # server runs Python 3.12 (see server/webapp/Dockerfile)
+line-length = 100          # E501 is not selected below, so this is not enforced yet
+extend-exclude = [
+    "docs-archive",        # historical design docs copied from diary-processor, reference only
+    "data",                # gitignored runtime state
+]
+
+[tool.ruff.lint]
+# Deliberately conservative: Ruff's own default set, spelled out so it is explicit.
+#   E4  import-statement errors (e.g. E402 module-import-not-at-top)
+#   E7  statement errors (e.g. E711/E712 comparisons, E722 bare except, E741 ambiguous names)
+#   E9  syntax / IO errors
+#   F   Pyflakes (unused imports/variables, undefined names, ...)
+# No `ignore` and no `per-file-ignores`: baseline findings are tracked for KA-4 to fix,
+# not hidden here.
+select = ["E4", "E7", "E9", "F"]
