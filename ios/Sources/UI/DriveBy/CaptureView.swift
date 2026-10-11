@@ -49,10 +49,7 @@ public struct CaptureView: View {
                         }
 
                         if let lastError = coordinator.lastError {
-                            Text(lastError)
-                                .font(Theme.font.footnote)
-                                .foregroundStyle(Theme.color.status.destructive)
-                                .padding(.horizontal, Theme.spacing.md)
+                            CaptureErrorText(message: lastError)
                         }
                     }
                     .padding(.horizontal, Theme.spacing.md)
@@ -244,3 +241,17 @@ public struct CaptureView: View {
 
 // SeedSummaryCard removed — last-note playback + metadata now lives
 // in the Verlauf tab so the recording screen stays single-purpose.
+
+/// Inline capture-failure line under the record area. Its own view so the
+/// recovery copy can be rendered in isolation (light / dark) by tests.
+struct CaptureErrorText: View {
+    let message: String
+
+    var body: some View {
+        Text(message)
+            .font(Theme.font.footnote)
+            .foregroundStyle(Theme.color.status.destructive)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, Theme.spacing.md)
+    }
+}
