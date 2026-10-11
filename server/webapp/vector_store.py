@@ -9,6 +9,7 @@ Uses fastembed (paraphrase-multilingual-MiniLM-L12-v2, 384-dim) for embeddings â
 runs on CPU, no external service needed.
 """
 
+import asyncio
 import logging
 import os
 import re
@@ -266,7 +267,9 @@ async def find_similar_corrections(
 
     try:
         client = await _get_client()
-        results = client.query(
+        # Blocking HTTP + local embedding: keep it off the event loop.
+        results = await asyncio.to_thread(
+            client.query,
             collection_name=COLLECTION_CORRECTIONS,
             query_text=text,
             limit=limit,
