@@ -1,0 +1,25 @@
+# Override for the verify-server skill. Layered on top of
+# server/docker-compose.yml (never edited) so a verification run:
+#   - publishes the webapp on 127.0.0.1 only (the bind guard still gets a
+#     tailnet-range TAILNET_IP value from the generated env file, but nothing
+#     is ever published on a tailnet or public interface),
+#   - reads a generated per-run env file instead of server/.env, so no real
+#     secret is read, and
+#   - keeps /data in a project-scoped named volume instead of server/data, so a
+#     run cannot touch the real session bundles or the MSAL cache.
+# Postgres/Qdrant already use project-scoped named volumes in the base file.
+#
+# Needs Compose >= 2.24 for the !override tag. VERIFY_PORT and VERIFY_ENV_FILE
+# are written by `verify.sh launch`.
+services:
+  webapp:
+    ports: !override
+      - "127.0.0.1:${VERIFY_PORT:?run via verify.sh}:8000"
+    env_file: !override
+      - ${VERIFY_ENV_FILE:?run via verify.sh}
+    volumes: !override
+      - verify_data:/data
+      - ./scripts:/app/scripts:ro
+
+volumes:
+  verify_data:
