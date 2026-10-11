@@ -746,7 +746,8 @@ recovers. Two mechanisms retry it:
 - **`POST /api/sessions/{session_id}/retry-analysis`** (bearer-token) — rebuilds the session's
   narrative input from what's persisted: the manifest on disk (segment order, headers, todos) plus
   each `pending_analysis` segment's transcript row (corrected text where present, else raw;
-  entities from `entities_json`), then re-runs the shared narrative stage
+  entities from `detected_entities_json`, falling back to `entities_json` for rows ingested before
+  the column existed), then re-runs the shared narrative stage
   (`narrative.build_day_narrative` + `narrative.sync_and_ingest`). If a `processed_documents` row
   already exists for every pending segment and isn't marked ingested (an ingest-only failure —
   analysis succeeded, only LightRAG failed), it re-ingests that saved narrative instead of

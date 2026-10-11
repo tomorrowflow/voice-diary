@@ -63,6 +63,9 @@ CREATE TABLE IF NOT EXISTS transcripts (
 
 -- migration: add entities_json if missing
 ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS entities_json JSONB;
+-- migration: add detected_entities_json if missing (pipeline output from the
+-- iOS session path; entities_json / status='saved' stay reserved for human review)
+ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS detected_entities_json JSONB;
 -- migration: add processing_error if missing
 ALTER TABLE transcripts ADD COLUMN IF NOT EXISTS processing_error TEXT;
 -- migration: add context to persons if missing
