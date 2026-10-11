@@ -1,0 +1,28 @@
+ Container vd-verify-driver-run-fa83e2e47cb2 Creating 
+ Container vd-verify-driver-run-fa83e2e47cb2 Created 
+{
+  "request": {
+    "bearer": "sent",
+    "body": null,
+    "method": "GET",
+    "path": "/api/admin/static-entities"
+  },
+  "response": {
+    "body": [
+      {
+        "aliases": [],
+        "created_at": "2026-10-11T12:11:27.447123+00:00",
+        "description": "KA-8 verify-server probe",
+        "entity_type": "Category",
+        "id": 1,
+        "name": "verify-ka8-probe",
+        "properties": "{}",
+        "sort_order": 0,
+        "status": "active",
+        "updated_at": "2026-10-11T12:11:27.447123+00:00"
+      }
+    ],
+    "status": 200
+  }
+}
+PASS  GET -> 200 and list contains the probe row

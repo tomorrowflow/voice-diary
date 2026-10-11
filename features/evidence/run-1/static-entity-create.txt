@@ -1,0 +1,42 @@
+ Container vd-verify-driver-run-e961e521fe19 Creating 
+ Container vd-verify-driver-run-e961e521fe19 Created 
+{
+  "request": {
+    "bearer": "none",
+    "body": {
+      "description": "KA-8 verify-server probe",
+      "entity_type": "Category",
+      "name": "verify-ka8-probe"
+    },
+    "method": "POST",
+    "path": "/api/admin/static-entities"
+  },
+  "response": {
+    "body": {
+      "detail": "missing_bearer_token"
+    },
+    "status": 401
+  }
+}
+PASS  POST without bearer -> 401
+{
+  "request": {
+    "bearer": "sent",
+    "body": {
+      "description": "KA-8 verify-server probe",
+      "entity_type": "Category",
+      "name": "verify-ka8-probe"
+    },
+    "method": "POST",
+    "path": "/api/admin/static-entities"
+  },
+  "response": {
+    "body": {
+      "id": 1,
+      "status": "ok"
+    },
+    "status": 200
+  }
+}
+PASS  POST with bearer -> 200 {status: ok, id}
+ENTITY_ID=1

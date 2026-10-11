@@ -5,11 +5,10 @@ probes it before onboarding.
 
 ## Drive
 
-```bash
-features/verify-server/verify.sh drive health
-```
+Driver subcommand `health` (full command: SKILL.md → Drive):
+`… run --rm --no-deps -T driver python /drive.py health`.
 
-`GET http://127.0.0.1:<port>/health`, no Authorization header.
+`GET http://webapp:8000/health` from the driver container, no Authorization header.
 
 ## Expected
 
@@ -26,4 +25,4 @@ None. The request still appears in the webapp request log.
 
 ## Evidence
 
-`health.request.txt`, `health.response.{headers,body}`, `health.status`.
+`health.txt` (request/response JSON record + PASS lines) and the `/health` line in `webapp.log`.

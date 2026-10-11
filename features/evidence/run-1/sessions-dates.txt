@@ -1,0 +1,49 @@
+ Container vd-verify-driver-run-7c24fe4333cc Creating 
+ Container vd-verify-driver-run-7c24fe4333cc Created 
+{
+  "request": {
+    "bearer": "none",
+    "body": null,
+    "method": "GET",
+    "path": "/api/sessions/dates"
+  },
+  "response": {
+    "body": {
+      "detail": "missing_bearer_token"
+    },
+    "status": 401
+  }
+}
+PASS  GET /api/sessions/dates without bearer -> 401 missing_bearer_token
+{
+  "request": {
+    "bearer": "sent",
+    "body": null,
+    "method": "GET",
+    "path": "/api/sessions/dates"
+  },
+  "response": {
+    "body": {
+      "dates": [
+        "2025-05-14"
+      ]
+    },
+    "status": 200
+  }
+}
+PASS  with bearer -> 200 and dates is a list
+{
+  "request": {
+    "bearer": "sent",
+    "body": null,
+    "method": "GET",
+    "path": "/api/sessions/dates?date_from=not-a-date"
+  },
+  "response": {
+    "body": {
+      "detail": "invalid_date_from"
+    },
+    "status": 400
+  }
+}
+PASS  bad date_from -> 400 invalid_date_from

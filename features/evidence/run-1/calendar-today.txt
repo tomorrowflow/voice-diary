@@ -1,0 +1,117 @@
+ Container vd-verify-driver-run-707cc1b5eab0 Creating 
+ Container vd-verify-driver-run-707cc1b5eab0 Created 
+{
+  "request": {
+    "bearer": "none",
+    "body": null,
+    "method": "GET",
+    "path": "/today/calendar?date=2026-10-11"
+  },
+  "response": {
+    "body": {
+      "detail": "missing_bearer_token"
+    },
+    "status": 401
+  }
+}
+PASS  GET /today/calendar?date=2026-10-11 without bearer -> 401 missing_bearer_token
+{
+  "request": {
+    "bearer": "sent",
+    "body": null,
+    "method": "GET",
+    "path": "/today/calendar?date=2026-10-11"
+  },
+  "response": {
+    "body": {
+      "date": "2026-10-11",
+      "events": [
+        {
+          "attendees": [
+            {
+              "email": "monica.breitkreutz@enersis.com",
+              "name": "Monica Breitkreutz"
+            },
+            {
+              "email": "florian.wolf@enersis.com",
+              "name": "Florian Wolf"
+            }
+          ],
+          "body_preview": "W\u00f6chentliches 1:1 \u2014 BYOD policy, Q2 OKRs, Team Workload.",
+          "end": "2026-10-11T10:30:00+02:00",
+          "graph_event_id": "FIXTURE-AAMkAD-1on1-monica",
+          "is_all_day": false,
+          "is_recurring": false,
+          "organizer": {
+            "email": "monica.breitkreutz@enersis.com",
+            "name": "Monica Breitkreutz"
+          },
+          "rsvp_status": "accepted",
+          "show_as": "busy",
+          "start": "2026-10-11T10:00:00+02:00",
+          "subject": "1:1 mit Monica Breitkreutz",
+          "web_link": "https://outlook.office365.com/owa/?itemid=FIXTURE-1on1-monica"
+        },
+        {
+          "attendees": [
+            {
+              "email": "christian.bauer@enersis.com",
+              "name": "Christian Bauer"
+            },
+            {
+              "email": "monica.breitkreutz@enersis.com",
+              "name": "Monica Breitkreutz"
+            },
+            {
+              "email": "florian.wolf@enersis.com",
+              "name": "Florian Wolf"
+            },
+            {
+              "email": "legal@enersis.com",
+              "name": "Legal Counsel"
+            }
+          ],
+          "body_preview": "Cross-team sync \u2014 Christian, Monica, Legal. Goal: agree on a draft policy by Donnerstag.",
+          "end": "2026-10-11T12:00:00+02:00",
+          "graph_event_id": "FIXTURE-AAMkAD-byod-sync",
+          "is_all_day": false,
+          "is_recurring": false,
+          "organizer": {
+            "email": "christian.bauer@enersis.com",
+            "name": "Christian Bauer"
+          },
+          "rsvp_status": "tentative",
+          "show_as": "busy",
+          "start": "2026-10-11T11:00:00+02:00",
+          "subject": "BYOD Policy Sync",
+          "web_link": "https://outlook.office365.com/owa/?itemid=FIXTURE-byod-sync"
+        },
+        {
+          "attendees": [],
+          "body_preview": "Solo-Block f\u00fcr Architektur-Review der Q2-Roadmap.",
+          "end": "2026-10-11T15:30:00+02:00",
+          "graph_event_id": "FIXTURE-AAMkAD-deepwork",
+          "is_all_day": false,
+          "is_recurring": false,
+          "organizer": {
+            "email": "florian.wolf@enersis.com",
+            "name": "Florian Wolf"
+          },
+          "rsvp_status": "organizer",
+          "show_as": "busy",
+          "start": "2026-10-11T14:00:00+02:00",
+          "subject": "Deep Work \u2014 Architektur Review Q2",
+          "web_link": "https://outlook.office365.com/owa/?itemid=FIXTURE-deepwork"
+        }
+      ],
+      "rsvp_filter": [
+        "accepted",
+        "tentative",
+        "organizer"
+      ]
+    },
+    "status": 200
+  }
+}
+PASS  with bearer -> 200
+PASS  date echoed and fixture events returned

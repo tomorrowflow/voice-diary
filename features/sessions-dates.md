@@ -5,9 +5,8 @@ dates that already have a transcript; the iOS walkthrough date picker uses it.
 
 ## Drive
 
-```bash
-features/verify-server/verify.sh drive sessions-dates
-```
+Driver subcommand `sessions-dates` (full command: SKILL.md → Drive):
+`… run --rm --no-deps -T driver python /drive.py sessions-dates`.
 
 1. `GET /api/sessions/dates` without bearer → **401**.
 2. With bearer → **200**, body `{"dates": [...]}` (empty array on a fresh stack).
@@ -21,4 +20,4 @@ webapp lifespan on startup, so a 200 also shows the schema/DB path works).
 
 ## Evidence
 
-`sessions-dates-noauth.*`, `sessions-dates.*`, `sessions-dates-bad.*`.
+`sessions-dates.txt` (all three calls, request/response JSON, PASS lines) and the matching `webapp.log` lines.

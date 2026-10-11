@@ -7,11 +7,10 @@ without Whisper, Ollama or LightRAG.
 
 ## Drive
 
-```bash
-features/verify-server/verify.sh drive admin-static-entities
-```
-
-Probe row name: `verify-<run id>`, `entity_type: "Category"`.
+Driver subcommands `static-entity-create <name>`, `static-entity-list <name>`,
+`static-entity-delete <id>` (full commands: SKILL.md → Drive), with `psql` checks via
+`… exec -T postgres sh -c '…'` between them. Probe row: name `verify-ka8-probe`,
+`entity_type: "Category"`.
 
 1. `POST /api/admin/static-entities` without bearer → **401**; no row is created.
 2. `POST` with bearer, body `{"name","entity_type":"Category","description"}` → **200**
@@ -26,8 +25,8 @@ Probe row name: `verify-<run id>`, `entity_type: "Category"`.
 
 ## Evidence
 
-`static-entity-{noauth,create,list,delete}.*`, `static-entity-db-row.txt`,
-`static-entity-request-log.jsonl`, `static-entity-db-after-delete.txt`.
+`static-entity-{create,list,delete}.txt`, `db-row-after-create.txt`,
+`db-row-after-delete.txt`, and the `/api/admin/static-entities` lines in `webapp.log`.
 
 ## Notes
 
