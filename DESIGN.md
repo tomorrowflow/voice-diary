@@ -233,7 +233,7 @@ Sharp corners (`none`) are reserved for full-bleed images. `2xl` (16px) is for t
 
 ## Components
 
-The component library is intentionally small. Five button variants × three sizes, two card flavours, one badge, one event-row pattern. Adding a new visual primitive requires updating `docs/design-system/specs/components/*.json` and rebuilding tokens — see `CLAUDE.md` Design system rules.
+The component library is intentionally small. Five button variants × three sizes, two card flavours, one badge, one event-row pattern. Adding a new visual primitive requires updating `docs/design-system/specs/components/*.json` and rebuilding tokens — see the Don't list and "Implementation contract" below.
 
 ### Buttons (5 × 3 = 15 styles total)
 
