@@ -16,8 +16,7 @@ active implementation. Trust `git log` and the source trees over any status tabl
   **canonical test commands (§7.4)**. Do not copy test or deploy recipes into other files.
 - `DESIGN.md` — design system; tokens come from `docs/design-system/tokens/` via
   `scripts/build_design_system.sh`.
-- `CODING_STANDARDS.md` (repo root, added by KA-2; until then `.sandcastle/CODING_STANDARDS.md`) —
-  coding conventions.
+- `CODING_STANDARDS.md` — coding conventions and the reviewer's hard rules.
 - `CONTEXT.md` + `docs/adr/` — domain language and decisions; see `docs/agents/domain.md`.
 - `ios/README.md` — iOS setup, signing, device builds, manual test plan.
 - `server/README.md` — server setup, environment, operations.
@@ -27,7 +26,7 @@ active implementation. Trust `git log` and the source trees over any status tabl
 
 - Stay inside one component's directory. A change to the `ios/` ↔ `server/` contract is two cards:
   the server half plus SPEC.md first, then the iOS half naming the server PR (detail in
-  `CODING_STANDARDS.md` after KA-2).
+  `CODING_STANDARDS.md`).
 - Read existing code before changing it; prefer the simpler implementation.
 - Commit messages: short, imperative, no Claude attribution.
 - Never hard-code colours, spacing, radius, or font sizes; never hand-edit generated token files.
