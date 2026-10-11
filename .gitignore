@@ -2,7 +2,9 @@
 .DS_Store
 
 # Editors / tooling
-.claude/
+# Local Claude state stays ignored; project skills are tracked.
+.claude/*
+!.claude/skills/
 .automaker/
 .planning/
 .worktrees/
@@ -27,6 +29,11 @@ server/.env
 server/data/
 server/**/data/sessions/
 server/**/data/msal_cache.bin
+
+# verify-server skill: per-run scratch (generated env with ephemeral secrets)
+# and per-run evidence. A run's evidence is committed deliberately (git add -f).
+.verify/
+features/evidence/*/
 
 # Node (in case any tooling lands)
 node_modules/
