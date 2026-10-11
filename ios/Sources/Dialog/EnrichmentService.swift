@@ -44,6 +44,23 @@ public actor EnrichmentService {
 
     public init() {}
 
+    /// Spoken copy for a failed enrichment (SPEC §15.1). Connectivity
+    /// failures (server unreachable, device offline, request timed out)
+    /// get the "can't reach server" message; every other failure keeps
+    /// the generic "couldn't answer" message.
+    public static func failureMessage(for error: Error, language: OpenerLanguage) -> String {
+        switch ConnectionDiagnosis.classify(error).kind {
+        case .unreachable, .offline, .timeout:
+            return language == .de
+                ? "Server nicht erreichbar. Die Anreicherung wird übersprungen."
+                : "Can't reach server. Enrichment skipped."
+        default:
+            return language == .de
+                ? "Ich konnte die Frage gerade nicht beantworten."
+                : "I couldn't answer that just now."
+        }
+    }
+
     /// End-to-end enrichment: classify → call the right endpoint → return
     /// a TTS-ready summary string.
     public func enrich(
