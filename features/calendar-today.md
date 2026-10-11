@@ -8,9 +8,8 @@ No Entra tenant, MSAL cache or Graph token is involved.
 
 ## Drive
 
-```bash
-features/verify-server/verify.sh drive calendar-today
-```
+Driver subcommand `calendar-today` (full command: SKILL.md → Drive):
+`… run --rm --no-deps -T driver python /drive.py calendar-today`.
 
 1. `GET /today/calendar?date=<today>` without bearer → **401** `missing_bearer_token`.
 2. Same request with the generated bearer → **200**.
@@ -28,4 +27,4 @@ ones — the isolated data volume is empty, so the bundled defaults are used.
 
 ## Evidence
 
-`calendar-today-noauth.*`, `calendar-today.*`.
+`calendar-today.txt` (both calls, request/response JSON, PASS lines) and the matching `webapp.log` lines.

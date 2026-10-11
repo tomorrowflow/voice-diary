@@ -1,0 +1,65 @@
+ Image python:3.11-slim Pulling 
+ Image python:3.11-slim Pulled 
+ Container vd-verify-driver-run-0be7a29eecb4 Creating 
+ Container vd-verify-driver-run-0be7a29eecb4 Created 
+{
+  "request": {
+    "bearer": "none",
+    "body": null,
+    "method": "GET",
+    "path": "/health"
+  },
+  "response": {
+    "body": {
+      "status": "down",
+      "upstream": {
+        "lightrag": "skipped",
+        "msgraph": "fixture",
+        "ollama": "skipped",
+        "postgres": "ok",
+        "qdrant": "ok",
+        "voxtral": "down",
+        "whisper": "down"
+      }
+    },
+    "status": 200
+  }
+}
+PASS  GET /health -> 200 without bearer
+PASS  health: postgres ok
+PASS  health: qdrant ok
+PASS  health: msgraph is fixture (no Entra needed)
+{
+  "request": {
+    "bearer": "none",
+    "body": null,
+    "method": "GET",
+    "path": "/api/sessions/dates"
+  },
+  "response": {
+    "body": {
+      "detail": "missing_bearer_token"
+    },
+    "status": 401
+  }
+}
+PASS  GET /api/sessions/dates without bearer -> 401 missing_bearer_token
+{
+  "request": {
+    "bearer": "sent",
+    "body": null,
+    "method": "GET",
+    "path": "/api/sessions/dates"
+  },
+  "response": {
+    "body": {
+      "dates": [
+        "2025-05-14"
+      ]
+    },
+    "status": 200
+  }
+}
+PASS  GET /api/sessions/dates with bearer -> 200
+note: health.status is expected to be down/degraded: whisper, voxtral, ollama and lightrag are deliberately not in this stack.
+exit=0

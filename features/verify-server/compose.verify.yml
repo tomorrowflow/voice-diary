@@ -1,25 +1,48 @@
-# Override for the verify-server skill. Layered on top of
-# server/docker-compose.yml (never edited) so a verification run:
-#   - publishes the webapp on 127.0.0.1 only (the bind guard still gets a
-#     tailnet-range TAILNET_IP value from the generated env file, but nothing
-#     is ever published on a tailnet or public interface),
-#   - reads a generated per-run env file instead of server/.env, so no real
-#     secret is read, and
-#   - keeps /data in a project-scoped named volume instead of server/data, so a
-#     run cannot touch the real session bundles or the MSAL cache.
-# Postgres/Qdrant already use project-scoped named volumes in the base file.
+# Override for the verify-server skill, layered on server/docker-compose.yml
+# (never edited). Always used with `-p vd-verify` and
+# `--env-file features/verify-server/verify.env`, so a run:
+#   - publishes NO host port (the webapp is reached only by the `driver`
+#     service over the project network),
+#   - reads verify.env instead of server/.env (no real secret is read),
+#   - keeps /data in a project-scoped named volume, not server/data, and
+#   - only brings up webapp + postgres + qdrant (no Whisper/Voxtral/GPU).
 #
-# Needs Compose >= 2.24 for the !override tag. VERIFY_PORT and VERIFY_ENV_FILE
-# are written by `verify.sh launch`.
+# Needs Compose >= 2.24 for the !override / !reset tags.
 services:
   webapp:
-    ports: !override
-      - "127.0.0.1:${VERIFY_PORT:?run via verify.sh}:8000"
+    ports: !reset []
     env_file: !override
-      - ${VERIFY_ENV_FILE:?run via verify.sh}
+      - ../features/verify-server/verify.env
     volumes: !override
       - verify_data:/data
       - ./scripts:/app/scripts:ro
+    # The base file waits for Whisper; this stack deliberately has none.
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    # Lets `up --wait` block until the app is serving. /health is 200 even when
+    # upstreams are down, so this only proves the process is up.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 15s
+
+  # One-shot HTTP driver on the project network. Not started by `up` (profile);
+  # run with `docker compose ... run --rm --no-deps driver python /drive.py <cmd>`.
+  # Evidence is its stdout, which the caller redirects into features/evidence/.
+  driver:
+    profiles: ["drive"]
+    image: python:3.11-slim
+    env_file:
+      - ../features/verify-server/verify.env
+    environment:
+      BASE_URL: http://webapp:8000
+    volumes:
+      - ../features/verify-server/drive.py:/drive.py:ro
 
 volumes:
   verify_data:

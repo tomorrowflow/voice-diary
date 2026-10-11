@@ -1,0 +1,27 @@
+ Container vd-verify-driver-run-c55b692b4e3f Creating 
+ Container vd-verify-driver-run-c55b692b4e3f Created 
+{
+  "request": {
+    "bearer": "none",
+    "body": null,
+    "method": "GET",
+    "path": "/health"
+  },
+  "response": {
+    "body": {
+      "status": "down",
+      "upstream": {
+        "lightrag": "skipped",
+        "msgraph": "fixture",
+        "ollama": "skipped",
+        "postgres": "ok",
+        "qdrant": "ok",
+        "voxtral": "down",
+        "whisper": "down"
+      }
+    },
+    "status": 200
+  }
+}
+PASS  200
+PASS  upstream has postgres + qdrant + msgraph

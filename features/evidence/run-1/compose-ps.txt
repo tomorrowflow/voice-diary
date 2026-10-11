@@ -1,0 +1,4 @@
+SERVICE    STATE     <no value>   PORTS
+postgres   running   healthy      5432/tcp
+qdrant     running                6333-6334/tcp
+webapp     running   healthy      8000/tcp
