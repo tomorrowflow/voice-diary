@@ -2322,9 +2322,7 @@ public final class WalkthroughCoordinator {
             Log.app.warning(
                 "enrichment failed: \(String(describing: error), privacy: .public)"
             )
-            let fallback = language == .de
-                ? "Ich konnte die Frage gerade nicht beantworten."
-                : "I couldn't answer that just now."
+            let fallback = EnrichmentService.failureMessage(for: error, language: language)
             recordAiPrompt(role: "enrichment_failed", segmentID: segmentID, text: "\(error)")
             await speak(fallback, language: language.rawValue)
         }
