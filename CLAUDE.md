@@ -25,8 +25,9 @@ active implementation. Trust `git log` and the source trees over any status tabl
 
 ## Working rules
 
-- Stay inside one component's directory unless the change crosses the `ios/` ↔ `server/` contract;
-  then touch both sides in the same commit.
+- Stay inside one component's directory. A change to the `ios/` ↔ `server/` contract is two cards:
+  the server half plus SPEC.md first, then the iOS half naming the server PR (detail in
+  `CODING_STANDARDS.md` after KA-2).
 - Read existing code before changing it; prefer the simpler implementation.
 - Commit messages: short, imperative, no Claude attribution.
 - Never hard-code colours, spacing, radius, or font sizes; never hand-edit generated token files.

@@ -534,7 +534,7 @@ generate, boot the simulator, and test:
 
 ```bash
 cd ios
-printf 'targets: {}\n' > project-piper.yml
+printf '{}\n' > project-piper.yml
 mkdir -p Resources/Models
 xcodegen generate
 xcrun simctl boot "iPhone 17" || true
