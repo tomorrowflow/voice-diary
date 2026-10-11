@@ -510,23 +510,43 @@ async def _retry_via_saved_document(artifacts: list[_SegmentArtifact]) -> bool:
     """Ingest-only retry shortcut.
 
     If analysis already completed and saved a `processed_documents` row for
-    every artifact but the LightRAG ingest itself failed (rows exist,
-    unmarked), re-ingest that saved narrative rather than re-running
-    analysis. Returns `False` (no-op) if any artifact has no saved document
-    yet, or already has one marked ingested.
+    every artifact, the latest rows are all the same whole-session narrative
+    (`_run_session_document_processor` saves one combined document against
+    every segment), and the LightRAG ingest itself failed (rows unmarked),
+    re-ingest that saved narrative rather than re-running analysis.
+
+    Returns `False` (no-op, caller re-analyzes) if any artifact has no saved
+    document yet, every document is already marked ingested, or the latest
+    documents diverge (e.g. a newer single-segment document from the review
+    UI) — ingesting `docs[0]` and marking every row would otherwise record a
+    narrative that was never ingested.
+
+    A mix of marked and unmarked rows of the same narrative means a previous
+    run ingested it and died part-way through marking: just mark the
+    remainder.
     """
     docs: list[dict] = []
     for art in artifacts:
         doc = await db.get_latest_processed_document(art.transcript_id)
-        if doc is None or doc.get("lightrag_ingested"):
+        if doc is None:
             return False
         docs.append(doc)
 
-    metadata = docs[0]["metadata"]
-    if isinstance(metadata, str):
-        metadata = json.loads(metadata)
-    await narrative.sync_and_ingest(docs[0]["document_markdown"], metadata)
-    for doc in docs:
+    def _metadata(doc: dict) -> dict:
+        metadata = doc["metadata"]
+        return json.loads(metadata) if isinstance(metadata, str) else metadata
+
+    narratives = {
+        (doc["document_markdown"], json.dumps(_metadata(doc), sort_keys=True))
+        for doc in docs
+    }
+    unmarked = [doc for doc in docs if not doc.get("lightrag_ingested")]
+    if len(narratives) != 1 or not unmarked:
+        return False
+
+    if len(unmarked) == len(docs):
+        await narrative.sync_and_ingest(docs[0]["document_markdown"], _metadata(docs[0]))
+    for doc in unmarked:
         await db.mark_document_ingested(doc["id"])
     return True
 
