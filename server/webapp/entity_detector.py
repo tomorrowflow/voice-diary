@@ -363,7 +363,6 @@ def detect_entities(
                     d_idx += len(var_dehyph)
 
         # Pass 2: Normalized match for terms
-        canonical_normalized = normalize_text(canonical)
         for variation in variations:
             if not variation:
                 continue
