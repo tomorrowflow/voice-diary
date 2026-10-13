@@ -12,11 +12,9 @@ saves evidence under `features/evidence/<run>/`, and tears down only that projec
 
 The route map is `features/README.md`; one file per feature in `features/`.
 
-> Location: this file lives at `features/verify-server/SKILL.md`. To expose it as a
-> project skill, move it to `.claude/skills/verify-server/SKILL.md` (`.gitignore` already
-> un-ignores `.claude/skills/`). Its sibling files stay where they are.
-
 ## Files
+
+All under `features/verify-server/`:
 
 - `compose.verify.yml` — override on `server/docker-compose.yml` (never edited): no host
   port, no `server/.env`, project-scoped `/data` volume, only webapp + postgres + qdrant,

@@ -1,7 +1,6 @@
 # Server feature map
 
-Route-focused maps for the `verify-server` skill (`features/verify-server/SKILL.md`;
-move it to `.claude/skills/verify-server/` to expose it as a project skill). The stack is
+Route-focused maps for the `verify-server` skill (`.claude/skills/verify-server/SKILL.md`). The stack is
 `features/verify-server/compose.verify.yml` (Compose project `vd-verify`) and routes are
 driven by `features/verify-server/drive.py` from a `driver` container. Each file says how to drive one route group
 against the isolated Compose stack and what proves it worked.
