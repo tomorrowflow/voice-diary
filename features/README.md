@@ -1,5 +1,7 @@
 # Server feature map
 
+> The iOS app has its own map and skill: `features/ios/README.md` and `.claude/skills/verify-ios/SKILL.md`.
+
 Route-focused maps for the `verify-server` skill (`.claude/skills/verify-server/SKILL.md`). The stack is
 `features/verify-server/compose.verify.yml` (Compose project `vd-verify`) and routes are
 driven by `features/verify-server/drive.py` from a `driver` container. Each file says how to drive one route group
