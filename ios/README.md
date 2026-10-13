@@ -138,6 +138,7 @@ swiftlint lint --strict
   original `force_try` violations in `Sources/Dialog/TodoExtractor.swift` were fixed in KA-6. No
   `disabled_rules` and no per-file disables hide anything.
 
+
 ---
 
 ## Layout
