@@ -134,10 +134,9 @@ swiftlint lint --strict
   (`DSColor.swift`, `DSMetrics.swift`, `DSSemantic.swift`, written by
   `scripts/build_design_system.sh`), the gitignored `Sources/TTS/Vendor` and `Frameworks`, and
   build output.
-- **Baseline (for KA-6):** `swiftlint lint --strict` reports 3 violations in 102 files, all
-  `force_try` in `Sources/Dialog/TodoExtractor.swift` (lines 58, 102, 172). No `disabled_rules`
-  and no per-file disables hide them. The full source tree is **not** lint-green until KA-6 fixes
-  these.
+- **Baseline:** `swiftlint lint --strict` is clean across the hand-written sources. The three
+  original `force_try` violations in `Sources/Dialog/TodoExtractor.swift` were fixed in KA-6. No
+  `disabled_rules` and no per-file disables hide anything.
 
 ---
 
