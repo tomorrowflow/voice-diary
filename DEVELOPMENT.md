@@ -563,7 +563,7 @@ dispatch. It uses no secrets (`permissions: contents: read`); the commands are t
 |---|---|---|
 | `ruff` | `ubuntu-latest` | `ruff check server` with the version pinned in `.pre-commit-config.yaml` and the config in `server/pyproject.toml`. |
 | `server-tests` | `ubuntu-latest` | Writes the §7.4 `.env` stub, then runs the §7.4 Compose pytest command. Docker Engine and Compose v2 are preinstalled on the runner. |
-| `ios-tests` | `macos-26` | Selects the newest installed Xcode 26, installs XcodeGen/SwiftLint with Homebrew only if the image lacks them, runs `swiftlint lint`, stubs `project-piper.yml` and `Resources/Models`, runs `xcodegen generate`, boots a simulator, then `xcodebuild test -skipMacroValidation`. |
+| `ios-tests` | `macos-26` | Selects the newest installed Xcode 26, installs XcodeGen/SwiftLint with Homebrew only if the image lacks them, runs `swiftlint lint --strict`, stubs `project-piper.yml` and `Resources/Models`, runs `xcodegen generate`, boots a simulator, then `xcodebuild test -skipMacroValidation`. |
 
 iOS job notes:
 
@@ -575,8 +575,8 @@ iOS job notes:
   image has no such simulator. It tests by UDID, so the name differences in §7.4 do not matter.
 - `CODE_SIGNING_ALLOWED=NO` is passed because `project.yml` pins a personal `DEVELOPMENT_TEAM`
   that CI has no certificate for; simulator tests do not need signing.
-- SwiftLint currently runs without `--strict`, so errors fail the job and warnings do not.
-  Tighten it once the SwiftLint baseline is clean.
+- SwiftLint runs with `--strict` from the repo root (config and scope live in `.swiftlint.yml`),
+  so any violation fails the job.
 - Swift packages are resolved on every run (no cache yet), so the first minutes of the job are
   dependency fetches.
 
