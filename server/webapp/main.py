@@ -19,26 +19,26 @@ from logging_setup import CorrelationIdMiddleware, configure_logging  # noqa: E4
 configure_logging()
 logger = logging.getLogger(__name__)
 
-import httpx
-from fastapi import APIRouter, Depends, FastAPI, Form, Request, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
-from sse_starlette.sse import EventSourceResponse
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
+import httpx  # noqa: E402
+from fastapi import APIRouter, Depends, FastAPI, Form, Request, UploadFile, File  # noqa: E402
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse  # noqa: E402
+from sse_starlette.sse import EventSourceResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from fastapi.templating import Jinja2Templates  # noqa: E402
 
-import asr_client
-import bind_guard
-import correction
-import db
-import document_processor
-import llm_validator
-import harvest_patterns
-import harvest_llm
-import fluency_checker
-import narrative
-import transcript_ingest
-import vector_store
-from llm_validator import validate_entities_stream
+import asr_client  # noqa: E402
+import bind_guard  # noqa: E402
+import correction  # noqa: E402
+import db  # noqa: E402
+import document_processor  # noqa: E402
+import llm_validator  # noqa: E402
+import harvest_patterns  # noqa: E402
+import harvest_llm  # noqa: E402
+import fluency_checker  # noqa: E402
+import narrative  # noqa: E402
+import transcript_ingest  # noqa: E402
+import vector_store  # noqa: E402
+from llm_validator import validate_entities_stream  # noqa: E402
 
 WHISPER_URL = os.getenv("WHISPER_URL", "http://whisper:9000")
 HARVEST_ACCESS_TOKEN = os.getenv("HARVEST_ACCESS_TOKEN", "")

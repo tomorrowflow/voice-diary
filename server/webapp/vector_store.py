@@ -15,7 +15,6 @@ import os
 import re
 import uuid
 import warnings
-from datetime import date as date_type
 
 from dotenv import load_dotenv
 from pathlib import Path

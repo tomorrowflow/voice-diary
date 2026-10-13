@@ -292,7 +292,7 @@ async def validate_entities_stream(
 
     # Call Ollama
     logger.info("Calling Ollama at %s (model: %s, timeout: %ss)", OLLAMA_BASE_URL, OLLAMA_MODEL, OLLAMA_TIMEOUT)
-    yield _sse_log(f"Calling Ollama for entity validation...")
+    yield _sse_log("Calling Ollama for entity validation...")
     t0 = time.monotonic()
 
     try:

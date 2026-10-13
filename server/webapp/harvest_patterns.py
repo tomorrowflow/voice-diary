@@ -149,7 +149,6 @@ def match_calendar_to_pattern(
         return None
 
     subject_lower = subject.lower()
-    subject_words = set(re.findall(r'\b[a-zäöüß]{3,}\b', subject_lower))
 
     best_match = None
     best_score = 0
