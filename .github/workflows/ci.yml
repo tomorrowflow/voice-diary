@@ -56,17 +56,15 @@ jobs:
     # Standard GitHub-hosted macOS runner (free for public repos). iOS 26 SDK needs Xcode 26.
     runs-on: macos-26
     timeout-minutes: 60
-    env:
-      DERIVED_DATA: ${{ runner.temp }}/vd-derived-data
     steps:
       - uses: actions/checkout@v4
 
       - name: Select newest installed Xcode
         run: |
-          latest=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
-          if [ -z "$latest" ]; then
+          latest=$(printf '%s\n' /Applications/Xcode_26*.app | sort -V | tail -n 1)
+          if [ ! -d "$latest" ]; then
             echo "No Xcode 26 found on this runner image:" >&2
-            ls -d /Applications/Xcode*.app >&2
+            printf '%s\n' /Applications/Xcode*.app >&2
             exit 1
           fi
           sudo xcode-select -s "$latest/Contents/Developer"
@@ -112,5 +110,5 @@ jobs:
           xcodebuild test -scheme VoiceDiary
           -destination "platform=iOS Simulator,id=$SIMULATOR_UDID"
           -skipMacroValidation
-          -derivedDataPath "$DERIVED_DATA"
+          -derivedDataPath "$RUNNER_TEMP/vd-derived-data"
           CODE_SIGNING_ALLOWED=NO
