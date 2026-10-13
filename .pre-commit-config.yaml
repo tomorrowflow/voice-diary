@@ -4,3 +4,12 @@ repos:
     hooks:
       - id: ruff-check
         files: ^server/.*\.py$
+  # SwiftLint from PATH (`brew install swiftlint`); config and scope live in .swiftlint.yml.
+  - repo: local
+    hooks:
+      - id: swiftlint
+        name: swiftlint
+        entry: swiftlint lint --strict
+        language: system
+        files: ^ios/.*\.swift$
+        pass_filenames: false
