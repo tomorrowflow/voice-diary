@@ -9,7 +9,7 @@ import re
 
 REPO_ROOT = os.path.join(os.path.dirname(__file__), "..", "..", "..")
 DEVELOPMENT_MD = os.path.join(REPO_ROOT, "DEVELOPMENT.md")
-CLAUDE_MD = os.path.join(REPO_ROOT, "CLAUDE.md")
+SERVER_README = os.path.join(REPO_ROOT, "server", "README.md")
 ENV_EXAMPLE = os.path.join(REPO_ROOT, "server", ".env.example")
 
 
@@ -30,11 +30,10 @@ def _deploy_section() -> str:
     return text[start:end]
 
 
-def _server_stack_table() -> str:
-    text = _read(CLAUDE_MD)
-    start = text.index("## Server stack")
-    end = text.index("## Target device", start)
-    return text[start:end]
+def _server_overview() -> str:
+    text = _read(SERVER_README)
+    end = text.index("## First-time setup")
+    return text[:end]
 
 
 def test_deploy_docs_do_not_frame_stack_as_still_being_migrated():
@@ -43,11 +42,11 @@ def test_deploy_docs_do_not_frame_stack_as_still_being_migrated():
     assert "after S2" not in section
 
 
-def test_claude_md_server_stack_does_not_call_whisper_newly_added():
-    # The stack table describes the deployed system today, not the S1
-    # migration plan; "added in S1" reads as still-pending work even
+def test_server_readme_overview_does_not_call_whisper_newly_added():
+    # The server README overview describes the deployed system today, not
+    # the S1 migration plan; "added in S1" reads as still-pending work even
     # though the Whisper sidecar has been live since S1 landed.
-    assert "added in S1" not in _server_stack_table()
+    assert "added in S1" not in _server_overview()
 
 
 def test_deploy_docs_list_voxtral_tts_vars_present_in_env_example():
