@@ -442,7 +442,6 @@ CONTEXT: {month_name} {year} gehört zu Quartal {year}-Q{quarter}"""
             w_start = _iso_week_start(iso_year, iso_week)
             w_end = w_start + timedelta(days=6)
             w_month = w_start.month
-            w_quarter = (w_month - 1) // 3 + 1
             month_name = MONTH_NAMES_DE[w_month - 1]
 
             identifier = f"{iso_year}-KW{iso_week:02d}"
