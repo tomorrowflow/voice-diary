@@ -1,0 +1,116 @@
+name: CI
+
+# Linux: Ruff + server pytest through Compose. macOS: XcodeGen + SwiftLint + xcodebuild test.
+# Commands mirror DEVELOPMENT.md §7.4; runner/tool setup is documented in §7.5.
+# No secrets are used: the server .env is a throwaway stub and iOS tests run unsigned.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ruff:
+    name: Ruff (server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Keep the version in step with .pre-commit-config.yaml. Config: server/pyproject.toml.
+      - name: Install Ruff
+        run: python -m pip install ruff==0.17.0
+      - name: Ruff check
+        run: ruff check server
+
+  server-tests:
+    name: Server pytest (Compose)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      # Same command as DEVELOPMENT.md §7.4 (`vd-test`), split so the .env stub is its own step.
+      - name: Write .env test stub
+        working-directory: server
+        run: printf 'POSTGRES_PASSWORD=test\nTAILNET_IP=127.0.0.1\n' > .env
+      - name: pytest in the webapp container
+        working-directory: server
+        run: >-
+          docker compose -p vd-test run --rm --no-deps
+          -e PYTHONDONTWRITEBYTECODE=1
+          -v ..:/repo -w /repo/server
+          webapp pytest webapp/tests/ -q -p no:cacheprovider
+
+  ios-tests:
+    name: iOS (XcodeGen, SwiftLint, xcodebuild test)
+    # Standard GitHub-hosted macOS runner (free for public repos). iOS 26 SDK needs Xcode 26.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      DERIVED_DATA: ${{ runner.temp }}/vd-derived-data
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select newest installed Xcode
+        run: |
+          latest=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          if [ -z "$latest" ]; then
+            echo "No Xcode 26 found on this runner image:" >&2
+            ls -d /Applications/Xcode*.app >&2
+            exit 1
+          fi
+          sudo xcode-select -s "$latest/Contents/Developer"
+          xcodebuild -version
+
+      - name: Install XcodeGen and SwiftLint if missing
+        run: |
+          for tool in xcodegen swiftlint; do
+            command -v "$tool" >/dev/null || brew install "$tool"
+          done
+          xcodegen --version
+          swiftlint --version
+
+      # Plain `swiftlint lint` (errors fail, warnings do not) until the baseline is clean;
+      # tighten to --strict once the SwiftLint config/baseline ticket lands.
+      - name: SwiftLint
+        working-directory: ios
+        run: swiftlint lint
+
+      # project.yml includes project-piper.yml (gitignored; normally written by
+      # ios/scripts/fetch_piper_voices.sh). Stub it and the Models folder reference.
+      - name: Generate Xcode project
+        working-directory: ios
+        run: |
+          printf '{}\n' > project-piper.yml
+          mkdir -p Resources/Models
+          xcodegen generate
+
+      - name: Select and boot an installed iPhone simulator
+        run: |
+          xcrun simctl list runtimes available
+          udid=$(xcrun simctl list devices available -j | python3 scripts/ci/select_ios_simulator.py)
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$udid" || true
+          xcrun simctl bootstatus "$udid" -b
+
+      # -skipMacroValidation: MLXHuggingFace's package macro otherwise needs an Xcode trust prompt.
+      # CODE_SIGNING_ALLOWED=NO: project.yml sets a personal DEVELOPMENT_TEAM that CI has no
+      # certificates for; simulator tests do not need signing.
+      - name: xcodebuild test
+        working-directory: ios
+        run: >-
+          xcodebuild test -scheme VoiceDiary
+          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID"
+          -skipMacroValidation
+          -derivedDataPath "$DERIVED_DATA"
+          CODE_SIGNING_ALLOWED=NO
