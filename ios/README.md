@@ -109,6 +109,38 @@ Run these scenarios after every iOS or server change. They cover what M3 needs t
 
 ---
 
+## Linting
+
+SwiftLint (`brew install swiftlint`; validated with 0.65.1) lints the hand-written Swift under
+`ios/`. Config: `../.swiftlint.yml` (repo root). Lint-only: nothing here runs `--fix` or reformats.
+
+```bash
+# from the repo root
+swiftlint lint --strict
+```
+
+- **Why SwiftLint, not swift-format:** rule-based lint can be turned on conservatively, one
+  correctness rule at a time, without forcing a formatting sweep over existing code.
+- **Rule choices:** `only_rules` is an explicit allowlist (20 rules). SwiftLint's default and opt-in
+  sets are off. Enabled: unsafe constructs (`force_cast`, `force_try`); likely bugs
+  (`duplicate_conditions`, `duplicate_enum_cases`, `duplicate_imports`, `empty_enum_arguments`,
+  `no_fallthrough_only`, `unavailable_condition`, `unused_optional_binding`, `unused_setter_value`,
+  `unneeded_override`, `private_unit_test`, `xctfail_message`); dead or noisy code
+  (`redundant_discardable_let`, `orphaned_doc_comment`, `invalid_swiftlint_command`,
+  `legacy_cggeometry_functions`, `legacy_constructor`, `trailing_semicolon`, `void_return`).
+  No formatting, naming, or size rules (`line_length`, `file_length`, `identifier_name`,
+  `trailing_whitespace`, ...). Add rules deliberately, one at a time.
+- **Scope:** `ios/` (102 Swift files). Excluded: the three generated design-system files
+  (`DSColor.swift`, `DSMetrics.swift`, `DSSemantic.swift`, written by
+  `scripts/build_design_system.sh`), the gitignored `Sources/TTS/Vendor` and `Frameworks`, and
+  build output.
+- **Baseline (for KA-6):** `swiftlint lint --strict` reports 3 violations in 102 files, all
+  `force_try` in `Sources/Dialog/TodoExtractor.swift` (lines 58, 102, 172). No `disabled_rules`
+  and no per-file disables hide them. The full source tree is **not** lint-green until KA-6 fixes
+  these.
+
+---
+
 ## Layout
 
 ```
