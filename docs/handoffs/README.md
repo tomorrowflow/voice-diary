@@ -45,11 +45,13 @@ each handoff below carries what it needs.
 (Sandcastle merged server fixes), and parked Sandcastle branches rewrite parts of
 `WalkthroughCoordinator.swift`. Re-locate by symbol name, not line.
 
-**Sandcastle is live on this repo.** A run may be implementing overlapping issues while you grill.
-Before grilling a candidate, check its overlapping issues (`gh issue view <n> --comments`) and
-their branches (`git log main..sandcastle/issue-<n>`). An issue labelled
-`sandcastle:needs-host-verify` has code on a branch that hasn't been built on the Mac yet
-(`scripts/verify_agent_branch.sh sandcastle/issue-<n>`).
+**Sandcastle is retired (KA-10); this section is kept as historical context.** When these
+handoffs were written, a Sandcastle run could be implementing overlapping issues while you
+grilled, so overlapping issues and their branches were checked first (`gh issue view <n>
+--comments`, `git log main..sandcastle/issue-<n>`). Parked `sandcastle/issue-<n>` branches and
+`sandcastle:needs-host-verify` labels may still exist on old issues; `scripts/verify_agent_branch.sh`
+no longer exists. Today, overlapping work is tracked as Workboard cards and ordinary branches;
+iOS builds are verified on the Mac host per `DEVELOPMENT.md` §7.4.
 
 **Process rule (user preference).** Grill first, file issues only for what survives the grill; no
 mass issue creation from a review. iOS work is host-verified: agents edit in the Linux sandbox,
@@ -62,6 +64,6 @@ builds and on-device checks happen on the Mac/iPhone.
   is contested; `DEEPENING.md` for dependency categories.
 - `mattpocock-skills:domain-modeling`: update `CONTEXT.md` inline; offer an ADR only if a
   rejection reason is hard to reverse, surprising, and a real trade-off.
-- `mattpocock-skills:to-issues`: once the user confirms the grill is done. Label `Sandcastle` plus
-  `track:ios` / `track:server` (see `docs/agents/triage-labels.md`), and link blockers with
+- `mattpocock-skills:to-issues`: once the user confirms the grill is done. Label with
+  `track:ios` / `track:server` (see `docs/agents/triage-labels.md`; the old `Sandcastle` label is retired), and link blockers with
   GitHub's native issue dependencies.
