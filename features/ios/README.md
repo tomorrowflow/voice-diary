@@ -1,7 +1,6 @@
 # iOS feature map
 
-User-facing maps for the `verify-ios` skill (`features/verify-ios/SKILL.md`; move it to
-`.claude/skills/verify-ios/` to expose it as a project skill). Each file says how a state is
+User-facing maps for the `verify-ios` skill (`.claude/skills/verify-ios/SKILL.md`). Each file says how a state is
 reached on a throwaway iPhone 17 simulator (`vd-verify-ios`), what proves it, and what only a device can check.
 
 | Feature | Where in the app | Reached with `simctl` | Mapped from |

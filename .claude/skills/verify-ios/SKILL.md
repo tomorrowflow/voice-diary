@@ -12,10 +12,6 @@ what this run created.
 
 The feature map is `features/ios/README.md`; one file per user-facing feature in `features/ios/`.
 
-> Location: this file lives at `features/verify-ios/SKILL.md`. To expose it as a project
-> skill, move it to `.claude/skills/verify-ios/SKILL.md` (`.gitignore` already un-ignores
-> `.claude/skills/`). The feature files stay where they are.
-
 Needs macOS with Xcode 26+ (the app targets iOS 26), XcodeGen and an iOS 26+ simulator runtime
 (`DEVELOPMENT.md` §7.4/§7.5). `xcodebuild` does not run on Linux; there, report the iOS part
 as not run.
