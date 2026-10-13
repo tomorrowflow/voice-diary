@@ -55,7 +55,11 @@ public enum TodoExtractor {
     private nonisolated(unsafe) static let hallucinationRegex: Regex<Substring> = {
         let alt = hallucinationPatterns.joined(separator: "|")
         let pattern = #"(?i)\b(?:"# + alt + #")\b[\s.,!?]*"#
-        return try! Regex(pattern)
+        do {
+            return try Regex(pattern)
+        } catch {
+            fatalError("Invalid built-in regex: \(error)")
+        }
     }()
 
     /// Strip stock ASR-hallucination phrases from a transcript. Returns
@@ -99,7 +103,11 @@ public enum TodoExtractor {
         // (?i) inline case-insensitive; non-capturing trigger group;
         // capture stops at . ! ? or end-of-string.
         let pattern = #"(?i)(?:\b(?:"# + alternation + #")\b)\s*[:,\-]?\s*(.{3,200}?)(?=[.!?]|\Z)"#
-        return try! Regex(pattern)
+        do {
+            return try Regex(pattern)
+        } catch {
+            fatalError("Invalid built-in regex: \(error)")
+        }
     }()
 
     // MARK: - Public entry point
@@ -169,7 +177,14 @@ public enum TodoExtractor {
         let lower = text.lowercased()
 
         // ISO date
-        if let m = lower.firstMatch(of: try! Regex(#"(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])"#)),
+        let isoPattern = #"(20\d{2})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])"#
+        let isoRegex: Regex<AnyRegexOutput>
+        do {
+            isoRegex = try Regex(isoPattern)
+        } catch {
+            fatalError("Invalid built-in regex: \(error)")
+        }
+        if let m = lower.firstMatch(of: isoRegex),
            m.output.count > 0 {
             return String(lower[m.range])
         }

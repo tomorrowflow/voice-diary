@@ -78,11 +78,9 @@ jobs:
           xcodegen --version
           swiftlint --version
 
-      # Plain `swiftlint lint` (errors fail, warnings do not) until the baseline is clean;
-      # tighten to --strict once the SwiftLint config/baseline ticket lands.
+      # Run from the repo root: .swiftlint.yml lives there and scopes itself to ios/.
       - name: SwiftLint
-        working-directory: ios
-        run: swiftlint lint
+        run: swiftlint lint --strict
 
       # project.yml includes project-piper.yml (gitignored; normally written by
       # ios/scripts/fetch_piper_voices.sh). Stub it and the Models folder reference.
