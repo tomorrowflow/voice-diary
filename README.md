@@ -28,6 +28,7 @@ voice-diary/
 1. **`SPEC.md`** — what the system does, how the pieces fit, API contract, state machine.
 2. **`DEVELOPMENT.md`** — how to build it, what to deploy where, milestone-by-milestone plan.
 3. **`CLAUDE.md`** — agent guidance; read this before asking Claude Code to do anything here.
+4. **`CODING_STANDARDS.md`** — the blocking rules plus iOS, server, test, commit and architecture conventions applied in every review.
 
 ## Runtime dependencies
 
