@@ -1,5 +1,11 @@
 # Sandcastle Issue Plan — grill target
 
+> **HISTORICAL — Sandcastle was retired by KA-10.** `.sandcastle/`, `docs/SANDCASTLE-RUNBOOK.md`,
+> `docs/SANDCASTLE-SETUP-PLAN.md`, `scripts/sandcastle_create_issues.py` and
+> `scripts/verify_agent_branch.sh` referenced below were removed (see git history before KA-10).
+> Kept as evidence of the original plan; not a live process. Current flow: Workboard cards,
+> `CLAUDE.md`, `CODING_STANDARDS.md`.
+
 **Status: proposed, NOT yet filed.** This is the plan to turn `docs/REVIEW-2026-07-04.md`
 findings into GitHub issues that the sandcastle environment can work. Per the review's intended
 workflow (validate via `/grill-me`, then triage into issues), **grill this plan first** — then
