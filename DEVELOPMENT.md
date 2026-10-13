@@ -554,6 +554,36 @@ xcodebuild test -scheme VoiceDiary \
 - If the Piper bootstrap has already been run, skip the stub and `mkdir` steps; do not overwrite
   the real `project-piper.yml`.
 
+### 7.5 Continuous integration
+
+`.github/workflows/ci.yml` runs on every pull request, on pushes to `main`, and on manual
+dispatch. It uses no secrets (`permissions: contents: read`); the commands are the ones in §7.4.
+
+| Job | Runner | What it does |
+|---|---|---|
+| `ruff` | `ubuntu-latest` | `ruff check server` with the version pinned in `.pre-commit-config.yaml` and the config in `server/pyproject.toml`. |
+| `server-tests` | `ubuntu-latest` | Writes the §7.4 `.env` stub, then runs the §7.4 Compose pytest command. Docker Engine and Compose v2 are preinstalled on the runner. |
+| `ios-tests` | `macos-26` | Selects the newest installed Xcode 26, installs XcodeGen/SwiftLint with Homebrew only if the image lacks them, runs `swiftlint lint`, stubs `project-piper.yml` and `Resources/Models`, runs `xcodegen generate`, boots a simulator, then `xcodebuild test -skipMacroValidation`. |
+
+iOS job notes:
+
+- The runner is the standard GitHub-hosted macOS image, free for public repositories; no
+  self-hosted or paid larger runner is used. It needs Xcode 26 (the project targets iOS 26).
+- The simulator is discovered, not hard-coded: `scripts/ci/select_ios_simulator.py` reads
+  `xcrun simctl list devices available -j` and picks the newest installed iOS ≥ 26 runtime, then
+  `iPhone 17` if present, else the newest plain iPhone. The job fails with a clear message if the
+  image has no such simulator. It tests by UDID, so the name differences in §7.4 do not matter.
+- `CODE_SIGNING_ALLOWED=NO` is passed because `project.yml` pins a personal `DEVELOPMENT_TEAM`
+  that CI has no certificate for; simulator tests do not need signing.
+- SwiftLint currently runs without `--strict`, so errors fail the job and warnings do not.
+  Tighten it once the SwiftLint baseline is clean.
+- Swift packages are resolved on every run (no cache yet), so the first minutes of the job are
+  dependency fetches.
+
+To make these checks required, add `Ruff (server)`, `Server pytest (Compose)` and
+`iOS (XcodeGen, SwiftLint, xcodebuild test)` as required status checks in the branch protection
+for `main`.
+
 ---
 
 ## 8. Operational notes
