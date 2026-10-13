@@ -104,7 +104,7 @@ def test_interchange_jsonl_structure():
     assert meta["engine"] == "voice-diary"
     assert meta["source_metadata"]["date"] == "2026-05-10"
 
-    chunks = [json.loads(l) for l in lines[1:]]
+    chunks = [json.loads(line) for line in lines[1:]]
     for idx, chunk in enumerate(chunks):
         assert chunk["type"] == "text"
         assert chunk["chunk_order_index"] == idx
@@ -117,7 +117,7 @@ def test_interchange_jsonl_structure():
 def test_interchange_chunk_order_contiguous():
     jsonl = diary_to_interchange_jsonl("diary:2026-05-10", SIMPLE_MARKDOWN, {})
     lines = jsonl.strip().split("\n")
-    indices = [json.loads(l)["chunk_order_index"] for l in lines[1:]]
+    indices = [json.loads(line)["chunk_order_index"] for line in lines[1:]]
     assert indices == list(range(len(indices)))
 
 
