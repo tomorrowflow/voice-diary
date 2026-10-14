@@ -34,6 +34,8 @@ UNAUTHENTICATED_CASES = [
     ("GET", "/"),
     ("GET", "/review/1"),
     ("GET", "/api/dictionary"),
+    ("GET", "/api/transcripts/1/process"),
+    ("GET", "/api/transcripts/1/process-document"),
     ("POST", "/api/transcripts/delete"),
     ("POST", "/api/data/clear-dictionary"),
     ("DELETE", "/api/admin/persons/1"),

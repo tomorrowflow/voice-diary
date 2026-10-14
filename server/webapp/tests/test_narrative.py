@@ -1,5 +1,5 @@
 """Tests for `narrative.build_day_narrative` / `narrative.sync_and_ingest` —
-the one shared narrative stage both `main.py::process_document_stream` (HTMX
+the one shared narrative stage both `routers/review_stream.py::process_document_stream` (HTMX
 SSE) and `routers/sessions.py::_run_session_document_processor` (iOS
 sessions) delegate to (SRV-A1/#50).
 

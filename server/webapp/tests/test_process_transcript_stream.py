@@ -1,8 +1,8 @@
-"""Tests for `main.py`'s `/api/transcripts/{id}/process` SSE endpoint
-(`process_transcript_stream` / `_process_transcript_events`) after it was
-rewired to delegate to `correction.correct_and_detect_entities` (#51).
+"""Tests for `routers/review_stream.py`'s `/api/transcripts/{id}/process` SSE
+endpoint (`process_transcript_stream` / `_process_transcript_events`) after it
+was rewired to delegate to `correction.correct_and_detect_entities` (#51).
 
-These focus on the SSE-bridging logic in main.py itself — turning
+These focus on the SSE-bridging logic in review_stream.py itself — turning
 `correction`'s callback-shaped `on_step` progress into the async-generator
 events the endpoint yields, and the fluency/entities/validation phases that
 follow, which stay HTMX-only (decision D2) — not on
@@ -23,7 +23,7 @@ import json
 
 import correction
 import fluency_checker
-import main
+import routers.review_stream as review_stream
 import vector_store
 from entity_detector import DetectedEntity
 
@@ -63,10 +63,10 @@ def test_happy_path_relays_correction_steps_then_fluency_and_entities(monkeypatc
     async def fake_validate_entities_stream(text, entities, entity_usage_samples=None):
         yield {"event": "result", "data": json.dumps([e.to_dict() for e in entities])}
 
-    monkeypatch.setattr(main, "validate_entities_stream", fake_validate_entities_stream)
+    monkeypatch.setattr(review_stream, "validate_entities_stream", fake_validate_entities_stream)
 
     events = _collect(
-        main._process_transcript_events(
+        review_stream._process_transcript_events(
             "hallo welt", persons=[], terms=[], text_corrections=[], dismissals=[]
         )
     )
@@ -109,10 +109,10 @@ def test_dismissed_entities_never_reach_llm_validation(monkeypatch):
         seen_entities.extend(entities)
         yield {"event": "result", "data": json.dumps([])}
 
-    monkeypatch.setattr(main, "validate_entities_stream", fake_validate_entities_stream)
+    monkeypatch.setattr(review_stream, "validate_entities_stream", fake_validate_entities_stream)
 
     _collect(
-        main._process_transcript_events(
+        review_stream._process_transcript_events(
             "Martin war im Baumarkt.", persons=[], terms=[], text_corrections=[],
             dismissals=["Baumarkt"],
         )
