@@ -25,3 +25,13 @@ _Avoid_: drive-by (legacy name), seed (legacy name), memo
 **Pickup**:
 Re-entering an unfinished session bundle after a pause, cancel or app kill, continuing at the last recorded segment.
 _Avoid_: resume (reserved for un-pausing within a running walkthrough), restore
+
+### Server dependencies
+
+**Upstream**:
+An external service the server calls to do its work: Whisper (transcription), Ollama (analysis, enrichment summaries), LightRAG (diary memory), Microsoft Graph (calendar, email), Voxtral (server-side speech). Postgres and Qdrant are infrastructure, not upstreams. The phone never talks to an upstream directly.
+_Avoid_: backend (ambiguous with the server itself), dependency, provider
+
+**Pending analysis**:
+The state of an uploaded session whose transcripts are safely stored but whose session-level analysis or LightRAG ingest failed. No data is lost; it is retried by the server (startup sweep) or on request (`retry-analysis`).
+_Avoid_: stuck, failed (a failed segment has no transcript and needs a re-upload)
