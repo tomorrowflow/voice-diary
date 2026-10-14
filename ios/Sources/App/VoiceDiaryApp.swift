@@ -223,6 +223,7 @@ enum IntentRouter {
 
 struct RootView: View {
     @State private var router = AppRouter.shared
+    @State private var showServerSetup = OnboardingGate.needsServerSetup()
 
     var body: some View {
         // Four primary tabs in the bottom rail; secondary destinations
@@ -256,6 +257,12 @@ struct RootView: View {
         }
         .font(Theme.font.body)
         .tint(Theme.color.text.primary)
+        .fullScreenCover(isPresented: $showServerSetup) {
+            ServerSettingsView {
+                OnboardingGate.markServerSetupDone()
+                showServerSetup = false
+            }
+        }
     }
 }
 
@@ -319,7 +326,7 @@ private struct MehrView: View {
                             MehrRow(label: "Lock screen", systemImage: "lock.rectangle.on.rectangle")
                         }
                         NavigationLink {
-                            DebugSettingsView()
+                            ServerSettingsView()
                         } label: {
                             MehrRow(label: "Server", systemImage: "server.rack")
                         }
