@@ -1,6 +1,6 @@
 """
 Shared non-interactive transcript-correction chain for both server pipelines:
-the HTMX SSE review flow (`main.py::process_transcript_stream`) and the iOS
+the HTMX SSE review flow (`routers/review_stream.py::process_transcript_stream`) and the iOS
 session ingest (`routers/sessions.py::_process_segment`). The two paths used
 to diverge — HTMX ran dictionary corrections, vector-store few-shot examples
 and dismissal filtering that the iOS path skipped, so iOS diary entries
