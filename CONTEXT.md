@@ -39,3 +39,7 @@ _Avoid_: stuck, failed (a failed segment has no transcript and needs a re-upload
 **Failure code**:
 The stable snake_case identifier the server puts in an error response (`code`) when an upstream fails, together with `upstream` and `retryable`. The app keys its explanation copy and retry behaviour on it, never on the human-readable message.
 _Avoid_: error string, error message (those are free-form and may change)
+
+**Optional upstream**:
+An upstream whose outage never changes the overall `/health` status and never blocks a workflow. Today only Voxtral: the app consults its health entry only when a Voxtral voice is selected, and falls back to Piper/Apple per utterance.
+_Avoid_: soft dependency, non-critical
