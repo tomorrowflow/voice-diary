@@ -789,7 +789,7 @@ The iOS app also consumes these read endpoints on `server` over Tailscale:
 | `GET /calendar/event/{graph_event_id}` | Full detail for a specific event (for enrichment "tell me more about this meeting"). | MS Graph |
 | `GET /health` | Tailscale reachability + upstream health probe. Returns `ok` only when LightRAG, Ollama, Whisper, and Postgres are reachable. | self |
 
-All endpoints require a simple bearer token entered in Mehr → Server (`DebugSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
+All endpoints require a simple bearer token entered in Mehr → Server (`ServerSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
 
 ---
 
@@ -913,8 +913,11 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
   default **off**, i.e. only accepted, timed events flow into the per-event loop by default.
 
 **Backend**
-- Server endpoint URL + bearer token (Mehr → Server, `DebugSettingsView`) — a Keychain-backed
-  text field + secure field, not an onboarding-only step.
+- Server endpoint URL + bearer token (Mehr → Server, `ServerSettingsView`) — a Keychain-backed
+  text field + secure field. The same screen is shown on first launch (§14), but stays in Mehr
+  for later changes. The URL is format-checked before it is written (`ServerURLValidator`:
+  non-empty, `http://` or `https://`, a host, no spaces); a bare `http://` or a malformed URL
+  shows a specific message and is not saved.
 - "Check server" button: on-demand `Reachability.refresh()` call — pings `/health` and a
   bearer-gated route, shows a live status (`—` / `OK` / `degraded` / `Bearer invalid` / `down`).
   It is not a persisted "last successful contact time"; the status only reflects the most
@@ -1011,7 +1014,7 @@ Independent of that manual clearing:
 
 First-run gate (UX-6a), not the multi-step wizard this section used to describe. This is a
 single-user tool the developer sets up once, so onboarding is reduced to what actually blocks
-first capture. Today that's a single step:
+first capture. Today that's two steps:
 
 ```
 1. Microphone + Speech Recognition + notification permission prompts — fired proactively at
@@ -1020,13 +1023,20 @@ first capture. Today that's a single step:
    `CaptureNotifications.requestAuthorisationIfNeeded()`, both on the launch task.
 ```
 
+```
+2. Server setup — on first launch with no valid server URL in Keychain, `RootView` presents
+   `ServerSettingsView` full-screen (`OnboardingGate`). The user enters URL + bearer token and can
+   run "Check server"; "Continue" (once the server answers) or "Set up later" dismisses it and
+   records the choice in `UserDefaults` (`onboarding.serverSetup.done.v1`) so it is not shown
+   again. Mehr → Server remains the way back in.
+```
+
 There is no first-run wizard beyond that: `ios/Sources/UI/Onboarding/_OnboardingPlaceholder.swift`
 is a two-line stub ("Tailscale check + bearer-token paste + voice preview + Action Button hookup.
-Implemented in milestone M11.") — none of that has landed yet. Server URL/bearer-token entry +
-a "Check server" test (`DebugSettingsView`) and the voice pickers (`VoiceSettingsView`, §12.1)
-already exist, but only as ordinary Settings (Mehr) screens the developer opens manually, not as
-onboarding steps 2+. An Action Button binding prompt and a first-run drive-by tutorial
-("Hallo Voice Diary") don't exist in code at all yet.
+Implemented in milestone M11.") — voice preview and the rest haven't landed. The voice pickers
+(`VoiceSettingsView`, §12.1) exist only as ordinary Settings (Mehr) screens the developer opens
+manually. An Action Button binding prompt and a first-run drive-by tutorial ("Hallo Voice Diary")
+don't exist in code at all yet.
 
 Graph OAuth setup is a one-time step the user runs on the server (`server/scripts/msgraph_bootstrap.py`) before first iOS launch — not on the phone.
 

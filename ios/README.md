@@ -171,7 +171,7 @@ ios/
 │   ├── UI/
 │   │   ├── DriveBy/CaptureView.swift
 │   │   └── Settings/
-│   │       ├── DebugSettingsView.swift   server URL + bearer paste
+│   │       ├── ServerSettingsView.swift  server URL + bearer paste
 │   │       └── DebugUploadView.swift     synthetic-session uploader
 │   ├── TTS/                      placeholder — M5
 │   ├── Dialog/                   placeholder — M5/M6/M7
