@@ -18,7 +18,7 @@ No voice picker, no fallback, no prefetch, no walkthrough integration in this sl
 - [ ] `docker compose up -d voxtral webapp` brings both services up; `voxtral` logs show `mistralai/Voxtral-4B-TTS-2603` loaded on GPU 0 with no errors.
 - [ ] The `voxtral` service is pinned to GPU 0 via `device_ids: ["0"]` and uses a named volume for the HuggingFace model cache; it is **not** bound to a host port (only reachable on the compose-internal network).
 - [ ] `POST /api/tts/synthesize` accepts `{ text, language: "DE", voice, response_format: "wav" }`, requires bearer auth (same `IOS_BEARER_TOKEN` as the other iOS-only routes), and streams back a `audio/wav` body.
-- [ ] An on-device debug button in `DebugSettingsView` invokes `VoxtralTTS.speak("Hallo, ich bin die neue Stimme.", language: "DE")` and produces audible German speech through the iPhone speaker.
+- [ ] An on-device debug button in `ServerSettingsView` invokes `VoxtralTTS.speak("Hallo, ich bin die neue Stimme.", language: "DE")` and produces audible German speech through the iPhone speaker.
 - [ ] The `voxtral_client` server module is implemented as a pure async HTTP client with injectable httpx transport.
 - [ ] The `voxtral_client` pytest suite passes inside the webapp container and covers: happy path returns bytes; unknown voice → `TTSUnknownVoiceError`; connection refused → `TTSUnavailableError`; slow response past timeout → `TTSTimeoutError`; one 5xx then 200 → returns bytes (retry succeeds); three 5xx → `TTSEngineError` (retry exhausted).
 - [ ] `SPEC.md` §4 contains a Voxtral row with a one-line CC BY-NC 4.0 note.
