@@ -1,5 +1,5 @@
 """Tests for `correction.correct_and_detect_entities` — the shared
-non-interactive correction chain both `main.py::process_transcript_stream`
+non-interactive correction chain both `routers/review_stream.py::process_transcript_stream`
 (HTMX SSE) and `routers/sessions.py::_process_segment` (iOS sessions)
 delegate to (#51).
 
