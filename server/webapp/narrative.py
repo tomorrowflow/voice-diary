@@ -1,6 +1,6 @@
 """
 Shared narrative stage for both server pipelines: the HTMX SSE review flow
-(`main.py::process_document_stream`) and the iOS session ingest
+(`routers/review_stream.py::process_document_stream`) and the iOS session ingest
 (`routers/sessions.py::_run_session_document_processor`). Both callers used
 to hand-assemble the same sequence of `document_processor` step calls with
 their own (slightly different) error handling; this module is the one place
@@ -39,7 +39,7 @@ from lightrag_client import LightRAGClient
 logger = logging.getLogger(__name__)
 
 # Called as `on_step(event, data)` with the same event names/payload shapes
-# main.py's SSE endpoint already emits (`step`, `log`, `context`, `summary`,
+# review_stream.py's SSE endpoint already emits (`step`, `log`, `context`, `summary`,
 # `analysis`, `error`). May be a sync callable or return an awaitable.
 OnStep = Callable[[str, dict], "Awaitable[None] | None"]
 

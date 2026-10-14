@@ -1,8 +1,8 @@
-"""Tests for `main.py`'s SSE endpoint (`process_document_stream` /
+"""Tests for `routers/review_stream.py`'s SSE endpoint (`process_document_stream` /
 `_process_document_events`) after it was rewired to delegate to
 `narrative.build_day_narrative` (SRV-A1/#50).
 
-These focus on the SSE-bridging logic in main.py itself — turning
+These focus on the SSE-bridging logic in review_stream.py itself — turning
 `narrative`'s callback-shaped `on_step` progress into the async-generator
 events the endpoint yields, and the save step that follows — not on
 `narrative.build_day_narrative`'s own internals (covered by
@@ -21,8 +21,8 @@ import asyncio
 import json
 
 import db
-import main
 import narrative
+import routers.review_stream as review_stream
 
 
 def _collect(agen):
@@ -53,7 +53,7 @@ def test_happy_path_relays_narrative_steps_then_saves_and_emits_document(monkeyp
 
     monkeypatch.setattr(db, "save_processed_document", fake_save_processed_document)
 
-    events = _collect(main._process_document_events(7, "raw text", [], "2026-05-10"))
+    events = _collect(review_stream._process_document_events(7, "raw text", [], "2026-05-10"))
     names = [e["event"] for e in events]
 
     assert names == ["step", "step", "step", "log", "document", "step", "done"]
@@ -79,7 +79,7 @@ def test_analysis_failure_stops_before_any_save(monkeypatch):
 
     monkeypatch.setattr(db, "save_processed_document", fail_if_called)
 
-    events = _collect(main._process_document_events(7, "raw text", [], "2026-05-10"))
+    events = _collect(review_stream._process_document_events(7, "raw text", [], "2026-05-10"))
 
     assert [e["event"] for e in events] == ["step", "log", "error"]
     assert json.loads(events[-1]["data"]) == {"message": "Analysis failed: boom"}
@@ -98,7 +98,7 @@ def test_save_failure_emits_document_error_event(monkeypatch):
 
     monkeypatch.setattr(db, "save_processed_document", failing_save)
 
-    events = _collect(main._process_document_events(7, "raw text", [], "2026-05-10"))
+    events = _collect(review_stream._process_document_events(7, "raw text", [], "2026-05-10"))
 
     assert [e["event"] for e in events] == ["step", "log", "step", "error"]
     assert json.loads(events[-2]["data"]) == {"step": "document", "state": "error"}

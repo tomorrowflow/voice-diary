@@ -19,6 +19,7 @@ import db
 import fluency_checker
 import main
 import narrative
+import routers.review_stream as review_stream
 import routers.sessions as sessions_router
 import vector_store
 
@@ -157,7 +158,7 @@ def test_transcript_stream_generator_close_cancels_correction_task(monkeypatch):
     monkeypatch.setattr(fluency_checker, "FLUENCY_CHECK_ENABLED", False)
 
     async def run():
-        agen = main._process_transcript_events("x", [], [], [], [])
+        agen = review_stream._process_transcript_events("x", [], [], [], [])
         first = await agen.__anext__()
         assert first["event"] == "log"
         await agen.aclose()
@@ -182,7 +183,7 @@ def test_document_stream_generator_close_cancels_narrative_task(monkeypatch):
     monkeypatch.setattr(narrative, "build_day_narrative", fake_build)
 
     async def run():
-        agen = main._process_document_events(7, "t", [], "2026-05-10")
+        agen = review_stream._process_document_events(7, "t", [], "2026-05-10")
         first = await agen.__anext__()
         assert first["event"] == "log"
         await agen.aclose()
@@ -207,7 +208,7 @@ def test_document_stream_unexpected_failure_is_logged_and_emitted(monkeypatch, c
     monkeypatch.setattr(db, "save_processed_document", save_must_not_run)
 
     async def run():
-        return [e async for e in main._process_document_events(7, "t", [], "2026-05-10")]
+        return [e async for e in review_stream._process_document_events(7, "t", [], "2026-05-10")]
 
     with caplog.at_level(logging.ERROR):
         events = asyncio.run(run())
@@ -226,7 +227,7 @@ def test_document_stream_already_reported_failure_emits_no_second_error(monkeypa
     monkeypatch.setattr(narrative, "build_day_narrative", fake_build)
 
     async def run():
-        return [e async for e in main._process_document_events(7, "t", [], "2026-05-10")]
+        return [e async for e in review_stream._process_document_events(7, "t", [], "2026-05-10")]
 
     events = asyncio.run(run())
     assert [e["event"] for e in events] == ["error"]
