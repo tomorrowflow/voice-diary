@@ -492,6 +492,16 @@
         }
       }
     },
+    "Connect Voice Diary to your server over Tailscale. You can change this later under More → Server." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Verbinde Voice Diary über Tailscale mit deinem Server. Du kannst das später unter Mehr → Server ändern."
+          }
+        }
+      }
+    },
     "Connect to Wi-Fi and ideally plug in the device." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -757,6 +767,16 @@
         }
       }
     },
+    "Continue" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Weiter"
+          }
+        }
+      }
+    },
     "Continue recording" : {
       "localizations" : {
         "de" : {
@@ -921,6 +941,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Frage eingeben"
+          }
+        }
+      }
+    },
+    "Enter your server URL, e.g. http://my-server.tailnet.ts.net:8000." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Gib die URL deines Servers ein, z. B. http://my-server.tailnet.ts.net:8000."
           }
         }
       }
@@ -2349,6 +2379,16 @@
         }
       }
     },
+    "Set up later" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Später einrichten"
+          }
+        }
+      }
+    },
     "Server" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -2806,6 +2846,16 @@
         }
       }
     },
+    "That doesn’t look like a valid server URL. Check for typos or spaces, e.g. http://my-server.tailnet.ts.net:8000." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das sieht nicht nach einer gültigen Server-URL aus. Prüfe auf Tippfehler oder Leerzeichen, z. B. http://my-server.tailnet.ts.net:8000."
+          }
+        }
+      }
+    },
     "The audio is removed from this phone. This cannot be undone." : {
       "localizations" : {
         "de" : {
@@ -2832,6 +2882,36 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Der gewählte Tag ist der Tag, für den der Tagebuch-Eintrag aufgenommen wird."
+          }
+        }
+      }
+    },
+    "The server URL must start with http:// or https://." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Server-URL muss mit http:// oder https:// beginnen."
+          }
+        }
+      }
+    },
+    "The server URL needs a host, e.g. http://my-server.tailnet.ts.net:8000." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Server-URL fehlt der Host, z. B. http://my-server.tailnet.ts.net:8000."
+          }
+        }
+      }
+    },
+    "Save the server URL first, then check the server." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Speichere zuerst die Server-URL und prüfe dann den Server."
           }
         }
       }

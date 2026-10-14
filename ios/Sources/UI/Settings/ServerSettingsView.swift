@@ -2,15 +2,23 @@ import SwiftUI
 
 /// Server connection settings. Lets the user paste their Tailscale
 /// server URL + bearer token into Keychain and sanity-check
-/// reachability against `/health`.
+/// reachability against `/health`. Shown under Mehr → Server and, with
+/// `onFinish`, as the first-run server setup.
 @MainActor
-public struct DebugSettingsView: View {
+public struct ServerSettingsView: View {
     @State private var serverURL: String = KeychainStore.read(.serverURL) ?? "http://"
     @State private var bearerToken: String = KeychainStore.read(.bearerToken) ?? ""
     @State private var lastError: String?
+    @State private var hasSavedURL = false   // set by `refresh()` on appear
     @StateObject private var reachability = Reachability()
 
-    public init() {}
+    /// Set when presented as first-run setup; called when the user
+    /// continues or skips. `nil` in Mehr → Server.
+    private let onFinish: (() -> Void)?
+
+    public init(onFinish: (() -> Void)? = nil) {
+        self.onFinish = onFinish
+    }
 
     public var body: some View {
         ZStack(alignment: .top) {
@@ -21,19 +29,55 @@ public struct DebugSettingsView: View {
 
                 ScrollView {
                     VStack(spacing: Theme.spacing.md) {
+                        if onFinish != nil {
+                            Text("Connect Voice Diary to your server over Tailscale. You can change this later under More → Server.")
+                                .font(Theme.font.body)
+                                .foregroundStyle(Theme.color.text.subdued)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                         tailscaleCard
-                        connectionCard
+                        // Right under the URL field: below the cards it
+                        // scrolls out of sight behind the bottom actions.
                         if let lastError {
                             errorCard(lastError)
                         }
+                        connectionCard
                     }
                     .padding(.horizontal, Theme.spacing.md)
                     .padding(.vertical, Theme.spacing.md)
                 }
+
+                if let onFinish {
+                    BottomActionStack {
+                        Button(action: onFinish) {
+                            // Two literals, not a ternary: a ternary resolves to
+                            // `String` and would skip localization.
+                            if isConnected { Text("Continue") } else { Text("Set up later") }
+                        }
+                        .buttonStyle(DSButtonStyle(variant: isConnected ? .primary : .secondary,
+                                                   size: .lg, fullWidth: true))
+                    }
+                }
             }
         }
         .navigationBarHidden(true)
-        .onAppear { Task { await refresh() } }
+        .onAppear {
+            Task { await refresh() }
+        }
+    }
+
+    private var isConnected: Bool {
+        switch displayedStatus {
+        case .ok, .degraded: return true
+        case .unknown, .authInvalid, .down: return false
+        }
+    }
+
+    /// Status shown in the pill. Nothing is configured until a valid URL
+    /// has been saved, so a "down" from probing an empty Keychain would
+    /// only mislead.
+    private var displayedStatus: Reachability.Status {
+        hasSavedURL ? reachability.status : .unknown
     }
 
     // MARK: - Cards
@@ -127,7 +171,7 @@ public struct DebugSettingsView: View {
             }
 
             Button {
-                Task { await refresh() }
+                Task { await refresh(explicit: true) }
             } label: {
                 Label("Check server", systemImage: "arrow.clockwise")
             }
@@ -170,15 +214,36 @@ public struct DebugSettingsView: View {
     // MARK: - Logic
 
     private func save() {
-        KeychainStore.write(serverURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                            for: .serverURL)
+        switch ServerURLValidator.validate(serverURL) {
+        case .failure(let issue):
+            lastError = issue.message
+            return
+        case .success(let url):
+            KeychainStore.write(url, for: .serverURL)
+        }
         KeychainStore.write(bearerToken.trimmingCharacters(in: .whitespacesAndNewlines),
                             for: .bearerToken)
         lastError = nil
         Task { await refresh() }
     }
 
-    private func refresh() async {
+    /// `explicit` is the "Check server" button, which should say why
+    /// nothing happened when there is no saved URL to probe.
+    private func refresh(explicit: Bool = false) async {
+        // Probe only a stored URL that passes the format check; anything
+        // else would surface as an opaque "down".
+        guard let stored = KeychainStore.read(.serverURL),
+              !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            hasSavedURL = false
+            lastError = explicit ? String(localized: "Save the server URL first, then check the server.") : nil
+            return
+        }
+        if case .failure(let issue) = ServerURLValidator.validate(stored) {
+            hasSavedURL = false
+            lastError = issue.message
+            return
+        }
+        hasSavedURL = true
         await reachability.refresh()
         applyStatusSideEffects(reachability.status)
     }
@@ -207,7 +272,7 @@ public struct DebugSettingsView: View {
     // MARK: - Status mapping
 
     private var statusLabel: String {
-        switch reachability.status {
+        switch displayedStatus {
         case .unknown:                       return "—"
         case .ok:                            return "OK"
         case .degraded:                      return String(localized: "degraded")
@@ -217,7 +282,7 @@ public struct DebugSettingsView: View {
     }
 
     private var statusColor: Color {
-        switch reachability.status {
+        switch displayedStatus {
         case .ok:                            return Theme.color.status.success
         case .degraded:                      return Theme.color.status.warning
         case .authInvalid, .down:            return Theme.color.status.destructive
