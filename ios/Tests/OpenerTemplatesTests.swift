@@ -52,11 +52,13 @@ struct OpenerTemplatesTests {
 
     @Test("template renders {title} + {time}")
     func renderTemplate() {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
         let event = ServerCalendarEvent(
             graph_event_id: "id",
             subject: "Sync mit Sabine",
-            start: "2026-04-28T10:00:00+02:00",
-            end: "2026-04-28T10:30:00+02:00",
+            start: f.string(from: localDate(10)),
+            end: f.string(from: localDate(10, 30)),
             is_all_day: false,
             show_as: "busy",
             rsvp_status: "accepted",
