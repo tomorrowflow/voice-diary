@@ -35,3 +35,7 @@ _Avoid_: backend (ambiguous with the server itself), dependency, provider
 **Pending analysis**:
 The state of an uploaded session whose transcripts are safely stored but whose session-level analysis or LightRAG ingest failed. No data is lost; it is retried by the server (startup sweep) or on request (`retry-analysis`).
 _Avoid_: stuck, failed (a failed segment has no transcript and needs a re-upload)
+
+**Failure code**:
+The stable snake_case identifier the server puts in an error response (`code`) when an upstream fails, together with `upstream` and `retryable`. The app keys its explanation copy and retry behaviour on it, never on the human-readable message.
+_Avoid_: error string, error message (those are free-form and may change)
