@@ -1,17 +1,16 @@
 # UFH-06 proof screenshots
 
 Real screenshots (`xcrun simctl io <device> screenshot`) of the running app on a throwaway
-iPhone 17 simulator (iOS 27), driven with `idb`. Each file was opened once, as a downscaled copy,
-before it was committed. App language and appearance were switched in the app and with
+iPhone 17 simulator (iOS 27). App language was switched in the app and appearance with
 `simctl ui <device> appearance`.
 
 ## Captured
 
 | File | State |
 |---|---|
-| `card-en-light.png`, `card-en-dark.png`, `card-de-light.png`, `card-de-dark.png` | The calendar card after "Start session" with the calendar fetch failing: diagnosis, **Try again** / **Start without calendar** (DE: *Erneut versuchen* / *Ohne Kalender starten*), and the explanation line. |
-| `walkthrough-en-light.png`, `walkthrough-en-dark.png`, `walkthrough-de-light.png`, `walkthrough-de-dark.png` | The walkthrough running after **Start without calendar**: no calendar events, general section "Day close". |
-| `done-de-light.png`, `done-de-dark.png` | The same calendar-free session finishing: "Session saved." (the bundle is built and queued for upload). |
+| `card-en-light.png`, `card-en-dark.png`, `card-de-light.png`, `card-de-dark.png` | The calendar card after "Start session" with the calendar fetch failing: diagnosis, **Try again** / **Start without calendar** (DE: *Erneut versuchen* / *Ohne Kalender starten*), and the explanation line. This is the uncoded `notConfigured` diagnosis, so its title and hint are German in both languages; it is not the coded retryable or not-bootstrapped card. |
+| `walkthrough-en-light.png`, `walkthrough-en-dark.png`, `walkthrough-de-light.png`, `walkthrough-de-dark.png` | The walkthrough running after **Start without calendar**: no calendar events, then the voice-note closing section "Day close" (DE: *Tagesabschluss*). |
+| `done-de-light.png`, `done-de-dark.png` | The same calendar-free session finishing: "Session saved." The bundle is built; with no server configured it stays queued and does not upload. |
 | `resume-calendar-free-en-light.png`, `resume-calendar-free-en-dark.png` | *Pick up* on an unfinished session that was started without the calendar: it goes straight back into the walkthrough, with no calendar fetch and no card. |
 
 ## How the failure was produced
@@ -36,4 +35,6 @@ in both languages (a known limit of uncoded diagnoses, out of scope for this tic
 
 To capture the missing states, run the app signed on a device or simulator with Keychain access,
 point it at a server whose `GET /today/calendar` answers 503 with `code: msgraph_unavailable`
-(retryable) and then `code: msgraph_not_bootstrapped` (`retryable: false`), and add the images here.
+(retryable) and then `code: msgraph_not_bootstrapped` (`retryable: false`), and add the images here as
+`card-<lang>-<light|dark>-retryable.png`, `card-<lang>-<light|dark>-not-bootstrapped.png`,
+`retry-spinner-…png` and `resume-card-…png`.
