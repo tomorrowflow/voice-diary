@@ -86,15 +86,16 @@ public actor AnalysisRetrier {
         var attempted = Set<String>()
         for sessionID in await deps.recentSessionIDs(now) where attempted.insert(sessionID).inserted {
             guard foreground == generation else { return }
-            await attempt(sessionID, upstream: upstream)
+            await attempt(sessionID, upstream: upstream, foreground: foreground)
         }
     }
 
-    private func attempt(_ sessionID: String, upstream: [String: String]) async {
+    private func attempt(_ sessionID: String, upstream: [String: String], foreground: Int) async {
         do {
             // 404 (not uploaded yet, or forgotten by the server) → nil.
             guard let status = try await deps.status(sessionID),
-                  RetryAnalysisPolicy.shouldRetry(segments: status.segments, upstream: upstream)
+                  RetryAnalysisPolicy.shouldRetry(segments: status.segments, upstream: upstream),
+                  foreground == generation
             else { return }
             try await deps.retry(sessionID)
             Log.backend.info("analysis retry requested for \(sessionID, privacy: .public)")
