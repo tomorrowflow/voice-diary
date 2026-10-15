@@ -200,3 +200,31 @@ def test_narrative_tags_raw_analysis_failures_and_keeps_the_message(monkeypatch)
 
     assert excinfo.value.code == "ollama_timeout"
     assert str(excinfo.value) == "LLM analysis timed out after 600s"
+
+
+def test_raise_as_failure_translates_a_client_exception_and_keeps_the_cause():
+    original = LightRAGTimeoutError("no answer in 120s")
+
+    with pytest.raises(UpstreamFailure) as info:
+        with upstream_failure.raise_as_failure():
+            raise original
+
+    assert info.value.code == "lightrag_timeout"
+    assert info.value.__cause__ is original
+
+
+def test_raise_as_failure_lets_other_exceptions_through_unchanged():
+    with pytest.raises(ValueError, match="not upstream"):
+        with upstream_failure.raise_as_failure():
+            raise ValueError("not upstream")
+
+
+def test_raise_as_failure_does_not_rewrap_an_upstream_failure():
+    failure = upstream_failure.whisper_unavailable()
+
+    with pytest.raises(UpstreamFailure) as info:
+        with upstream_failure.raise_as_failure():
+            raise failure
+
+    assert info.value is failure
+    assert failure.__cause__ is None
