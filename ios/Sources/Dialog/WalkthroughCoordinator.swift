@@ -162,9 +162,10 @@ public final class WalkthroughCoordinator {
     /// Which start a calendar answer belongs to, and what the user may do
     /// about a failed one (UFH-06).
     private let calendarGate = CalendarStartGate()
-    /// True while the first calendar fetch of a start is in flight. The
-    /// plan is still empty then, so Weiter, Fertig and Pause must not act.
-    public private(set) var isFetchingCalendar = false
+    /// True from the moment a start begins until it has a plan (session
+    /// setup and the first calendar fetch). The plan is empty then, so
+    /// Weiter, Fertig and Pause must not act.
+    public var isPreparingStart: Bool { calendarGate.isPreparing }
     /// Re-entrancy guard for `advance` / `skip` / `finishCurrentSection`. Without
     /// it, two rapid Weiter taps both pattern-match the same listening
     /// state, both await `stopSegmentCapture()` (which doesn't mutate
@@ -391,9 +392,13 @@ public final class WalkthroughCoordinator {
         // even from a locked screen.
         do { try await engine.prepareSession() }
         catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
+        // Closed (or restarted) during setup: a newer start owns the
+        // session dir and state now.
+        guard calendarGate.isCurrent(attempt) else { return }
         do {
             try makeSessionDir()
         } catch {
+            calendarGate.finishPreparing(attempt)
             self.error = "\(error)"
             state = .failed("\(error)")
             await endLiveActivity()
@@ -402,6 +407,7 @@ public final class WalkthroughCoordinator {
         let start = CalendarStart(attempt: attempt, targetDate: targetDate, language: language, mode: .fresh)
         guard let fetched = await fetchCalendarOrOffer(start) else { return }
         events = fetched
+        calendarGate.finishPreparing(attempt)
         await runPlan(targetDate: targetDate, language: language)
     }
 
@@ -410,8 +416,6 @@ public final class WalkthroughCoordinator {
     /// failed (the fallback screen is up) or because the user cancelled or
     /// restarted while it ran (nothing may change then).
     private func fetchCalendarOrOffer(_ start: CalendarStart) async -> [ServerCalendarEvent]? {
-        isFetchingCalendar = true
-        defer { isFetchingCalendar = false }
         let result: Result<[ServerCalendarEvent], Error>
         do { result = .success(try await fetchCalendar(date: start.targetDate)) }
         catch { result = .failure(error) }
@@ -494,8 +498,14 @@ public final class WalkthroughCoordinator {
     public func startWithoutCalendar() async {
         guard case .calendarUnavailable = state,
               let start = calendarGate.takeForStartWithout() else { return }
+        // Without the marker a later resume would fetch the calendar and
+        // shift every step index, so stay on the card if it can't be written.
+        guard let dir = sessionDir, CalendarFreeMarker.mark(in: dir) else {
+            Log.app.warning("calendar-free marker not written; staying on the calendar card")
+            calendarGate.park(start)
+            return
+        }
         events = []
-        if let dir = sessionDir { CalendarFreeMarker.mark(in: dir) }
         state = .briefing
         syncLiveActivity()
         await runPlan(targetDate: start.targetDate, language: start.language)
@@ -865,6 +875,7 @@ public final class WalkthroughCoordinator {
         Task { await ParakeetManager.shared.warmUp() }
         do { try await engine.prepareSession() }
         catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
+        guard calendarGate.isCurrent(attempt) else { return }
         sessionDir = existingDir
         sessionID = existingDir.lastPathComponent
         if CalendarFreeMarker.isMarked(in: existingDir) {
@@ -880,6 +891,7 @@ public final class WalkthroughCoordinator {
             guard let fetched = await fetchCalendarOrOffer(start) else { return }
             events = fetched
         }
+        calendarGate.finishPreparing(attempt)
         await continuePickup(existingDir: existingDir, targetDate: targetDate, language: language)
     }
 
@@ -1461,7 +1473,7 @@ public final class WalkthroughCoordinator {
         // user to resume first. Otherwise a tap that arrived while the
         // pause was being acknowledged would silently jump to the next
         // step.
-        if isPaused || isFetchingCalendar { return }
+        if isPaused || isPreparingStart { return }
         // Time-based debounce: the in-flight flag below catches a
         // re-entrant tap while the previous advance is still mid-await,
         // but doesn't catch a SECOND tap that arrives shortly *after*
@@ -1556,7 +1568,7 @@ public final class WalkthroughCoordinator {
 
     /// Skip the current step's segment without recording it.
     public func skip(language: OpenerLanguage = .current) async {
-        guard !isFetchingCalendar else { return }
+        guard !isPreparingStart else { return }
         await withTransition {
         switch state {
         case .eventListening(let stepIdx, let eventIdx):
@@ -1606,7 +1618,7 @@ public final class WalkthroughCoordinator {
     /// note-review / closing — which is already the last section —
     /// "next step" naturally falls through to `ingestAndUpload`.
     public func finishCurrentSection(language: OpenerLanguage = .current) async {
-        guard !isFetchingCalendar else { return }
+        guard !isPreparingStart else { return }
         await withTransition {
         switch state {
         case .eventListening(let stepIdx, _):
@@ -1728,7 +1740,7 @@ public final class WalkthroughCoordinator {
     /// Resume is button-only — by design — so the user can't acci-
     /// dentally un-pause with a "weiter" mid-thought.
     public func pause() async {
-        guard !isPaused, !isFetchingCalendar else { return }
+        guard !isPaused, !isPreparingStart else { return }
         guard state.isPausable else { return }
         Diag.log("walkthrough pause: state=\(state.label)")
 

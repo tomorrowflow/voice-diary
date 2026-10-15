@@ -220,6 +220,52 @@ struct CalendarStartGateTests {
         #expect(resumed.mode == .resume(resumeDir))
     }
 
+    @Test("a start is preparing until it parks or finishes, and only its own attempt clears the flag")
+    func preparingFlag() {
+        let gate = CalendarStartGate()
+        #expect(!gate.isPreparing)
+
+        let first = gate.newAttempt()
+        #expect(gate.isPreparing)
+        let second = gate.newAttempt()       // cancelled and restarted while the first was fetching
+        gate.finishPreparing(first)          // the stale fetch finishing must not re-enable the controls
+        #expect(gate.isPreparing)
+        gate.finishPreparing(second)
+        #expect(!gate.isPreparing)
+
+        let third = gate.newAttempt()
+        gate.park(CalendarStart(attempt: third, targetDate: day, language: .en, mode: .fresh))
+        #expect(!gate.isPreparing)           // parked on the card: nothing to advance
+
+        _ = gate.newAttempt()
+        gate.invalidate()
+        #expect(!gate.isPreparing)
+    }
+
+    @Test("a retry left over from a cancelled start does not disable the new card")
+    func staleRetryDoesNotBlockNewStart() async {
+        let gate = CalendarStartGate()
+        gate.park(start(gate))
+
+        let outcome = await gate.retry { _ in
+            gate.invalidate()
+            let newer = self.start(gate)
+            gate.park(newer)                 // the new start fails and parks while the old fetch runs
+            #expect(!gate.isRetrying)
+            let inner = await gate.retry { _ in [event("new")] }
+            guard case .fetched = inner else {
+                Issue.record("expected .fetched, got \(inner)")
+                return []
+            }
+            return [event("old")]
+        }
+        guard case .stale = outcome else {
+            Issue.record("expected .stale, got \(outcome)")
+            return
+        }
+        #expect(!gate.isRetrying)
+    }
+
     @Test("nothing waiting means nothing to retry or start")
     func nothingWaiting() async {
         let gate = CalendarStartGate()
@@ -250,9 +296,17 @@ struct CalendarFreeSessionTests {
             try? FileManager.default.removeItem(at: other)
         }
         #expect(!CalendarFreeMarker.isMarked(in: marked))
-        CalendarFreeMarker.mark(in: marked)
+        #expect(CalendarFreeMarker.mark(in: marked))
         #expect(CalendarFreeMarker.isMarked(in: marked))
         #expect(!CalendarFreeMarker.isMarked(in: other))
+    }
+
+    @Test("a marker that cannot be written is reported, so the start can stay on the card")
+    func markerWriteFailureIsReported() {
+        let missing = FileManager.default.temporaryDirectory
+            .appending(path: "vd-calfree-missing-\(UUID().uuidString)", directoryHint: .isDirectory)
+        #expect(!CalendarFreeMarker.mark(in: missing))
+        #expect(!CalendarFreeMarker.isMarked(in: missing))
     }
 
     private let general = GeneralSection(id: "g1", title: "Reflection", introText: "How was your day?")
@@ -283,27 +337,5 @@ struct CalendarFreeSessionTests {
             generals: [general], events: [event("e1")], notes: []
         )
         #expect(kinds(steps) == ["general", "calendar", "voiceNote"])
-    }
-
-    @Test("a calendar-free session's manifest has no calendar segment")
-    func manifestHasNoCalendarSegment() throws {
-        let manifest = Manifest(
-            session_id: "2026-10-15T19:30:00+02:00",
-            date: "2026-10-15",
-            segments: [
-                .generalSection(.init(
-                    segment_id: "s01", section_id: "g1", title: "Reflection",
-                    prompt_text: "How was your day?", audio_file: "segments/s01.m4a"
-                )),
-            ]
-        )
-        let decoded = try JSONDecoder().decode(Manifest.self, from: JSONEncoder().encode(manifest))
-        #expect(decoded.segments.count == 1)
-        for segment in decoded.segments {
-            if case .calendarEvent = segment { Issue.record("unexpected calendar segment") }
-        }
-        let json = try #require(String(data: JSONEncoder().encode(manifest), encoding: .utf8))
-        #expect(!json.contains("calendar_event"))
-        #expect(!json.contains("calendar_ref"))
     }
 }

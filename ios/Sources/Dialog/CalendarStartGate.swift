@@ -38,28 +38,47 @@ public final class CalendarStartGate {
     /// The start whose answers count; nil after `invalidate()`.
     public private(set) var current: UUID?
     public private(set) var waiting: CalendarStart?
-    public private(set) var isRetrying = false
+    /// The start that has begun but has no plan yet (session setup and the
+    /// first calendar fetch). Weiter, Fertig and Pause must not act then:
+    /// the plan is empty, so they would upload an empty bundle.
+    private var preparing: UUID?
+    private var retrying: UUID?
 
     public init() {}
+
+    public var isPreparing: Bool { preparing != nil }
+    /// True while a retry for the *current* start is in flight. A retry
+    /// left over from a cancelled start does not count.
+    public var isRetrying: Bool { retrying != nil && retrying == current }
 
     /// Begin a new start; any fetch still in flight for an older one is
     /// stale from now on.
     public func newAttempt() -> UUID {
         let attempt = UUID()
         current = attempt
+        preparing = attempt
         return attempt
+    }
+
+    /// The start has its plan (or has failed): the controls may act again.
+    /// Only the attempt that set the flag may clear it.
+    public func finishPreparing(_ attempt: UUID) {
+        if preparing == attempt { preparing = nil }
     }
 
     /// Cancel: drop the waiting start and make every in-flight fetch stale.
     public func invalidate() {
         current = nil
         waiting = nil
+        preparing = nil
+        retrying = nil
     }
 
     public func isCurrent(_ attempt: UUID) -> Bool { current == attempt }
 
     /// Park a start on the user's decision.
     public func park(_ start: CalendarStart) {
+        finishPreparing(start.attempt)
         waiting = start
     }
 
@@ -83,9 +102,9 @@ public final class CalendarStartGate {
     public func retry(
         fetch: (Date) async throws -> [ServerCalendarEvent]
     ) async -> RetryOutcome {
-        guard !isRetrying, let start = waiting else { return .ignored }
-        isRetrying = true
-        defer { isRetrying = false }
+        guard let start = waiting, retrying != start.attempt else { return .ignored }
+        retrying = start.attempt
+        defer { if retrying == start.attempt { retrying = nil } }
         let events: [ServerCalendarEvent]
         do {
             events = try await fetch(start.targetDate)
@@ -106,11 +125,19 @@ public final class CalendarStartGate {
 enum CalendarFreeMarker {
     static let filename = "calendar_free"
 
-    static func mark(in dir: URL) {
-        try? Data().write(
-            to: dir.appending(path: filename),
-            options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
-        )
+    /// False when the marker could not be written; the caller must not go
+    /// on without the calendar then, or a later resume would fetch it and
+    /// shift every step index.
+    static func mark(in dir: URL) -> Bool {
+        do {
+            try Data().write(
+                to: dir.appending(path: filename),
+                options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication]
+            )
+            return true
+        } catch {
+            return false
+        }
     }
 
     static func isMarked(in dir: URL) -> Bool {
