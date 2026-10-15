@@ -1,38 +1,39 @@
-# UFH-06 proof screenshots: not captured on the node
+# UFH-06 proof screenshots
 
-No screenshots are committed for UFH-06. The five states below can only be reached by
-tapping, and the node that runs `verify-ios` cannot tap. This file says exactly why and what a
-person or device run has to capture.
+Real screenshots (`xcrun simctl io <device> screenshot`) of the running app on a throwaway
+iPhone 17 simulator (iOS 27), driven with `idb`. Each file was opened once, as a downscaled copy,
+before it was committed. App language and appearance were switched in the app and with
+`simctl ui <device> appearance`.
 
-## Why the node cannot drive them
+## Captured
 
-- **No tap input.** `xcrun simctl` has no tap, type or swipe command. `idb` and `cliclick` are not
-  installed, AppleScript is not allowed in the agent sandbox (`.claude/skills/verify-ios/SKILL.md`,
-  Rules), and the project has no UI-test target.
-- **"Start session" is disabled until the speech model has loaded.** The calendar fetch only runs
-  after the tap. The button stays disabled while `ParakeetManager` (`ios/Sources/Capture/ParakeetManager.swift`)
-  downloads and loads its ~1.2 GB model (`WalkthroughView.isModelReady`).
-- **The server comes from the Keychain.** `ServerClient.config()` reads URL and bearer token from
-  `KeychainStore`; they cannot be passed as a launch argument, so the app needs the Settings screen
-  (taps and typing) and a server whose `/today/calendar` answers 503.
-- **A real launch only shows the first-launch Server screen** under the system notification
-  prompt (`features/ios/first-launch.md`), not any state this ticket changed.
+| File | State |
+|---|---|
+| `card-en-light.png`, `card-en-dark.png`, `card-de-light.png`, `card-de-dark.png` | The calendar card after "Start session" with the calendar fetch failing: diagnosis, **Try again** / **Start without calendar** (DE: *Erneut versuchen* / *Ohne Kalender starten*), and the explanation line. |
+| `walkthrough-en-light.png`, `walkthrough-en-dark.png`, `walkthrough-de-light.png`, `walkthrough-de-dark.png` | The walkthrough running after **Start without calendar**: no calendar events, general section "Day close". |
+| `done-de-light.png`, `done-de-dark.png` | The same calendar-free session finishing: "Session saved." (the bundle is built and queued for upload). |
+| `resume-calendar-free-en-light.png`, `resume-calendar-free-en-dark.png` | *Pick up* on an unfinished session that was started without the calendar: it goes straight back into the walkthrough, with no calendar fetch and no card. |
 
-`ImageRenderer` renders are not evidence (board reference), so none are committed.
+## How the failure was produced
 
-## What to capture (device or simulator, with a person tapping)
+The app was never given a working server: with no server URL and token the calendar fetch
+fails at start (`ServerClientError.notConfigured`). That is a real calendar failure, but an
+uncoded one, so the card shows the German status-based text "Server noch nicht eingerichtet"
+in both languages (a known limit of uncoded diagnoses, out of scope for this ticket).
 
-Point the app at a server whose `GET /today/calendar` returns 503 with `code: msgraph_unavailable`
-(retryable), then with `code: msgraph_not_bootstrapped` (`retryable: false`). Take real screenshots
-(`xcrun simctl io <device> screenshot`, or the device screenshot), light and dark, German and English:
+## Not captured, and why
 
-1. Calendar card, retryable: **Try again** is the dark button, **Start without calendar** is secondary.
-2. Calendar card, not bootstrapped: **Start without calendar** is the dark button; the text says once
-   that the server has to be set up. Check that the English hint wraps and nothing is cut off.
-3. Retry spinner: tap **Try again** while the server is slow; both buttons are disabled.
-4. After **Start without calendar**: the walkthrough opens on a general section (no calendar events).
-5. Resume with Graph down (*Pick up where you left off*): the card shows **Try again** only.
+- **Coded cards:** retryable (`msgraph_unavailable`) and not bootstrapped
+  (`msgraph_not_bootstrapped`, where **Start without calendar** is the dark button), including
+  the English hint wrap. They need a server answering 503 with the failure fields. The server
+  settings could not be saved in this unsigned simulator build (after **Save** the app still
+  reported "not set up"; most likely the Keychain write is refused without signing), and this node
+  allows neither a background process nor `python3` for a stub server.
+- **Retry spinner:** it needs a fetch that stays pending, which needs the same server setup.
+- **Resume card with "Erneut versuchen" only:** it needs an unfinished session that was started
+  *with* the calendar, so a working server first.
+- **PRD scenario 3 on a physical device** is left for the operator.
 
-Then run PRD manual scenario 3 on the iPhone 17 Pro: start without the calendar, finish, and
-confirm the session uploads with no calendar segment. Commit the images here as the last commit,
-`UFH-06: proof screenshots`, and delete this README.
+To capture the missing states, run the app signed on a device or simulator with Keychain access,
+point it at a server whose `GET /today/calendar` answers 503 with `code: msgraph_unavailable`
+(retryable) and then `code: msgraph_not_bootstrapped` (`retryable: false`), and add the images here.
