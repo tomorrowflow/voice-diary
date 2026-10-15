@@ -183,9 +183,9 @@ public struct WalkthroughView: View {
                                 Label("Next", systemImage: "arrow.right.circle.fill")
                             }
                             .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
-                            .disabled(coordinator.isPaused || coordinator.isFetchingCalendar)
+                            .disabled(coordinator.isPaused || coordinator.isPreparingStart)
 
-                            if coordinator.state.isPausable && !coordinator.isFetchingCalendar {
+                            if coordinator.state.isPausable && !coordinator.isPreparingStart {
                                 Button {
                                     haptics.tap()
                                     Task {
@@ -1082,6 +1082,12 @@ private struct CalendarUnavailableCard: View {
     let diagnosis: ConnectionDiagnosis
     let coordinator: WalkthroughCoordinator
 
+    /// Retry leads unless the server said it can't help, and it is the only
+    /// choice when resuming.
+    private var retryIsPrimary: Bool {
+        diagnosis.isRetryable || !coordinator.canStartWithoutCalendar
+    }
+
     var body: some View {
         DiagnosisCard {
             DiagnosisSummary(diagnosis: diagnosis)
@@ -1090,7 +1096,7 @@ private struct CalendarUnavailableCard: View {
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                if diagnosis.isRetryable {
+                if retryIsPrimary {
                     retryButton.buttonStyle(.dsPrimary(fullWidth: true))
                     startWithoutButton.buttonStyle(.dsSecondary(fullWidth: true))
                 } else {
@@ -1118,7 +1124,7 @@ private struct CalendarUnavailableCard: View {
                     ProgressView().controlSize(.small)
                         // Retry is the dark primary button unless the
                         // server said retrying can't help.
-                        .tint(diagnosis.isRetryable ? Theme.color.text.inverse : nil)
+                        .tint(retryIsPrimary ? Theme.color.text.inverse : nil)
                     Text("Loading…")
                 }
             } else {
