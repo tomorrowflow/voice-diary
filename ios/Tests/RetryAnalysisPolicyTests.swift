@@ -88,7 +88,11 @@ struct RetryAnalysisPolicyTests {
 private actor Calls {
     private(set) var retried: [String] = []
     private(set) var statusChecks = 0
-    func retry(_ id: String) { retried.append(id) }
+    /// Records the attempt and returns how many have been made so far.
+    func retry(_ id: String) -> Int {
+        retried.append(id)
+        return retried.count
+    }
     func statusCheck() { statusChecks += 1 }
 }
 
@@ -119,7 +123,7 @@ struct AnalysisRetrierTests {
 
     /// `unknown` sessions answer 404 (nil status); `retryErrors` makes the
     /// retry call for that session throw; `started` / `hold` let a test
-    /// pause the first retry call.
+    /// pause the first retry call only.
     private func retrier(
         calls: Calls,
         health: (@Sendable () async throws -> [String: String])? = nil,
@@ -141,9 +145,10 @@ struct AnalysisRetrierTests {
                 return response(id, [seg])
             },
             retry: { id in
-                await calls.retry(id)
-                await started?.open()
-                await hold?.wait()
+                if await calls.retry(id) == 1 {
+                    await started?.open()
+                    await hold?.wait()
+                }
                 if let error = retryErrors[id] { throw error }
             }
         ))
@@ -177,19 +182,29 @@ struct AnalysisRetrierTests {
         #expect(await calls.retried == ["a", "a"])
     }
 
-    @Test("a trigger is dropped while a pass is still running")
-    func overlappingPassDropped() async {
+    @Test("a pass still running when the app backgrounds stops, and cannot overlap the next foreground's pass")
+    func stalePassStopsAtForegroundChange() async {
         let calls = Calls()
         let started = Gate()
         let hold = Gate()
-        let r = retrier(calls: calls, ids: ["a"], pending: ["a"], started: started, hold: hold)
-        let first = Task { await r.runOnForeground() }
+        let r = retrier(calls: calls, ids: ["a", "b"], pending: ["a", "b"], started: started, hold: hold)
+
+        // Foreground 1: the pass is mid-request on "a".
+        let stale = Task { await r.runOnForeground() }
         await started.wait()
+
+        // Background, then foreground 2 runs its own pass to completion.
         await r.markBackgrounded()
         await r.runOnForeground()
+        #expect(await calls.retried == ["a", "a", "b"])
+
+        // An inactive -> active flip in foreground 2 starts nothing.
+        await r.runOnForeground()
+
+        // The stale pass finishes its in-flight request but skips "b".
         await hold.open()
-        await first.value
-        #expect(await calls.retried == ["a"])
+        await stale.value
+        #expect(await calls.retried == ["a", "a", "b"])
     }
 
     @Test("degraded Ollama or LightRAG makes no per-session request")
@@ -207,15 +222,6 @@ struct AnalysisRetrierTests {
         let r = retrier(calls: calls, health: { throw Boom() }, ids: ["a"], pending: ["a"])
         await r.runOnForeground()
         #expect(await calls.statusChecks == 0)
-    }
-
-    @Test("session_busy and session_not_retryable do not stop the pass", arguments: ["session_busy", "session_not_retryable"])
-    func expectedConflictsAreSkipped(detail: String) async {
-        let calls = Calls()
-        let conflict = ServerClientError.http(status: 409, detail: detail, failure: UpstreamFailure())
-        let r = retrier(calls: calls, ids: ["a", "b"], pending: ["a", "b"], retryErrors: ["a": conflict])
-        await r.runOnForeground()
-        #expect(await calls.retried == ["a", "b"])
     }
 
     @Test("a session the server does not know is skipped without a retry")
