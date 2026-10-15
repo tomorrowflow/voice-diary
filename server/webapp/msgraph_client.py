@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 from pathlib import Path
 from typing import Any
 
 import httpx
 import msal
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -32,13 +34,22 @@ GRAPH_SCOPES = ["Calendars.Read", "Mail.Read"]  # offline_access is implicit for
 class MSGraphNotBootstrapped(RuntimeError):
     """Raised when the MSAL cache has no usable account.
 
-    Surfaced as HTTP 503 by the routers; the user must run
-    `scripts/msgraph_bootstrap.py` and sign in once.
+    Surfaced as 503 `msgraph_not_bootstrapped` (upstream_failure); the user
+    must run `scripts/msgraph_bootstrap.py` and sign in once.
     """
 
 
 class MSGraphError(RuntimeError):
-    """Generic Graph failure (network, 5xx, parsing)."""
+    """Generic Graph failure. The message prefix names the kind
+    (`rate_limited`, `network_error`, `upstream_5xx`, `graph_error`,
+    `transport_error`, `auth_error`, `bad_response`); upstream_failure maps it.
+
+    `retry_after` is Graph's `Retry-After` in seconds when a 429 carried one.
+    """
+
+    def __init__(self, message: str, *, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 def _cache_path() -> Path:
@@ -77,6 +88,26 @@ def _persist_cache(cache: msal.SerializableTokenCache, path: Path) -> None:
         pass
 
 
+def _parse_retry_after(value: str | None) -> float | None:
+    """`Retry-After` as seconds, or None when absent or an HTTP-date."""
+    try:
+        seconds = float(value) if value is not None else None
+    except ValueError:
+        return None
+    return seconds if seconds is not None and math.isfinite(seconds) and seconds > 0 else None
+
+
+def _graph_error_fields(resp: httpx.Response) -> tuple[str, str]:
+    """`(code, message)` from a Graph error body, whatever shape it has."""
+    try:
+        err = resp.json().get("error")
+    except Exception:
+        err = None
+    if isinstance(err, dict):
+        return str(err.get("code") or "?"), str(err.get("message") or "")[:200]
+    return "?", (str(err) if err else resp.text)[:200]
+
+
 class MSGraphClient:
     """Singleton-ish wrapper around an MSAL public client + httpx."""
 
@@ -87,18 +118,24 @@ class MSGraphClient:
         cache_path: Path | None = None,
     ) -> None:
         if not client_id or not tenant_id:
-            raise RuntimeError(
+            raise MSGraphNotBootstrapped(
                 "MSGRAPH_CLIENT_ID and MSGRAPH_TENANT_ID must be set in .env"
             )
         self._client_id = client_id
         self._tenant_id = tenant_id
         self._cache_path = cache_path or _cache_path()
         self._cache = _load_cache(self._cache_path)
-        self._app = msal.PublicClientApplication(
-            client_id=client_id,
-            authority=f"{GRAPH_AUTHORITY}/{tenant_id}",
-            token_cache=self._cache,
-        )
+        try:
+            # MSAL may discover the authority over the network while constructing.
+            self._app = msal.PublicClientApplication(
+                client_id=client_id,
+                authority=f"{GRAPH_AUTHORITY}/{tenant_id}",
+                token_cache=self._cache,
+            )
+        except requests.RequestException as exc:
+            raise MSGraphError(f"network_error: authority discovery: {exc}") from exc
+        except ValueError as exc:
+            raise MSGraphError(f"auth_error: {exc}") from exc
         self._cache_lock = asyncio.Lock()
         self._http: httpx.AsyncClient | None = None
 
@@ -110,20 +147,28 @@ class MSGraphClient:
             accounts = self._app.get_accounts()
             if not accounts:
                 raise MSGraphNotBootstrapped(
-                    "msgraph_not_bootstrapped: no accounts in cache; "
-                    "run scripts/msgraph_bootstrap.py once."
+                    "no accounts in cache; run scripts/msgraph_bootstrap.py once."
                 )
             # Use the first (and, for this single-user app, only) account.
-            result = await asyncio.to_thread(
-                self._app.acquire_token_silent,
-                scopes=GRAPH_SCOPES,
-                account=accounts[0],
-            )
-            _persist_cache(self._cache, self._cache_path)
+            try:
+                result = await asyncio.to_thread(
+                    self._app.acquire_token_silent,
+                    scopes=GRAPH_SCOPES,
+                    account=accounts[0],
+                )
+            except requests.RequestException as exc:
+                # MSAL talks to the Entra token endpoint through `requests`.
+                raise MSGraphError(f"network_error: token endpoint: {exc}") from exc
+            except Exception as exc:
+                raise MSGraphError(f"auth_error: {exc}") from exc
+            try:
+                _persist_cache(self._cache, self._cache_path)
+            except OSError as exc:
+                # The token is in hand; losing the cache write only costs a refresh next time.
+                logger.warning("Could not persist the MSAL cache at %s: %s", self._cache_path, exc)
         if not result or "access_token" not in result:
             raise MSGraphNotBootstrapped(
-                "msgraph_not_bootstrapped: silent refresh failed; "
-                "the refresh token may be revoked. Re-run bootstrap."
+                "silent refresh failed; the refresh token may be revoked. Re-run bootstrap."
             )
         return result["access_token"]
 
@@ -165,39 +210,45 @@ class MSGraphClient:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """GET a Graph endpoint and return JSON. Honours Retry-After on 429
-        with up to two retries (1 s + 2 s default), then surfaces 503.
+        with up to two retries (1 s + 2 s default), then raises a
+        `rate_limited` MSGraphError carrying that `Retry-After`.
+
+        Every failure leaves as MSGraphError / MSGraphNotBootstrapped.
         """
         url = path if path.startswith("http") else f"{GRAPH_BASE_URL}{path}"
         backoff = [1.0, 2.0]
+        retry_after: float | None = None
         for attempt in range(len(backoff) + 1):
             try:
                 resp = await self._request("GET", url, params=params)
             except (httpx.NetworkError, httpx.TimeoutException) as exc:
-                raise MSGraphError(f"network_error: {exc}") from exc
+                raise MSGraphError(f"network_error: {exc!r}") from exc
+            except httpx.RequestError as exc:
+                # e.g. RemoteProtocolError: the peer answered, but not in HTTP.
+                raise MSGraphError(f"transport_error: {exc!r}") from exc
+            if resp.status_code == 429:
+                retry_after = _parse_retry_after(resp.headers.get("Retry-After"))
             if resp.status_code == 429 and attempt < len(backoff):
-                try:
-                    retry_after = float(resp.headers.get("Retry-After", "0"))
-                except ValueError:
-                    retry_after = 0.0
-                wait = max(retry_after, backoff[attempt])
+                wait = max(retry_after or 0.0, backoff[attempt])
                 logger.warning("Graph 429; sleeping %.1fs before retry", wait)
                 await asyncio.sleep(wait)
                 continue
             if resp.status_code == 429:
-                raise MSGraphError("rate_limited: backoff_exhausted")
+                raise MSGraphError("rate_limited: backoff_exhausted", retry_after=retry_after)
             if resp.status_code >= 500:
                 raise MSGraphError(f"upstream_5xx: status={resp.status_code}")
             if resp.status_code >= 400:
-                try:
-                    err = resp.json().get("error", {})
-                except Exception:
-                    err = {"message": resp.text[:200]}
+                code, message = _graph_error_fields(resp)
                 raise MSGraphError(
-                    f"graph_error: status={resp.status_code} "
-                    f"code={err.get('code', '?')} "
-                    f"message={err.get('message', '')[:200]}"
+                    f"graph_error: status={resp.status_code} code={code} message={message}"
                 )
-            return resp.json()
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                raise MSGraphError(f"bad_response: {exc}") from exc
+            if not isinstance(data, dict):
+                raise MSGraphError(f"bad_response: expected a JSON object, got {type(data).__name__}")
+            return data
         raise MSGraphError("rate_limited: backoff_exhausted")  # pragma: no cover
 
 

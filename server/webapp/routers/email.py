@@ -13,19 +13,13 @@ import logging
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
 import fixtures
-from enrichment import (
-    EnrichmentSummariserUnavailable,
-    summarise_for_speech,
-)
-from msgraph_client import (
-    MSGraphError,
-    MSGraphNotBootstrapped,
-    get_client,
-)
+import upstream_failure
+from enrichment import summarise_for_speech
+from msgraph_client import get_client
 from routers.auth import require_bearer
 
 logger = logging.getLogger(__name__)
@@ -100,34 +94,19 @@ async def email_search(
             "$top": str(top),
             "$select": "id,subject,from,receivedDateTime,bodyPreview,webLink",
         }
-        try:
+        with upstream_failure.raise_as_failure():
             client = await get_client()
             data = await client.get_json("/me/messages", params=params)
-        except MSGraphNotBootstrapped as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="msgraph_not_bootstrapped",
-            ) from exc
-        except MSGraphError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=str(exc),
-            ) from exc
         raw_messages = data.get("value", []) or []
     raw_messages = _filter_by_date(raw_messages, from_, to)
 
     sources_text = _format_sources(raw_messages)
-    try:
+    with upstream_failure.raise_as_failure():
         summary = await summarise_for_speech(
             query=q,
             sources_text=sources_text,
             response_language=response_language,
         )
-    except EnrichmentSummariserUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"ollama_unavailable: {exc}",
-        ) from exc
 
     return EmailSearchResponse(
         summary=summary,

@@ -6,6 +6,7 @@ upstream failure the same way: the string `detail` (`"<code>"` or
 `upstream` and `retryable`, and a `Retry-After` header only where a wait is
 known.
 
+`raise_as_failure` is how a route puts a client call on the contract.
 `failure_from_exception` maps each upstream client's exception classes to an
 `UpstreamFailure`; `classify_raw_ollama_error` does the same for the plain
 `httpx` / `RuntimeError` failures that escape `document_processor`'s analysis
@@ -15,6 +16,8 @@ path. `failure_fields` is what the sessions pipeline records on a segment.
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Literal
 
 import httpx
@@ -186,6 +189,20 @@ def failure_from_exception(exc: BaseException) -> UpstreamFailure | None:
             return _make("voxtral_engine_error", "voxtral", _ERROR, exc)
         return None
     return None
+
+
+@contextmanager
+def raise_as_failure() -> Iterator[None]:
+    """Re-raise any upstream client exception raised inside the block as its
+    `UpstreamFailure`, so the route answers in the shared shape. Anything that
+    is not a typed upstream failure propagates unchanged."""
+    try:
+        yield
+    except Exception as exc:
+        failure = failure_from_exception(exc)
+        if failure is None or failure is exc:
+            raise
+        raise failure from exc
 
 
 def classify_raw_ollama_error(exc: BaseException) -> UpstreamFailure | None:

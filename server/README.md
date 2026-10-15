@@ -226,7 +226,10 @@ was restored intact.
 |---|---|---|
 | `/health` returns `"msgraph":"not_bootstrapped"` | bootstrap never run, or refresh token revoked | re-run `scripts/msgraph_bootstrap.py` |
 | `/today/calendar` → 503 `msgraph_not_bootstrapped` | same | same |
-| `/today/calendar` → 502 `rate_limited: backoff_exhausted` | Graph throttling | wait, retry; if persistent reduce poll rate on iOS |
+| `/today/calendar` → 429 `msgraph_rate_limited` (with `Retry-After`) | Graph throttling | wait, retry; if persistent reduce poll rate on iOS |
+| `/today/calendar` or `/email/search` → 503 `msgraph_unavailable` | no route to Graph or the Entra token endpoint, or a timeout | check the server's outbound network and DNS |
+| `/lightrag/query` → 503 `lightrag_timeout` | LightRAG did not answer within 120 s | check the LightRAG container load; retry |
+| `/lightrag/query` → 503 `ollama_unavailable` / `ollama_timeout` | the speech summariser could not reach Ollama or ran out of time | check `OLLAMA_BASE_URL` and `OLLAMA_ENRICHMENT_TIMEOUT` |
 | `/api/sessions` → 503 `whisper_unavailable` | Whisper sidecar stopped | `docker compose ps whisper` and restart |
 | Segments come back with `status: "pending_analysis"` | Ollama or LightRAG was down during ingest | bundle persisted on disk; re-process via `/process/<transcript_id>` once upstream returns |
 | `/health` returns `"status":"degraded"` | a non-optional upstream (Qdrant, LightRAG, Ollama, Graph) is not `ok` | check `upstream` map for the offending service |
@@ -239,8 +242,8 @@ was restored intact.
 Upstream failures carry a stable `code` and the failing `upstream` next to the string `detail`
 (`{"detail": "whisper_unavailable", "code": "whisper_unavailable", "upstream": "whisper",
 "retryable": true}`), and the same two fields on failed / `pending_analysis` segments in
-`GET /api/sessions/<id>/status`. `Retry-After` is sent only when a wait is known. Contract and
-statuses: SPEC §10.6.1. Today the session routes use it; other routers follow.
+`GET /api/sessions/<id>/status`. `Retry-After` is sent only when a wait is known (Graph 429).
+Contract and statuses: SPEC §10.6.1; every upstream-facing route uses it (SPEC §10.7).
 
 | Code | Upstream | Status | Retryable | What to check |
 |---|---|---|---|---|
@@ -248,8 +251,8 @@ statuses: SPEC §10.6.1. Today the session routes use it; other routers follow.
 | `ollama_unavailable` / `ollama_timeout` / `ollama_engine_error` | ollama | 503 / 503 / 502 | yes | Ollama reachable at `OLLAMA_BASE_URL`; model pulled; long analyses may need a higher timeout |
 | `lightrag_unavailable` / `lightrag_timeout` / `lightrag_engine_error` | lightrag | 503 / 503 / 502 | yes | LightRAG reachable at its base URL; API key |
 | `msgraph_not_bootstrapped` | msgraph | 503 | no | run `scripts/msgraph_bootstrap.py` |
-| `msgraph_rate_limited` / `msgraph_unavailable` / `msgraph_engine_error` | msgraph | 429 / 503 / 502 | yes | Graph throttling or outage; wait |
-| `voxtral_unavailable` / `voxtral_timeout` / `voxtral_engine_error` | voxtral | 503 / 503 / 502 | yes | voxtral-gate and engine |
+| `msgraph_rate_limited` / `msgraph_unavailable` / `msgraph_engine_error` | msgraph | 429 / 503 / 502 | yes | Graph throttling (`Retry-After` sent when Graph gave one), network or outage; wait |
+| `voxtral_unavailable` / `voxtral_timeout` / `voxtral_engine_error` | voxtral | 503 / 503 / 502 | yes | voxtral-gate and engine; a timeout is 503 like the others, not 504 |
 | `unknown_voice` | voxtral | 400 | no | the voice id is not in the catalogue |
 
 A segment with no `code` failed for a reason that is not an upstream failure (or predates the
