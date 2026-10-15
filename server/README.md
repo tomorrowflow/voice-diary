@@ -234,6 +234,27 @@ was restored intact.
 | HTMX review UI returns `401 missing_bearer_token` | browser isn't sending the bearer | add the `Authorization` header for the tailnet host (see First-time setup, step 7) |
 | HTMX review UI's calendar widget shows nothing | tenant returned no events for that date, or MSAL bootstrap stale | confirm `/today/calendar` works directly |
 
+### Failure codes
+
+Upstream failures carry a stable `code` and the failing `upstream` next to the string `detail`
+(`{"detail": "whisper_unavailable", "code": "whisper_unavailable", "upstream": "whisper",
+"retryable": true}`), and the same two fields on failed / `pending_analysis` segments in
+`GET /api/sessions/<id>/status`. `Retry-After` is sent only when a wait is known. Contract and
+statuses: SPEC §10.6.1. Today the session routes use it; other routers follow.
+
+| Code | Upstream | Status | Retryable | What to check |
+|---|---|---|---|---|
+| `whisper_unavailable` / `whisper_timeout` / `whisper_engine_error` | whisper | 503 / 503 / 502 | yes | whisper container up and healthy; model loaded |
+| `ollama_unavailable` / `ollama_timeout` / `ollama_engine_error` | ollama | 503 / 503 / 502 | yes | Ollama reachable at `OLLAMA_BASE_URL`; model pulled; long analyses may need a higher timeout |
+| `lightrag_unavailable` / `lightrag_timeout` / `lightrag_engine_error` | lightrag | 503 / 503 / 502 | yes | LightRAG reachable at its base URL; API key |
+| `msgraph_not_bootstrapped` | msgraph | 503 | no | run `scripts/msgraph_bootstrap.py` |
+| `msgraph_rate_limited` / `msgraph_unavailable` / `msgraph_engine_error` | msgraph | 429 / 503 / 502 | yes | Graph throttling or outage; wait |
+| `voxtral_unavailable` / `voxtral_timeout` / `voxtral_engine_error` | voxtral | 503 / 503 / 502 | yes | voxtral-gate and engine |
+| `unknown_voice` | voxtral | 400 | no | the voice id is not in the catalogue |
+
+A segment with no `code` failed for a reason that is not an upstream failure (or predates the
+contract); read its `error` string and the webapp log.
+
 ---
 
 ## Layout

@@ -48,6 +48,7 @@ import correction
 import db
 import narrative
 import transcript_ingest
+import upstream_failure
 from logging_setup import bind_session_id
 from paths import sessions_dir
 from models import (
@@ -250,10 +251,7 @@ async def post_session(
             async with _status_lock:
                 _session_status.pop(session_id, None)
             await db.delete_session_status(session_id)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="whisper_unavailable",
-            )
+            raise upstream_failure.whisper_unavailable()
     except BaseException:
         await _end_session_run(session_id)
         raise
@@ -469,6 +467,7 @@ async def _retry_session_analysis(session_id: str, status_obj: SessionStatus) ->
                 status="pending_analysis",
                 transcript_id=r.transcript_id,
                 error=f"analysis_pending: {exc}",
+                **upstream_failure.failure_fields(exc),
             )
             if r.segment_id in retried_ids
             else r
@@ -727,6 +726,7 @@ async def _process_session(parsed: Manifest, session_dir: Path) -> list[SegmentR
             )
             results_by_id[seg.segment_id] = SegmentResult(
                 segment_id=seg.segment_id, status="failed", error=str(exc),
+                **upstream_failure.failure_fields(exc),
             )
         await _persist_phase_1_progress(parsed, results_by_id)
 
@@ -756,6 +756,7 @@ async def _process_session(parsed: Manifest, session_dir: Path) -> list[SegmentR
                     status="pending_analysis",
                     transcript_id=art.transcript_id,
                     error=f"analysis_pending: {exc}",
+                    **upstream_failure.failure_fields(exc),
                 )
 
     # Preserve manifest segment order in the response.

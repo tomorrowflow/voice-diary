@@ -34,6 +34,7 @@ from typing import Awaitable, Callable
 import httpx
 
 import document_processor
+import upstream_failure
 from lightrag_client import LightRAGClient
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,8 @@ async def build_day_narrative(
     `document_processor.build_enriched_context`'s default when omitted.
 
     Raises whatever `document_processor.analyze_transcript` raises (after
-    emitting the matching error events) — analysis failure is the one step
+    emitting the matching error events), as an `UpstreamFailure` when it is
+    an Ollama failure we can classify — analysis failure is the one step
     in this pipeline that isn't degraded, per the decided failure policy.
     """
     ports = ports or NarrativePorts()
@@ -142,6 +144,11 @@ async def build_day_narrative(
         await _emit(on_step, "step", {"step": "analysis", "state": "error"})
         await _emit(on_step, "log", {"message": f"Analysis failed: {error_msg}", "level": "error"})
         await _emit(on_step, "error", {"message": f"Analysis failed: {error_msg}"})
+        # The analysis call talks to Ollama with plain httpx; tag its raw
+        # failures with the shared code. The message (`str(exc)`) is unchanged.
+        failure = upstream_failure.classify_raw_ollama_error(e)
+        if failure is not None and failure is not e:
+            raise failure from e
         raise
 
     await _emit(on_step, "analysis", {"analysis": analysis})
