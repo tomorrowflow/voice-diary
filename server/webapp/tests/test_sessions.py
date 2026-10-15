@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 
 import db
 import routers.sessions as sessions_router
+import upstream_failure
 from models import SegmentResult, SessionStatus
 
 
@@ -33,6 +34,7 @@ BEARER = "test-token"
 
 def _client() -> TestClient:
     app = FastAPI()
+    upstream_failure.install(app)
     app.include_router(sessions_router.router)
     return TestClient(app)
 
@@ -133,7 +135,11 @@ def test_persist_session_status_updates_cache_and_writes_through_to_db(monkeypat
     assert sessions_router._session_status["sess-x"].state == "done"
     assert sessions_router._session_status["sess-x"].segments == new_results
     assert updated == [
-        ("sess-x", "done", [{"segment_id": "s01", "status": "processed", "transcript_id": 7, "error": None}])
+        (
+            "sess-x",
+            "done",
+            [{"segment_id": "s01", "status": "processed", "transcript_id": 7, "error": None, "code": None, "upstream": None}],
+        )
     ]
 
 
@@ -227,7 +233,10 @@ def test_post_session_persists_status_row_before_returning(monkeypatch, tmp_path
     assert session_id == "sess-post-1"
     assert state == "processing"
     assert segments == [
-        {"segment_id": "s01", "status": "pending_analysis", "transcript_id": None, "error": None}
+        {
+            "segment_id": "s01", "status": "pending_analysis", "transcript_id": None,
+            "error": None, "code": None, "upstream": None,
+        }
     ]
 
 
@@ -813,7 +822,10 @@ def test_retry_analysis_rebuilds_narrative_from_persisted_transcripts_and_marks_
     body = resp.json()
     assert body["state"] == "done"
     assert body["segments"] == [
-        {"segment_id": "s01", "status": "processed", "transcript_id": 5, "error": None}
+        {
+            "segment_id": "s01", "status": "processed", "transcript_id": 5,
+            "error": None, "code": None, "upstream": None,
+        }
     ]
     assert saved_docs == [5]
     assert marked_ids == [905]
@@ -887,6 +899,8 @@ def test_retry_analysis_returns_pending_status_when_analysis_fails_again(monkeyp
             "status": "pending_analysis",
             "transcript_id": 5,
             "error": "analysis_pending: ollama unreachable",
+            "code": None,
+            "upstream": None,
         }
     ]
     assert body["segments"] == expected_segments
@@ -936,6 +950,8 @@ def test_retry_analysis_returns_pending_status_when_ingest_fails_again(monkeypat
             "status": "pending_analysis",
             "transcript_id": 5,
             "error": "analysis_pending: lightrag unreachable",
+            "code": None,
+            "upstream": None,
         }
     ]
     assert body["segments"] == expected_segments
@@ -1399,8 +1415,14 @@ def _stub_sweep_dependencies(monkeypatch, *, transcript_ids: set[int], sweep_ids
     return processed
 
 
-def _segment_row(segment_id: str, status: str, transcript_id: int | None = None, error: str | None = None):
-    return {"segment_id": segment_id, "status": status, "transcript_id": transcript_id, "error": error}
+def _segment_row(
+    segment_id: str, status: str, transcript_id: int | None = None, error: str | None = None,
+    code: str | None = None, upstream: str | None = None,
+):
+    return {
+        "segment_id": segment_id, "status": status, "transcript_id": transcript_id,
+        "error": error, "code": code, "upstream": upstream,
+    }
 
 
 def test_process_session_persists_each_segment_as_phase_1_finishes(monkeypatch, tmp_path):
