@@ -224,6 +224,8 @@ public struct ServerSettingsView: View {
         KeychainStore.write(bearerToken.trimmingCharacters(in: .whitespacesAndNewlines),
                             for: .bearerToken)
         lastError = nil
+        // New URL or token: let uploads the server refused retry now.
+        SessionUploader.shared.kick()
         Task { await refresh() }
     }
 
