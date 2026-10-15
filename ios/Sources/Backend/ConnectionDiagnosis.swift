@@ -24,6 +24,10 @@ public struct ConnectionDiagnosis: Equatable, Sendable {
         /// Server returned an authentication error (401 / 403). Likely a
         /// rotated bearer token — Settings again.
         case unauthorised
+        /// The server named a failing upstream (Whisper, Ollama, LightRAG,
+        /// Graph, Voxtral) through the failure contract; title and hint
+        /// come from `FailureCatalog`. Refresh might help once it recovers.
+        case upstreamFailure
         /// Server returned 5xx. Refresh might help once the server recovers.
         case serverError
         /// Server returned a 4xx other than auth.
@@ -61,9 +65,14 @@ public struct ConnectionDiagnosis: Equatable, Sendable {
     /// Strings are German because the front rail of the app is German;
     /// English copy is kept symmetrical so a future locale switch is a
     /// table swap, not a rewrite.
-    public static func classify(_ error: Error) -> ConnectionDiagnosis {
+    ///
+    /// A coded upstream failure (`FailureCatalog`) is explained first, in
+    /// `language` (nil = the app's current language). Errors without a
+    /// recognised code keep the status-based cases below, so a new app
+    /// against an older server reads exactly as before.
+    public static func classify(_ error: Error, language: OpenerLanguage? = nil) -> ConnectionDiagnosis {
         if let serverError = error as? ServerClientError {
-            return classify(serverError)
+            return classify(serverError, language: language)
         }
         if let urlError = error as? URLError {
             return classify(urlError)
@@ -89,7 +98,17 @@ public struct ConnectionDiagnosis: Equatable, Sendable {
         )
     }
 
-    private static func classify(_ error: ServerClientError) -> ConnectionDiagnosis {
+    private static func classify(_ error: ServerClientError, language: OpenerLanguage?) -> ConnectionDiagnosis {
+        if case .http(let status, let detail, let failure) = error,
+           let copy = FailureCatalog.copy(for: failure, language: language) {
+            return ConnectionDiagnosis(
+                kind: .upstreamFailure,
+                title: copy.title,
+                hint: "\(copy.hint) \(copy.impact)",
+                detail: "HTTP \(status): \(detail.prefix(160))",
+                systemImage: "server.rack"
+            )
+        }
         switch error {
         case .notConfigured:
             return ConnectionDiagnosis(
@@ -99,7 +118,7 @@ public struct ConnectionDiagnosis: Equatable, Sendable {
                 detail: nil,
                 systemImage: "gearshape.fill"
             )
-        case .http(let status, let detail):
+        case .http(let status, let detail, _):
             switch status {
             case 401, 403:
                 return ConnectionDiagnosis(

@@ -44,12 +44,18 @@ public actor EnrichmentService {
 
     public init() {}
 
-    /// Spoken copy for a failed enrichment (SPEC §15.1). Connectivity
-    /// failures (server unreachable, device offline, request timed out)
-    /// get the "can't reach server" message; every other failure keeps
-    /// the generic "couldn't answer" message.
+    /// Spoken copy for a failed enrichment (SPEC §15.1). A coded failure
+    /// from Ollama, LightRAG or Graph gets its own line ending in
+    /// "Enrichment skipped". Without one, connectivity failures (server
+    /// unreachable, device offline, request timed out) get the "can't
+    /// reach server" message and every other failure keeps the generic
+    /// "couldn't answer" message.
     public static func failureMessage(for error: Error, language: OpenerLanguage) -> String {
-        switch ConnectionDiagnosis.classify(error).kind {
+        if case ServerClientError.http(_, _, let failure) = error,
+           let line = FailureCatalog.spokenEnrichmentLine(for: failure, language: language) {
+            return line
+        }
+        switch ConnectionDiagnosis.classify(error, language: language).kind {
         case .unreachable, .offline, .timeout:
             return language == .de
                 ? "Server nicht erreichbar. Die Anreicherung wird übersprungen."
