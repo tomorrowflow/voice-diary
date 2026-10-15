@@ -220,11 +220,7 @@ public actor ServerClient {
     /// status map is in-memory on the server, so a restart loses it
     /// even though the bundle on disk survives.
     public func sessionStatus(sessionID: String) async throws -> SessionStatusResponse? {
-        // Path-encode the session id; ISO8601 timestamps contain ':'.
-        let escaped = sessionID.addingPercentEncoding(
-            withAllowedCharacters: .urlPathAllowed
-        ) ?? sessionID
-        let (url, token) = try endpoint("/api/sessions/\(escaped)/status")
+        let (url, token) = try sessionEndpoint(sessionID, "status")
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: req)
@@ -233,6 +229,28 @@ public actor ServerClient {
         }
         try Self.assertOK(response: response, body: data)
         return try Self.decode(SessionStatusResponse.self, from: data)
+    }
+
+    /// Asks the server to re-run analysis for a `pending_analysis` session
+    /// (SPEC §10.6.1). Returns the updated status; a retry that fails again
+    /// still answers `200`. Throws `.http` for `409 session_busy` /
+    /// `session_not_retryable` and `404`.
+    public func retryAnalysis(sessionID: String) async throws -> SessionStatusResponse {
+        let (url, token) = try sessionEndpoint(sessionID, "retry-analysis")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response: response, body: data)
+        return try Self.decode(SessionStatusResponse.self, from: data)
+    }
+
+    private func sessionEndpoint(_ sessionID: String, _ action: String) throws -> (URL, String) {
+        // Path-encode the session id; ISO8601 timestamps contain ':'.
+        let escaped = sessionID.addingPercentEncoding(
+            withAllowedCharacters: .urlPathAllowed
+        ) ?? sessionID
+        return try endpoint("/api/sessions/\(escaped)/\(action)")
     }
 
     public struct SessionStatusResponse: Codable, Sendable {
