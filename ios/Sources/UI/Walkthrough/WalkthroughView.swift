@@ -1032,10 +1032,12 @@ private struct DiagnosisSummary: View {
                     Text(diagnosis.title)
                         .font(Theme.font.callout.weight(.semibold))
                         .foregroundStyle(Theme.color.text.primary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Text(diagnosis.hint)
                         .font(Theme.font.caption)
                         .foregroundStyle(Theme.color.text.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
