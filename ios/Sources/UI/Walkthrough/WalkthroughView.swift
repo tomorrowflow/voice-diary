@@ -96,6 +96,8 @@ public struct WalkthroughView: View {
                         case .idle:                StartCard(coordinator: coordinator)
                         case .noteReview:          NoteReviewCard(coordinator: coordinator)
                         case .confirmingTodos:     TodoConfirmationCard(coordinator: coordinator)
+                        case .calendarUnavailable(let diagnosis):
+                            CalendarUnavailableCard(diagnosis: diagnosis, coordinator: coordinator)
                         case .ingesting:           UploadingCard()
                         case .done:                DoneCard(coordinator: coordinator)
                         case .failed(let msg):     ErrorCard(message: msg, coordinator: coordinator)
@@ -991,16 +993,30 @@ private struct DayOverview: View {
     }
 }
 
-/// Replaces the single-line red error string in DayOverview with a
-/// proper card: icon + title + actionable hint + technical detail in a
-/// monospaced caption + a primary action ("Tagesübersicht erneut laden"
-/// or "Einstellungen öffnen", depending on the diagnosis).
+/// Bordered container shared by the cards that show a `ConnectionDiagnosis`.
+private struct DiagnosisCard<Content: View>: View {
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            content()
+        }
+        .padding(Theme.spacing.md)
+        .background(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .fill(Theme.color.bg.containerInset)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
+                .strokeBorder(Theme.color.status.destructive.opacity(0.30), lineWidth: 1)
+        )
+    }
+}
+
+/// Icon, title, hint and collapsible technical detail of a diagnosis.
 @MainActor
-private struct ConnectionErrorCard: View {
+private struct DiagnosisSummary: View {
     let diagnosis: ConnectionDiagnosis
-    let isLoading: Bool
-    let onRefresh: () -> Void
-    let onOpenSettings: () -> Void
 
     @State private var detailExpanded: Bool = false
 
@@ -1051,18 +1067,69 @@ private struct ConnectionErrorCard: View {
                         )
                 }
             }
+        }
+    }
+}
 
+/// Shown when the calendar fetch at walkthrough start fails: the
+/// diagnosis plus an explicit choice between retrying and walking through
+/// without the calendar. When the server says retrying can't help (Graph
+/// not set up), starting without the calendar is the emphasised action.
+@MainActor
+private struct CalendarUnavailableCard: View {
+    let diagnosis: ConnectionDiagnosis
+    let coordinator: WalkthroughCoordinator
+
+    var body: some View {
+        DiagnosisCard {
+            DiagnosisSummary(diagnosis: diagnosis)
+            Text("Without the calendar you'll walk through your general sections and voice notes only.")
+                .font(Theme.font.caption)
+                .foregroundStyle(Theme.color.text.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if diagnosis.isRetryable {
+                retryButton.buttonStyle(.dsPrimary(fullWidth: true))
+                startWithoutButton.buttonStyle(.dsSecondary(fullWidth: true))
+            } else {
+                startWithoutButton.buttonStyle(.dsPrimary(fullWidth: true))
+                retryButton.buttonStyle(.dsSecondary(fullWidth: true))
+            }
+        }
+    }
+
+    private var retryButton: some View {
+        Button {
+            Task { await coordinator.retryCalendar() }
+        } label: {
+            Label("Try again", systemImage: "arrow.clockwise")
+        }
+    }
+
+    private var startWithoutButton: some View {
+        Button {
+            Task { await coordinator.startWithoutCalendar() }
+        } label: {
+            Text("Start without calendar")
+        }
+    }
+}
+
+/// Replaces the single-line red error string in DayOverview with a
+/// proper card: icon + title + actionable hint + technical detail in a
+/// monospaced caption + a primary action ("Tagesübersicht erneut laden"
+/// or "Einstellungen öffnen", depending on the diagnosis).
+@MainActor
+private struct ConnectionErrorCard: View {
+    let diagnosis: ConnectionDiagnosis
+    let isLoading: Bool
+    let onRefresh: () -> Void
+    let onOpenSettings: () -> Void
+
+    var body: some View {
+        DiagnosisCard {
+            DiagnosisSummary(diagnosis: diagnosis)
             primaryAction
         }
-        .padding(Theme.spacing.md)
-        .background(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .fill(Theme.color.bg.containerInset)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Theme.radius.lg, style: .continuous)
-                .strokeBorder(Theme.color.status.destructive.opacity(0.30), lineWidth: 1)
-        )
     }
 
     @ViewBuilder

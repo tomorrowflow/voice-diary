@@ -159,6 +159,9 @@ public final class WalkthroughCoordinator {
     private let answerLullDetector = LullDetector()
     private static let todoAnswerMaxSeconds: TimeInterval = 20.0
     private var interruptInFlight: Bool = false
+    /// Day and language of the start that is waiting on the user in
+    /// `.calendarUnavailable`; nil in every other state.
+    private var calendarFallbackContext: (targetDate: Date, language: OpenerLanguage)?
     /// Re-entrancy guard for `advance` / `skip` / `finishCurrentSection`. Without
     /// it, two rapid Weiter taps both pattern-match the same listening
     /// state, both await `stopSegmentCapture()` (which doesn't mutate
@@ -386,37 +389,95 @@ public final class WalkthroughCoordinator {
         catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
         do {
             try makeSessionDir()
-            try await fetchCalendar(date: targetDate)
-            plan = await buildPlan(forDate: targetDate)
-            if plan.isEmpty {
-                await finishUploadOrConfirmTodos()
-                return
-            }
-            // Pre-generate every LLM-dependent line for the whole
-            // session up front, two-tier: the *first* opener fires
-            // alone (so the briefing-then-event-0 transition feels
-            // instant), then a trampoline awaits its completion and
-            // fans out everything else — remaining event openers,
-            // general intros, voiceNote closings, and note summaries.
-            // See `prefetchAllOpeners` for the rationale (CPU sharing
-            // on `PiperTTS.prefetch` is the actual delay vector).
-            prefetchAllOpeners(language: language)
-            // Opening intro: orient the user on the day + the rough
-            // shape of what's coming. SPEC §6 calls for a "briefing"
-            // before the per-event loop; this fills that slot with a
-            // single short sentence rather than silence.
-            let intro = composeOpeningIntro(date: targetDate, language: language)
-            if !intro.isEmpty {
-                lastSpoken = intro
-                recordAiPrompt(role: "session_opening", segmentID: nil, text: intro)
-                await speak(intro, language: language.rawValue)
-            }
-            await runStep(at: 0, language: language)
         } catch {
             self.error = "\(error)"
             state = .failed("\(error)")
             await endLiveActivity()
+            return
         }
+        do {
+            try await fetchCalendar(date: targetDate)
+        } catch {
+            await offerCalendarFallback(error, targetDate: targetDate, language: language)
+            return
+        }
+        await runPlan(targetDate: targetDate, language: language)
+    }
+
+    /// Build the plan from the fetched (or deliberately empty) calendar and
+    /// run it from the first step.
+    private func runPlan(targetDate: Date, language: OpenerLanguage) async {
+        plan = await buildPlan(forDate: targetDate)
+        if plan.isEmpty {
+            await finishUploadOrConfirmTodos()
+            return
+        }
+        // Pre-generate every LLM-dependent line for the whole
+        // session up front, two-tier: the *first* opener fires
+        // alone (so the briefing-then-event-0 transition feels
+        // instant), then a trampoline awaits its completion and
+        // fans out everything else — remaining event openers,
+        // general intros, voiceNote closings, and note summaries.
+        // See `prefetchAllOpeners` for the rationale (CPU sharing
+        // on `PiperTTS.prefetch` is the actual delay vector).
+        prefetchAllOpeners(language: language)
+        // Opening intro: orient the user on the day + the rough
+        // shape of what's coming. SPEC §6 calls for a "briefing"
+        // before the per-event loop; this fills that slot with a
+        // single short sentence rather than silence.
+        let intro = composeOpeningIntro(date: targetDate, language: language)
+        if !intro.isEmpty {
+            lastSpoken = intro
+            recordAiPrompt(role: "session_opening", segmentID: nil, text: intro)
+            await speak(intro, language: language.rawValue)
+        }
+        await runStep(at: 0, language: language)
+    }
+
+    /// The start-time calendar fetch failed: park the walkthrough on a
+    /// diagnosis with two explicit choices instead of failing it. Nothing
+    /// starts without the calendar unless the user picks it.
+    private func offerCalendarFallback(
+        _ error: Error,
+        targetDate: Date,
+        language: OpenerLanguage
+    ) async {
+        Log.app.warning("calendar fetch failed at start: \(String(describing: error), privacy: .public)")
+        calendarFallbackContext = (targetDate, language)
+        state = .calendarUnavailable(ConnectionDiagnosis.classify(error, language: language))
+        await endLiveActivity()
+    }
+
+    /// Re-run the calendar fetch after `.calendarUnavailable`; continues the
+    /// normal walkthrough on success, shows the new diagnosis on failure.
+    public func retryCalendar() async {
+        guard case .calendarUnavailable = state,
+              let (targetDate, language) = calendarFallbackContext else { return }
+        state = .briefing
+        syncLiveActivity()
+        do {
+            try await fetchCalendar(date: targetDate)
+        } catch {
+            await offerCalendarFallback(error, targetDate: targetDate, language: language)
+            return
+        }
+        // The user may have closed the walkthrough while the fetch ran.
+        guard case .briefing = state else { return }
+        calendarFallbackContext = nil
+        await runPlan(targetDate: targetDate, language: language)
+    }
+
+    /// Start the walkthrough with no calendar events after
+    /// `.calendarUnavailable`: general sections, free reflection and voice
+    /// notes only. The session is bundled and uploaded as usual.
+    public func startWithoutCalendar() async {
+        guard case .calendarUnavailable = state,
+              let (targetDate, language) = calendarFallbackContext else { return }
+        calendarFallbackContext = nil
+        events = []
+        state = .briefing
+        syncLiveActivity()
+        await runPlan(targetDate: targetDate, language: language)
     }
 
     public func previewDay(_ date: Date? = nil) async {
@@ -1599,6 +1660,7 @@ public final class WalkthroughCoordinator {
         // this point shall be stored" — and the pickup intent should
         // survive alongside them. `finishUpload()` is the only path
         // that strips the marker.
+        calendarFallbackContext = nil
         state = .idle
         isPaused = false
         pausedAtState = nil
@@ -3945,7 +4007,7 @@ public final class WalkthroughCoordinator {
         // briefly on the first card and Live Activity tracks the
         // walkthrough as a whole, so .speaking matches the rest.
         case .noteReview:                                             return .speaking
-        case .idle, .ingesting, .done, .failed:                       return nil
+        case .idle, .calendarUnavailable, .ingesting, .done, .failed: return nil
         }
     }
 
