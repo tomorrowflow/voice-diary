@@ -730,6 +730,15 @@ Manifest-level fields tied to the drive-by section:
 
 Processing (per-segment Whisper re-transcription + entity normalization, then a single session-level Ollama analysis + LightRAG ingest) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres.
 
+Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-analysis` response, §10.6.1) have this shape:
+
+```json
+{ "segment_id": "s01", "status": "failed", "transcript_id": null,
+  "error": "whisper read timed out", "code": "whisper_timeout", "upstream": "whisper" }
+```
+
+`status` is `processed`, `failed` or `pending_analysis`. `error` is the free-form string and is unchanged. `code` and `upstream` are optional machine-readable fields using the failure catalogue in §10.6.1; both are `null` when the segment did not fail, when the error is not an upstream failure, and for sessions written before they existed (the status is stored as JSON, so old rows simply lack the keys). Clients must treat a null `code` as "unknown reason" and fall back to `error` / `status`.
+
 ### 10.6 Retry & offline behaviour
 
 - On upload failure, back off exponentially (1s, 2s, 4s, 8s, 30s, 60s, ... max 10 min).
@@ -775,6 +784,49 @@ another `processed_documents` version per transcript and ingest `diary:{date}` i
 
 A segment that failed before transcription (no transcript row) is out of scope for both — that
 needs the audio re-uploaded, not a narrative retry.
+
+**Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
+Voxtral) is down, slow or answers with an error, the server reports it in one shape. `detail` stays
+a string (`"<code>"` or `"<code>: <message>"`) so older app builds keep working; `code`, `upstream`
+and `retryable` are additional top-level fields:
+
+```json
+{ "detail": "whisper_unavailable", "code": "whisper_unavailable",
+  "upstream": "whisper", "retryable": true }
+```
+
+`retryable` says whether trying again later can succeed without operator action. A `Retry-After`
+header is sent only where a wait is known. Status: `503` upstream down or timed out, `502` upstream
+answered with an error, `429` Graph rate-limited. The same `code` / `upstream` are recorded on
+failed and `pending_analysis` segments (§10.5). Today `POST /api/sessions` (Whisper preflight) and
+the session status use it; the other routers move onto it in follow-up work, so until then they
+keep their existing error bodies.
+
+| Code | Upstream | Status | Retryable |
+|---|---|---|---|
+| `whisper_unavailable` | whisper | 503 | yes |
+| `whisper_timeout` | whisper | 503 | yes |
+| `whisper_engine_error` | whisper | 502 | yes |
+| `ollama_unavailable` | ollama | 503 | yes |
+| `ollama_timeout` | ollama | 503 | yes |
+| `ollama_engine_error` | ollama | 502 | yes |
+| `lightrag_unavailable` | lightrag | 503 | yes |
+| `lightrag_timeout` | lightrag | 503 | yes |
+| `lightrag_engine_error` | lightrag | 502 | yes |
+| `msgraph_not_bootstrapped` | msgraph | 503 | no |
+| `msgraph_rate_limited` | msgraph | 429 | yes |
+| `msgraph_unavailable` | msgraph | 503 | yes |
+| `msgraph_engine_error` | msgraph | 502 | yes |
+| `voxtral_unavailable` | voxtral | 503 | yes |
+| `voxtral_timeout` | voxtral | 503 | yes |
+| `voxtral_engine_error` | voxtral | 502 | yes |
+| `unknown_voice` | voxtral | 400 | no |
+
+At upload, Whisper being unreachable returns `503 whisper_unavailable` and persists nothing (no
+status row, no bundle on disk), so the app keeps the recording and retries. During processing, an
+error is given a `code` when it comes from one of the upstream clients, or when the session-level
+analysis call fails with a raw HTTP error to Ollama (classified as `ollama_unavailable`,
+`ollama_timeout` or `ollama_engine_error`); anything else leaves `code` null.
 
 ### 10.7 Other backend endpoints
 
