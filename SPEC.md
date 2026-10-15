@@ -797,7 +797,7 @@ The iOS app also consumes these read endpoints on `server` over Tailscale:
 
 `voxtral` is an optional upstream: its entry reports the real probe result (`ok`, `down` or `skipped`) but never changes the overall `status`. The Graph probe checks the MSAL token cache, not live Graph.
 
-All endpoints require a simple bearer token entered in Mehr → Server (`ServerSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
+All other endpoints require a simple bearer token entered in Mehr → Server (`ServerSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
 
 ---
 

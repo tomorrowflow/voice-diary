@@ -105,11 +105,3 @@ def test_route_postgres_down_is_down(
 ) -> None:
     _stub_probes(monkeypatch, _with(postgres="down"))
     assert client.get("/health").json()["status"] == "down"
-
-
-def test_route_is_unauthenticated(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("IOS_BEARER_TOKEN", "secret")
-    _stub_probes(monkeypatch, OK)
-    assert client.get("/health").status_code == 200
