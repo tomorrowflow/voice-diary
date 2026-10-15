@@ -3420,6 +3420,390 @@
           }
         }
       }
+    },
+    "Analysis failed" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auswertung fehlgeschlagen"
+          }
+        }
+      }
+    },
+    "Analysis is delayed; your texts are saved." : {
+      "comment" : "Upstream failure impact for Ollama and LightRAG (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auswertung verzögert sich, deine Texte sind gespeichert."
+          }
+        }
+      }
+    },
+    "Analysis is taking too long" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auswertung dauert zu lange"
+          }
+        }
+      }
+    },
+    "Analysis isn’t available" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Auswertung nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Calendar and mail aren’t available" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender und Mail nicht erreichbar"
+          }
+        }
+      }
+    },
+    "Calendar and mail aren’t reachable right now." : {
+      "comment" : "Upstream failure impact for Microsoft Graph (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender und Mail sind gerade nicht erreichbar."
+          }
+        }
+      }
+    },
+    "Calendar and mail aren’t reachable right now. Enrichment skipped." : {
+      "comment" : "Spoken enrichment failure for Microsoft Graph (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender und Mail sind gerade nicht erreichbar. Anreicherung übersprungen."
+          }
+        }
+      }
+    },
+    "Calendar and mail aren’t set up" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender und Mail sind nicht eingerichtet"
+          }
+        }
+      }
+    },
+    "Calendar and mail aren’t set up on the server. Enrichment skipped." : {
+      "comment" : "Spoken enrichment failure when Graph is not bootstrapped (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender und Mail sind auf dem Server nicht eingerichtet. Anreicherung übersprungen."
+          }
+        }
+      }
+    },
+    "Calendar and mail are busy" : {
+      "comment" : "Upstream failure title for a Graph rate limit (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender und Mail sind gerade ausgelastet"
+          }
+        }
+      }
+    },
+    "Calendar and mail are taking too long" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender und Mail antworten zu langsam"
+          }
+        }
+      }
+    },
+    "Calendar and mail failed" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender und Mail fehlgeschlagen"
+          }
+        }
+      }
+    },
+    "Calendar isn’t set up on the server. This has to be fixed on the server." : {
+      "comment" : "Upstream failure impact when Graph is not bootstrapped (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kalender ist auf dem Server nicht eingerichtet. Das muss am Server erledigt werden."
+          }
+        }
+      }
+    },
+    "Choose a different voice in the voice settings." : {
+      "comment" : "Upstream failure hint for an unknown server voice (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wähle in den Stimmen-Einstellungen eine andere Stimme."
+          }
+        }
+      }
+    },
+    "Diary memory failed" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tagebuch-Gedächtnis fehlgeschlagen"
+          }
+        }
+      }
+    },
+    "Diary memory is taking too long" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tagebuch-Gedächtnis antwortet zu langsam"
+          }
+        }
+      }
+    },
+    "Diary memory isn’t available" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Tagebuch-Gedächtnis nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Microsoft is asking for a short pause. Try again in a moment." : {
+      "comment" : "Upstream failure hint for a Graph rate limit (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Microsoft bittet um eine kurze Pause. Versuche es gleich noch einmal."
+          }
+        }
+      }
+    },
+    "Microsoft sign-in has to be completed on the server. This can’t be fixed on the phone." : {
+      "comment" : "Upstream failure hint when Graph is not bootstrapped (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Microsoft-Anmeldung muss am Server abgeschlossen werden. Das lässt sich nicht am Handy beheben."
+          }
+        }
+      }
+    },
+    "Recordings stay on your phone and upload later." : {
+      "comment" : "Upstream failure impact for Whisper (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahmen bleiben auf dem Handy und werden später hochgeladen."
+          }
+        }
+      }
+    },
+    "Server voice failed" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server-Stimme fehlgeschlagen"
+          }
+        }
+      }
+    },
+    "Server voice is taking too long" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server-Stimme antwortet zu langsam"
+          }
+        }
+      }
+    },
+    "Server voice isn’t available" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server-Stimme nicht verfügbar"
+          }
+        }
+      }
+    },
+    "Server voice not found" : {
+      "comment" : "Upstream failure title for an unknown voice (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server-Stimme nicht gefunden"
+          }
+        }
+      }
+    },
+    "Server voices fall back to Piper." : {
+      "comment" : "Upstream failure impact for Voxtral (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Server-Stimmen fallen auf Piper zurück."
+          }
+        }
+      }
+    },
+    "The diary memory isn’t reachable right now. Enrichment skipped." : {
+      "comment" : "Spoken enrichment failure for LightRAG (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das Tagebuch-Gedächtnis ist gerade nicht erreichbar. Anreicherung übersprungen."
+          }
+        }
+      }
+    },
+    "The service answered with an error. Try again in a moment; if it keeps happening, check the server logs." : {
+      "comment" : "Upstream failure hint for an engine error (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Der Dienst hat mit einem Fehler geantwortet. Versuche es gleich noch einmal; wenn es bleibt, schau in die Server-Logs."
+          }
+        }
+      }
+    },
+    "The summary isn’t available right now. Enrichment skipped." : {
+      "comment" : "Spoken enrichment failure for Ollama (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Zusammenfassung ist gerade nicht verfügbar. Anreicherung übersprungen."
+          }
+        }
+      }
+    },
+    "This is usually temporary. Try again in a moment." : {
+      "comment" : "Upstream failure hint for unavailable or timed-out upstreams (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Das ist meist vorübergehend. Versuche es gleich noch einmal."
+          }
+        }
+      }
+    },
+    "Transcription failed" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkription fehlgeschlagen"
+          }
+        }
+      }
+    },
+    "Transcription is taking too long" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkription dauert zu lange"
+          }
+        }
+      }
+    },
+    "Transcription isn’t available" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkription nicht verfügbar"
+          }
+        }
+      }
     }
   },
   "version" : "1.1"
