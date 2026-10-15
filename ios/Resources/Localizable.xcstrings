@@ -3777,6 +3777,16 @@
         }
       }
     },
+    "This session needs the calendar to continue. Your recordings stay saved." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zum Fortsetzen braucht diese Sitzung den Kalender. Deine Aufnahmen bleiben gespeichert."
+          }
+        }
+      }
+    },
     "This is usually temporary. Try again in a moment." : {
       "comment" : "Upstream failure hint for unavailable or timed-out upstreams (FailureCatalog).",
       "extractionState" : "manual",

@@ -109,7 +109,7 @@ public struct ConnectionDiagnosis: Equatable, Sendable {
             return ConnectionDiagnosis(
                 kind: .upstreamFailure,
                 title: copy.title,
-                hint: "\(copy.hint) \(copy.impact)",
+                hint: copy.summary,
                 detail: "HTTP \(status): \(detail.prefix(160))",
                 systemImage: "server.rack",
                 isRetryable: failure.retryable != false
