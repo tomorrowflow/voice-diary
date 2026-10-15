@@ -132,9 +132,17 @@ Expected `/health` shape on a healthy host:
 ```json
 {"status":"ok","upstream":{
   "postgres":"ok","qdrant":"ok","whisper":"ok",
-  "lightrag":"ok","ollama":"ok","msgraph":"ok"
+  "lightrag":"ok","ollama":"ok","msgraph":"ok","voxtral":"skipped"
 }}
 ```
+
+The overall `status` follows fixed rules (SPEC §10.7):
+
+- `down`: `postgres` or `whisper` is `down`.
+- `degraded`: any other non-optional upstream (`qdrant`, `lightrag`, `ollama`, `msgraph`) is not `ok`, including `msgraph: not_bootstrapped`. `skipped` and `fixture` entries are ignored.
+- `ok`: otherwise.
+
+`voxtral` is optional: `upstream.voxtral` shows its real state (`ok`, `down` or `skipped`), but it never changes `status`. The `msgraph` probe checks the MSAL token cache, not live Graph.
 
 Every other route — the iOS routers *and* the HTMX review/admin/data UI
 (`/`, `/review/*`, `/admin`, `/settings`, `/ingest`, `/harvest`, `/api/*`) —
@@ -221,7 +229,8 @@ was restored intact.
 | `/today/calendar` → 502 `rate_limited: backoff_exhausted` | Graph throttling | wait, retry; if persistent reduce poll rate on iOS |
 | `/api/sessions` → 503 `whisper_unavailable` | Whisper sidecar stopped | `docker compose ps whisper` and restart |
 | Segments come back with `status: "pending_analysis"` | Ollama or LightRAG was down during ingest | bundle persisted on disk; re-process via `/process/<transcript_id>` once upstream returns |
-| `/health` returns `"status":"degraded"` | one upstream down | check `upstream` map for the offending service |
+| `/health` returns `"status":"degraded"` | a non-optional upstream (Qdrant, LightRAG, Ollama, Graph) is not `ok` | check `upstream` map for the offending service |
+| `/health` returns `"status":"down"` | Postgres or Whisper is down | `docker compose ps` and restart the service |
 | HTMX review UI returns `401 missing_bearer_token` | browser isn't sending the bearer | add the `Authorization` header for the tailnet host (see First-time setup, step 7) |
 | HTMX review UI's calendar widget shows nothing | tenant returned no events for that date, or MSAL bootstrap stale | confirm `/today/calendar` works directly |
 
