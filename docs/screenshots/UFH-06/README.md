@@ -24,10 +24,19 @@ in both languages (a known limit of uncoded diagnoses, out of scope for this tic
 
 - **Coded cards:** retryable (`msgraph_unavailable`) and not bootstrapped
   (`msgraph_not_bootstrapped`, where **Start without calendar** is the dark button), including
-  the English hint wrap. They need a server answering 503 with the failure fields. The server
-  settings could not be saved in this unsigned simulator build (after **Save** the app still
-  reported "not set up"; most likely the Keychain write is refused without signing), and this node
-  allows neither a background process nor `python3` for a stub server.
+  the English hint wrap. They need a server answering 503 with the failure fields. Two things
+  stand in the way:
+  1. *Keychain (understood, workaround found).* In the unsigned simulator build
+     (`CODE_SIGNING_ALLOWED=NO`) `SecItemAdd` fails with `-34018` (missing entitlement), so **Save**
+     on the server settings silently stores nothing. An ad-hoc signed build writes it
+     (`SecItemAdd` returns 0): add `CODE_SIGN_IDENTITY=- CODE_SIGNING_ALLOWED=YES
+     CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM=` to the `xcodebuild` command.
+  2. *Stub server (open).* Nothing on this node can keep a server running: Bash background
+     processes are denied, and `python3`, `node` and `ruby` scripts need an approval nobody can give
+     there. A stub only has to answer `GET /today/calendar` with 503 and the failure fields
+     (`{"detail":"…","code":"msgraph_unavailable","upstream":"msgraph","retryable":true}` and the
+     `msgraph_not_bootstrapped` / `retryable: false` variant), `/health` with 200, and a slow
+     (about 15 s) variant for the spinner.
 - **Retry spinner:** it needs a fetch that stays pending, which needs the same server setup.
 - **Resume card with "Erneut versuchen" only:** it needs an unfinished session that was started
   *with* the calendar, so a working server first.
