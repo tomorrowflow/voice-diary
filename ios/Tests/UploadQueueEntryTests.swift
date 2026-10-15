@@ -98,16 +98,42 @@ struct UploadQueueEntryTests {
 
     @Test("a queue file written before last_failure_code decodes with a nil code")
     func oldQueueFileDecodes() throws {
-        // Encode a current entry, then strip the new key to mimic an old file.
-        let data = try JSONEncoder().encode([entry()])
-        var json = try #require(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
-        json[0].removeValue(forKey: "last_failure_code")
-        let old = try JSONSerialization.data(withJSONObject: json)
+        // The oldest entry shape: only the five original keys, neither
+        // `permanentlyFailed` nor `last_failure_code`.
+        let manifest = try JSONSerialization.jsonObject(with: JSONEncoder().encode(entry().manifest))
+        let oldEntry: [String: Any] = [
+            "id": "2026-04-27T19:30:00+02:00",
+            "manifest": manifest,
+            "audio_file_paths": ["segments/s01.m4a": "~AppSupport/sessions/x/segments/s01.m4a"],
+            "attempts": 3,
+            "next_attempt_at": 767_000_000.0,
+        ]
+        let old = try JSONSerialization.data(withJSONObject: [oldEntry])
 
         let decoded = try JSONDecoder().decode([SessionUploader.QueueEntry].self, from: old)
         #expect(decoded.count == 1)
         #expect(decoded[0].last_failure_code == nil)
         #expect(decoded[0].permanentlyFailed == false)
+        #expect(decoded[0].attempts == 3)
         #expect(decoded[0].audio_file_paths.count == 1)
+    }
+
+    @Test("nextDue skips paused and permanently failed entries until they are due")
+    func nextDueSkipsPaused() {
+        var paused = entry()
+        paused.id = "paused"
+        var permanent = entry()
+        permanent.id = "permanent"
+        permanent.permanentlyFailed = true
+        var future = entry()
+        future.id = "future"
+        future.next_attempt_at = now.addingTimeInterval(60)
+        let ready = { var e = entry(); e.id = "ready"; return e }()
+        let queue = [paused, permanent, future, ready]
+
+        #expect(SessionUploader.nextDue(in: queue, paused: ["paused"], now: now)?.id == "ready")
+        // Lifting the pause (what `kick()` does) makes the entry due again.
+        #expect(SessionUploader.nextDue(in: queue, paused: [], now: now)?.id == "paused")
+        #expect(SessionUploader.nextDue(in: [permanent, future], paused: [], now: now) == nil)
     }
 }

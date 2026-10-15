@@ -743,13 +743,14 @@ Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-ana
 
 - On upload failure, back off exponentially (1s, 2s, 4s, 8s, 30s, 60s, ... max 10 min). When the
   error carries a `Retry-After` (§10.6.1 failure contract) longer than the next backoff step, wait
-  that long instead; a shorter one is ignored.
+  that long instead; a shorter one is ignored. The server's value is not capped.
 - A failure with `retryable: false` does not retry on its own and is not marked permanent: the
   entry waits until the app next comes to the foreground or the server settings are saved, then is
   tried again. It stays in the queue meanwhile.
 - The status rules are unchanged: `409` counts as already ingested, `400` / `404` / `422` are
   permanent, and everything else (including `401`, `403`, `408`, `429`, `5xx`, network errors)
-  retries. Permanent entries are kept for diagnostics and skipped.
+  retries, unless it says `retryable: false` as above. Permanent entries are kept for diagnostics
+  and skipped.
 - Each queue entry records the `code` of its last failed attempt (`last_failure_code`, optional;
   nil without a code and for queue files written before it existed) and
   `SessionUploader.pending()` exposes it, so the UI can say why a session is still waiting. It is
