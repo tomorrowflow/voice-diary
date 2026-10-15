@@ -57,7 +57,7 @@ public final class Reachability: ObservableObject {
         }()
         do {
             _ = try await ServerClient.shared.todayCalendar(date: dateString)
-        } catch ServerClientError.http(let code, _) where code == 401 {
+        } catch ServerClientError.http(let code, _, _) where code == 401 {
             status = .authInvalid
             return
         } catch ServerClientError.notConfigured {

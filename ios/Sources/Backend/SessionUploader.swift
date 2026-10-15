@@ -310,7 +310,7 @@ enum UploadOutcome: Equatable {
     /// rate-limiting / timeout (408, 429) are NOT permanent — they may
     /// succeed once the server is accessible or credentials are refreshed.
     static func classify(_ error: any Error) -> UploadOutcome {
-        guard case ServerClientError.http(let status, _) = error else {
+        guard case ServerClientError.http(let status, _, _) = error else {
             return .retry
         }
         switch status {

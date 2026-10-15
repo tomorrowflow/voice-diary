@@ -6,7 +6,9 @@ import UniformTypeIdentifiers
 
 public enum ServerClientError: Error, CustomStringConvertible, Sendable {
     case notConfigured
-    case http(status: Int, detail: String)
+    /// `failure` carries the additive contract fields (`code`, `upstream`,
+    /// `retryable`, `Retry-After`); all nil when the server predates them.
+    case http(status: Int, detail: String, failure: UpstreamFailure = UpstreamFailure())
     case decodingFailed(String)
     case missingFile(URL)
 
@@ -14,13 +16,35 @@ public enum ServerClientError: Error, CustomStringConvertible, Sendable {
         switch self {
         case .notConfigured:
             return "server URL or bearer token not set"
-        case .http(let status, let detail):
+        case .http(let status, let detail, _):
             return "HTTP \(status): \(detail.prefix(200))"
         case .decodingFailed(let msg):
             return "decode error: \(msg)"
         case .missingFile(let url):
             return "missing file: \(url.path)"
         }
+    }
+}
+
+extension ServerClientError {
+    /// Build the `.http` error for a non-2xx response. FastAPI's default
+    /// error shape is `{"detail": "..."}`; pull that out when present so
+    /// logs and UI show the precise code instead of a JSON blob. The
+    /// contract fields (`code`, `upstream`, `retryable`, `Retry-After`)
+    /// ride along in `failure`.
+    static func http(from response: HTTPURLResponse, body: Data) -> ServerClientError {
+        let detail: String
+        if let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
+           let d = obj["detail"] as? String {
+            detail = d
+        } else {
+            detail = String(data: body, encoding: .utf8) ?? "<binary>"
+        }
+        let failure = UpstreamFailure.parse(
+            body: body,
+            retryAfterHeader: response.value(forHTTPHeaderField: "Retry-After")
+        )
+        return .http(status: response.statusCode, detail: detail, failure: failure)
     }
 }
 
@@ -270,17 +294,7 @@ public actor ServerClient {
     private static func assertOK(response: URLResponse, body: Data) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
-            // FastAPI's default error shape is `{"detail": "..."}`; pull
-            // that out when present so logs and UI show the precise code
-            // instead of a JSON blob.
-            let detail: String
-            if let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any],
-               let d = obj["detail"] as? String {
-                detail = d
-            } else {
-                detail = String(data: body, encoding: .utf8) ?? "<binary>"
-            }
-            throw ServerClientError.http(status: http.statusCode, detail: detail)
+            throw ServerClientError.http(from: http, body: body)
         }
     }
 
