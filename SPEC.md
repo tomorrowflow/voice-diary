@@ -803,7 +803,9 @@ session whose `GET /api/sessions/{session_id}/status` has a `pending_analysis` s
 this way, and a session whose status is `404` (not uploaded yet) is skipped. `409 session_busy`
 and `409 session_not_retryable` are expected outcomes and are skipped without any error in the UI;
 any other failure is only logged, and the session stays `pending_analysis` for the next
-foreground. There is no retry button: the Verlauf "Processing" pill reflects progress.
+foreground. A pass still running when the app goes to the background stops before its next
+session. The retry request waits up to 10 minutes, because the server runs the analysis inside it.
+There is no retry button: the Verlauf "Processing" pill reflects progress.
 
 All three paths share one in-process, per-session in-flight guard (single-process app), released
 when the run ends whether it succeeded or failed. Without it, overlapping runs would each save

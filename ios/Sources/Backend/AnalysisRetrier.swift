@@ -34,12 +34,14 @@ public actor AnalysisRetrier {
     }
 
     private let deps: Dependencies
-    private var isRunning = false
     /// True until a pass starts; set again when the app goes to the
     /// background. `scenePhase` also reports `.active` after a mere
     /// `.inactive` flip (notification shade, system sheets), which is not
     /// a new foreground.
     private var armed = true
+    /// Bumped on every background. A pass belongs to the foreground it
+    /// started in and stops once the generation moves on.
+    private var generation = 0
 
     init(deps: Dependencies = .live) {
         self.deps = deps
@@ -58,16 +60,18 @@ public actor AnalysisRetrier {
 
     func markBackgrounded() {
         armed = true
+        generation += 1
     }
 
     /// One pass per foreground, with at most one retry attempt per
-    /// session. A trigger that arrives while a pass is running, or before
-    /// the app has been backgrounded again, is dropped.
+    /// session. A trigger before the app has been backgrounded again is
+    /// dropped, and a pass still running when the app backgrounds stops
+    /// before its next session (its in-flight request finishes), so it
+    /// cannot overlap the next foreground's pass.
     func runOnForeground(now: Date = Date()) async {
-        guard armed, !isRunning else { return }
+        guard armed else { return }
         armed = false
-        isRunning = true
-        defer { isRunning = false }
+        let foreground = generation
 
         let upstream: [String: String]
         do {
@@ -81,6 +85,7 @@ public actor AnalysisRetrier {
 
         var attempted = Set<String>()
         for sessionID in await deps.recentSessionIDs(now) where attempted.insert(sessionID).inserted {
+            guard foreground == generation else { return }
             await attempt(sessionID, upstream: upstream)
         }
     }
