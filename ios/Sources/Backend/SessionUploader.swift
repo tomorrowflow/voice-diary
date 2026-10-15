@@ -121,6 +121,7 @@ public actor SessionUploader {
             permanentlyFailed: false
         )
         queue.removeAll { $0.id == entry.id }
+        pausedIDs.remove(entry.id)
         queue.append(entry)
         persist()
         Log.upload.notice(
@@ -149,6 +150,7 @@ public actor SessionUploader {
     public func clear() async {
         await ensureLoaded()
         queue.removeAll()
+        pausedIDs.removeAll()
         persist()
         Log.upload.info("queue cleared")
     }
@@ -166,6 +168,7 @@ public actor SessionUploader {
         }
         let removed = before - queue.count
         if removed > 0 {
+            pausedIDs.formIntersection(queue.map(\.id))
             persist()
             Log.upload.warning("purged \(removed) orphaned queue entries")
         }
@@ -250,8 +253,12 @@ public actor SessionUploader {
                         "upload.permanent_failure sid=\(entry.id, privacy: .public) err=\(String(describing: error), privacy: .public)"
                     )
                 case .paused:
-                    recordFailure(entry: entry, error: error, outcome: outcome)
-                    pausedIDs.insert(entry.id)
+                    // A foreground that lands while this upload is in flight
+                    // has already cleared the set, so this entry waits for
+                    // the next one. A cleared entry is not paused at all.
+                    if recordFailure(entry: entry, error: error, outcome: outcome) != nil {
+                        pausedIDs.insert(entry.id)
+                    }
                     Log.upload.warning(
                         "upload.paused sid=\(entry.id, privacy: .public) — not retryable; waiting for foreground or settings change err=\(String(describing: error), privacy: .public)"
                     )
@@ -310,9 +317,13 @@ public actor SessionUploader {
     // --- queue mechanics ----------------------------------------------
 
     private func nextDue() -> QueueEntry? {
-        let now = Date()
-        return queue.first {
-            !$0.permanentlyFailed && !pausedIDs.contains($0.id) && $0.next_attempt_at <= now
+        Self.nextDue(in: queue, paused: pausedIDs, now: Date())
+    }
+
+    /// First entry that is due and neither permanently failed nor paused.
+    static func nextDue(in queue: [QueueEntry], paused: Set<String>, now: Date) -> QueueEntry? {
+        queue.first {
+            !$0.permanentlyFailed && !paused.contains($0.id) && $0.next_attempt_at <= now
         }
     }
 
