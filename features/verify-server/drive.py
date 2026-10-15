@@ -3,6 +3,8 @@ verify stack's network and talks to the real webapp at $BASE_URL.
 
     python /drive.py doctor
     python /drive.py health | calendar-today | sessions-dates
+    python /drive.py session-upload-whisper-down <session_id>
+    python /drive.py session-status <session_id> legacy|coded
     python /drive.py static-entity-create <name>
     python /drive.py static-entity-list <name>
     python /drive.py static-entity-delete <id>
@@ -23,7 +25,11 @@ BASE = os.environ.get("BASE_URL", "http://webapp:8000")
 TOKEN = os.environ["IOS_BEARER_TOKEN"]
 
 
-def call(method, path, auth, body=None):
+LAST_RESPONSE_HEADERS = {}
+
+
+def call(method, path, auth, body=None, multipart=None):
+    """`multipart` is (content_type, bytes) and replaces the JSON `body`."""
     headers = {}
     data = None
     if auth:
@@ -31,19 +37,28 @@ def call(method, path, auth, body=None):
     if body is not None:
         data = json.dumps(body).encode()
         headers["Content-Type"] = "application/json"
+    if multipart is not None:
+        headers["Content-Type"], data = multipart
     req = urllib.request.Request(BASE + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             status, raw = resp.status, resp.read()
+            LAST_RESPONSE_HEADERS.clear()
+            LAST_RESPONSE_HEADERS.update({k.lower(): v for k, v in resp.headers.items()})
     except urllib.error.HTTPError as exc:
         status, raw = exc.code, exc.read()
+        LAST_RESPONSE_HEADERS.clear()
+        LAST_RESPONSE_HEADERS.update({k.lower(): v for k, v in exc.headers.items()})
     try:
         parsed = json.loads(raw)
     except ValueError:
         parsed = raw.decode(errors="replace")
     print(json.dumps({
-        "request": {"method": method, "path": path, "bearer": "sent" if auth else "none", "body": body},
-        "response": {"status": status, "body": parsed},
+        "request": {
+            "method": method, "path": path, "bearer": "sent" if auth else "none",
+            "body": body if multipart is None else "<multipart session bundle>",
+        },
+        "response": {"status": status, "body": parsed, "retry_after": LAST_RESPONSE_HEADERS.get("retry-after")},
     }, indent=2, sort_keys=True), flush=True)
     return status, parsed
 
@@ -102,6 +117,72 @@ def sessions_dates():
     check("bad date_from -> 400 invalid_date_from", status == 400 and body.get("detail") == "invalid_date_from")
 
 
+def _session_bundle(session_id):
+    """A minimal one-segment iOS session bundle as multipart/form-data."""
+    manifest = {
+        "session_id": session_id,
+        "date": "2026-07-01",
+        "device": "iPhone17,2",
+        "app_version": "1.0",
+        "audio_codec": {"codec": "aac-lc", "sample_rate": 16000, "channels": 1, "bitrate": 64000},
+        "segments": [{
+            "segment_id": "s01",
+            "segment_type": "drive_by",
+            "audio_file": "segments/s01.m4a",
+            "captured_at": "2026-07-01T10:00:00Z",
+        }],
+    }
+    boundary = "----verify-server-ufh01"
+    parts = [
+        ("manifest", "manifest.json", "application/json", json.dumps(manifest).encode()),
+        ("segments/s01.m4a", "s01.m4a", "audio/mp4", b"verify-server-not-real-audio"),
+    ]
+    body = b""
+    for name, filename, ctype, content in parts:
+        body += (
+            f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"; '
+            f'filename="{filename}"\r\nContent-Type: {ctype}\r\n\r\n'
+        ).encode() + content + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    return f"multipart/form-data; boundary={boundary}", body
+
+
+def session_upload_whisper_down(session_id):
+    """Whisper is not in this stack, so the real preflight fails: expect the
+    failure contract and (checked separately with psql) nothing persisted."""
+    status, body = call("POST", "/api/sessions", auth=False, multipart=_session_bundle(session_id))
+    check("POST /api/sessions without bearer -> 401", status == 401)
+    status, body = call("POST", "/api/sessions", auth=True, multipart=_session_bundle(session_id))
+    check("with bearer -> 503", status == 503)
+    check("body is the failure contract (string detail + code/upstream/retryable)",
+          body == {"detail": "whisper_unavailable", "code": "whisper_unavailable",
+                   "upstream": "whisper", "retryable": True})
+    check("no Retry-After header (no wait is known)", "retry-after" not in LAST_RESPONSE_HEADERS)
+    status, body = call("GET", f"/api/sessions/{session_id}/status", auth=True)
+    check("status of the rejected upload -> 404 session_not_found (nothing persisted)",
+          status == 404 and body.get("detail") == "session_not_found")
+
+
+def session_status(session_id, expect):
+    """Read back a seeded row. expect = legacy (segments without code/upstream
+    keys) or coded (segments carrying them)."""
+    require_auth_first(f"/api/sessions/{session_id}/status")
+    status, body = call("GET", f"/api/sessions/{session_id}/status", auth=True)
+    check("with bearer -> 200", status == 200)
+    segments = body.get("segments", []) if isinstance(body, dict) else []
+    check("segments present", len(segments) > 0)
+    if expect == "legacy":
+        check("every segment reads back with null code and upstream, error unchanged",
+              all(s.get("code") is None and s.get("upstream") is None and s.get("error") for s in segments))
+    else:
+        check("failed segment carries code whisper_timeout / upstream whisper next to its error",
+              any(s.get("code") == "whisper_timeout" and s.get("upstream") == "whisper" and s.get("error")
+                  for s in segments))
+        check("pending_analysis segment carries code ollama_unavailable / upstream ollama",
+              any(s.get("code") == "ollama_unavailable" and s.get("upstream") == "ollama"
+                  for s in segments))
+
+
 def static_entity_create(name):
     payload = {"name": name, "entity_type": "Category", "description": "KA-8 verify-server probe"}
     status, body = call("POST", "/api/admin/static-entities", auth=False, body=payload)
@@ -127,6 +208,8 @@ COMMANDS = {
     "health": (health, 0),
     "calendar-today": (calendar_today, 0),
     "sessions-dates": (sessions_dates, 0),
+    "session-upload-whisper-down": (session_upload_whisper_down, 1),
+    "session-status": (session_status, 2),
     "static-entity-create": (static_entity_create, 1),
     "static-entity-list": (static_entity_list, 1),
     "static-entity-delete": (static_entity_delete, 1),
