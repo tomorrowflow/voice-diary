@@ -192,6 +192,10 @@ class SegmentResult(BaseModel):
     status: Literal["processed", "failed", "pending_analysis"]
     transcript_id: int | None = None
     error: str | None = None
+    # Machine-readable failure (SPEC §10.5); null on rows written before the
+    # contract and for errors that are not an upstream failure.
+    code: str | None = None
+    upstream: str | None = None
 
 
 class SessionAccepted(BaseModel):
