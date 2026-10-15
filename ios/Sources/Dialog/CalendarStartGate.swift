@@ -47,9 +47,9 @@ public final class CalendarStartGate {
     public init() {}
 
     public var isPreparing: Bool { preparing != nil }
-    /// True while a retry for the *current* start is in flight. A retry
+    /// True while a retry is in flight. `invalidate()` clears it, so a retry
     /// left over from a cancelled start does not count.
-    public var isRetrying: Bool { retrying != nil && retrying == current }
+    public var isRetrying: Bool { retrying != nil }
 
     /// Begin a new start; any fetch still in flight for an older one is
     /// stale from now on.

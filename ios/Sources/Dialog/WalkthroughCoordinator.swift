@@ -419,7 +419,10 @@ public final class WalkthroughCoordinator {
         let result: Result<[ServerCalendarEvent], Error>
         do { result = .success(try await fetchCalendar(date: start.targetDate)) }
         catch { result = .failure(error) }
-        guard calendarGate.isCurrent(start.attempt), case .briefing = state else { return nil }
+        guard calendarGate.isCurrent(start.attempt), case .briefing = state else {
+            calendarGate.finishPreparing(start.attempt)
+            return nil
+        }
         switch result {
         case .success(let fetched):
             return fetched
@@ -1675,6 +1678,10 @@ public final class WalkthroughCoordinator {
         // existing advance() / skip() / finishCurrentSection() paths already use
         // this signal — cancel() just wasn't joining the protocol.
         interruptInFlight = true
+        // Same for a calendar fetch still in flight for a start: it must
+        // be stale before the first teardown await, or it could revive the
+        // walkthrough while the engine is shutting down.
+        calendarGate.invalidate()
         // Halt the lull detector so a buffered threshold callback can't
         // fire `handleLull` → `speakFollowUp` after we've torn down.
         // (The detector also auto-pauses when the engine stops feeding
@@ -1723,7 +1730,6 @@ public final class WalkthroughCoordinator {
         // this point shall be stored" — and the pickup intent should
         // survive alongside them. `finishUpload()` is the only path
         // that strips the marker.
-        calendarGate.invalidate()
         state = .idle
         isPaused = false
         pausedAtState = nil

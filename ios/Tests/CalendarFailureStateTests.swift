@@ -197,6 +197,21 @@ struct CalendarStartGateTests {
         #expect(gate.takeForStartWithout() == nil)
     }
 
+    @Test("a start that could not be marked calendar-free can be parked again and taken again")
+    func reparkAfterFailedMarker() {
+        let gate = CalendarStartGate()
+        let waiting = start(gate)
+        gate.park(waiting)
+
+        let taken = gate.takeForStartWithout()
+        #expect(taken == waiting)
+        gate.park(waiting)                   // the marker write failed: stay on the card
+        #expect(gate.waiting == waiting)
+        #expect(gate.canStartWithout)
+        #expect(!gate.isRetrying)
+        #expect(gate.takeForStartWithout() == waiting)
+    }
+
     @Test("resuming while Graph is down offers retry only, and a failed retry keeps waiting")
     func resumeWhileGraphIsDown() async {
         let gate = CalendarStartGate()
