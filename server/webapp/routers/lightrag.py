@@ -14,19 +14,12 @@ import logging
 from datetime import date, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from enrichment import (
-    EnrichmentSummariserUnavailable,
-    summarise_for_speech,
-)
-from lightrag_client import (
-    LightRAGClient,
-    LightRAGEngineError,
-    LightRAGTimeoutError,
-    LightRAGUnavailableError,
-)
+import upstream_failure
+from enrichment import summarise_for_speech
+from lightrag_client import LightRAGClient
 from routers.auth import require_bearer
 
 logger = logging.getLogger(__name__)
@@ -71,18 +64,8 @@ class OpenTodosResponse(BaseModel):
 
 
 async def _query_lightrag(query: str, *, mode: str, top_k: int) -> str:
-    try:
+    with upstream_failure.raise_as_failure():
         return await _lightrag_client.query(query, mode=mode, top_k=top_k, timeout_seconds=120.0)
-    except (LightRAGUnavailableError, LightRAGTimeoutError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"lightrag_unavailable: {exc}",
-        ) from exc
-    except LightRAGEngineError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"lightrag_status_{exc.status_code}" if exc.status_code else "lightrag_bad_response",
-        ) from exc
 
 
 # --- routes ---------------------------------------------------------------
@@ -95,17 +78,12 @@ async def lightrag_query(body: LightRAGQueryBody) -> LightRAGSummaryResponse:
     )
     if not raw_response:
         raw_response = "(LightRAG hat keine Treffer geliefert.)"
-    try:
+    with upstream_failure.raise_as_failure():
         summary = await summarise_for_speech(
             query=body.query,
             sources_text=raw_response,
             response_language=body.response_language,
         )
-    except EnrichmentSummariserUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"ollama_unavailable: {exc}",
-        ) from exc
     return LightRAGSummaryResponse(
         summary=summary,
         response_language=body.response_language,
@@ -137,7 +115,7 @@ async def yesterday_open_todos(
     if not raw_response.strip():
         raw_response = "(Keine offenen Punkte gefunden.)"
 
-    try:
+    with upstream_failure.raise_as_failure():
         summary = await summarise_for_speech(
             query=(
                 "Welche offenen Punkte stehen aus der letzten Woche?"
@@ -147,11 +125,6 @@ async def yesterday_open_todos(
             sources_text=raw_response,
             response_language=response_language,
         )
-    except EnrichmentSummariserUnavailable as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"ollama_unavailable: {exc}",
-        ) from exc
 
     return OpenTodosResponse(
         summary=summary,

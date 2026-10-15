@@ -798,9 +798,8 @@ and `retryable` are additional top-level fields:
 `retryable` says whether trying again later can succeed without operator action. A `Retry-After`
 header is sent only where a wait is known. Status: `503` upstream down or timed out, `502` upstream
 answered with an error, `429` Graph rate-limited. The same `code` / `upstream` are recorded on
-failed and `pending_analysis` segments (§10.5). Today `POST /api/sessions` (Whisper preflight) and
-the session status use it; the other routers move onto it in follow-up work, so until then they
-keep their existing error bodies.
+failed and `pending_analysis` segments (§10.5). Every upstream-facing route uses it: the session
+routes, the read endpoints in §10.7 and `POST /api/tts/synthesize`.
 
 | Code | Upstream | Status | Retryable |
 |---|---|---|---|
@@ -848,6 +847,13 @@ The iOS app also consumes these read endpoints on `server` over Tailscale:
 - `ok`: otherwise.
 
 `voxtral` is an optional upstream: its entry reports the real probe result (`ok`, `down` or `skipped`) but never changes the overall `status`. The Graph probe checks the MSAL token cache, not live Graph.
+
+**Errors on these endpoints.** The routes above, plus `POST /api/tts/synthesize`, report upstream failures in the §10.6.1 shape (`detail` string, `code`, `upstream`, `retryable`) with the §10.6.1 status mapping:
+
+- `GET /today/calendar`, `GET /calendar/event/{id}`, `GET /email/search`: Graph failures are `msgraph_rate_limited` (429, with `Retry-After` in whole seconds when Graph sent one; the server has already retried twice), `msgraph_unavailable` (503: network error, timeout, or the Entra token endpoint unreachable), `msgraph_engine_error` (502: Graph 4xx/5xx, an unreadable answer, a transport protocol error, or another token failure) and `msgraph_not_bootstrapped` (503, `retryable: false`: no signed-in account, or the refresh token was revoked). `/email/search` also reports the summariser's `ollama_*` codes.
+- `POST /lightrag/query`, `GET /yesterday/open-todos`: `lightrag_unavailable`, `lightrag_timeout` or `lightrag_engine_error` when the query fails, then `ollama_unavailable`, `ollama_timeout` or `ollama_engine_error` when the speech summariser fails. A LightRAG timeout is no longer reported as unavailable, and the old `lightrag_status_N` / `lightrag_bad_response` details are now `lightrag_engine_error`.
+- `POST /api/tts/synthesize`: `voxtral_unavailable`, `voxtral_timeout` (now 503, was 504) or `voxtral_engine_error`; an unknown voice is `unknown_voice`, 400, `retryable: false`. The body is the shared shape; the earlier `{"error", "detail"}` object under `detail` is gone, so read `code` (or the `detail` string prefix).
+- Request validation errors (for example `invalid_date`, 400) are not upstream failures and keep their plain `detail`.
 
 All other endpoints require a simple bearer token entered in Mehr → Server (`ServerSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
 
