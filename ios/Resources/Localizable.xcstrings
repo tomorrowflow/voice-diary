@@ -2692,6 +2692,16 @@
         }
       }
     },
+    "Start without calendar" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohne Kalender starten"
+          }
+        }
+      }
+    },
     "Status unknown" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3351,6 +3361,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Welche Termine zählen?"
+          }
+        }
+      }
+    },
+    "Without the calendar you'll walk through your general sections and voice notes only." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohne Kalender gehst du nur deine allgemeinen Abschnitte und Notizen durch."
           }
         }
       }
