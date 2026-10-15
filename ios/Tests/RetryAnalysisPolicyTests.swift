@@ -236,4 +236,3 @@ struct AnalysisRetrierTests {
         #expect(await calls.retried == ["a", "b", "c"])
     }
 }
-
