@@ -183,9 +183,9 @@ public struct WalkthroughView: View {
                                 Label("Next", systemImage: "arrow.right.circle.fill")
                             }
                             .buttonStyle(.dsPrimary(size: .lg, fullWidth: true))
-                            .disabled(coordinator.isPaused)
+                            .disabled(coordinator.isPaused || coordinator.isFetchingCalendar)
 
-                            if coordinator.state.isPausable {
+                            if coordinator.state.isPausable && !coordinator.isFetchingCalendar {
                                 Button {
                                     haptics.tap()
                                     Task {
@@ -1083,16 +1083,26 @@ private struct CalendarUnavailableCard: View {
     var body: some View {
         DiagnosisCard {
             DiagnosisSummary(diagnosis: diagnosis)
-            Text("Without the calendar you'll walk through your general sections and voice notes only.")
-                .font(Theme.font.caption)
-                .foregroundStyle(Theme.color.text.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            if diagnosis.isRetryable {
-                retryButton.buttonStyle(.dsPrimary(fullWidth: true))
-                startWithoutButton.buttonStyle(.dsSecondary(fullWidth: true))
+            if coordinator.canStartWithoutCalendar {
+                Text("Without the calendar you'll walk through your general sections and voice notes only.")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if diagnosis.isRetryable {
+                    retryButton.buttonStyle(.dsPrimary(fullWidth: true))
+                    startWithoutButton.buttonStyle(.dsSecondary(fullWidth: true))
+                } else {
+                    startWithoutButton.buttonStyle(.dsPrimary(fullWidth: true))
+                    retryButton.buttonStyle(.dsSecondary(fullWidth: true))
+                }
             } else {
-                startWithoutButton.buttonStyle(.dsPrimary(fullWidth: true))
-                retryButton.buttonStyle(.dsSecondary(fullWidth: true))
+                // Resuming: the recorded event audio can only be continued
+                // with the calendar, so there is nothing else to choose.
+                Text("This session needs the calendar to continue. Your recordings stay saved.")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                retryButton.buttonStyle(.dsPrimary(fullWidth: true))
             }
         }
     }
