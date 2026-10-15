@@ -159,9 +159,16 @@ public final class WalkthroughCoordinator {
     private let answerLullDetector = LullDetector()
     private static let todoAnswerMaxSeconds: TimeInterval = 20.0
     private var interruptInFlight: Bool = false
-    /// Day and language of the start that is waiting on the user in
-    /// `.calendarUnavailable`; nil in every other state.
-    private var calendarFallbackContext: (targetDate: Date, language: OpenerLanguage)?
+    /// The start that is waiting on the user in `.calendarUnavailable`; nil
+    /// in every other state. `attempt` tells a stale retry from the current one.
+    private struct CalendarFallback {
+        let attempt: UUID
+        let targetDate: Date
+        let language: OpenerLanguage
+    }
+    private var calendarFallback: CalendarFallback?
+    /// True while `retryCalendar` has its fetch in flight (drives the spinner).
+    public private(set) var isRetryingCalendar = false
     /// Re-entrancy guard for `advance` / `skip` / `finishCurrentSection`. Without
     /// it, two rapid Weiter taps both pattern-match the same listening
     /// state, both await `stopSegmentCapture()` (which doesn't mutate
@@ -398,6 +405,8 @@ public final class WalkthroughCoordinator {
         do {
             try await fetchCalendar(date: targetDate)
         } catch {
+            // The user may have closed the walkthrough while the fetch ran.
+            guard case .briefing = state else { return }
             await offerCalendarFallback(error, targetDate: targetDate, language: language)
             return
         }
@@ -440,44 +449,57 @@ public final class WalkthroughCoordinator {
     private func offerCalendarFallback(
         _ error: Error,
         targetDate: Date,
-        language: OpenerLanguage
+        language: OpenerLanguage,
+        attempt: UUID = UUID()
     ) async {
         Log.app.warning("calendar fetch failed at start: \(String(describing: error), privacy: .public)")
-        calendarFallbackContext = (targetDate, language)
+        calendarFallback = CalendarFallback(attempt: attempt, targetDate: targetDate, language: language)
         state = .calendarUnavailable(ConnectionDiagnosis.classify(error, language: language))
         await endLiveActivity()
     }
 
     /// Re-run the calendar fetch after `.calendarUnavailable`; continues the
     /// normal walkthrough on success, shows the new diagnosis on failure.
+    /// The state stays `.calendarUnavailable` while the fetch runs, so no
+    /// walkthrough control (advance, pause) is live until it succeeds.
     public func retryCalendar() async {
-        guard case .calendarUnavailable = state,
-              let (targetDate, language) = calendarFallbackContext else { return }
-        state = .briefing
-        syncLiveActivity()
+        guard case .calendarUnavailable = state, !isRetryingCalendar,
+              let fallback = calendarFallback else { return }
+        isRetryingCalendar = true
+        defer { isRetryingCalendar = false }
+        let failure: Error?
         do {
-            try await fetchCalendar(date: targetDate)
+            try await fetchCalendar(date: fallback.targetDate)
+            failure = nil
         } catch {
-            await offerCalendarFallback(error, targetDate: targetDate, language: language)
+            failure = error
+        }
+        // The user may have closed the walkthrough (or started another one)
+        // while the fetch ran; only the attempt that is still waiting acts.
+        guard case .calendarUnavailable = state, calendarFallback?.attempt == fallback.attempt else { return }
+        if let failure {
+            await offerCalendarFallback(
+                failure, targetDate: fallback.targetDate, language: fallback.language, attempt: fallback.attempt
+            )
             return
         }
-        // The user may have closed the walkthrough while the fetch ran.
-        guard case .briefing = state else { return }
-        calendarFallbackContext = nil
-        await runPlan(targetDate: targetDate, language: language)
+        calendarFallback = nil
+        state = .briefing
+        syncLiveActivity()
+        await runPlan(targetDate: fallback.targetDate, language: fallback.language)
     }
 
     /// Start the walkthrough with no calendar events after
     /// `.calendarUnavailable`: general sections, free reflection and voice
     /// notes only. The session is bundled and uploaded as usual.
     public func startWithoutCalendar() async {
-        guard case .calendarUnavailable = state,
-              let (targetDate, language) = calendarFallbackContext else { return }
-        calendarFallbackContext = nil
+        guard case .calendarUnavailable = state, !isRetryingCalendar,
+              let fallback = calendarFallback else { return }
+        calendarFallback = nil
         events = []
         state = .briefing
         syncLiveActivity()
-        await runPlan(targetDate: targetDate, language: language)
+        await runPlan(targetDate: fallback.targetDate, language: fallback.language)
     }
 
     public func previewDay(_ date: Date? = nil) async {
@@ -1660,7 +1682,7 @@ public final class WalkthroughCoordinator {
         // this point shall be stored" — and the pickup intent should
         // survive alongside them. `finishUpload()` is the only path
         // that strips the marker.
-        calendarFallbackContext = nil
+        calendarFallback = nil
         state = .idle
         isPaused = false
         pausedAtState = nil

@@ -1101,8 +1101,19 @@ private struct CalendarUnavailableCard: View {
         Button {
             Task { await coordinator.retryCalendar() }
         } label: {
-            Label("Try again", systemImage: "arrow.clockwise")
+            if coordinator.isRetryingCalendar {
+                HStack(spacing: Theme.spacing.xs) {
+                    ProgressView().controlSize(.small)
+                        // Retry is the dark primary button unless the
+                        // server said retrying can't help.
+                        .tint(diagnosis.isRetryable ? Theme.color.text.inverse : nil)
+                    Text("Loading…")
+                }
+            } else {
+                Label("Try again", systemImage: "arrow.clockwise")
+            }
         }
+        .disabled(coordinator.isRetryingCalendar)
     }
 
     private var startWithoutButton: some View {
@@ -1111,6 +1122,7 @@ private struct CalendarUnavailableCard: View {
         } label: {
             Text("Start without calendar")
         }
+        .disabled(coordinator.isRetryingCalendar)
     }
 }
 
