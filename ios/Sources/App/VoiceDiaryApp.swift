@@ -136,6 +136,10 @@ struct VoiceDiaryApp: App {
                         // mode. `kick()` is cheap (nonisolated Task spawn)
                         // and flush() is idempotent (isFlushing guard).
                         SessionUploader.shared.kick()
+                        // Once per foreground, ask the server to retry
+                        // recent sessions left `pending_analysis` by an
+                        // Ollama / LightRAG outage (SPEC §10.6.1).
+                        AnalysisRetrier.shared.kick()
                     case .background:
                         // Two reasons to suspend Gemma when backgrounded:
                         // (1) iOS background memory caps are far tighter
@@ -153,6 +157,9 @@ struct VoiceDiaryApp: App {
                         // backgrounded (e.g. when the user says "weiter"
                         // mid-walkthrough with the phone in their pocket).
                         Task { await GemmaDialogLLM.shared.suspend() }
+                        // The next `.active` is a new foreground, so it
+                        // may retry pending analysis again.
+                        AnalysisRetrier.shared.rearm()
                     default:
                         break
                     }
