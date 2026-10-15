@@ -182,7 +182,7 @@ The server in `server/` is one FastAPI app with three clusters of responsibility
 - Session ingest: `POST /api/sessions` receives multipart bundles, runs each segment through the entity pipeline, ingests into LightRAG.
 - Microsoft Graph proxy: `/today/calendar`, `/calendar/event/{id}`, `/email/search` with server-side MSAL tokens.
 - Enrichment: `/lightrag/query` and `/yesterday/open-todos` call LightRAG (external) and summarise via Ollama.
-- Health: `/health` reports upstream liveness for LightRAG, Ollama, Whisper, and Postgres.
+- Health: `/health` reports upstream liveness for Postgres, Qdrant, Whisper, LightRAG, Ollama, Graph and Voxtral, with overall status rules in §10.7.
 
 **Removed (formerly in n8n):**
 - Audio conversion (ffmpeg now runs in the webapp container).
@@ -839,9 +839,17 @@ The iOS app also consumes these read endpoints on `server` over Tailscale:
 | `GET /email/search?q=...&from=ISO&to=ISO` | Email search for enrichment. | MS Graph |
 | `POST /lightrag/query` | Natural-language query against LightRAG for enrichment. Body: `{ "query": "...", "mode": "hybrid" }`. | LightRAG |
 | `GET /calendar/event/{graph_event_id}` | Full detail for a specific event (for enrichment "tell me more about this meeting"). | MS Graph |
-| `GET /health` | Tailscale reachability + upstream health probe. Returns `ok` only when LightRAG, Ollama, Whisper, and Postgres are reachable. | self |
+| `GET /health` | Tailscale reachability + upstream health probe. Unauthenticated. Overall `status` rules below. | self |
 
-All endpoints require a simple bearer token entered in Mehr → Server (`ServerSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
+`/health` returns `{ "status", "upstream": { name: result } }`. Upstream results are `ok`, `down`, `skipped` (not configured), `not_bootstrapped` (Graph) or `fixture` (Graph in fixture mode). The overall `status` is:
+
+- `down`: `postgres` or `whisper` is `down` (no audio path is possible).
+- `degraded`: any other non-optional upstream (`qdrant`, `lightrag`, `ollama`, `msgraph`) is not `ok`, including Graph `not_bootstrapped`. `skipped` and `fixture` entries are ignored.
+- `ok`: otherwise.
+
+`voxtral` is an optional upstream: its entry reports the real probe result (`ok`, `down` or `skipped`) but never changes the overall `status`. The Graph probe checks the MSAL token cache, not live Graph.
+
+All other endpoints require a simple bearer token entered in Mehr → Server (`ServerSettingsView`, §12.1). No per-user OAuth on the phone. `server` holds the MSAL refresh token for Microsoft Graph and reuses it transparently for each request.
 
 ---
 

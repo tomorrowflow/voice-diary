@@ -1,7 +1,7 @@
 """Upstream-aware health endpoint.
 
-`GET /health` probes Postgres, Qdrant, Whisper, LightRAG, Ollama, and the
-MSAL token cache and returns:
+`GET /health` probes Postgres, Qdrant, Whisper, LightRAG, Ollama, the MSAL
+token cache, and the optional Voxtral sidecar, and returns:
 
     { "status": "ok" | "degraded" | "down",
       "upstream": { "postgres": "ok" | "down" | "skipped", ... } }
@@ -35,6 +35,15 @@ PROBE_TIMEOUT = 2.0  # seconds — keep this snappy
 
 ProbeResult = Literal["ok", "down", "skipped", "not_bootstrapped", "fixture"]
 OverallStatus = Literal["ok", "degraded", "down"]
+
+# Without either of these no audio path is possible, so the server is `down`.
+ESSENTIAL_UPSTREAMS = frozenset({"postgres", "whisper"})
+# Optional upstreams report their real probe result but never change the
+# overall status: Voxtral is only an opt-in TTS voice, and the app falls back
+# to Piper when it is unavailable.
+OPTIONAL_UPSTREAMS = frozenset({"voxtral"})
+# Probe results that say nothing about health (not configured / dev mode).
+IGNORED_RESULTS = frozenset({"skipped", "fixture"})
 
 
 class HealthResponse(BaseModel):
@@ -132,6 +141,27 @@ async def _probe_msgraph() -> ProbeResult:
         return "down"
 
 
+# --- overall status -------------------------------------------------------
+
+
+def overall_status(upstream: dict[str, ProbeResult]) -> OverallStatus:
+    """Fold the per-upstream probe results into one overall status.
+
+    - `down`     — an essential upstream (postgres, whisper) is `down`.
+    - `degraded` — any other non-optional upstream that is neither `skipped`
+                   nor `fixture` is not `ok` (incl. msgraph `not_bootstrapped`).
+    - `ok`       — otherwise. Optional upstreams (voxtral) are never counted.
+    """
+    if any(upstream.get(name) == "down" for name in ESSENTIAL_UPSTREAMS):
+        return "down"
+    counted = (
+        result
+        for name, result in upstream.items()
+        if name not in OPTIONAL_UPSTREAMS and result not in IGNORED_RESULTS
+    )
+    return "ok" if all(result == "ok" for result in counted) else "degraded"
+
+
 # --- route ----------------------------------------------------------------
 
 
@@ -150,15 +180,4 @@ async def health() -> HealthResponse:
     )
     upstream: dict[str, ProbeResult] = dict(zip(names, probes))
 
-    # Overall status:
-    #   "ok"        — everything that isn't 'skipped' is 'ok'
-    #   "down"      — postgres or whisper is 'down' (no audio path possible)
-    #   "degraded"  — anything else is failing (incl. voxtral down)
-    relevant = [v for v in upstream.values() if v not in ("skipped", "fixture")]
-    if upstream["postgres"] == "down" or upstream["whisper"] == "down":
-        overall: OverallStatus = "down"
-    elif all(v == "ok" for v in relevant):
-        overall = "ok"
-    else:
-        overall = "degraded"
-    return HealthResponse(status=overall, upstream=upstream)
+    return HealthResponse(status=overall_status(upstream), upstream=upstream)
