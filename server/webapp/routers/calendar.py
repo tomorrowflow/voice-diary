@@ -23,11 +23,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import fixtures
-from msgraph_client import (
-    MSGraphError,
-    MSGraphNotBootstrapped,
-    get_client,
-)
+import upstream_failure
+from msgraph_client import get_client
 from routers.auth import require_bearer
 
 logger = logging.getLogger(__name__)
@@ -197,7 +194,7 @@ async def today_calendar(
 
     start_iso, end_iso = _local_day_bounds_iso(date)
 
-    try:
+    with upstream_failure.raise_as_failure():
         client = await get_client()
         data = await client.get_json(
             "/me/calendarView",
@@ -212,18 +209,6 @@ async def today_calendar(
                 ),
             },
         )
-    except MSGraphNotBootstrapped as exc:
-        logger.warning("MS Graph not bootstrapped: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="msgraph_not_bootstrapped",
-        ) from exc
-    except MSGraphError as exc:
-        logger.warning("MS Graph error on /today/calendar: %s", exc)
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
 
     raw_events = data.get("value", [])
     events = [_shape_event(ev) for ev in raw_events]
@@ -248,17 +233,7 @@ async def calendar_event(graph_event_id: str) -> CalendarEvent:
                 detail="event_not_in_fixture",
             )
         return _shape_event(raw)
-    try:
+    with upstream_failure.raise_as_failure():
         client = await get_client()
         raw = await client.get_json(f"/me/events/{graph_event_id}")
-    except MSGraphNotBootstrapped as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="msgraph_not_bootstrapped",
-        ) from exc
-    except MSGraphError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        ) from exc
     return _shape_event(raw)

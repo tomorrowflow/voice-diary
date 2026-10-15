@@ -23,19 +23,15 @@ from __future__ import annotations
 import logging
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
+import upstream_failure
 from routers.auth import require_bearer
+from upstream_failure import UpstreamFailure
 from voice_catalog import catalog as voice_catalog
-from voxtral_client import (
-    TTSEngineError,
-    TTSTimeoutError,
-    TTSUnavailableError,
-    TTSUnknownVoiceError,
-    VoxtralClient,
-)
+from voxtral_client import VoxtralClient
 
 logger = logging.getLogger(__name__)
 
@@ -98,39 +94,19 @@ async def voices() -> dict[str, list[dict[str, str]]]:
 @router.post("/synthesize")
 async def synthesize(req: SynthesizeRequest) -> Response:
     if not voice_catalog.exists(req.voice):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "unknown_voice", "detail": f"voice '{req.voice}' is not in the Voxtral catalog"},
+        raise UpstreamFailure(
+            code="unknown_voice", upstream="voxtral", status_code=400, retryable=False,
+            message=f"voice '{req.voice}' is not in the Voxtral catalog",
         )
 
     client = _get_client()
-    try:
+    with upstream_failure.raise_as_failure():
         result = await client.synthesize(
             req.text,
             language=req.language,
             voice=req.voice,
             response_format=req.response_format,
         )
-    except TTSUnknownVoiceError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "unknown_voice", "detail": str(exc)},
-        ) from exc
-    except TTSTimeoutError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail={"error": "voxtral_timeout", "detail": str(exc)},
-        ) from exc
-    except TTSUnavailableError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail={"error": "voxtral_unavailable", "detail": str(exc)},
-        ) from exc
-    except TTSEngineError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail={"error": "voxtral_engine_error", "detail": str(exc)},
-        ) from exc
 
     return Response(
         content=result.audio,
