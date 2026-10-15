@@ -10,6 +10,7 @@ import httpx
 import pytest
 import requests
 
+import msgraph_client
 from msgraph_client import MSGraphError, MSGraphNotBootstrapped
 from tests.route_helpers import graph_client
 
@@ -102,3 +103,72 @@ def test_no_account_and_failed_refresh_are_not_bootstrapped(monkeypatch, tmp_pat
         _get(graph_client(monkeypatch, tmp_path, accounts=[]))
     with pytest.raises(MSGraphNotBootstrapped):
         _get(graph_client(monkeypatch, tmp_path, token_result={"error": "invalid_grant"}))
+
+
+@pytest.mark.parametrize(
+    "body",
+    [{"error": "invalid_request"}, {"error": {"message": None}}, ["unexpected"], "plain text"],
+)
+def test_graph_4xx_with_an_odd_error_body_is_still_a_graph_error(monkeypatch, tmp_path, body):
+    client = graph_client(monkeypatch, tmp_path, _answers([httpx.Response(400, json=body)]))
+
+    with pytest.raises(MSGraphError, match="^graph_error: status=400"):
+        _get(client)
+
+
+def test_a_200_with_a_non_object_body_is_a_bad_response(monkeypatch, tmp_path):
+    client = graph_client(monkeypatch, tmp_path, _answers([httpx.Response(200, json=["x"])]))
+
+    with pytest.raises(MSGraphError, match="^bad_response"):
+        _get(client)
+
+
+def test_other_httpx_request_errors_become_msgraph_errors(monkeypatch, tmp_path):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.DecodingError("bad content-encoding")
+
+    with pytest.raises(MSGraphError, match="^transport_error"):
+        _get(graph_client(monkeypatch, tmp_path, handler))
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("30", 30.0), ("0.5", 0.5), ("0", None), ("-3", None), ("soon", None),
+        (None, None), ("inf", None), ("nan", None),
+    ],
+)
+def test_parse_retry_after_only_accepts_a_finite_positive_wait(raw, expected):
+    assert msgraph_client._parse_retry_after(raw) == expected
+
+
+def test_a_cache_write_failure_does_not_fail_the_request(monkeypatch, tmp_path):
+    def boom(*_args) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(msgraph_client, "_persist_cache", boom)
+    client = graph_client(monkeypatch, tmp_path, _answers([httpx.Response(200, json={"value": []})]))
+
+    assert _get(client) == {"value": []}
+
+
+def test_missing_client_or_tenant_id_is_not_bootstrapped():
+    with pytest.raises(MSGraphNotBootstrapped):
+        msgraph_client.MSGraphClient("", "tid")
+
+
+@pytest.mark.parametrize(
+    "exc, kind",
+    [
+        (requests.ConnectionError("no route"), "network_error"),
+        (ValueError("bad authority"), "auth_error"),
+    ],
+)
+def test_msal_construction_failures_become_msgraph_errors(monkeypatch, tmp_path, exc, kind):
+    def broken_app(*_args, **_kwargs):
+        raise exc
+
+    monkeypatch.setattr(msgraph_client.msal, "PublicClientApplication", broken_app)
+
+    with pytest.raises(MSGraphError, match=f"^{kind}"):
+        msgraph_client.MSGraphClient("cid", "tid", cache_path=tmp_path / "msal.bin")
