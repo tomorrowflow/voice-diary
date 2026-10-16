@@ -1,5 +1,4 @@
 import Foundation
-import UniformTypeIdentifiers
 
 // Multipart upload to POST /api/sessions plus thin GET helpers for /health,
 // /today/calendar, etc. Intentionally URLSession-only — no Alamofire.
@@ -54,6 +53,15 @@ public actor ServerClient {
     private let session: URLSession
 
     public init() {
+        self.init(session: Self.makeSession())
+    }
+
+    /// Test seam: lets tests inject a session backed by a `URLProtocol` stub.
+    init(session: URLSession) {
+        self.session = session
+    }
+
+    private static func makeSession() -> URLSession {
         let config = URLSessionConfiguration.default
         // 90 s of idle is enough headroom for Tailscale handshakes plus the
         // server's synchronous parts (ffmpeg + Whisper). The actual session
@@ -65,7 +73,7 @@ public actor ServerClient {
         // URLSession to spin waiting for connectivity itself — fail fast
         // and let the queue reschedule with backoff.
         config.waitsForConnectivity = false
-        self.session = URLSession(configuration: config)
+        return URLSession(configuration: config)
     }
 
     deinit {
@@ -295,19 +303,37 @@ public actor ServerClient {
             forHTTPHeaderField: "Content-Type"
         )
 
-        let body = try await Self.makeMultipartBody(
+        let (data, response) = try await sendMultipart(
+            req,
             manifest: manifest,
             audioFiles: audioFiles,
             boundary: boundary
         )
-
-        let (data, response) = try await session.upload(for: req, from: body)
         try Self.assertOK(response: response, body: data)
         do {
             return try JSONDecoder().decode(SessionAccepted.self, from: data)
         } catch {
             throw ServerClientError.decodingFailed("\(error)")
         }
+    }
+
+    /// Streams the multipart body from a temporary file and deletes that file
+    /// once the upload finishes, fails or is cancelled.
+    func sendMultipart(
+        _ req: URLRequest,
+        manifest: Manifest,
+        audioFiles: [String: URL],
+        boundary: String,
+        bodyDirectory: URL = FileManager.default.temporaryDirectory
+    ) async throws -> (Data, URLResponse) {
+        let bodyURL = try await MultipartBodyFile.write(
+            manifest: manifest,
+            audioFiles: audioFiles,
+            boundary: boundary,
+            directory: bodyDirectory
+        )
+        defer { try? FileManager.default.removeItem(at: bodyURL) }
+        return try await session.upload(for: req, fromFile: bodyURL)
     }
 
     // --- helpers -------------------------------------------------------
@@ -325,56 +351,5 @@ public actor ServerClient {
         guard (200..<300).contains(http.statusCode) else {
             throw ServerClientError.http(from: http, body: body)
         }
-    }
-
-    private static func makeMultipartBody(
-        manifest: Manifest,
-        audioFiles: [String: URL],
-        boundary: String
-    ) async throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let manifestJSON = try encoder.encode(manifest)
-
-        var data = Data()
-        let boundaryLine = "--\(boundary)\r\n".data(using: .utf8)!
-        let endBoundary = "--\(boundary)--\r\n".data(using: .utf8)!
-
-        // manifest part
-        data.append(boundaryLine)
-        data.append(
-            "Content-Disposition: form-data; name=\"manifest\"; filename=\"manifest.json\"\r\n".data(using: .utf8)!
-        )
-        data.append("Content-Type: application/json\r\n\r\n".data(using: .utf8)!)
-        data.append(manifestJSON)
-        data.append("\r\n".data(using: .utf8)!)
-
-        // audio parts
-        for (fieldName, fileURL) in audioFiles {
-            guard FileManager.default.fileExists(atPath: fileURL.path) else {
-                throw ServerClientError.missingFile(fileURL)
-            }
-            let fileData = try Data(contentsOf: fileURL, options: .mappedIfSafe)
-            let baseName = fileURL.lastPathComponent
-            let mime = mimeType(for: fileURL)
-            data.append(boundaryLine)
-            data.append(
-                "Content-Disposition: form-data; name=\"\(fieldName)\"; filename=\"\(baseName)\"\r\n".data(using: .utf8)!
-            )
-            data.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
-            data.append(fileData)
-            data.append("\r\n".data(using: .utf8)!)
-        }
-
-        data.append(endBoundary)
-        return data
-    }
-
-    private static func mimeType(for url: URL) -> String {
-        if let type = UTType(filenameExtension: url.pathExtension),
-           let mime = type.preferredMIMEType {
-            return mime
-        }
-        return "application/octet-stream"
     }
 }
