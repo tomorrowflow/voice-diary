@@ -4672,6 +4672,9 @@ public final class WalkthroughCoordinator {
             // Cancelled or replaced by a newer start: `cancel()` / `begin()`
             // already settled the notice.
         } catch {
+            // A cancelled request throws `URLError.cancelled`, not
+            // `CancellationError`; it is the same silent case.
+            guard !Task.isCancelled else { return }
             // Network/parse failure: walkthrough proceeds normally and
             // the fallbacks handle each failure where it happens.
             // Surface only at debug level so the log doesn't get noisy.
