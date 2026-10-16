@@ -253,6 +253,12 @@ public struct ServerSettingsView: View {
                 .font(Theme.font.body)
                 .foregroundStyle(Theme.color.text.primary)
 
+            if summary.partialCount > 0 {
+                Text("\(summary.partialCount) sessions will upload without some recordings")
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+            }
+
             if let explanation {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(explanation.title)
