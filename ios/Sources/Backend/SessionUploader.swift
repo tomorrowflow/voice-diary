@@ -144,8 +144,9 @@ public actor SessionUploader {
     private let queueFile: @Sendable () throws -> URL
     private let upload: @Sendable (Manifest, [String: URL]) async throws -> SessionAccepted
     /// Diagnostics line for a session (`session_id`, message). Unlike
-    /// `partial`, it outlives the queue entry, so the export still shows
-    /// that segments were lost after the smaller session uploaded.
+    /// `partial`, it does not vanish with the queue entry: it stays in the
+    /// app log that the diagnostics export reads, so the export can still
+    /// show that segments were lost after the smaller session uploaded.
     private let diag: @Sendable (String, String) -> Void
 
     public init() {
@@ -343,10 +344,13 @@ public actor SessionUploader {
             Log.upload.warning(
                 "partial entry \(entry.id, privacy: .public) — pruned missing files: \(files, privacy: .public)"
             )
-            diag(
-                entry.id,
-                "upload.pruned segments=[\(segmentIDs.joined(separator: ", "))] files=[\(files)] kept=\(pruned.manifest.segments.count)"
-            )
+            // A stray file no segment refers to loses no data: nothing to report.
+            if !segmentIDs.isEmpty {
+                diag(
+                    entry.id,
+                    "upload.pruned segments=[\(segmentIDs.joined(separator: ", "))] files=[\(files)] kept=\(pruned.manifest.segments.count)"
+                )
+            }
             return pruned
         case .unrecoverable(let missing, let segmentIDs):
             queue.removeAll { $0.id == entry.id }
