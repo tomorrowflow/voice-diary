@@ -71,7 +71,14 @@ public struct ServerSettingsView: View {
         .onAppear {
             Task { await refresh() }
         }
-        .task { await refreshPendingUploads() }
+        .task {
+            // The queue has no change notification and drains on its own
+            // after a retry or a saved token, so re-read it while visible.
+            while !Task.isCancelled {
+                await refreshPendingUploads()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
     }
 
     /// One line per unhealthy upstream. Nothing is probed until a valid URL
