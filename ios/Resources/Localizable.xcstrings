@@ -166,6 +166,47 @@
         }
       }
     },
+    "%lld sessions will upload without some recordings" : {
+      "comment" : "Pending-upload indicator in Mehr → Server; %lld is the number of queued sessions whose audio files are partly gone from the iPhone, so they upload without those recordings.",
+      "localizations" : {
+        "de" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Sitzung wird ohne einige Aufnahmen hochgeladen"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld Sitzungen werden ohne einige Aufnahmen hochgeladen"
+                }
+              }
+            }
+          }
+        },
+        "en" : {
+          "variations" : {
+            "plural" : {
+              "one" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld session will upload without some recordings"
+                }
+              },
+              "other" : {
+                "stringUnit" : {
+                  "state" : "translated",
+                  "value" : "%lld sessions will upload without some recordings"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "(empty)" : {
       "extractionState" : "stale",
       "localizations" : {

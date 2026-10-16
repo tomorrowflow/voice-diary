@@ -153,6 +153,16 @@ public enum Segment: Codable, Sendable {
         }
     }
 
+    public var segmentID: String {
+        switch self {
+        case .calendarEvent(let v):  return v.segment_id
+        case .voiceNote(let v):        return v.segment_id
+        case .freeReflection(let v): return v.segment_id
+        case .emptyBlock(let v):     return v.segment_id
+        case .generalSection(let v): return v.segment_id
+        }
+    }
+
     public var audioFile: String {
         switch self {
         case .calendarEvent(let v):  return v.audio_file
