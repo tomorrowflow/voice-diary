@@ -2744,6 +2744,16 @@
         }
       }
     },
+    "Start without calendar" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohne Kalender starten"
+          }
+        }
+      }
+    },
     "Status unknown" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3406,6 +3416,16 @@
         }
       }
     },
+    "Without the calendar you'll walk through your general sections and voice notes only." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ohne Kalender gehst du nur deine allgemeinen Abschnitte und Notizen durch."
+          }
+        }
+      }
+    },
     "Yesterday" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3804,6 +3824,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Die Zusammenfassung ist gerade nicht verfügbar. Anreicherung übersprungen."
+          }
+        }
+      }
+    },
+    "This session needs the calendar to continue. Your recordings stay saved." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Zum Fortsetzen braucht diese Sitzung den Kalender. Deine Aufnahmen bleiben gespeichert."
           }
         }
       }
