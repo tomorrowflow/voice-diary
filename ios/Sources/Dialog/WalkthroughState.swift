@@ -20,6 +20,7 @@ public enum WalkthroughState: Sendable, Equatable {
     case voiceNoteOpener(stepIndex: Int)                       // AI speaking the closing prompt
     case voiceNoteListening(stepIndex: Int)                    // mic open, recording the closing reflection
     case confirmingTodos(index: Int)                         // post-CLOSING per-candidate ja/nein/anders pass
+    case calendarUnavailable(ConnectionDiagnosis)            // start-time calendar fetch failed; user picks retry or start without
     case ingesting                                           // building manifest + handing to SessionUploader
     case done
     case failed(String)
@@ -89,6 +90,7 @@ public extension WalkthroughState {
         case .voiceNoteOpener:              return "Notizen"
         case .voiceNoteListening:           return "Notizen — Hören"
         case .confirmingTodos:            return "Aufgaben prüfen"
+        case .calendarUnavailable:        return "Kalender nicht erreichbar"
         case .ingesting:                  return "Lade hoch"
         case .done:                       return "Fertig"
         case .failed(let msg):            return "Fehler: \(msg)"
