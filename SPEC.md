@@ -759,7 +759,10 @@ Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-ana
   It leaves the queue only on success, via `clear()`, or when its audio files are found missing.
 - If Tailscale unreachable, queue locally. Resume queue when reachability returns.
 - Queue is first-in-first-out by `session_id` (which is the session start timestamp).
-- User-facing UI shows queue status ("2 sessions pending upload") — non-intrusive.
+- User-facing UI shows queue status — non-intrusive. Mehr → Server shows an upload-queue card only
+  while sessions wait ("2 Sitzungen warten auf Upload" / "2 sessions waiting to upload"), with the
+  explanation (§15.1 copy) of the last failure code of the oldest waiting session that has one. It
+  disappears when the queue is empty; permanently rejected entries are not counted as waiting.
 
 ### 10.6.1 Retrying a `pending_analysis` session
 
@@ -1134,7 +1137,9 @@ Graph OAuth setup is a one-time step the user runs on the server (`server/script
 | Upstream | Server error with `code` / `upstream` (§10.6.1 failure contract) during enrichment | Per-upstream spoken line, each ending "Enrichment skipped." (German: "Anreicherung übersprungen."): Ollama "The summary isn't available right now."; LightRAG "The diary memory isn't reachable right now."; Graph "Calendar and mail aren't reachable right now." (not bootstrapped: "Calendar and mail aren't set up on the server."). Whisper and Voxtral codes keep the generic "I couldn't answer that just now." |
 | Upstream | Same contract on any other server call (e.g. the day overview) | `ConnectionDiagnosis` shows a title, hint and one-line impact for the `(code, upstream)` pair in German and English, from the string catalog. Impact lines: Whisper "Recordings stay on your phone and upload later."; Ollama / LightRAG "Analysis is delayed; your texts are saved."; Graph "Calendar and mail aren't reachable right now." (not bootstrapped: "Calendar isn't set up on the server. This has to be fixed on the server."); Voxtral "Server voices fall back to Piper." An unknown code from a known upstream gets that upstream's generic "failed" copy. |
 | Upstream | Server without the failure fields (older server), or no recognised code / upstream | Status-based messages as before ("Server-Fehler" for 5xx, and so on); never an empty message. `Retry-After` and `retryable` are decoded into `ServerClientError.http` for the upload queue (§10.6). |
-| Ingest | Upload fails repeatedly | "2 sessions pending upload. Tap to retry." |
+| Upstream | `/health` reports an unhealthy upstream (`down`, or Graph `not_bootstrapped`) | Mehr → Server shows a "Dienste" / "Services" card with one impact sentence (the same lines as above) per unhealthy upstream; `ok`, `skipped` and `fixture` upstreams show none. At walkthrough start a non-blocking banner shows each distinct impact sentence for about six seconds, then clears itself; Voxtral is included only when a Voxtral voice is selected. It never blocks or delays the walkthrough. |
+| Upstream | A `failed` segment in Verlauf carries a `code` (§10.5) | The row shows the title of the `(code, upstream)` copy under the segment details, next to the "Failed" pill. A failed segment without a `code` shows the plain pill only. |
+| Ingest | Upload fails repeatedly | Mehr → Server shows "2 sessions waiting to upload" with the last failure's explanation (§10.6). |
 | LLM | Apple FM generation fails | Silent fallback to canned follow-up template. |
 | TTS | Voxtral (server voice) request fails or is unreachable | Silent fallback: `TTSFallbackPolicy` re-dispatches the utterance to the user's Piper voice for that language if its bundled assets are present, else to AVSpeechSynthesizer. Walkthrough keeps speaking. |
 | TTS | Piper voice selected but its bundled assets are missing | `VoiceRegistry` pre-checks asset presence before ever routing to Piper; falls back to AVSpeechSynthesizer for that language. |
