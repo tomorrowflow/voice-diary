@@ -46,19 +46,24 @@ public struct ConnectionDiagnosis: Equatable, Sendable {
     /// for diagnostics — never load-bearing.
     public let detail: String?
     public let systemImage: String
+    /// False when the server said retrying cannot help (`retryable: false`,
+    /// e.g. Graph not bootstrapped), so the UI doesn't push the retry.
+    public let isRetryable: Bool
 
     public init(
         kind: Kind,
         title: String,
         hint: String,
         detail: String?,
-        systemImage: String
+        systemImage: String,
+        isRetryable: Bool = true
     ) {
         self.kind = kind
         self.title = title
         self.hint = hint
         self.detail = detail
         self.systemImage = systemImage
+        self.isRetryable = isRetryable
     }
 
     /// Map any error from `ServerClient` calls to a structured diagnosis.
@@ -104,9 +109,10 @@ public struct ConnectionDiagnosis: Equatable, Sendable {
             return ConnectionDiagnosis(
                 kind: .upstreamFailure,
                 title: copy.title,
-                hint: "\(copy.hint) \(copy.impact)",
+                hint: copy.summary,
                 detail: "HTTP \(status): \(detail.prefix(160))",
-                systemImage: "server.rack"
+                systemImage: "server.rack",
+                isRetryable: failure.retryable != false
             )
         }
         switch error {
