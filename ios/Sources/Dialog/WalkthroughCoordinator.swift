@@ -75,7 +75,11 @@ public final class WalkthroughCoordinator {
     /// selected). Purely a heads-up so tonight's degradation doesn't
     /// surprise the user — the walkthrough never waits for it. Cleared
     /// automatically after a few seconds.
-    public private(set) var upstreamStartNotice: String?
+    public var upstreamStartNotice: String? { startNotice.message }
+    private var startNotice = UpstreamStartNotice()
+    /// The in-flight `/health` probe of the current start; replaced on the
+    /// next start and cancelled by `cancel()`.
+    private var upstreamPreflightTask: Task<Void, Never>?
 
     private let engine = AudioEngine()
     // Resolve the TTS engine fresh on every utterance via `speak(_:language:)`.
@@ -348,8 +352,7 @@ public final class WalkthroughCoordinator {
         // can say what an unhealthy upstream means for tonight before the
         // first opener fires. The walkthrough never blocks on this — the
         // fallbacks handle each failure even if /health races us.
-        upstreamStartNotice = nil
-        Task { await preflightUpstreams() }
+        startUpstreamPreflight()
         error = nil
         recordingWasInterrupted = false
         events = previewEvents
@@ -838,8 +841,7 @@ public final class WalkthroughCoordinator {
         }
         let attempt = calendarGate.newAttempt()
         state = .briefing
-        upstreamStartNotice = nil
-        Task { await preflightUpstreams() }
+        startUpstreamPreflight()
         // Reset coordinator state the same way begin() does — but
         // hand the existing dir + session_id to the engine instead of
         // making fresh ones.
@@ -1676,6 +1678,8 @@ public final class WalkthroughCoordinator {
         // be stale before the first teardown await, or it could revive the
         // walkthrough while the engine is shutting down.
         calendarGate.invalidate()
+        // Same for the /health probe behind the start notice.
+        cancelUpstreamPreflight()
         // Halt the lull detector so a buffered threshold callback can't
         // fire `handleLull` → `speakFollowUp` after we've torn down.
         // (The detector also auto-pauses when the engine stops feeding
@@ -4636,7 +4640,23 @@ public final class WalkthroughCoordinator {
         || VoicePreferences.isVoxtralVoiceID(VoicePreferences.selectedVoiceID(for: "en"))
     }
 
-    private func preflightUpstreams() async {
+    /// Begin the `/health` probe for a new start. The previous start's probe
+    /// is cancelled and its token goes stale, so a late answer or timer from
+    /// it can neither show nor clear this start's notice.
+    private func startUpstreamPreflight() {
+        upstreamPreflightTask?.cancel()
+        let token = startNotice.begin()
+        upstreamPreflightTask = Task { await preflightUpstreams(token: token) }
+    }
+
+    /// Cancel: no notice, and nothing in flight may bring one back.
+    private func cancelUpstreamPreflight() {
+        upstreamPreflightTask?.cancel()
+        upstreamPreflightTask = nil
+        startNotice.reset()
+    }
+
+    private func preflightUpstreams(token: UUID) async {
         do {
             let data = try await ServerClient.shared.health()
             let payload = try JSONDecoder().decode(UpstreamPreflightPayload.self, from: data)
@@ -4645,14 +4665,16 @@ public final class WalkthroughCoordinator {
             guard let message = UpstreamImpact.startNotice(
                 health: payload.upstream,
                 includeVoxtral: hasVoxtralVoiceSelected()
-            ) else { return }
-            upstreamStartNotice = message
-            try? await Task.sleep(nanoseconds: 6_000_000_000)
-            // Only clear if we still own the message (no other path overwrote it).
-            if upstreamStartNotice == message {
-                upstreamStartNotice = nil
-            }
+            ), startNotice.publish(message, for: token) else { return }
+            try await Task.sleep(nanoseconds: 6_000_000_000)
+            startNotice.clear(for: token)
+        } catch is CancellationError {
+            // Cancelled or replaced by a newer start: `cancel()` / `begin()`
+            // already settled the notice.
         } catch {
+            // A cancelled request throws `URLError.cancelled`, not
+            // `CancellationError`; it is the same silent case.
+            guard !Task.isCancelled else { return }
             // Network/parse failure: walkthrough proceeds normally and
             // the fallbacks handle each failure where it happens.
             // Surface only at debug level so the log doesn't get noisy.
