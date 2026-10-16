@@ -6,6 +6,10 @@ public struct FailureCopy: Equatable, Sendable {
     public let hint: String
     /// What the failure means for the user's data and walkthrough.
     public let impact: String
+    /// What a diagnosis shows under the title: the hint, then the impact.
+    /// "Not set up" is the exception: its hint already says the server has
+    /// to fix it, so the impact would only say it again.
+    public let summary: String
 }
 
 /// Pure mapping from the server failure contract (`code`, `upstream`) to
@@ -30,10 +34,13 @@ public enum FailureCatalog {
     /// recognised. `language: nil` follows the app's current language.
     public static func copy(for failure: UpstreamFailure, language: OpenerLanguage? = nil) -> FailureCopy? {
         guard let (upstream, condition) = resolve(failure) else { return nil }
+        let hintText = text(hint(condition), language)
+        let impactText = text(impact(upstream, condition), language)
         return FailureCopy(
             title: text(title(upstream, condition), language),
-            hint: text(hint(condition), language),
-            impact: text(impact(upstream, condition), language)
+            hint: hintText,
+            impact: impactText,
+            summary: condition == .notBootstrapped ? hintText : "\(hintText) \(impactText)"
         )
     }
 
