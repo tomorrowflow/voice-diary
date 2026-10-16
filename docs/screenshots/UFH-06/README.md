@@ -31,8 +31,11 @@ The stub never answers 200, so a session cannot be started *with* the calendar. 
 **Start without calendar** and finished with **Next** (real audio, recorded by the app), then
 `manifest.json` and `calendar_free` were deleted from that session folder in the throwaway
 simulator's app container. The app therefore sees an unfinished session with a recorded segment
-and no marker, which is exactly what a resumed session started with the calendar looks like.
-Nothing outside that simulator was touched.
+and no marker. At the point the card appears the app cannot tell that apart from a session that
+was started with the calendar (*Pick up* fetches the calendar before it rebuilds the plan), so
+the captures show that an unfinished session with a segment and no marker reaches the retry-only
+card when the fetch fails (retryable stub, port 8781). They do not show a genuine calendar
+session resuming after a successful retry. Nothing outside that simulator was touched.
 
 ## Not captured
 
