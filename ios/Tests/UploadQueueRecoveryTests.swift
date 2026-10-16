@@ -69,13 +69,14 @@ struct UploadQueueRecoveryTests {
     func prunesOnlyTheMissingSegment() throws {
         let dir = try makeDir()
         let entry = try makeEntry(in: dir, missing: ["s02"])
-        guard case .pruned(let pruned, let missing) = entry.recoveringFromMissingFiles(
+        guard case .pruned(let pruned, let missing, let lostIDs) = entry.recoveringFromMissingFiles(
             fileExists: { FileManager.default.fileExists(atPath: $0) }
         ) else {
             Issue.record("expected a pruned entry")
             return
         }
         #expect(missing == [field("s02")])
+        #expect(lostIDs == ["s02"])
         #expect(segmentIDs(pruned) == ["s01", "s03"])
         #expect(Set(pruned.audio_file_paths.keys) == [field("s01"), field("s03")])
         #expect(pruned.partial)
@@ -102,13 +103,14 @@ struct UploadQueueRecoveryTests {
     func strayFileDoesNotMakePartial() throws {
         var entry = try makeEntry(in: try makeDir())
         entry.audio_file_paths["segments/stray.m4a"] = "/nonexistent/stray.m4a"
-        guard case .pruned(let pruned, _) = entry.recoveringFromMissingFiles(
+        guard case .pruned(let pruned, _, let lostIDs) = entry.recoveringFromMissingFiles(
             fileExists: { FileManager.default.fileExists(atPath: $0) }
         ) else {
             Issue.record("expected a pruned entry")
             return
         }
         #expect(pruned.partial == false)
+        #expect(lostIDs.isEmpty)
         #expect(segmentIDs(pruned) == ids)
         #expect(pruned.audio_file_paths["segments/stray.m4a"] == nil)
     }
@@ -116,12 +118,13 @@ struct UploadQueueRecoveryTests {
     @Test("an entry with no surviving segment is unrecoverable")
     func allMissingIsUnrecoverable() throws {
         let entry = try makeEntry(in: try makeDir(), missing: Set(ids))
-        guard case .unrecoverable(let missing) = entry.recoveringFromMissingFiles(
+        guard case .unrecoverable(let missing, let lostIDs) = entry.recoveringFromMissingFiles(
             fileExists: { FileManager.default.fileExists(atPath: $0) }
         ) else {
             Issue.record("expected an unrecoverable entry")
             return
         }
+        #expect(lostIDs == ids)
         #expect(missing == Set(ids.map(field)))
     }
 
@@ -236,6 +239,86 @@ struct UploadQueueRecoveryTests {
         #expect(Set(waiting[0].audio_file_paths.keys) == [field("s02"), field("s03")])
     }
 
+    // --- diagnostics and manifest -----------------------------------------
+
+    @Test("pruning writes one Diag line naming the session and the pruned segment ids, once")
+    func pruneIsLoggedOnce() async throws {
+        let dir = try makeDir()
+        let file = try seed([try makeEntry(in: dir, missing: ["s02"])], in: dir)
+        let lines = DiagLines()
+        let uploader = SessionUploader(queueFile: { file }, upload: UploadLog().upload, diag: lines.record)
+
+        await uploader.purgeOrphans()
+        await uploader.flush()   // the entry is already pruned: nothing new to say
+
+        let logged = lines.all
+        #expect(logged.count == 1)
+        #expect(logged[0].session == sessionID)
+        #expect(logged[0].message.contains("segments=[s02]"))
+        #expect(logged[0].message.contains(field("s02")))
+        #expect(logged[0].message.contains("kept=2"))
+    }
+
+    @Test("flush logs the pruning too, even though the upload then dequeues the entry")
+    func flushPruneIsLogged() async throws {
+        let dir = try makeDir()
+        let file = try seed([try makeEntry(in: dir, missing: ["s01", "s03"])], in: dir)
+        let lines = DiagLines()
+        let uploader = SessionUploader(queueFile: { file }, upload: UploadLog().upload, diag: lines.record)
+
+        await uploader.flush()
+
+        #expect(await uploader.pending().isEmpty)
+        let logged = lines.all
+        #expect(logged.count == 1)
+        #expect(logged[0].message.contains("segments=[s01, s03]"))
+    }
+
+    @Test("dropping an entry with nothing left is logged with all its segment ids")
+    func dropIsLogged() async throws {
+        let dir = try makeDir()
+        let file = try seed([try makeEntry(in: dir, missing: Set(ids))], in: dir)
+        let lines = DiagLines()
+        let uploader = SessionUploader(queueFile: { file }, upload: UploadLog().upload, diag: lines.record)
+
+        await uploader.purgeOrphans()
+
+        let logged = lines.all
+        #expect(logged.count == 1)
+        #expect(logged[0].session == sessionID)
+        #expect(logged[0].message.contains("upload.dropped"))
+        #expect(logged[0].message.contains("segments=[s01, s02, s03]"))
+    }
+
+    @Test("an intact entry writes no Diag line")
+    func intactIsSilent() async throws {
+        let dir = try makeDir()
+        let file = try seed([try makeEntry(in: dir)], in: dir)
+        let lines = DiagLines()
+        let uploader = SessionUploader(queueFile: { file }, upload: UploadLog().upload, diag: lines.record)
+
+        await uploader.purgeOrphans()
+        await uploader.flush()
+
+        #expect(lines.all.isEmpty)
+    }
+
+    @Test("the manifest that is sent carries only the survivors and no partial marker")
+    func sentManifestHasNoPartialMarker() async throws {
+        let dir = try makeDir()
+        let file = try seed([try makeEntry(in: dir, missing: ["s02"])], in: dir)
+        let log = UploadLog()
+        let uploader = SessionUploader(queueFile: { file }, upload: log.upload)
+
+        await uploader.flush()
+
+        let sent = try #require(await log.manifests.first)
+        let json = try #require(String(data: JSONEncoder().encode(sent), encoding: .utf8))
+        #expect(!json.contains("partial"))
+        #expect(!json.contains("s02"))
+        #expect(json.contains("s01") && json.contains("s03"))
+    }
+
     @Test("flush still drops an entry whose files are all gone and goes on to the next one")
     func flushDropsEmptyEntryAndContinues() async throws {
         let dir = try makeDir()
@@ -256,6 +339,24 @@ struct UploadQueueRecoveryTests {
     }
 }
 
+/// Stub for the uploader's diagnostics seam; records the lines it was given.
+/// Synchronous, so a line is there as soon as the uploader call returns.
+private final class DiagLines: @unchecked Sendable {
+    struct Line {
+        let session: String
+        let message: String
+    }
+
+    private let lock = NSLock()
+    private var lines: [Line] = []
+
+    var all: [Line] { lock.withLock { lines } }
+
+    var record: @Sendable (String, String) -> Void {
+        { session, message in self.lock.withLock { self.lines.append(Line(session: session, message: message)) } }
+    }
+}
+
 /// Stub for the uploader's network seam; records what would have been sent.
 private actor UploadLog {
     struct Call: Sendable {
@@ -265,6 +366,7 @@ private actor UploadLog {
     }
 
     private(set) var calls: [Call] = []
+    private(set) var manifests: [Manifest] = []
     private var failure: (any Error)?
 
     func failNext(_ error: any Error) { failure = error }
@@ -278,6 +380,7 @@ private actor UploadLog {
             if case .voiceNote(let v) = segment { return v.segment_id }
             return "?"
         }
+        manifests.append(manifest)
         calls.append(Call(sessionID: manifest.session_id, segmentIDs: ids, fields: files.keys.sorted()))
         if let failure {
             self.failure = nil

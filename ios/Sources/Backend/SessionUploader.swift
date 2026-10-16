@@ -105,10 +105,11 @@ public actor SessionUploader {
             /// Every audio file is on disk.
             case intact
             /// Some files are gone. The entry no longer references them or
-            /// their segments and is marked `partial`.
-            case pruned(QueueEntry, missing: Set<String>)
-            /// No segment is left to upload.
-            case unrecoverable(missing: Set<String>)
+            /// their segments (`segmentIDs`, manifest order) and is marked
+            /// `partial` when a segment went with them.
+            case pruned(QueueEntry, missing: Set<String>, segmentIDs: [String])
+            /// No segment is left to upload; `segmentIDs` are all it had.
+            case unrecoverable(missing: Set<String>, segmentIDs: [String])
         }
 
         /// Prune each missing audio file and its manifest segment, keeping
@@ -120,10 +121,14 @@ public actor SessionUploader {
             if missing.isEmpty { return .intact }
             var pruned = self
             pruned.audio_file_paths = audio_file_paths.filter { !missing.contains($0.key) }
-            pruned.manifest.segments = manifest.segments.filter { !missing.contains($0.audioFile) }
-            if pruned.manifest.segments.isEmpty { return .unrecoverable(missing: missing) }
-            pruned.partial = partial || pruned.manifest.segments.count < manifest.segments.count
-            return .pruned(pruned, missing: missing)
+            let (lost, kept) = manifest.segments.reduce(into: ([Segment](), [Segment]())) { split, segment in
+                if missing.contains(segment.audioFile) { split.0.append(segment) } else { split.1.append(segment) }
+            }
+            pruned.manifest.segments = kept
+            let lostIDs = lost.map(\.segmentID)
+            if kept.isEmpty { return .unrecoverable(missing: missing, segmentIDs: lostIDs) }
+            pruned.partial = partial || !lost.isEmpty
+            return .pruned(pruned, missing: missing, segmentIDs: lostIDs)
         }
     }
 
@@ -138,6 +143,10 @@ public actor SessionUploader {
 
     private let queueFile: @Sendable () throws -> URL
     private let upload: @Sendable (Manifest, [String: URL]) async throws -> SessionAccepted
+    /// Diagnostics line for a session (`session_id`, message). Unlike
+    /// `partial`, it outlives the queue entry, so the export still shows
+    /// that segments were lost after the smaller session uploaded.
+    private let diag: @Sendable (String, String) -> Void
 
     public init() {
         self.init(
@@ -148,13 +157,16 @@ public actor SessionUploader {
         )
     }
 
-    /// Seam for tests: where the queue persists and how a session is sent.
+    /// Seam for tests: where the queue persists, how a session is sent and
+    /// where diagnostics lines go.
     init(
         queueFile: @escaping @Sendable () throws -> URL,
-        upload: @escaping @Sendable (Manifest, [String: URL]) async throws -> SessionAccepted
+        upload: @escaping @Sendable (Manifest, [String: URL]) async throws -> SessionAccepted,
+        diag: @escaping @Sendable (String, String) -> Void = { Diag.log(session: $0, $1) }
     ) {
         self.queueFile = queueFile
         self.upload = upload
+        self.diag = diag
     }
 
     // --- public API ----------------------------------------------------
@@ -322,21 +334,31 @@ public actor SessionUploader {
         switch recovery {
         case .intact:
             return entry
-        case .pruned(let pruned, let missing):
+        case .pruned(let pruned, let missing, let segmentIDs):
             if let idx = queue.firstIndex(where: { $0.id == entry.id }) {
                 queue[idx] = pruned
             }
             persist()
+            let files = missing.sorted().joined(separator: ", ")
             Log.upload.warning(
-                "partial entry \(entry.id, privacy: .public) — pruned missing files: \(missing.sorted().joined(separator: ", "), privacy: .public)"
+                "partial entry \(entry.id, privacy: .public) — pruned missing files: \(files, privacy: .public)"
+            )
+            diag(
+                entry.id,
+                "upload.pruned segments=[\(segmentIDs.joined(separator: ", "))] files=[\(files)] kept=\(pruned.manifest.segments.count)"
             )
             return pruned
-        case .unrecoverable(let missing):
+        case .unrecoverable(let missing, let segmentIDs):
             queue.removeAll { $0.id == entry.id }
             pausedIDs.remove(entry.id)
             persist()
+            let files = missing.sorted().joined(separator: ", ")
             Log.upload.warning(
-                "drop orphaned entry \(entry.id, privacy: .public) — missing files: \(missing.sorted().joined(separator: ", "), privacy: .public)"
+                "drop orphaned entry \(entry.id, privacy: .public) — missing files: \(files, privacy: .public)"
+            )
+            diag(
+                entry.id,
+                "upload.dropped segments=[\(segmentIDs.joined(separator: ", "))] files=[\(files)] kept=0"
             )
             return nil
         }

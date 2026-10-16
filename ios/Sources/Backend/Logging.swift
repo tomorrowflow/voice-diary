@@ -49,6 +49,13 @@ public enum Diag {
             log(message)
         }
     }
+
+    /// Same, for a session known only by its manifest `session_id` (the
+    /// upload queue has no `UUID`). The id is the session start timestamp,
+    /// so the tag carries it whole.
+    public static func log(session: String, _ message: String) {
+        Log.app.notice("[sid=\(session, privacy: .public)] \(message, privacy: .public)")
+    }
 }
 
 /// Lightweight resident-memory reader so cardinal-event Diag lines can
