@@ -234,24 +234,34 @@ scenario, the SPEC §10.6.1 failure contract (`detail`, `code`, `upstream`, `ret
 | `slow` / `slow:<s>` | the `retryable` 503 after 15 s (or `<s>`): the retry spinner stays visible |
 | `slow-ok` | the 200 after 15 s |
 
+On `/health`, `retryable` and `not-bootstrapped` answer like the real server: 200,
+`status: degraded`, `msgraph` `down` / `not_bootstrapped`.
+
 A route takes a comma-separated list (`--route /today/calendar=retryable,ok`: the first request
 fails, every later one succeeds). The authed routes answer 401 `missing_bearer_token` without a
 bearer header and accept any token unless `--token` is given.
 
 **Node permission.** The Mac node must allow exactly two commands, both from the worktree root:
 `python3 features/verify-ios/stub_server.py <args>` and
-`pkill -f features/verify-ios/stub_server.py`. No other `python3` command is needed or allowed.
+`pkill -f features/verify-ios/stub_server.py`. No other `python3` command is needed or allowed,
+and no background mode, `&`, `nohup` or wrapper script.
 
-Start it with the Bash tool in **background mode** (no `&`, `nohup` or wrapper script), as one
-command:
+Start it **detached, in the foreground**. The Bash tool's background mode is not available on the
+node, so the stub daemonizes itself: `--daemon` forks twice with `setsid`, points stdin, stdout
+and stderr at `/dev/null` (or at `--log <file>`, which then holds the request log), prints one
+line and returns at once. `--ttl <seconds>` (1 to 7200) is required with it: the stub exits on
+its own when the time is up, so a forgotten run cannot listen forever. The port is bound before
+the fork, so a busy port is an error here, not a silent failure later. One command:
 
 ```bash
-python3 features/verify-ios/stub_server.py --port 8791 --route /today/calendar=retryable
+python3 features/verify-ios/stub_server.py --daemon --ttl 3000 --port 8791 --log features/evidence/ios-<run>/stub.log --route /today/calendar=retryable
 ```
 
-Its first output line is `stub listening on http://127.0.0.1:8791 {…}`. Check every route and
-scenario through the same file (`curl` is denied); it prints one `PASS`/`FAIL` line per request,
-exits non-zero on a failure, and restores the routes it changed:
+It prints `stub listening on http://127.0.0.1:8791 {…} ttl=3000s log=…` and the stub survives
+the next commands. Check every route and scenario through the same file (`curl` is denied); it
+prints one `PASS`/`FAIL` line per request (24 lines and `routes restored`), exits non-zero on a
+failure, and restores the routes it changed. Without a listener it prints
+`no stub answering on …` and exits 2:
 
 ```bash
 python3 features/verify-ios/stub_server.py --port 8791 --check > features/evidence/ios-<run>/stub-check.txt 2>&1
@@ -264,8 +274,9 @@ uses it):
 python3 features/verify-ios/stub_server.py --port 8791 --set /today/calendar=not-bootstrapped
 ```
 
-The app's server URL for the stub is `http://127.0.0.1:8791`. The stub is stopped in Cleanup;
-never leave it running.
+Without `--daemon` the stub runs in the foreground until killed; do not do that from a Bash call
+that has to return. The app's server URL for the stub is `http://127.0.0.1:8791`. The stub is
+stopped in Cleanup; never leave it running.
 
 ## Drive
 
@@ -333,17 +344,31 @@ Things learned in KA-11:
 
 ### Reaching the calendar failure states (UFH-06)
 
-1. First launch: answer the prompts, then enter the server URL `http://127.0.0.1:8791` and any
-   dummy token on the Server screen (or More → Server) and tap **Save**. They must persist: quit
-   and relaunch the app (`simctl terminate`, `simctl launch`); the Server screen must not come
-   back (an unsigned build forgets them, see "Why ad-hoc signing").
-2. Wait for the Parakeet model (about 1.2 GB, needs network) to finish loading; **Start
-   session** stays disabled until then. Check the tree for the button being enabled.
-3. With the stub on `/today/calendar=retryable`, tap **Start session**: the card with
-   **Try again** and **Start without calendar** appears. Switch the stub (`--set …=not-bootstrapped`)
-   and tap **Try again** for the not-bootstrapped card. With `slow` the card shows the retry
-   spinner right after the tap: screenshot within the delay.
-4. The retry-only resume card needs an unfinished session: use the Seed step below.
+1. First launch: answer both prompts (`Allow`, `Allow`), then on the Server screen tap the URL
+   field and type `127.0.0.1:8791` after the prefilled `http://`, tap the token field and type a
+   dummy token, tap the keyboard's return key, tap **Save**. The Connection row turns **OK**
+   (the stub's `/health`), then tap **Continue**. They must persist: `simctl terminate`,
+   `simctl launch`; the app must open on the Evening tab, not the Server screen (an unsigned
+   build forgets them, see "Why ad-hoc signing"). The stub log then shows the app's
+   `/today/calendar` and `/api/sessions/dates` requests.
+2. Wait for the on-device speech model (Parakeet, about 1.2 GB from Hugging Face, then a first
+   CoreML compile of a few minutes; every new simulator repeats it). **Start session** is
+   missing from the tree or disabled ("Preparing speech model…") until it is ready.
+3. **Retryable card:** stub on `/today/calendar=retryable`, tap **Start session**. The card
+   shows the diagnosis with **Try again** (primary) and **Start without calendar**.
+4. **Retry spinner:** `--set /today/calendar=slow:30`, tap **Try again**, screenshot straight
+   away: the button reads **Loading…** with a spinner. Both appearances fit in the 30 s. The card
+   only returns once the request has failed, so wait for `Try again` in the tree before the next
+   tap.
+5. **Not-bootstrapped card:** `--set /today/calendar=not-bootstrapped`, tap **Try again**:
+   **Start without calendar** is now the primary button and the hint says the sign-in has to be
+   completed on the server.
+6. **Retry-only resume card:** needs an unfinished session with a recorded segment and no
+   marker. Tap **Start without calendar**, wait until the Day close step records (the timer
+   runs), tap **Next** (this writes `segments/s01.m4a`), then use the Seed step below. After the
+   relaunch the Evening tab shows *Unfinished session — pick it up below*; with the stub on
+   `retryable`, tap **Pick up**: the card shows only **Try again** and "This session needs the
+   calendar to continue. Your recordings stay saved."
 
 ### Seed (states the UI cannot reach)
 
@@ -370,9 +395,17 @@ ls "<data container>/Library/Application Support/VoiceDiary/sessions"
 rm "<data container>/Library/Application Support/VoiceDiary/sessions/<session>/calendar_free"
 ```
 
+For the UFH-06 resume card also remove the session's `manifest.json` (a session with a
+manifest counts as finished), leaving `segments/` in place:
+
+```bash
+rm "<data container>/Library/Application Support/VoiceDiary/sessions/<session>/manifest.json"
+```
+
 Only the paths of this simulator's container. Say in the evidence what the fixture does and does
-not prove (a seeded state is not the real flow that normally leads to it). Launch the app again
-afterwards.
+not prove: the app cannot tell this session from one that was started *with* the calendar, so the
+capture shows the card for "unfinished session, a segment, no marker", not a genuine calendar
+session. Launch the app again afterwards.
 
 ## Evidence
 
@@ -410,7 +443,7 @@ means the step failed. Commit the original full-size images, not the `-small` co
 The app log (os.Logger) can be read with `xcrun simctl spawn vd-verify-ios log show --last 5m
 --predicate 'process == "VoiceDiary"' --style compact`; it is noisy (CoreML, network), so
 filter on the message you expect, e.g. `eventMessage CONTAINS "Voice Diary ready"`. The
-stub also logs every request it answers on its stderr (the background task's output).
+stub also logs every request it answers (method, path, status) to its `--log` file.
 
 Retain proof you want in git by copying it out of the git-ignored evidence directory into
 `docs/screenshots/<KEY>/` and committing it as the last commit (`<KEY>: proof screenshots`):
@@ -432,8 +465,8 @@ Always run it, also after a failed Launch or Drive. It removes only what this ru
 never touches `features/evidence/` or `docs/screenshots/`. Deleting the device also removes
 the installed app, its container and every permission answer.
 
-Stop the stub first (matches only this file's process; `no process found` is fine). Then end
-the background Bash task if it is still listed, and confirm nothing is left:
+Stop the stub first (matches only this file's process, which `pkill` ends even though it was
+detached; a non-zero exit with no output just means none was running). Confirm nothing is left:
 
 ```bash
 pkill -f features/verify-ios/stub_server.py
@@ -443,7 +476,13 @@ pkill -f features/verify-ios/stub_server.py
 pgrep -fl stub_server
 ```
 
-Must print nothing.
+Must print nothing (exit 1).
+
+```bash
+python3 features/verify-ios/stub_server.py --port 8791 --check
+```
+
+Must print `no stub answering on http://127.0.0.1:8791` (port closed).
 
 ```bash
 xcrun simctl terminate vd-verify-ios com.tomorrowflow.voice-diary

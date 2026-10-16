@@ -5,11 +5,12 @@ Serves the few routes the iOS app calls on the Evening tab, with a scenario per 
 simulator run can reach states a real server never produces on demand (the SPEC section 10.6.1
 failure contract: HTTP 503 with `detail`, `code`, `upstream`, `retryable`).
 
-    python3 features/verify-ios/stub_server.py --port 8781 --route /today/calendar=retryable
-    python3 features/verify-ios/stub_server.py --port 8781 --set /today/calendar=not-bootstrapped
-    python3 features/verify-ios/stub_server.py --port 8781 --check
+    python3 features/verify-ios/stub_server.py --daemon --ttl 1800 --port 8791 --route /today/calendar=retryable
+    python3 features/verify-ios/stub_server.py --port 8791 --set /today/calendar=not-bootstrapped
+    python3 features/verify-ios/stub_server.py --port 8791 --check
 
-Without `--set` or `--check` it serves until killed. Binds 127.0.0.1 only; the simulator reaches
+Without `--set` or `--check` it serves until killed (or, with `--daemon`, detached until `--ttl`
+runs out; stop it with `pkill -f features/verify-ios/stub_server.py`). Binds 127.0.0.1 only; the simulator reaches
 the host loopback, so the app's server URL is `http://127.0.0.1:<port>`.
 
 Scenarios (a route takes a comma-separated list: request n gets the n-th, the last repeats):
@@ -17,6 +18,7 @@ Scenarios (a route takes a comma-separated list: request n gets the n-th, the la
     ok                 200, the route's normal body
     retryable          503 msgraph_unavailable, retryable true
     not-bootstrapped   503 msgraph_not_bootstrapped, retryable false
+                       (on /health instead: 200, status degraded, msgraph down / not_bootstrapped)
     rate-limited       429 msgraph_rate_limited, retryable true, Retry-After: 5
     engine-error       502 msgraph_engine_error, retryable true
     slow               the retryable 503 after a delay (default 15 s)
@@ -29,6 +31,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import signal
 import socketserver
 import sys
 import threading
@@ -41,6 +45,7 @@ from urllib.parse import parse_qs, urlsplit
 
 HOST = "127.0.0.1"
 DEFAULT_DELAY = 15.0
+MAX_TTL = 7200
 CONTROL_PATH = "/__stub/routes"
 
 # Routes the app calls. Everything but /health needs a bearer, as on the real server.
@@ -56,6 +61,8 @@ FAILURES: dict[str, tuple[int, str, str, bool, str | None]] = {
     "slow": (503, "msgraph_unavailable", "msgraph", True, None),
 }
 SCENARIOS = ("ok", "slow-ok", *FAILURES)
+# SPEC 10.7: /health reports a Graph problem as 200 with status "degraded", never as a 503.
+HEALTH_MSGRAPH = {"retryable": "down", "not-bootstrapped": "not_bootstrapped"}
 
 
 def parse_scenario(text: str) -> tuple[str, float]:
@@ -202,6 +209,12 @@ class Handler(BaseHTTPRequestHandler):
         if name in ("ok", "slow-ok"):
             self.send_json(200, ok_body(route, parse_qs(parts.query)))
             return
+        if route == "/health" and name in HEALTH_MSGRAPH:
+            body = ok_body(route, {})
+            body.update(status="degraded")
+            body["upstream"]["msgraph"] = HEALTH_MSGRAPH[name]
+            self.send_json(200, body)
+            return
         status, code, upstream, retryable, retry_after = FAILURES[name]
         self.send_json(
             status,
@@ -279,6 +292,9 @@ def check(port: int) -> int:
                         and {"graph_event_id", "subject", "start", "end", "rsvp_status", "organizer",
                              "attendees", "is_all_day", "show_as", "body_preview", "is_recurring",
                              "web_link"} <= set(body["events"][0])))
+                elif route == "/health" and name in HEALTH_MSGRAPH:
+                    good = (status == 200 and body.get("status") == "degraded"
+                            and body["upstream"].get("msgraph") == HEALTH_MSGRAPH[name])
                 else:
                     want = FAILURES[name]
                     good = (status == want[0] and body.get("code") == want[1] and body.get("upstream") == want[2]
@@ -298,30 +314,70 @@ def check(port: int) -> int:
     return 1 if failures else 0
 
 
+def detach(log_path: str | None) -> bool:
+    """Double fork into a session of its own with stdio on /dev/null (or `log_path`).
+
+    Returns False in the original process (which should report and exit) and True in the daemon.
+    """
+    if os.fork() > 0:
+        return False
+    os.setsid()
+    if os.fork() > 0:
+        os._exit(0)
+    signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    null = os.open(os.devnull, os.O_RDONLY)
+    out = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644) if log_path \
+        else os.open(os.devnull, os.O_WRONLY)
+    os.dup2(null, 0)
+    os.dup2(out, 1)
+    os.dup2(out, 2)
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--port", type=int, required=True, help="TCP port on 127.0.0.1")
     parser.add_argument("--route", action="append", default=[], metavar="ROUTE=SCENARIO[,SCENARIO...]",
                         help="initial scenario for a route (default ok); repeatable")
     parser.add_argument("--token", help="bearer token the authed routes accept (default: any)")
+    parser.add_argument("--daemon", action="store_true",
+                        help="detach (double fork, setsid), print the port and return at once; "
+                             "serve until --ttl runs out. Stop early with pkill -f this file")
+    parser.add_argument("--ttl", type=int, default=0, metavar="SECONDS",
+                        help=f"with --daemon: exit after this many seconds (1..{MAX_TTL})")
+    parser.add_argument("--log", metavar="FILE", help="with --daemon: append the request log here")
     parser.add_argument("--set", dest="set_route", metavar="ROUTE=SCENARIO[,SCENARIO...]",
                         help="change a route on the stub already running on --port, then exit")
     parser.add_argument("--check", action="store_true",
                         help="request every route under each scenario on the running stub, then exit")
     args = parser.parse_args()
 
-    if args.set_route:
-        print(json.dumps(set_route(args.port, args.set_route)))
-        return 0
-    if args.check:
-        return check(args.port)
+    if args.set_route or args.check:
+        try:
+            if args.set_route:
+                print(json.dumps(set_route(args.port, args.set_route)))
+                return 0
+            return check(args.port)
+        except urllib.error.URLError as exc:
+            print(f"no stub answering on http://{HOST}:{args.port}: {exc.reason}", file=sys.stderr)
+            return 2
 
     routes: dict[str, list[tuple[str, float]]] = {}
     for item in args.route:
         route, sequence = parse_route_arg(item)
         routes[route] = sequence
+    if args.daemon and not 0 < args.ttl <= MAX_TTL:
+        parser.error(f"--daemon needs --ttl between 1 and {MAX_TTL} seconds")
+    # Bind before forking so a busy port is reported to the caller, not lost in the daemon.
     server = StubServer((HOST, args.port), State(routes, args.token))
-    print(f"stub listening on http://{HOST}:{args.port} {json.dumps(server.state.snapshot())}", flush=True)
+    banner = f"stub listening on http://{HOST}:{args.port} {json.dumps(server.state.snapshot())}"
+    if args.daemon:
+        if not detach(args.log):
+            print(f"{banner} ttl={args.ttl}s log={args.log or os.devnull}", flush=True)
+            os._exit(0)
+        threading.Timer(args.ttl, server.shutdown).start()
+    else:
+        print(banner, flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
