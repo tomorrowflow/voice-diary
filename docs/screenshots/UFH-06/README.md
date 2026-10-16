@@ -17,7 +17,8 @@ because the unsigned simulator build cannot write the Keychain (`-34018`).
 |---|---|
 | `retryable-{en,de}-{light,dark}.png` | Coded retryable card: **Try again** is the filled (primary) button, **Start without calendar** is the outlined secondary one; the hint wraps. |
 | `not-bootstrapped-{en,de}-{light,dark}.png` | Coded not-bootstrapped card: **Start without calendar** is the filled (primary) button, **Try again** is the outlined secondary one; the hint says once that the sign-in has to be completed on the server, and wraps in English and German. |
-| `spinner-{en,de}-{light,dark}.png` | **Try again** pressed while the fetch is pending: the button shows a spinner and "Loading…" / "Lade …", and **Start without calendar** is disabled. Shown on the retryable card only; the spinner on the not-bootstrapped card (secondary button) is not captured. |
+| `spinner-{en,de}-{light,dark}.png` | **Try again** pressed while the fetch is pending: the button shows a spinner and "Loading…" / "Lade …", and **Start without calendar** is disabled. Retryable card, where **Try again** is the primary button. |
+| `spinner-not-bootstrapped-{en,de}-{light,dark}.png` | The same retry on the not-bootstrapped card, where **Try again** is the outlined secondary button: it shows the spinner with "Loading…" / "Lade …" while **Start without calendar** stays the filled primary button. Captured against the slow stub (15 s) straight after the tap. |
 | `resume-card-{en,de}-{light,dark}.png` | *Pick up* on an unfinished session with the calendar down: the same diagnosis with only **Try again** (primary) and "This session needs the calendar to continue. Your recordings stay saved." (DE: *Zum Fortsetzen braucht diese Sitzung den Kalender. Deine Aufnahmen bleiben gespeichert.*). See the fixture note below. |
 | `card-{en,de}-{light,dark}.png` | The uncoded `notConfigured` card (no server set): its title and hint are German in both languages. |
 | `walkthrough-{en,de}-{light,dark}.png` | The walkthrough running after **Start without calendar**: no calendar events, then the voice-note closing section "Day close" (DE: *Tagesabschluss*). |
@@ -39,6 +40,6 @@ session resuming after a successful retry. Nothing outside that simulator was to
 
 ## Not captured
 
-- **Retry spinner on the not-bootstrapped card** (secondary button); the spinner is shown on the
-  retryable card only.
+- **A genuine calendar session resuming after a successful retry**: the stub never answers 200
+  (see the fixture note).
 - **PRD scenario 3 on a physical device** is left for the operator.
