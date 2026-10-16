@@ -8,6 +8,15 @@ public struct PendingUploadSummary: Equatable, Sendable {
     /// that has one. Nil when no waiting session failed with a code (not
     /// attempted yet, older server, network error).
     public let lastFailureCode: String?
+    /// How many of the waiting sessions lost some audio files and will
+    /// upload without those segments (`QueueEntry.partial`).
+    public let partialCount: Int
+
+    public init(count: Int, lastFailureCode: String?, partialCount: Int = 0) {
+        self.count = count
+        self.lastFailureCode = lastFailureCode
+        self.partialCount = partialCount
+    }
 
     /// Summary of the queue, or nil when nothing is waiting. Permanently
     /// rejected entries are kept only for diagnostics and never upload, so
@@ -17,7 +26,8 @@ public struct PendingUploadSummary: Equatable, Sendable {
         guard !waiting.isEmpty else { return nil }
         return PendingUploadSummary(
             count: waiting.count,
-            lastFailureCode: waiting.lazy.compactMap(\.last_failure_code).first
+            lastFailureCode: waiting.lazy.compactMap(\.last_failure_code).first,
+            partialCount: waiting.filter(\.partial).count
         )
     }
 

@@ -114,7 +114,8 @@ struct PendingUploadSummaryTests {
     private func entry(
         _ id: String,
         code: String? = nil,
-        permanentlyFailed: Bool = false
+        permanentlyFailed: Bool = false,
+        partial: Bool = false
     ) -> SessionUploader.QueueEntry {
         .init(
             id: id,
@@ -123,8 +124,21 @@ struct PendingUploadSummaryTests {
             attempts: 1,
             next_attempt_at: Date(timeIntervalSince1970: 1_800_000_000),
             permanentlyFailed: permanentlyFailed,
-            last_failure_code: code
+            last_failure_code: code,
+            partial: partial
         )
+    }
+
+    @Test("counts waiting sessions that will upload without some recordings")
+    func partialCount() {
+        let summary = PendingUploadSummary.make(from: [
+            entry("a"),
+            entry("b", partial: true),
+            entry("c", partial: true),
+            entry("d", permanentlyFailed: true, partial: true),
+        ])
+        #expect(summary == PendingUploadSummary(count: 3, lastFailureCode: nil, partialCount: 2))
+        #expect(PendingUploadSummary.make(from: [entry("a")])?.partialCount == 0)
     }
 
     @Test("an empty queue has no summary, so the indicator disappears")

@@ -756,7 +756,11 @@ Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-ana
   `SessionUploader.pending()` exposes it, so the UI can say why a session is still waiting. It is
   replaced by every later failure and dropped with the entry on success.
 - An upload failure never deletes the audio or the manifest, and the entry keeps its audio paths.
-  It leaves the queue only on success, via `clear()`, or when its audio files are found missing.
+  It leaves the queue only on success, via `clear()`, or when none of its segments has audio left.
+- When some of a queued session's audio files are found missing (on `purgeOrphans()` and before each
+  upload attempt), only each missing file and its manifest segment are pruned. The surviving
+  segments stay queued under the same `session_id`, upload as a smaller manifest, and the entry is
+  marked `partial` (queue-local flag, not part of the manifest).
 - If Tailscale unreachable, queue locally. Resume queue when reachability returns.
 - Queue is first-in-first-out by `session_id` (which is the session start timestamp).
 - User-facing UI shows queue status — non-intrusive. Mehr → Server shows an upload-queue card only
