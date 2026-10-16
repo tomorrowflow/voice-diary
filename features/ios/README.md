@@ -6,16 +6,18 @@ reached on a throwaway iPhone 17 simulator (`vd-verify-ios`), what proves it, an
 | Feature | Where in the app | Reached with `simctl` | Mapped from |
 |---|---|---|---|
 | [first-launch](first-launch.md) | system prompts over the Evening tab | yes (launch) | `Permissions.swift`, `CaptureNotifications.swift` |
-| [evening-walkthrough](evening-walkthrough.md) | Evening tab (default) | launch only | `Walkthrough/WalkthroughView.swift` |
+| [evening-walkthrough](evening-walkthrough.md) | Evening tab (default) | launch; calendar failure cards with the stub and `idb` | `Walkthrough/WalkthroughView.swift` |
 | [recording](recording.md) | Recording tab | no (tap) | `DriveBy/CaptureView.swift` |
 | [history](history.md) | History tab | no (tap) | `Verlauf/VerlaufView.swift` |
+| [upstream-impact](upstream-impact.md) | More → Server, History → session, Evening → Start session | stub (`/health=unhealthy`), seeded queue, `idb` | `Settings/ServerSettingsView.swift`, `Backend/UpstreamImpact.swift` |
 | [more-settings](more-settings.md) | More tab, appearance, language | appearance only | `VoiceDiaryApp.swift` (`MehrView`), `Settings/` |
 
 ## Ground rules
 
 - The real app runs; nothing in `ios/Sources/` is changed, mocked or launched with a debug flag.
-- `simctl` cannot tap, type or swipe. A "(tap)" state is documented so a person (or a future UI
-  test) can reach it, but this skill never claims it as verified.
+- `simctl` cannot tap, type or swipe; `idb ui` can (SKILL.md → Drive). Server states a real
+  server cannot produce on demand come from `features/verify-ios/stub_server.py`. A state is
+  claimed only when it was driven and a screenshot of it was inspected.
 - Evidence for a run lives in `features/evidence/ios-<run>/` (git-ignored). Screenshots worth
   keeping are copied to `docs/screenshots/<KEY>/` and committed on purpose.
 - A state that is not in the table is not verified by this skill.
