@@ -28,6 +28,11 @@ public actor SessionUploader {
         /// failure, after a failure without a code (older server, network
         /// error) and for queue files written before this field existed.
         public var last_failure_code: String?
+        /// True once some of the session's audio files were found missing
+        /// and their segments were pruned from `manifest`, so only a subset
+        /// of what was recorded is uploaded. False for queue files written
+        /// before this field existed.
+        public var partial: Bool
 
         public init(
             id: String,
@@ -36,7 +41,8 @@ public actor SessionUploader {
             attempts: Int,
             next_attempt_at: Date,
             permanentlyFailed: Bool = false,
-            last_failure_code: String? = nil
+            last_failure_code: String? = nil,
+            partial: Bool = false
         ) {
             self.id = id
             self.manifest = manifest
@@ -45,11 +51,12 @@ public actor SessionUploader {
             self.next_attempt_at = next_attempt_at
             self.permanentlyFailed = permanentlyFailed
             self.last_failure_code = last_failure_code
+            self.partial = partial
         }
 
-        // Custom Decodable so queue files written before `permanentlyFailed`
-        // or `last_failure_code` were added decode cleanly (the missing keys
-        // default to false / nil).
+        // Custom Decodable so queue files written before `permanentlyFailed`,
+        // `last_failure_code` or `partial` were added decode cleanly (the
+        // missing keys default to false / nil / false).
         public init(from decoder: any Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(String.self, forKey: .id)
@@ -59,11 +66,12 @@ public actor SessionUploader {
             next_attempt_at = try c.decode(Date.self, forKey: .next_attempt_at)
             permanentlyFailed = try c.decodeIfPresent(Bool.self, forKey: .permanentlyFailed) ?? false
             last_failure_code = try c.decodeIfPresent(String.self, forKey: .last_failure_code)
+            partial = try c.decodeIfPresent(Bool.self, forKey: .partial) ?? false
         }
 
         private enum CodingKeys: String, CodingKey {
             case id, manifest, audio_file_paths, attempts, next_attempt_at, permanentlyFailed
-            case last_failure_code
+            case last_failure_code, partial
         }
 
         public var nextBackoff: TimeInterval {
@@ -91,6 +99,32 @@ public actor SessionUploader {
             }
             return updated
         }
+
+        /// What `recoveringFromMissingFiles` found.
+        enum Recovery {
+            /// Every audio file is on disk.
+            case intact
+            /// Some files are gone. The entry no longer references them or
+            /// their segments and is marked `partial`.
+            case pruned(QueueEntry, missing: Set<String>)
+            /// No segment is left to upload.
+            case unrecoverable(missing: Set<String>)
+        }
+
+        /// Prune each missing audio file and its manifest segment, keeping
+        /// the survivors. `fileExists` takes a stored path. Pure so the
+        /// recovery rule is testable without the disk. Schedule, failure
+        /// history and the permanent flag are left as they are.
+        func recoveringFromMissingFiles(fileExists: (String) -> Bool) -> Recovery {
+            let missing = Set(audio_file_paths.filter { !fileExists($0.value) }.keys)
+            if missing.isEmpty { return .intact }
+            var pruned = self
+            pruned.audio_file_paths = audio_file_paths.filter { !missing.contains($0.key) }
+            pruned.manifest.segments = manifest.segments.filter { !missing.contains($0.audioFile) }
+            if pruned.manifest.segments.isEmpty { return .unrecoverable(missing: missing) }
+            pruned.partial = true
+            return .pruned(pruned, missing: missing)
+        }
     }
 
     private var queue: [QueueEntry] = []
@@ -102,7 +136,26 @@ public actor SessionUploader {
     /// persisted entry is already due, so it is tried again then.
     private var pausedIDs: Set<String> = []
 
-    public init() {}
+    private let queueFile: @Sendable () throws -> URL
+    private let upload: @Sendable (Manifest, [String: URL]) async throws -> SessionAccepted
+
+    public init() {
+        self.init(
+            queueFile: { try LocalStore.uploadQueueFile() },
+            upload: { manifest, files in
+                try await ServerClient.shared.uploadSession(manifest: manifest, audioFiles: files)
+            }
+        )
+    }
+
+    /// Seam for tests: where the queue persists and how a session is sent.
+    init(
+        queueFile: @escaping @Sendable () throws -> URL,
+        upload: @escaping @Sendable (Manifest, [String: URL]) async throws -> SessionAccepted
+    ) {
+        self.queueFile = queueFile
+        self.upload = upload
+    }
 
     // --- public API ----------------------------------------------------
 
@@ -155,24 +208,18 @@ public actor SessionUploader {
         Log.upload.info("queue cleared")
     }
 
-    /// How many entries are dropped because their on-disk audio is gone.
-    /// Mostly diagnostic for the debug UI.
+    /// Prune queued sessions whose on-disk audio is gone. A session with some
+    /// files missing keeps its surviving segments (marked `partial`); only a
+    /// session with nothing left is dropped. Returns how many entries were
+    /// dropped. Mostly diagnostic for the debug UI.
     @discardableResult
     public func purgeOrphans() async -> Int {
         await ensureLoaded()
-        let before = queue.count
-        queue.removeAll { entry in
-            entry.audio_file_paths.values.contains { rel in
-                !FileManager.default.fileExists(atPath: Self.resolved(rel).path)
-            }
+        var dropped = 0
+        for entry in queue where reconcile(entry) == nil {
+            dropped += 1
         }
-        let removed = before - queue.count
-        if removed > 0 {
-            pausedIDs.formIntersection(queue.map(\.id))
-            persist()
-            Log.upload.warning("purged \(removed) orphaned queue entries")
-        }
-        return removed
+        return dropped
     }
 
     public func pending() async -> [QueueEntry] {
@@ -186,27 +233,16 @@ public actor SessionUploader {
         isFlushing = true
         defer { isFlushing = false }
 
-        while let entry = nextDue() {
-            // Drop orphaned entries up-front rather than burning retries.
+        while let due = nextDue() {
+            // Prune missing files up-front rather than burning retries.
+            guard let entry = reconcile(due) else { continue }
             let resolved = entry.audio_file_paths.mapValues { Self.resolved($0) }
-            let missing = resolved.filter { !FileManager.default.fileExists(atPath: $0.value.path) }
-            if !missing.isEmpty {
-                Log.upload.warning(
-                    "drop orphaned entry \(entry.id, privacy: .public) — missing files: \(missing.keys.joined(separator: ", "), privacy: .public)"
-                )
-                queue.removeAll { $0.id == entry.id }
-                persist()
-                continue
-            }
             Log.upload.notice(
                 "upload.start sid=\(entry.id, privacy: .public) attempt=\(entry.attempts, privacy: .public)"
             )
             let started = Date()
             do {
-                _ = try await ServerClient.shared.uploadSession(
-                    manifest: entry.manifest,
-                    audioFiles: resolved
-                )
+                _ = try await upload(entry.manifest, resolved)
                 queue.removeAll { $0.id == entry.id }
                 persist()
                 let elapsed = Int(Date().timeIntervalSince(started) * 1000)
@@ -276,6 +312,36 @@ public actor SessionUploader {
         }
     }
 
+    /// Apply the missing-file recovery rule to a queued entry and store the
+    /// result. Returns the entry to upload, or nil when it was dropped
+    /// because nothing is left of it.
+    private func reconcile(_ entry: QueueEntry) -> QueueEntry? {
+        let recovery = entry.recoveringFromMissingFiles { stored in
+            FileManager.default.fileExists(atPath: Self.resolved(stored).path)
+        }
+        switch recovery {
+        case .intact:
+            return entry
+        case .pruned(let pruned, let missing):
+            if let idx = queue.firstIndex(where: { $0.id == entry.id }) {
+                queue[idx] = pruned
+            }
+            persist()
+            Log.upload.warning(
+                "partial entry \(entry.id, privacy: .public) — pruned missing files: \(missing.sorted().joined(separator: ", "), privacy: .public)"
+            )
+            return pruned
+        case .unrecoverable(let missing):
+            queue.removeAll { $0.id == entry.id }
+            pausedIDs.remove(entry.id)
+            persist()
+            Log.upload.warning(
+                "drop orphaned entry \(entry.id, privacy: .public) — missing files: \(missing.sorted().joined(separator: ", "), privacy: .public)"
+            )
+            return nil
+        }
+    }
+
     /// Apply `outcome` to the queued entry and persist it. The audio files
     /// are never touched, whatever the outcome.
     @discardableResult
@@ -331,7 +397,7 @@ public actor SessionUploader {
 
     private func persist() {
         do {
-            let url = try LocalStore.uploadQueueFile()
+            let url = try queueFile()
             let data = try JSONEncoder().encode(queue)
             try data.write(to: url, options: [.atomic])
         } catch {
@@ -343,7 +409,7 @@ public actor SessionUploader {
         if didLoad { return }
         defer { didLoad = true }
         do {
-            let url = try LocalStore.uploadQueueFile()
+            let url = try queueFile()
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             let data = try Data(contentsOf: url)
             queue = try JSONDecoder().decode([QueueEntry].self, from: data)
