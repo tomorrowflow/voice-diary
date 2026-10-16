@@ -10,6 +10,7 @@ public struct ServerSettingsView: View {
     @State private var bearerToken: String = KeychainStore.read(.bearerToken) ?? ""
     @State private var lastError: String?
     @State private var hasSavedURL = false   // set by `refresh()` on appear
+    @State private var pendingUploads: PendingUploadSummary?
     @StateObject private var reachability = Reachability()
 
     /// Set when presented as first-run setup; called when the user
@@ -42,6 +43,12 @@ public struct ServerSettingsView: View {
                             errorCard(lastError)
                         }
                         connectionCard
+                        if !impactLines.isEmpty {
+                            impactCard
+                        }
+                        if let pendingUploads {
+                            pendingUploadsCard(pendingUploads)
+                        }
                     }
                     .padding(.horizontal, Theme.spacing.md)
                     .padding(.vertical, Theme.spacing.md)
@@ -64,6 +71,20 @@ public struct ServerSettingsView: View {
         .onAppear {
             Task { await refresh() }
         }
+        .task {
+            // The queue has no change notification and drains on its own
+            // after a retry or a saved token, so re-read it while visible.
+            while !Task.isCancelled {
+                await refreshPendingUploads()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+    }
+
+    /// One line per unhealthy upstream. Nothing is probed until a valid URL
+    /// has been saved, so an old answer never outlives that.
+    private var impactLines: [UpstreamImpactLine] {
+        hasSavedURL ? UpstreamImpact.lines(health: reachability.upstream) : []
     }
 
     private var isConnected: Bool {
@@ -182,6 +203,73 @@ public struct ServerSettingsView: View {
         .dsCard()
     }
 
+    private var impactCard: some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            HStack(spacing: Theme.spacing.sm) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.title3)
+                    .foregroundStyle(Theme.color.status.warning)
+                    .frame(width: 28)
+                Text("Services")
+                    .font(Theme.font.headline)
+                    .foregroundStyle(Theme.color.text.primary)
+                Spacer()
+            }
+
+            ForEach(impactLines) { line in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(verbatim: line.name)
+                        .font(Theme.font.body.weight(.medium))
+                        .foregroundStyle(Theme.color.text.primary)
+                    Text(line.impact)
+                        .font(Theme.font.caption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(Theme.spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsCard()
+    }
+
+    private func pendingUploadsCard(_ summary: PendingUploadSummary) -> some View {
+        let explanation = summary.explanation()
+        return VStack(alignment: .leading, spacing: Theme.spacing.sm) {
+            HStack(spacing: Theme.spacing.sm) {
+                Image(systemName: "arrow.up.circle")
+                    .font(.title3)
+                    .foregroundStyle(Theme.color.text.primary)
+                    .frame(width: 28)
+                Text("Upload queue")
+                    .font(Theme.font.headline)
+                    .foregroundStyle(Theme.color.text.primary)
+                Spacer()
+            }
+
+            Text("\(summary.count) sessions waiting to upload")
+                .font(Theme.font.body)
+                .foregroundStyle(Theme.color.text.primary)
+
+            if let explanation {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(explanation.title)
+                        .font(Theme.font.caption.weight(.medium))
+                        .foregroundStyle(Theme.color.text.primary)
+                    Text(explanation.impact)
+                        .font(Theme.font.caption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(Theme.spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .dsCard()
+    }
+
     private func errorCard(_ message: String) -> some View {
         VStack(alignment: .leading, spacing: Theme.spacing.sm) {
             HStack(spacing: Theme.spacing.sm) {
@@ -229,9 +317,14 @@ public struct ServerSettingsView: View {
         Task { await refresh() }
     }
 
+    private func refreshPendingUploads() async {
+        pendingUploads = PendingUploadSummary.make(from: await SessionUploader.shared.pending())
+    }
+
     /// `explicit` is the "Check server" button, which should say why
     /// nothing happened when there is no saved URL to probe.
     private func refresh(explicit: Bool = false) async {
+        await refreshPendingUploads()
         // Probe only a stored URL that passes the format check; anything
         // else would surface as an opaque "down".
         guard let stored = KeychainStore.read(.serverURL),

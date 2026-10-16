@@ -216,8 +216,8 @@ first app frame.
 ## Stub server
 
 `features/verify-ios/stub_server.py` (Python 3 standard library only, binds `127.0.0.1`; the
-simulator reaches the host loopback) answers `GET /health`, `GET /today/calendar` and
-`GET /api/sessions/dates` with the shapes of `server/webapp/routers/` and, per route and
+simulator reaches the host loopback) answers `GET /health`, `GET /today/calendar`,
+`GET /api/sessions/dates` and `GET /api/sessions/<id>/status` with the shapes of `server/webapp/routers/` and, per route and
 scenario, the SPEC §10.6.1 failure contract (`detail`, `code`, `upstream`, `retryable`, and
 `Retry-After` where the server sends one):
 
@@ -230,6 +230,11 @@ scenario, the SPEC §10.6.1 failure contract (`detail`, `code`, `upstream`, `ret
 | `engine-error` | 502 `msgraph_engine_error` |
 | `slow` / `slow:<s>` | the `retryable` 503 after 15 s (or `<s>`): the retry spinner stays visible |
 | `slow-ok` | the 200 after 15 s |
+| `unhealthy` | `/health` only (`ok` elsewhere): 200, `status: down`, Whisper, Ollama and Voxtral `down`, Graph `not_bootstrapped`, LightRAG `ok` (UFH-08) |
+
+It also answers `GET /api/sessions/<id>/status` for any id (route key `/api/sessions/{id}/status`)
+with one segment failed with code `whisper_timeout`, one failed without a code and one processed
+(UFH-08, Verlauf).
 
 On `/health`, `retryable` and `not-bootstrapped` answer like the real server: 200,
 `status: degraded`, `msgraph` `down` / `not_bootstrapped`.
@@ -256,7 +261,7 @@ python3 features/verify-ios/stub_server.py --daemon --ttl 3000 --port 8791 --log
 
 It prints `stub listening on http://127.0.0.1:8791 {…} ttl=3000s log=…` and the stub survives
 the next commands. Check every route and scenario through the same file (`curl` is denied); it
-prints one `PASS`/`FAIL` line per request (24 lines and `routes restored`), exits non-zero on a
+prints one `PASS`/`FAIL` line per request (33 lines, the last `routes restored`), exits non-zero on a
 failure, and restores the routes it changed. Without a listener it prints
 `no stub answering on …` and exits 2:
 

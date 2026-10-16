@@ -21,6 +21,8 @@ Scenarios (a route takes a comma-separated list: request n gets the n-th, the la
                        (on /health instead: 200, status degraded, msgraph down / not_bootstrapped)
     rate-limited       429 msgraph_rate_limited, retryable true, Retry-After: 5
     engine-error       502 msgraph_engine_error, retryable true
+    unhealthy          (/health only; ok elsewhere) 200, status down: whisper down, ollama down,
+                       voxtral down, msgraph not_bootstrapped, lightrag ok
     slow               the retryable 503 after a delay (default 15 s)
     slow-ok            the 200 after a delay (default 15 s)
 
@@ -32,6 +34,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import socketserver
 import sys
@@ -49,8 +52,10 @@ MAX_TTL = 7200
 CONTROL_PATH = "/__stub/routes"
 
 # Routes the app calls. Everything but /health needs a bearer, as on the real server.
-ROUTES = ("/health", "/today/calendar", "/api/sessions/dates")
-AUTHED = frozenset({"/today/calendar", "/api/sessions/dates"})
+# SESSION_STATUS stands for `GET /api/sessions/<session_id>/status` with any id.
+SESSION_STATUS = "/api/sessions/{id}/status"
+ROUTES = ("/health", "/today/calendar", "/api/sessions/dates", SESSION_STATUS)
+AUTHED = frozenset({"/today/calendar", "/api/sessions/dates", SESSION_STATUS})
 
 # name -> (status, code, upstream, retryable, Retry-After). The SPEC 10.6.1 catalogue for Graph.
 FAILURES: dict[str, tuple[int, str, str, bool, str | None]] = {
@@ -60,7 +65,11 @@ FAILURES: dict[str, tuple[int, str, str, bool, str | None]] = {
     "engine-error": (502, "msgraph_engine_error", "msgraph", True, None),
     "slow": (503, "msgraph_unavailable", "msgraph", True, None),
 }
-SCENARIOS = ("ok", "slow-ok", *FAILURES)
+SCENARIOS = ("ok", "slow-ok", "unhealthy", *FAILURES)
+# `/health` scenario `unhealthy`: Whisper (essential) down, so the overall status is `down`
+# (SPEC 10.7), plus Ollama and Voxtral down and Graph not bootstrapped. LightRAG stays ok.
+UNHEALTHY_UPSTREAM = {"postgres": "ok", "qdrant": "ok", "whisper": "down", "lightrag": "ok",
+                      "ollama": "down", "msgraph": "not_bootstrapped", "voxtral": "down"}
 # SPEC 10.7: /health reports a Graph problem as 200 with status "degraded", never as a 503.
 HEALTH_MSGRAPH = {"retryable": "down", "not-bootstrapped": "not_bootstrapped"}
 
@@ -112,9 +121,26 @@ def calendar_body(date: str, rsvp_filter: list[str]) -> dict:
     return {"date": date, "rsvp_filter": rsvp_filter, "events": events}
 
 
+def session_status_body() -> dict:
+    """`GET /api/sessions/<id>/status` (SPEC 10.5): one coded failure, one without a code, one processed."""
+    def segment(segment_id: str, status: str, error: str | None, code: str | None, upstream: str | None) -> dict:
+        return {"segment_id": segment_id, "status": status,
+                "transcript_id": 3 if status == "processed" else None,
+                "error": error, "code": code, "upstream": upstream}
+
+    return {"session_id": "stub", "received_at": "2026-10-15T20:05:00+02:00", "state": "partial",
+            "segments": [
+                segment("s01", "failed", "whisper read timed out", "whisper_timeout", "whisper"),
+                segment("s02", "failed", "unexpected error", None, None),
+                segment("s03", "processed", None, None, None),
+            ]}
+
+
 def ok_body(route: str, query: dict[str, list[str]]) -> dict:
     if route == "/health":
         return {"status": "ok", "upstream": {"postgres": "ok", "whisper": "ok", "msgraph": "fixture"}}
+    if route == SESSION_STATUS:
+        return session_status_body()
     if route == "/today/calendar":
         date = (query.get("date") or [date_type.today().isoformat()])[0]
         rsvp = (query.get("rsvp_filter") or ["accepted,organizer"])[0]
@@ -192,6 +218,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, state.snapshot())
             return
         route = parts.path
+        if re.fullmatch(r"/api/sessions/[^/]+/status", route):
+            route = SESSION_STATUS
         if route not in ROUTES:
             self.send_json(404, {"detail": "Not Found"})
             return
@@ -206,7 +234,10 @@ class Handler(BaseHTTPRequestHandler):
         name, delay = state.next_scenario(route)
         if delay:
             time.sleep(delay)
-        if name in ("ok", "slow-ok"):
+        if name == "unhealthy" and route == "/health":
+            self.send_json(200, {"status": "down", "upstream": UNHEALTHY_UPSTREAM})
+            return
+        if name in ("ok", "slow-ok", "unhealthy"):  # `unhealthy` only means something on /health
             self.send_json(200, ok_body(route, parse_qs(parts.query)))
             return
         if route == "/health" and name in HEALTH_MSGRAPH:
@@ -274,20 +305,24 @@ def check(port: int) -> int:
     try:
         for route in ROUTES:
             bearer = "check" if route in AUTHED else None
+            url = "/api/sessions/stub/status" if route == SESSION_STATUS else route
             if route in AUTHED:
-                status, _, body, _ = request(port, "GET", route)
+                status, _, body, _ = request(port, "GET", url)
                 report(f"{route} without bearer", status == 401 and body.get("detail") == "missing_bearer_token",
                        f"HTTP {status} {json.dumps(body)}")
             for scenario in ("ok", "retryable", "not-bootstrapped", "rate-limited", "engine-error",
                              "slow:1", "slow-ok:1"):
                 name, delay = parse_scenario(scenario)
                 set_route(port, f"{route}={scenario}")
-                path = f"{route}?date=2026-10-16" if route == "/today/calendar" else route
+                path = f"{route}?date=2026-10-16" if route == "/today/calendar" else url
                 status, headers, body, seconds = request(port, "GET", path, bearer=bearer)
                 label = f"{route} [{scenario}]"
                 detail = f"HTTP {status} {json.dumps(body)[:200]}"
                 if name in ("ok", "slow-ok"):
-                    good = status == 200 and (route != "/today/calendar" or (
+                    good = status == 200 and (route != SESSION_STATUS or (
+                        [s.get("code") for s in body.get("segments", [])] == ["whisper_timeout", None, None]
+                        and body["segments"][0].get("upstream") == "whisper"))
+                    good = good and (route != "/today/calendar" or (
                         body.get("date") == "2026-10-16" and len(body.get("events", [])) == 2
                         and {"graph_event_id", "subject", "start", "end", "rsvp_status", "organizer",
                              "attendees", "is_all_day", "show_as", "body_preview", "is_recurring",
@@ -306,6 +341,11 @@ def check(port: int) -> int:
                     good = good and seconds >= delay
                     detail += f" after {seconds:.1f}s"
                 report(label, good, detail)
+        set_route(port, "/health=unhealthy")
+        status, _, body, _ = request(port, "GET", "/health")
+        report("/health [unhealthy]",
+               status == 200 and body.get("status") == "down" and body.get("upstream") == UNHEALTHY_UPSTREAM,
+               f"HTTP {status} {json.dumps(body)[:200]}")
     finally:
         for route, scenario in before.items():
             set_route(port, f"{route}={scenario}")
