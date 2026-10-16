@@ -8,7 +8,7 @@ import Testing
 private typealias Segment = ServerClient.SessionStatusResponse.SegmentStatus
 
 private func segment(_ status: String, error: String? = nil) -> Segment {
-    Segment(segment_id: "s01", status: status, transcript_id: nil, error: error)
+    Segment(segment_id: "s01", status: status, transcript_id: nil, error: error, code: nil, upstream: nil)
 }
 
 private let pendingError = "analysis_pending: ollama_unavailable: connection refused"
