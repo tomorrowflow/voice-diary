@@ -60,7 +60,7 @@ public actor ServerClient {
         // ingest endpoint returns 202 immediately and processing happens in
         // a background task on the server; iOS polls for status if needed.
         config.timeoutIntervalForRequest = 90
-        config.timeoutIntervalForResource = 600
+        config.timeoutIntervalForResource = Self.longRequestTimeout
         // The SessionUploader queue handles retry, so we don't need
         // URLSession to spin waiting for connectivity itself — fail fast
         // and let the queue reschedule with backoff.
@@ -220,11 +220,7 @@ public actor ServerClient {
     /// status map is in-memory on the server, so a restart loses it
     /// even though the bundle on disk survives.
     public func sessionStatus(sessionID: String) async throws -> SessionStatusResponse? {
-        // Path-encode the session id; ISO8601 timestamps contain ':'.
-        let escaped = sessionID.addingPercentEncoding(
-            withAllowedCharacters: .urlPathAllowed
-        ) ?? sessionID
-        let (url, token) = try endpoint("/api/sessions/\(escaped)/status")
+        let (url, token) = try sessionEndpoint(sessionID, "status")
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: req)
@@ -233,6 +229,35 @@ public actor ServerClient {
         }
         try Self.assertOK(response: response, body: data)
         return try Self.decode(SessionStatusResponse.self, from: data)
+    }
+
+    /// Asks the server to re-run analysis for a `pending_analysis` session
+    /// (SPEC §10.6.1). Returns the updated status; a retry that fails again
+    /// still answers `200`. Throws `.http` for `409 session_busy` /
+    /// `session_not_retryable` and `404`.
+    public func retryAnalysis(sessionID: String) async throws -> SessionStatusResponse {
+        let (url, token) = try sessionEndpoint(sessionID, "retry-analysis")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        // The server runs the whole analysis inside this request (Ollama
+        // calls alone can take up to 120 s), so the shared 90 s idle
+        // timeout would abandon a retry that is still working.
+        req.timeoutInterval = Self.longRequestTimeout
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response: response, body: data)
+        return try Self.decode(SessionStatusResponse.self, from: data)
+    }
+
+    /// The longest any request may run; also `timeoutIntervalForResource`.
+    static let longRequestTimeout: TimeInterval = 600
+
+    private func sessionEndpoint(_ sessionID: String, _ action: String) throws -> (URL, String) {
+        // Path-encode the session id; ISO8601 timestamps contain ':'.
+        let escaped = sessionID.addingPercentEncoding(
+            withAllowedCharacters: .urlPathAllowed
+        ) ?? sessionID
+        return try endpoint("/api/sessions/\(escaped)/\(action)")
     }
 
     public struct SessionStatusResponse: Codable, Sendable {
