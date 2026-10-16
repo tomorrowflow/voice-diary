@@ -159,6 +159,13 @@ public final class WalkthroughCoordinator {
     private let answerLullDetector = LullDetector()
     private static let todoAnswerMaxSeconds: TimeInterval = 20.0
     private var interruptInFlight: Bool = false
+    /// Which start a calendar answer belongs to, and what the user may do
+    /// about a failed one (UFH-06).
+    private let calendarGate = CalendarStartGate()
+    /// True from the moment a start begins until it has a plan (session
+    /// setup and the first calendar fetch). The plan is empty then, so
+    /// Weiter, Fertig and Pause must not act.
+    public var isPreparingStart: Bool { calendarGate.isPreparing }
     /// Re-entrancy guard for `advance` / `skip` / `finishCurrentSection`. Without
     /// it, two rapid Weiter taps both pattern-match the same listening
     /// state, both await `stopSegmentCapture()` (which doesn't mutate
@@ -324,7 +331,7 @@ public final class WalkthroughCoordinator {
 
     /// One scheduled section. The calendar block is a single step that
     /// expands at runtime into per-event sub-states.
-    private enum PlanStep: Sendable {
+    enum PlanStep: Sendable {
         case general(GeneralSection)
         case calendar(events: [ServerCalendarEvent])
         case voiceNote(notes: [VoiceNote])
@@ -335,6 +342,7 @@ public final class WalkthroughCoordinator {
     public func begin(today: Date? = nil, language: OpenerLanguage = .current) async {
         guard case .idle = state else { return }
         let targetDate = today ?? selectedDate
+        let attempt = calendarGate.newAttempt()
         state = .briefing
         // Voxtral preflight: if the user has a server-hosted voice
         // selected for either language, probe /health in the background
@@ -384,40 +392,141 @@ public final class WalkthroughCoordinator {
         // even from a locked screen.
         do { try await engine.prepareSession() }
         catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
+        // Closed (or restarted) during setup: a newer start owns the
+        // session dir and state now.
+        guard calendarGate.isCurrent(attempt) else { return }
         do {
             try makeSessionDir()
-            try await fetchCalendar(date: targetDate)
-            plan = await buildPlan(forDate: targetDate)
-            if plan.isEmpty {
-                await finishUploadOrConfirmTodos()
-                return
-            }
-            // Pre-generate every LLM-dependent line for the whole
-            // session up front, two-tier: the *first* opener fires
-            // alone (so the briefing-then-event-0 transition feels
-            // instant), then a trampoline awaits its completion and
-            // fans out everything else — remaining event openers,
-            // general intros, voiceNote closings, and note summaries.
-            // See `prefetchAllOpeners` for the rationale (CPU sharing
-            // on `PiperTTS.prefetch` is the actual delay vector).
-            prefetchAllOpeners(language: language)
-            // Opening intro: orient the user on the day + the rough
-            // shape of what's coming. SPEC §6 calls for a "briefing"
-            // before the per-event loop; this fills that slot with a
-            // single short sentence rather than silence.
-            let intro = composeOpeningIntro(date: targetDate, language: language)
-            if !intro.isEmpty {
-                lastSpoken = intro
-                recordAiPrompt(role: "session_opening", segmentID: nil, text: intro)
-                await speak(intro, language: language.rawValue)
-            }
-            await runStep(at: 0, language: language)
         } catch {
+            calendarGate.finishPreparing(attempt)
             self.error = "\(error)"
             state = .failed("\(error)")
             await endLiveActivity()
+            return
+        }
+        let start = CalendarStart(attempt: attempt, targetDate: targetDate, language: language, mode: .fresh)
+        guard let fetched = await fetchCalendarOrOffer(start) else { return }
+        events = fetched
+        calendarGate.finishPreparing(attempt)
+        await runPlan(targetDate: targetDate, language: language)
+    }
+
+    /// The initial calendar fetch of a start. Returns the events when the
+    /// start should go on; nil when it must stop, either because the fetch
+    /// failed (the fallback screen is up) or because the user cancelled or
+    /// restarted while it ran (nothing may change then).
+    private func fetchCalendarOrOffer(_ start: CalendarStart) async -> [ServerCalendarEvent]? {
+        let result: Result<[ServerCalendarEvent], Error>
+        do { result = .success(try await fetchCalendar(date: start.targetDate)) }
+        catch { result = .failure(error) }
+        guard calendarGate.isCurrent(start.attempt), case .briefing = state else {
+            calendarGate.finishPreparing(start.attempt)
+            return nil
+        }
+        switch result {
+        case .success(let fetched):
+            return fetched
+        case .failure(let error):
+            await offerCalendarFallback(error, start)
+            return nil
         }
     }
+
+    /// Build the plan from the fetched (or deliberately empty) calendar and
+    /// run it from the first step.
+    private func runPlan(targetDate: Date, language: OpenerLanguage) async {
+        plan = await buildPlan(forDate: targetDate)
+        if plan.isEmpty {
+            await finishUploadOrConfirmTodos()
+            return
+        }
+        // Pre-generate every LLM-dependent line for the whole
+        // session up front, two-tier: the *first* opener fires
+        // alone (so the briefing-then-event-0 transition feels
+        // instant), then a trampoline awaits its completion and
+        // fans out everything else — remaining event openers,
+        // general intros, voiceNote closings, and note summaries.
+        // See `prefetchAllOpeners` for the rationale (CPU sharing
+        // on `PiperTTS.prefetch` is the actual delay vector).
+        prefetchAllOpeners(language: language)
+        // Opening intro: orient the user on the day + the rough
+        // shape of what's coming. SPEC §6 calls for a "briefing"
+        // before the per-event loop; this fills that slot with a
+        // single short sentence rather than silence.
+        let intro = composeOpeningIntro(date: targetDate, language: language)
+        if !intro.isEmpty {
+            lastSpoken = intro
+            recordAiPrompt(role: "session_opening", segmentID: nil, text: intro)
+            await speak(intro, language: language.rawValue)
+        }
+        await runStep(at: 0, language: language)
+    }
+
+    /// The start-time calendar fetch failed: park the walkthrough on a
+    /// diagnosis with two explicit choices instead of failing it. Nothing
+    /// starts without the calendar unless the user picks it.
+    private func offerCalendarFallback(_ error: Error, _ start: CalendarStart) async {
+        Log.app.warning("calendar fetch failed at start: \(String(describing: error), privacy: .public)")
+        events = []
+        calendarGate.park(start)
+        state = .calendarUnavailable(ConnectionDiagnosis.classify(error, language: start.language))
+        await endLiveActivity()
+    }
+
+    /// Re-run the calendar fetch after `.calendarUnavailable`; continues the
+    /// walkthrough on success, shows the new diagnosis on failure. The
+    /// state stays `.calendarUnavailable` while the fetch runs, so no
+    /// walkthrough control (advance, pause) is live until it succeeds.
+    public func retryCalendar() async {
+        guard case .calendarUnavailable = state else { return }
+        let outcome = await calendarGate.retry { try await self.fetchCalendar(date: $0) }
+        guard case .calendarUnavailable = state else { return }
+        switch outcome {
+        case .ignored, .stale:
+            return
+        case .stillFailing(let error, let start):
+            await offerCalendarFallback(error, start)
+        case .fetched(let fetched, let start):
+            events = fetched
+            state = .briefing
+            syncLiveActivity()
+            await continueStart(start)
+        }
+    }
+
+    /// Start a new walkthrough with no calendar events after
+    /// `.calendarUnavailable`: general sections, free reflection and voice
+    /// notes only. The session is bundled and uploaded as usual, and is
+    /// marked so that resuming it rebuilds the same calendar-free plan.
+    public func startWithoutCalendar() async {
+        guard case .calendarUnavailable = state,
+              let start = calendarGate.takeForStartWithout() else { return }
+        // Without the marker a later resume would fetch the calendar and
+        // shift every step index, so stay on the card if it can't be written.
+        guard let dir = sessionDir, CalendarFreeMarker.mark(in: dir) else {
+            Log.app.warning("calendar-free marker not written; staying on the calendar card")
+            calendarGate.park(start)
+            return
+        }
+        events = []
+        state = .briefing
+        syncLiveActivity()
+        await runPlan(targetDate: start.targetDate, language: start.language)
+    }
+
+    /// Carry on a start whose calendar is now in hand.
+    private func continueStart(_ start: CalendarStart) async {
+        switch start.mode {
+        case .fresh:
+            await runPlan(targetDate: start.targetDate, language: start.language)
+        case .resume(let existingDir):
+            await continuePickup(existingDir: existingDir, targetDate: start.targetDate, language: start.language)
+        }
+    }
+
+    /// Whether the fallback screen may offer "Ohne Kalender starten".
+    public var canStartWithoutCalendar: Bool { calendarGate.canStartWithout }
+    public var isRetryingCalendar: Bool { calendarGate.isRetrying }
 
     public func previewDay(_ date: Date? = nil) async {
         let target = date ?? selectedDate
@@ -731,6 +840,7 @@ public final class WalkthroughCoordinator {
             await begin(today: targetDate, language: language)
             return
         }
+        let attempt = calendarGate.newAttempt()
         state = .briefing
         voxtralPreflightWarning = nil
         if hasVoxtralVoiceSelected() {
@@ -768,65 +878,80 @@ public final class WalkthroughCoordinator {
         Task { await ParakeetManager.shared.warmUp() }
         do { try await engine.prepareSession() }
         catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
-        do {
-            sessionDir = existingDir
-            sessionID = existingDir.lastPathComponent
-            try await fetchCalendar(date: targetDate)
-            plan = await buildPlan(forDate: targetDate)
-            if plan.isEmpty {
-                await finishUploadOrConfirmTodos()
-                return
-            }
-            // Replay the existing segment files into the in-memory
-            // structures so they survive into the eventual upload, AND
-            // so the resume counter knows about them (next recording on
-            // the same step picks up at `c<N>`).
-            loadExistingSegments(in: existingDir, plan: plan)
-            // Resolve where the user actually left off. Two sources:
-            //   1. On-disk pause marker (only present if the user
-            //      tapped Pause explicitly — carries exact phase +
-            //      elapsedSeconds; can be stale across cancel→advance
-            //      cycles).
-            //   2. Disk inference — synthesised `listening` marker
-            //      pointing at the highest (step, event, chunk) m4a.
-            //      Always current with disk truth.
-            // Combine: pick whichever is FURTHER ALONG. A position-
-            // newer inference wins over a stale marker; a position-
-            // equal-or-older marker wins because it carries phase +
-            // elapsed details inference can't reconstruct.
-            // Final fall-through to `runStep(at: 0)` only when neither
-            // source produced anything (empty / mangled dir).
-            let marker: PauseMarker? = {
-                let saved = readPauseMarker(from: existingDir)
-                let inferred = inferPickupPoint()
-                switch (saved, inferred) {
-                case (let s?, let i?):
-                    let sScore = (s.stepIndex, s.eventIndex ?? -1)
-                    let iScore = (i.stepIndex, i.eventIndex ?? -1)
-                    if iScore.0 > sScore.0
-                        || (iScore.0 == sScore.0 && iScore.1 > sScore.1) {
-                        return i
-                    }
-                    return s
-                case (let s?, nil):  return s
-                case (nil, let i?):  return i
-                case (nil, nil):     return nil
+        guard calendarGate.isCurrent(attempt) else { return }
+        sessionDir = existingDir
+        sessionID = existingDir.lastPathComponent
+        if CalendarFreeMarker.isMarked(in: existingDir) {
+            // The session was started without the calendar. Rebuild that
+            // plan without fetching: a fetch that now succeeds would add a
+            // calendar step and shift every step index the recorded
+            // segments are named with.
+            events = []
+        } else {
+            let start = CalendarStart(
+                attempt: attempt, targetDate: targetDate, language: language, mode: .resume(existingDir)
+            )
+            guard let fetched = await fetchCalendarOrOffer(start) else { return }
+            events = fetched
+        }
+        calendarGate.finishPreparing(attempt)
+        await continuePickup(existingDir: existingDir, targetDate: targetDate, language: language)
+    }
+
+    /// The part of a resume that needs the calendar settled: rebuild the
+    /// plan, replay the recorded segments and re-enter where the user left
+    /// off.
+    private func continuePickup(existingDir: URL, targetDate: Date, language: OpenerLanguage) async {
+        plan = await buildPlan(forDate: targetDate)
+        if plan.isEmpty {
+            await finishUploadOrConfirmTodos()
+            return
+        }
+        // Replay the existing segment files into the in-memory
+        // structures so they survive into the eventual upload, AND
+        // so the resume counter knows about them (next recording on
+        // the same step picks up at `c<N>`).
+        loadExistingSegments(in: existingDir, plan: plan)
+        // Resolve where the user actually left off. Two sources:
+        //   1. On-disk pause marker (only present if the user
+        //      tapped Pause explicitly — carries exact phase +
+        //      elapsedSeconds; can be stale across cancel→advance
+        //      cycles).
+        //   2. Disk inference — synthesised `listening` marker
+        //      pointing at the highest (step, event, chunk) m4a.
+        //      Always current with disk truth.
+        // Combine: pick whichever is FURTHER ALONG. A position-
+        // newer inference wins over a stale marker; a position-
+        // equal-or-older marker wins because it carries phase +
+        // elapsed details inference can't reconstruct.
+        // Final fall-through to `runStep(at: 0)` only when neither
+        // source produced anything (empty / mangled dir).
+        let marker: PauseMarker? = {
+            let saved = readPauseMarker(from: existingDir)
+            let inferred = inferPickupPoint()
+            switch (saved, inferred) {
+            case (let s?, let i?):
+                let sScore = (s.stepIndex, s.eventIndex ?? -1)
+                let iScore = (i.stepIndex, i.eventIndex ?? -1)
+                if iScore.0 > sScore.0
+                    || (iScore.0 == sScore.0 && iScore.1 > sScore.1) {
+                    return i
                 }
-            }()
-            prefetchAllOpeners(language: language)
-            // No day-overview intro on pickup — the user already knows
-            // what day they're in, and stacking a briefing on top of
-            // the pre-intro cue feels chatty. Fresh `begin()` still
-            // plays the intro.
-            if let marker {
-                await routePickup(marker: marker, language: language)
-            } else {
-                await runStep(at: 0, language: language)
+                return s
+            case (let s?, nil):  return s
+            case (nil, let i?):  return i
+            case (nil, nil):     return nil
             }
-        } catch {
-            self.error = "\(error)"
-            state = .failed("\(error)")
-            await endLiveActivity()
+        }()
+        prefetchAllOpeners(language: language)
+        // No day-overview intro on pickup — the user already knows
+        // what day they're in, and stacking a briefing on top of
+        // the pre-intro cue feels chatty. Fresh `begin()` still
+        // plays the intro.
+        if let marker {
+            await routePickup(marker: marker, language: language)
+        } else {
+            await runStep(at: 0, language: language)
         }
         // Pickup consumed the badge — clear so the start card stops
         // advertising it after a successful upload (or another tap).
@@ -1351,7 +1476,7 @@ public final class WalkthroughCoordinator {
         // user to resume first. Otherwise a tap that arrived while the
         // pause was being acknowledged would silently jump to the next
         // step.
-        if isPaused { return }
+        if isPaused || isPreparingStart { return }
         // Time-based debounce: the in-flight flag below catches a
         // re-entrant tap while the previous advance is still mid-await,
         // but doesn't catch a SECOND tap that arrives shortly *after*
@@ -1446,6 +1571,7 @@ public final class WalkthroughCoordinator {
 
     /// Skip the current step's segment without recording it.
     public func skip(language: OpenerLanguage = .current) async {
+        guard !isPreparingStart else { return }
         await withTransition {
         switch state {
         case .eventListening(let stepIdx, let eventIdx):
@@ -1495,6 +1621,7 @@ public final class WalkthroughCoordinator {
     /// note-review / closing — which is already the last section —
     /// "next step" naturally falls through to `ingestAndUpload`.
     public func finishCurrentSection(language: OpenerLanguage = .current) async {
+        guard !isPreparingStart else { return }
         await withTransition {
         switch state {
         case .eventListening(let stepIdx, _):
@@ -1551,6 +1678,10 @@ public final class WalkthroughCoordinator {
         // existing advance() / skip() / finishCurrentSection() paths already use
         // this signal — cancel() just wasn't joining the protocol.
         interruptInFlight = true
+        // Same for a calendar fetch still in flight for a start: it must
+        // be stale before the first teardown await, or it could revive the
+        // walkthrough while the engine is shutting down.
+        calendarGate.invalidate()
         // Halt the lull detector so a buffered threshold callback can't
         // fire `handleLull` → `speakFollowUp` after we've torn down.
         // (The detector also auto-pauses when the engine stops feeding
@@ -1615,7 +1746,7 @@ public final class WalkthroughCoordinator {
     /// Resume is button-only — by design — so the user can't acci-
     /// dentally un-pause with a "weiter" mid-thought.
     public func pause() async {
-        guard !isPaused else { return }
+        guard !isPaused, !isPreparingStart else { return }
         guard state.isPausable else { return }
         Diag.log("walkthrough pause: state=\(state.label)")
 
@@ -1723,11 +1854,30 @@ public final class WalkthroughCoordinator {
 
     private func buildPlan(forDate target: Date) async -> [PlanStep] {
         let order = WalkthroughSettingsStore.order
-        let generals = WalkthroughSettingsStore.generals
+        var notes: [VoiceNote] = []
+        if order.contains(.voiceNote) {
+            notes = await loadUnsurfacedSeeds(forDate: target)
+        }
+        return Self.makePlan(
+            order: order,
+            generals: WalkthroughSettingsStore.generals,
+            events: events,
+            notes: notes
+        )
+    }
+
+    /// The steps of a walkthrough. A day with no events (or none fetched,
+    /// when starting without the calendar) has no calendar step, so no
+    /// calendar segment can be recorded.
+    nonisolated static func makePlan(
+        order: [WalkthroughSection],
+        generals: [GeneralSection],
+        events: [ServerCalendarEvent],
+        notes: [VoiceNote]
+    ) -> [PlanStep] {
         let generalsByID: [String: GeneralSection] = Dictionary(
             uniqueKeysWithValues: generals.map { ($0.id, $0) }
         )
-
         var steps: [PlanStep] = []
         for entry in order {
             switch entry {
@@ -1740,7 +1890,6 @@ public final class WalkthroughCoordinator {
                     steps.append(.calendar(events: events))
                 }
             case .voiceNote:
-                let notes = await loadUnsurfacedSeeds(forDate: target)
                 steps.append(.voiceNote(notes: notes))
             }
         }
@@ -3644,11 +3793,13 @@ public final class WalkthroughCoordinator {
         "segments/\(segmentID).m4a"
     }
 
-    private func fetchCalendar(date: Date) async throws {
+    /// The day's events under the current RSVP filter. Returns them rather
+    /// than storing them: only the caller that is still current may.
+    private func fetchCalendar(date: Date) async throws -> [ServerCalendarEvent] {
         let dateString = Self.dateFormatter.string(from: date)
         let raw = try await ServerClient.shared.todayCalendar(date: dateString)
         let response = try JSONDecoder().decode(TodayCalendarResponse.self, from: raw)
-        events = response.events.filtered(by: WalkthroughSettingsStore.current)
+        return response.events.filtered(by: WalkthroughSettingsStore.current)
     }
 
     private func buildManifest() throws -> Manifest {
@@ -3945,7 +4096,7 @@ public final class WalkthroughCoordinator {
         // briefly on the first card and Live Activity tracks the
         // walkthrough as a whole, so .speaking matches the rest.
         case .noteReview:                                             return .speaking
-        case .idle, .ingesting, .done, .failed:                       return nil
+        case .idle, .calendarUnavailable, .ingesting, .done, .failed: return nil
         }
     }
 
