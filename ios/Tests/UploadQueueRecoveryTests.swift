@@ -49,12 +49,7 @@ struct UploadQueueRecoveryTests {
     }
 
     private func segmentIDs(_ entry: SessionUploader.QueueEntry) -> [String] {
-        entry.manifest.segments.map { segment in
-            switch segment {
-            case .voiceNote(let v): return v.segment_id
-            default: return "?"
-            }
-        }
+        entry.manifest.segments.map(\.segmentID)
     }
 
     private func seed(_ entries: [SessionUploader.QueueEntry], in dir: URL) throws -> URL {
@@ -313,10 +308,32 @@ struct UploadQueueRecoveryTests {
         await uploader.flush()
 
         let sent = try #require(await log.manifests.first)
-        let json = try #require(String(data: JSONEncoder().encode(sent), encoding: .utf8))
-        #expect(!json.contains("partial"))
-        #expect(!json.contains("s02"))
-        #expect(json.contains("s01") && json.contains("s03"))
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(sent)) as? [String: Any]
+        )
+        // Same keys as an unpruned manifest, and only the survivors in it.
+        let original = try #require(
+            JSONSerialization.jsonObject(
+                with: JSONEncoder().encode(try makeEntry(in: try makeDir()).manifest)
+            ) as? [String: Any]
+        )
+        #expect(Set(object.keys) == Set(original.keys))
+        #expect(sent.segments.map(\.segmentID) == ["s01", "s03"])
+    }
+
+    @Test("a stray missing file that no segment refers to writes no Diag line")
+    func strayFileIsSilent() async throws {
+        let dir = try makeDir()
+        var entry = try makeEntry(in: dir)
+        entry.audio_file_paths["segments/stray.m4a"] = dir.appending(path: "segments/stray.m4a").path
+        let file = try seed([entry], in: dir)
+        let lines = DiagLines()
+        let uploader = SessionUploader(queueFile: { file }, upload: UploadLog().upload, diag: lines.record)
+
+        await uploader.purgeOrphans()
+
+        #expect(lines.all.isEmpty)
+        #expect(await uploader.pending().first?.partial == false)
     }
 
     @Test("flush still drops an entry whose files are all gone and goes on to the next one")
@@ -376,10 +393,7 @@ private actor UploadLog {
     }
 
     private func record(_ manifest: Manifest, _ files: [String: URL]) throws -> SessionAccepted {
-        let ids = manifest.segments.map { segment -> String in
-            if case .voiceNote(let v) = segment { return v.segment_id }
-            return "?"
-        }
+        let ids = manifest.segments.map(\.segmentID)
         manifests.append(manifest)
         calls.append(Call(sessionID: manifest.session_id, segmentIDs: ids, fields: files.keys.sorted()))
         if let failure {
