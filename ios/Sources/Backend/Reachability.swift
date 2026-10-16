@@ -16,6 +16,11 @@ public final class Reachability: ObservableObject {
     }
 
     @Published public private(set) var status: Status = .unknown
+    /// Per-upstream probe results of the last `/health` answer, kept apart
+    /// from `status` because the overall `down` (Postgres or Whisper)
+    /// carries no per-upstream detail. Empty while the server is unknown or
+    /// unreachable.
+    @Published public private(set) var upstream: [String: String] = [:]
 
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "vd.reachability")
@@ -33,17 +38,19 @@ public final class Reachability: ObservableObject {
         // 1. Liveness — `/health` is unauthenticated by design (iOS pings
         // it pre-onboarding). A green response here only proves the
         // server is reachable.
-        let upstream: [String: String]
+        let probes: [String: String]
         let healthLevel: String
         do {
             let data = try await ServerClient.shared.health()
             let parsed = try JSONDecoder().decode(HealthResponse.self, from: data)
-            upstream = parsed.upstream
+            probes = parsed.upstream
             healthLevel = parsed.status
         } catch {
+            upstream = [:]
             status = .down(reason: "\(error)")
             return
         }
+        upstream = probes
 
         // 2. Bearer validation — fire a cheap bearer-gated GET. A 200
         // means the bearer is correct; a 401 means the user's Keychain
@@ -68,8 +75,8 @@ public final class Reachability: ObservableObject {
         }
 
         switch healthLevel {
-        case "ok":       status = .ok(upstream: upstream)
-        case "degraded": status = .degraded(upstream: upstream)
+        case "ok":       status = .ok(upstream: probes)
+        case "degraded": status = .degraded(upstream: probes)
         default:         status = .down(reason: "server reports \(healthLevel)")
         }
     }

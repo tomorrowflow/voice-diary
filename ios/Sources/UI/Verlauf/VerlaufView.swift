@@ -823,9 +823,9 @@ struct VerlaufDetailView: View {
                 }
             }
             // segment_id (e.g. "s01") → server status
-            let statusBySegmentID: [String: String] = Dictionary(
+            let statusBySegmentID: [String: ServerClient.SessionStatusResponse.SegmentStatus] = Dictionary(
                 uniqueKeysWithValues: (serverStatus?.segments ?? []).map {
-                    ($0.segment_id, $0.status)
+                    ($0.segment_id, $0)
                 }
             )
             // audio_file leaf ("s01.m4a") → on-disk URL
@@ -868,6 +868,7 @@ struct VerlaufDetailView: View {
                     transcript = gs.transcript
                     language = gs.language
                 }
+                let segmentStatus = statusBySegmentID[segmentIDFor(segment: seg)]
                 return SegmentDescriptor(
                     id: seg.audioFile,
                     title: title,
@@ -875,8 +876,10 @@ struct VerlaufDetailView: View {
                     transcript: transcript,
                     language: language,
                     audioURL: url,
-                    serverStatus: serverStatusFetched
-                        ? (statusBySegmentID[segmentIDFor(segment: seg)] ?? "unknown")
+                    serverStatus: serverStatusFetched ? (segmentStatus?.status ?? "unknown") : nil,
+                    failureExplanation: segmentStatus?.status == "failed"
+                        ? FailureCatalog.copy(forSegmentCode: segmentStatus?.code,
+                                              upstream: segmentStatus?.upstream)?.title
                         : nil
                 )
             }
@@ -1214,6 +1217,10 @@ struct SegmentDescriptor: Identifiable {
     /// in-memory status was lost). `nil` while the lookup is in flight
     /// or doesn't apply (note detail).
     let serverStatus: String?
+    /// Why a `failed` segment failed, from its server `code`. `nil` for
+    /// every other segment and for failures without a code, which keep the
+    /// plain "Failed" pill.
+    var failureExplanation: String? = nil
     /// Audio length when it's known without decoding — notes carry
     /// `duration_seconds` in their metadata. `nil` for walkthrough
     /// segments, which the row loads lazily from the file instead.
@@ -1265,6 +1272,12 @@ private struct SegmentRow: View {
                             .font(Theme.font.caption)
                             .foregroundStyle(Theme.color.text.subdued)
                             .monospacedDigit()
+                    }
+                    if let explanation = descriptor.failureExplanation {
+                        Text(explanation)
+                            .font(Theme.font.caption)
+                            .foregroundStyle(Theme.color.status.destructive)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
 

@@ -22,13 +22,16 @@ The first-launch system prompt covers the screen until a person answers it
   state, not a fault.
 - Light and dark: backgrounds and text invert through the design tokens, no hard-coded colors.
 
-## Calendar failure at start (UFH-06) — manual only
+## Calendar failure at start (UFH-06) — stub and `idb`
 
-Not reachable with `simctl`: it needs *Start session* (tap), which stays disabled until the
-Parakeet model has loaded (~1.2 GB), and a server URL and bearer token in the Keychain.
+Not reachable with `simctl` alone: it needs *Start session* (tap), which stays disabled until the
+Parakeet model has loaded (~1.2 GB), and a server URL and bearer token in the Keychain (the
+ad-hoc signed build keeps them; SKILL.md → "Why ad-hoc signing"). SKILL.md → Drive → "Reaching
+the calendar failure states" does it with `features/verify-ios/stub_server.py` answering
+`/today/calendar` and `idb` taps (KA-11 captures: `docs/screenshots/KA-11/`).
 
-To see it, point the app at a server whose `/today/calendar` answers 503 (for example
-`msgraph_unavailable`) or 503 `msgraph_not_bootstrapped`, wait for the model, tap *Start session*:
+The stub answers 503 `msgraph_unavailable` or 503 `msgraph_not_bootstrapped`; wait for the model,
+tap *Start session*:
 
 - a card with the diagnosis, **Try again** and **Start without calendar** (DE: *Erneut versuchen*,
   *Ohne Kalender starten*); for not bootstrapped, *Start without calendar* is the dark button;
