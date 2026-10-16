@@ -233,6 +233,11 @@ scenario, the SPEC §10.6.1 failure contract (`detail`, `code`, `upstream`, `ret
 | `engine-error` | 502 `msgraph_engine_error` |
 | `slow` / `slow:<s>` | the `retryable` 503 after 15 s (or `<s>`): the retry spinner stays visible |
 | `slow-ok` | the 200 after 15 s |
+| `unhealthy` | `/health` only (`ok` elsewhere): 200, `status: down`, Whisper, Ollama and Voxtral `down`, Graph `not_bootstrapped`, LightRAG `ok` (UFH-08) |
+
+It also answers `GET /api/sessions/<id>/status` for any id (route key `/api/sessions/{id}/status`)
+with one segment failed with code `whisper_timeout`, one failed without a code and one processed
+(UFH-08, Verlauf).
 
 On `/health`, `retryable` and `not-bootstrapped` answer like the real server: 200,
 `status: degraded`, `msgraph` `down` / `not_bootstrapped`.
