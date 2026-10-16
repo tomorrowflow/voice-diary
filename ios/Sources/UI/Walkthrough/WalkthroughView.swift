@@ -51,9 +51,9 @@ public struct WalkthroughView: View {
                     }
                 }
 
-                VoxtralPreflightBanner(message: coordinator.voxtralPreflightWarning)
+                UpstreamNoticeBanner(message: coordinator.upstreamStartNotice)
                     .animation(.easeInOut(duration: 0.25),
-                               value: coordinator.voxtralPreflightWarning)
+                               value: coordinator.upstreamStartNotice)
 
                 if coordinator.recordingWasInterrupted {
                     InterruptionBanner(onDismiss: { coordinator.dismissInterruptionNotice() })
@@ -660,11 +660,11 @@ private struct ModelLoadingOverlay: View {
 }
 
 @MainActor
-/// Transient warning banner shown during BRIEFING when the user has a
-/// Voxtral voice selected but `/health` reports the sidecar is down.
-/// Set + auto-cleared by `WalkthroughCoordinator.preflightVoxtral`.
+/// Transient warning banner shown during BRIEFING when `/health` reports
+/// an unhealthy upstream: what it means for tonight, never a blocker.
+/// Set + auto-cleared by `WalkthroughCoordinator.preflightUpstreams`.
 /// Renders as `EmptyView` when nil so it doesn't reserve layout space.
-private struct VoxtralPreflightBanner: View {
+private struct UpstreamNoticeBanner: View {
     let message: String?
 
     var body: some View {

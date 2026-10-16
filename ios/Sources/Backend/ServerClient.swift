@@ -246,6 +246,10 @@ public actor ServerClient {
             public let status: String    // "processed" | "failed" | "pending_analysis"
             public let transcript_id: Int?
             public let error: String?
+            /// Failure contract fields (SPEC §10.5); nil for segments that
+            /// did not fail, non-upstream errors and servers without them.
+            public let code: String?
+            public let upstream: String?
         }
     }
 

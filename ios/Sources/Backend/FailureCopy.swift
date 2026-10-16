@@ -37,6 +37,18 @@ public enum FailureCatalog {
         )
     }
 
+    /// Copy for a `failed` session segment from its `code` / `upstream`
+    /// (SPEC §10.5). Nil without a `code`, so a segment the server could not
+    /// attribute keeps today's plain "Failed" pill, even if `upstream` is set.
+    public static func copy(
+        forSegmentCode code: String?,
+        upstream: String?,
+        language: OpenerLanguage? = nil
+    ) -> FailureCopy? {
+        guard let code, !code.isEmpty else { return nil }
+        return copy(for: UpstreamFailure(code: code, upstream: upstream), language: language)
+    }
+
     /// Spoken line for a failed enrichment question, ending in
     /// "Anreicherung übersprungen" / "Enrichment skipped". Only the
     /// upstreams enrichment calls (Ollama, LightRAG, Graph) have one;
