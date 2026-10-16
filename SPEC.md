@@ -793,6 +793,20 @@ recovers. Two mechanisms retry it:
   transcript was persisted …`) and retries the rest. A session that cannot be retried (no
   transcript at all, manifest missing) is logged as one line, without a traceback.
 
+**The app drives the route.** Once per foreground (the first `scenePhase == .active` at launch, then
+the first one after each `.background`; the same hook that kicks the upload queue, but an
+`.inactive` → `.active` flip does not count) the app checks `/health` and, only if both `ollama`
+and `lightrag` are `ok`, looks at each locally known session captured in the last 14 days (the app
+stores no upload time, so capture time stands in for it). For every
+session whose `GET /api/sessions/{session_id}/status` has a `pending_analysis` segment with an
+`analysis_pending: …` error, it calls `retry-analysis` once. `failed` segments are never retried
+this way, and a session whose status is `404` (not uploaded yet) is skipped. `409 session_busy`
+and `409 session_not_retryable` are expected outcomes and are skipped without any error in the UI;
+any other failure is only logged, and the session stays `pending_analysis` for the next
+foreground. A pass still running when the app goes to the background stops before its next
+session. The retry request waits up to 10 minutes, because the server runs the analysis inside it.
+There is no retry button: the Verlauf "Processing" pill reflects progress.
+
 All three paths share one in-process, per-session in-flight guard (single-process app), released
 when the run ends whether it succeeded or failed. Without it, overlapping runs would each save
 another `processed_documents` version per transcript and ingest `diary:{date}` into LightRAG twice.
