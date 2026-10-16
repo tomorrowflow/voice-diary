@@ -122,7 +122,7 @@ public actor SessionUploader {
             pruned.audio_file_paths = audio_file_paths.filter { !missing.contains($0.key) }
             pruned.manifest.segments = manifest.segments.filter { !missing.contains($0.audioFile) }
             if pruned.manifest.segments.isEmpty { return .unrecoverable(missing: missing) }
-            pruned.partial = true
+            pruned.partial = partial || pruned.manifest.segments.count < manifest.segments.count
             return .pruned(pruned, missing: missing)
         }
     }
@@ -216,8 +216,8 @@ public actor SessionUploader {
     public func purgeOrphans() async -> Int {
         await ensureLoaded()
         var dropped = 0
-        for entry in queue where reconcile(entry) == nil {
-            dropped += 1
+        for entry in queue {
+            if reconcile(entry) == nil { dropped += 1 }
         }
         return dropped
     }

@@ -96,7 +96,21 @@ struct UploadQueueRecoveryTests {
             Issue.record("expected an intact entry")
             return
         }
-        #expect(entry.partial == false)
+    }
+
+    @Test("a missing file no segment refers to is dropped without marking the entry partial")
+    func strayFileDoesNotMakePartial() throws {
+        var entry = try makeEntry(in: try makeDir())
+        entry.audio_file_paths["segments/stray.m4a"] = "/nonexistent/stray.m4a"
+        guard case .pruned(let pruned, _) = entry.recoveringFromMissingFiles(
+            fileExists: { FileManager.default.fileExists(atPath: $0) }
+        ) else {
+            Issue.record("expected a pruned entry")
+            return
+        }
+        #expect(pruned.partial == false)
+        #expect(segmentIDs(pruned) == ids)
+        #expect(pruned.audio_file_paths["segments/stray.m4a"] == nil)
     }
 
     @Test("an entry with no surviving segment is unrecoverable")
@@ -227,6 +241,7 @@ struct UploadQueueRecoveryTests {
         let dir = try makeDir()
         var gone = try makeEntry(in: dir, missing: Set(ids))
         gone.id = "gone"
+        gone.manifest.session_id = "gone"
         let alive = try makeEntry(in: try makeDir())
         let file = try seed([gone, alive], in: dir)
         let log = UploadLog()
