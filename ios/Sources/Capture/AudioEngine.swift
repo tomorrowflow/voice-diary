@@ -92,8 +92,8 @@ private final class TapConverterCache: @unchecked Sendable {
 }
 
 /// Convert one tap buffer to `format` through a cached `converter`.
-/// Shared by the writer upsampler and the 16 kHz downsampler in both tap
-/// callbacks so the frame-capacity math and the accepted converter
+/// Shared by the writer upsampler (writer tap) and the 16 kHz downsampler
+/// (both taps) so the frame-capacity math and the accepted converter
 /// statuses live in one place. Returns nil when the output buffer can't
 /// be allocated, the converter fails, or it produces no frames; callers
 /// drop the buffer.
