@@ -1,38 +1,42 @@
 # Feature: first-launch
 
-Source: `ios/Sources/App/Permissions.swift`, `ios/Sources/Capture/CaptureNotifications.swift`,
-`.task` in `ios/Sources/App/VoiceDiaryApp.swift`.
+Source: `ios/Sources/UI/Onboarding/OnboardingFlowView.swift` (`PermissionPrimingView`),
+`ios/Sources/UI/Onboarding/OnboardingGate.swift`, `ios/Sources/App/Permissions.swift`,
+`RootView` in `ios/Sources/App/VoiceDiaryApp.swift`.
 
-On a fresh install the app asks for permissions at launch, up front: notifications first
-(`requestAuthorisationIfNeeded`), then microphone, then speech recognition
-(`requestStartupPermissions`).
+Nothing asks for permissions at launch. A fresh install shows the Server step first, then a
+Permissions screen that explains microphone, speech recognition and notifications. The system
+dialogs appear one after the other only when the user taps **Continue** there
+(`Permissions.requestUndecided`). A returning user whose permissions are all answered never sees
+the screen; a reinstall that kept the Keychain (server already set up) sees the Permissions
+screen alone.
 
 ## Drive
 
-Install and launch steps from SKILL.md. Reached with `simctl` only as far as the first prompt:
+Install and launch steps from SKILL.md, then:
 
-1. `simctl privacy … grant microphone` skips the microphone prompt.
-2. Notifications and speech recognition cannot be pre-granted from the CLI, and answering them
-   needs a tap (manual). Until answered, the notification prompt stays on screen.
+1. Launch: the Server screen shows with no system alert over it.
+2. Save a URL and token against the stub, tap **Continue**: the Permissions screen shows.
+   (iOS may raise a "Save Password?" sheet over it from the token field: tap **Not Now**.)
+3. Tap **Continue**: the microphone, speech recognition and notification alerts follow;
+   answer each with `idb` (`simctl privacy … grant microphone` skips the first).
+4. `simctl terminate` + `simctl launch`: the app opens on the Evening tab with no alert.
 
 ## Expected
 
-- The system alert `"Voice Diary" Would Like to Send You Notifications` with *Don't Allow* /
-  *Allow*, over the app: the bottom tab bar (Evening selected, Recording, History, More) is
-  visible behind it.
-- Light and dark appearance both render the alert and tab bar in matching colors.
-- No crash dialog; the process stays running (`simctl launch` printed a pid).
+- No system alert before the tap on the Permissions screen's **Continue**.
+- Three cards (Microphone, Speech recognition, Notifications), light and dark.
+- After the last alert the Evening tab shows, and stays the first screen on relaunch.
 
 ## Side effects
 
 The permission answers live in the simulator, not the repo. Deleting the throwaway simulator
-(Cleanup) removes them, so every run starts at this prompt again. Do not reuse a shared
+(Cleanup) removes them, so every run starts at the first-run flow again. Do not reuse a shared
 simulator: SpringBoard alerts survive `simctl uninstall`.
 
 ## Evidence
 
-`evening-first-launch-light.png` and `evening-first-launch-dark.png` (KA-9 retained them in
-`docs/screenshots/KA-9/`), `launch.txt`, `xcodebuild-test.log`.
+`docs/screenshots/UX-6a/` holds the retained captures; `launch.txt`, `xcodebuild-test.log`.
 
 ## Device-only
 

@@ -3,8 +3,8 @@ import Speech
 import SwiftUI
 import UIKit
 
-/// Manual fallback for the auto-request that runs at app launch
-/// (`Permissions.requestStartupPermissions()`). Shows the *current*
+/// Manual fallback for the first-run permission priming
+/// (`PermissionPrimingView`). Shows the *current*
 /// status of microphone and speech-recognition access and lets the
 /// user trigger the system request again. iOS silently no-ops the
 /// request once a status has been cached — the only way to flip

@@ -5,7 +5,7 @@ reached on a throwaway iPhone 17 simulator (`vd-verify-ios`), what proves it, an
 
 | Feature | Where in the app | Reached with `simctl` | Mapped from |
 |---|---|---|---|
-| [first-launch](first-launch.md) | system prompts over the Evening tab | yes (launch) | `Permissions.swift`, `CaptureNotifications.swift` |
+| [first-launch](first-launch.md) | first-run Server and Permissions screens, then the system prompts | yes (launch) | `OnboardingFlowView.swift`, `Permissions.swift` |
 | [evening-walkthrough](evening-walkthrough.md) | Evening tab (default) | launch; calendar failure cards with the stub and `idb` | `Walkthrough/WalkthroughView.swift` |
 | [recording](recording.md) | Recording tab | no (tap) | `DriveBy/CaptureView.swift` |
 | [history](history.md) | History tab | no (tap) | `Verlauf/VerlaufView.swift` |
