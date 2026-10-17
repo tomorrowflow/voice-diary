@@ -62,8 +62,9 @@ actor OpenerPrefetcher {
     /// to a session that has since been cleared and is dropped; the check
     /// and the enqueue run in one step on the actor, so a clear can never
     /// fall between them.
-    func prefetch(segmentID: String, spans: @escaping SpanProvider, generation: Int = 0) {
-        guard generation >= currentGeneration else {
+    /// `nil` means the request isn't tied to a session and is always accepted.
+    func prefetch(segmentID: String, spans: @escaping SpanProvider, generation: Int? = nil) {
+        if let generation, generation < currentGeneration {
             Diag.log("prefetchOpener: stale session, dropped \(segmentID)")
             return
         }
@@ -102,9 +103,14 @@ actor OpenerPrefetcher {
     /// Safe to call repeatedly.
     ///
     /// `generation` is the session generation the caller has just moved to;
-    /// later `prefetch` calls carrying an older one are rejected.
-    func cancelAll(generation: Int = 0) {
-        currentGeneration = max(currentGeneration, generation)
+    /// later `prefetch` calls carrying an older one are rejected. A clear
+    /// older than one already processed is skipped: the newer clear has
+    /// wiped the old session, and this one would wipe the new session's work.
+    func cancelAll(generation: Int? = nil) {
+        if let generation {
+            if generation < currentGeneration { return }
+            currentGeneration = generation
+        }
         for pending in inFlight.values { pending.task.cancel() }
         inFlight.removeAll()
         for script in ready.values { discard(script) }
@@ -132,6 +138,9 @@ actor OpenerPrefetcher {
     func composedSpans(segmentID: String, generate: @escaping SpanProvider) async -> [SpokenSpan] {
         if let cached = textCache[segmentID] { return cached }
         if let task = textTasks[segmentID] { return await task.value }
+        // A cancelled caller (a prefetch whose session was cleared) still
+        // gets its text, but must not seed the cache of the next session.
+        if Task.isCancelled { return await generate() }
         let task = Task { await generate() }
         textTasks[segmentID] = task
         let spans = await task.value
