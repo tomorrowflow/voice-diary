@@ -579,7 +579,7 @@ The server hands todos to the existing `document_processor.py` pipeline. The pip
 The **App language** toggle (§12.1, `AppLanguage`) sets the session language: `System` resolves
 to `de` on a German device and `en` otherwise, `Deutsch` forces `de`. `Recording language`
 (`RecordingLanguage`) and `Response language` (`ResponseLanguage`) override it for one side
-each: `Auto` / `Match` follow the session language, `Deutsch` / `English` force it. Per-event
+each: `Auto` / `Match` follow the session language (the language the app is speaking in), `Deutsch` / `English` force it. Per-event
 language detection can still override the spoken voice, gated by the "Detect language per
 event" toggle (§12.1) — see §9.3.
 
@@ -999,8 +999,9 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
   controlled separately by "Detect language per event" below.
 - Recording language: `Auto (recommended) | Deutsch | English` (default: `Auto`; same screen,
   stored in `UserDefaults` as `RecordingLanguage`). Sets the language the wake-word listener
-  opens in and the language tag stamped on a transcribed segment. `Auto` follows the session
-  language for listening and keeps the `de` transcript tag.
+  opens in and the language tag stamped on a transcribed segment (Parakeet's transcription itself
+  is unchanged). `Auto` listens in the language the session is speaking in — the app language,
+  or the Response language when that overrides it — and keeps the `de` transcript tag.
 - Response language: `Match (recommended) | Deutsch | English` (default: `Match`; same screen,
   stored as `ResponseLanguage`). Sets the language the AI speaks, summarises and prompts in
   (`OpenerLanguage.current`) and the manifest's `response_language_setting` (`match_input` for
