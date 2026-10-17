@@ -14,8 +14,9 @@ Code: `Settings/ServerSettingsView.swift`, `Backend/UpstreamImpact.swift`,
    in the data container with entries whose `next_attempt_at` is far in the future and one
    `last_failure_code` (`whisper_unavailable`). Seed a session: `sessions/<id>/manifest.json` plus
    `segments/s01.m4a` … placeholders. Launch the app again.
-3. First launch: answer the notification and speech prompts, type `127.0.0.1:8791` after `http://`
-   and a dummy token, press return, Save, dismiss the "Save Password?" prompt with "Not Now".
+3. First launch: type `127.0.0.1:8791` after `http://` and a dummy token, press return, Save,
+   dismiss the "Save Password?" prompt with "Not Now", tap Continue, then Continue on the
+   Permissions screen and answer its three prompts.
 4. More → Server: scroll until the Services and Upload queue cards are on screen. History → the
    session shows the failed-segment explanation.
 

@@ -1116,26 +1116,28 @@ Independent of that manual clearing:
 
 First-run gate (UX-6a), not the multi-step wizard this section used to describe. This is a
 single-user tool the developer sets up once, so onboarding is reduced to what actually blocks
-first capture. Today that's two steps:
+first capture. Today that's two steps, shown full-screen over the tabs by `RootView`
+(`OnboardingFlowView`):
 
 ```
-1. Microphone + Speech Recognition + notification permission prompts — fired proactively at
-   app launch, not a dedicated onboarding screen. Mic + Speech come from
-   `Permissions.requestStartupPermissions()`; the notification prompt from
-   `CaptureNotifications.requestAuthorisationIfNeeded()`, both on the launch task.
+1. Server setup — on first launch with no valid server URL in Keychain, `ServerSettingsView`
+   (`OnboardingGate`). The user enters URL + bearer token and can run "Check server"; "Continue"
+   (once the server answers) or "Set up later" moves on and records the choice in `UserDefaults`
+   (`onboarding.serverSetup.done.v1`) so it is not shown again. Mehr → Server remains the way
+   back in.
 ```
 
 ```
-2. Server setup — on first launch with no valid server URL in Keychain, `RootView` presents
-   `ServerSettingsView` full-screen (`OnboardingGate`). The user enters URL + bearer token and can
-   run "Check server"; "Continue" (once the server answers) or "Set up later" dismisses it and
-   records the choice in `UserDefaults` (`onboarding.serverSetup.done.v1`) so it is not shown
-   again. Mehr → Server remains the way back in.
+2. Permission priming — `PermissionPrimingView` explains microphone, speech recognition and
+   notifications; the system dialogs for the ones still unanswered appear only when the user taps
+   "Continue" (`Permissions.requestUndecided()`). The choice is recorded in `UserDefaults`
+   (`onboarding.permissionPriming.done.v1`). It is skipped when the system has already answered
+   all three; a returning user with a server but an unanswered permission sees this step alone.
+   Nothing asks for permissions at app launch. Mehr → Permissions is the way back in for
+   microphone and speech recognition.
 ```
 
-There is no first-run wizard beyond that: `ios/Sources/UI/Onboarding/_OnboardingPlaceholder.swift`
-is a two-line stub ("Tailscale check + bearer-token paste + voice preview + Action Button hookup.
-Implemented in milestone M11.") — voice preview and the rest haven't landed. The voice pickers
+There is no first-run wizard beyond that: voice preview and the rest haven't landed. The voice pickers
 (`VoiceSettingsView`, §12.1) exist only as ordinary Settings (Mehr) screens the developer opens
 manually. An Action Button binding prompt and a first-run drive-by tutorial ("Hallo Voice Diary")
 don't exist in code at all yet.
