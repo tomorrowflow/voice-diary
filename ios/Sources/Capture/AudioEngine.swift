@@ -91,6 +91,34 @@ private final class TapConverterCache: @unchecked Sendable {
     }
 }
 
+/// Convert one tap buffer to `format` through a cached `converter`.
+/// Shared by the writer upsampler and the 16 kHz downsampler in both tap
+/// callbacks so the frame-capacity math and the accepted converter
+/// statuses live in one place. Returns nil when the output buffer can't
+/// be allocated, the converter fails, or it produces no frames; callers
+/// drop the buffer.
+func resample(
+    buffer: AVAudioPCMBuffer,
+    using converter: AVAudioConverter,
+    to format: AVAudioFormat
+) -> AVAudioPCMBuffer? {
+    let capacity = AVAudioFrameCount(
+        Double(buffer.frameLength) * format.sampleRate / buffer.format.sampleRate
+    ) + 1024
+    guard let out = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else {
+        return nil
+    }
+    var error: NSError?
+    let status = converter.convert(to: out, error: &error) { _, outStatus in
+        outStatus.pointee = .haveData
+        return buffer
+    }
+    guard status == .haveData || status == .inputRanDry, out.frameLength > 0 else {
+        return nil
+    }
+    return out
+}
+
 // AVAudioEngine wrapper with up to three sinks, all driven by the same
 // input tap callback so we open the microphone exactly once:
 //   1. M4A file writer       (AAC at ≥ 44.1 kHz mono — see writer-clamp note)
@@ -392,23 +420,9 @@ public actor AudioEngine {
             do {
                 let writeBuffer: AVAudioPCMBuffer
                 if let upsampler = state.writerUpsampler, let wf = state.writerFormat {
-                    let cap = AVAudioFrameCount(
-                        Double(buffer.frameLength) * wf.sampleRate / inputFormat.sampleRate
-                    ) + 1024
-                    guard let out = AVAudioPCMBuffer(
-                        pcmFormat: wf,
-                        frameCapacity: cap
-                    ) else {
+                    guard let out = resample(buffer: buffer, using: upsampler, to: wf) else {
                         return
                     }
-                    var convErr: NSError?
-                    let status = upsampler.convert(to: out, error: &convErr) { _, outStatus in
-                        outStatus.pointee = .haveData
-                        return buffer
-                    }
-                    guard status == .haveData || status == .inputRanDry,
-                          out.frameLength > 0
-                    else { return }
                     writeBuffer = out
                 } else {
                     writeBuffer = buffer
@@ -425,21 +439,9 @@ public actor AudioEngine {
             // Skip the conversion entirely if neither needs it.
             guard streamingSink != nil || liveWakeSink != nil else { return }
             guard let downsampler = state.downsampler else { return }
-            let parakeetFormat = state.parakeetFormat
-            let frameCapacity = AVAudioFrameCount(
-                Double(buffer.frameLength) * parakeetFormat.sampleRate / inputFormat.sampleRate
-            ) + 1024
-            guard let outBuf = AVAudioPCMBuffer(
-                pcmFormat: parakeetFormat,
-                frameCapacity: frameCapacity
+            guard let outBuf = resample(
+                buffer: buffer, using: downsampler, to: state.parakeetFormat
             ) else { return }
-            var error: NSError?
-            let status = downsampler.convert(to: outBuf, error: &error) { _, outStatus in
-                outStatus.pointee = .haveData
-                return buffer
-            }
-            guard status == .haveData || status == .inputRanDry else { return }
-            guard outBuf.frameLength > 0 else { return }
             if let sink = streamingSink { sink(outBuf) }
             if let sink = liveWakeSink { sink(outBuf) }
         }
@@ -726,21 +728,9 @@ public actor AudioEngine {
             let liveFormat = buffer.format
             let state = converters.state(for: liveFormat)
             guard let downsampler = state.downsampler else { return }
-            let parakeetFormat = state.parakeetFormat
-            let frameCapacity = AVAudioFrameCount(
-                Double(buffer.frameLength) * parakeetFormat.sampleRate / liveFormat.sampleRate
-            ) + 1024
-            guard let outBuf = AVAudioPCMBuffer(
-                pcmFormat: parakeetFormat,
-                frameCapacity: frameCapacity
+            guard let outBuf = resample(
+                buffer: buffer, using: downsampler, to: state.parakeetFormat
             ) else { return }
-            var error: NSError?
-            let status = downsampler.convert(to: outBuf, error: &error) { _, outStatus in
-                outStatus.pointee = .haveData
-                return buffer
-            }
-            guard status == .haveData || status == .inputRanDry else { return }
-            guard outBuf.frameLength > 0 else { return }
             sink(outBuf)
         }
     }
