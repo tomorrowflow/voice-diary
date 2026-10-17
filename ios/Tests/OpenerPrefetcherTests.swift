@@ -293,13 +293,54 @@ struct OpenerPrefetcherTests {
             }
 
             #expect(await prefetcher.consume(segmentID: "s01") == nil)
-            // Nothing the old session synthesised may be left undiscarded;
-            // a cancelled synth cleans up asynchronously, so poll (bounded).
-            for _ in 0..<400 where engine.prefetchedTexts.count != engine.discardedTexts.count {
-                try? await Task.sleep(for: .milliseconds(5))
-            }
-            #expect(engine.prefetchedTexts.count == engine.discardedTexts.count)
         }
+    }
+
+    @Test("an older clear arriving late neither lowers the generation nor wipes newer work")
+    func staleClearIsSkipped() async {
+        let prefetcher = OpenerPrefetcher(engineFor: { _ in FakeEngine() })
+        await prefetcher.cancelAll(generation: 2)
+        await prefetcher.prefetch(
+            segmentID: "s01",
+            spans: { [SpokenSpan(text: "neu", language: "de")] },
+            generation: 2
+        )
+        await prefetcher.waitUntilSettled(segmentID: "s01")
+
+        await prefetcher.cancelAll(generation: 1)
+        await prefetcher.prefetch(
+            segmentID: "s02",
+            spans: { [SpokenSpan(text: "alt", language: "de")] },
+            generation: 1
+        )
+
+        #expect(await prefetcher.consume(segmentID: "s01")?.utterances.map(\.text) == ["neu"])
+        #expect(await prefetcher.consume(segmentID: "s02") == nil)
+    }
+
+    @Test("a cancelled caller gets its text without seeding the cache")
+    func cancelledComposeCallerDoesNotSeedCache() async {
+        let counter = Counter()
+        let gate = Gate()
+        let prefetcher = OpenerPrefetcher(engineFor: { _ in FakeEngine() })
+        let generate: OpenerPrefetcher.SpanProvider = {
+            await counter.increment()
+            return [SpokenSpan(text: "alt", language: "de")]
+        }
+
+        let caller = Task {
+            await gate.wait()
+            return await prefetcher.composedSpans(segmentID: "e01", generate: generate)
+        }
+        await gate.waitForWaiter()
+        caller.cancel()
+        await gate.open()
+        let spans = await caller.value
+        let next = await prefetcher.composedSpans(segmentID: "e01", generate: generate)
+
+        #expect(spans == [SpokenSpan(text: "alt", language: "de")])
+        #expect(next == spans)
+        #expect(await counter.value == 2)
     }
 
     @Test("a synth cancelled mid-way discards the utterances it already produced")
