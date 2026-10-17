@@ -287,7 +287,7 @@ Output:
 
 ## Prompt 7 — Onboarding (M11 — superseded by the reduced first-run gate)
 
-Use when: planning M11. Paste this when starting the onboarding sequence design.
+Historical: this describes the original 3-screen wizard, which was dropped; the shipped M11 flow is the reduced first-run gate (server setup + permission priming).
 
 ```
 Design Voice Diary's first-launch onboarding (3 screens, no skip).
