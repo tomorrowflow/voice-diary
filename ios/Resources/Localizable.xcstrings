@@ -3215,12 +3215,12 @@
         }
       }
     },
-    "Voice Diary asks for these next. You can change them later under More → Permissions." : {
+    "Voice Diary asks for these next. You can change them later in iOS Settings." : {
       "localizations" : {
         "de" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Voice Diary fragt als Nächstes danach. Du kannst sie später unter Mehr → Berechtigungen ändern."
+            "value" : "Voice Diary fragt als Nächstes danach. Du kannst sie später in den iOS-Einstellungen ändern."
           }
         }
       }

@@ -13,6 +13,9 @@ struct OnboardingFlowView: View {
     }
 
     @State private var step: Step
+    /// Set on the first Continue/Set up later tap so a second tap during
+    /// the permission check cannot advance twice.
+    @State private var isAdvancing = false
     private let onFinish: () -> Void
 
     init(start: Step, onFinish: @escaping () -> Void) {
@@ -24,6 +27,8 @@ struct OnboardingFlowView: View {
         switch step {
         case .server:
             ServerSettingsView {
+                guard !isAdvancing else { return }
+                isAdvancing = true
                 OnboardingGate.markServerSetupDone()
                 Task { await advanceFromServer() }
             }
@@ -64,7 +69,7 @@ struct PermissionPrimingView: View {
 
                 ScrollView {
                     VStack(spacing: Theme.spacing.md) {
-                        Text("Voice Diary asks for these next. You can change them later under More → Permissions.")
+                        Text("Voice Diary asks for these next. You can change them later in iOS Settings.")
                             .font(Theme.font.body)
                             .foregroundStyle(Theme.color.text.subdued)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -123,6 +128,7 @@ struct PermissionPrimingView: View {
     }
 
     private func advance() {
+        guard !isRequesting else { return }
         isRequesting = true
         Task {
             await Permissions.requestUndecided()
