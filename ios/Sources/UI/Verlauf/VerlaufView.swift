@@ -390,13 +390,19 @@ struct VerlaufDetailView: View {
             .ignoresSafeArea(.keyboard)
         }
         .navigationBarHidden(true)
-        .sheet(isPresented: $showShare) {
+        .sheet(isPresented: $showShare, onDismiss: discardStagedExport) {
             if let url = shareURL {
-                ShareSheet(items: [url])
+                ShareSheet(
+                    items: [url],
+                    completion: ShareStaging.discardingHandler(for: url)
+                )
             }
         }
         .task { await loadServerStatus() }
-        .onDisappear { player.stop() }
+        .onDisappear {
+            player.stop()
+            discardStagedExport()
+        }
         .confirmationDialog(
             Text("Delete recording?"),
             isPresented: Binding(
@@ -949,7 +955,16 @@ struct VerlaufDetailView: View {
         return "\(timeRangeFormatter.string(from: s)) – \(timeRangeFormatter.string(from: e))"
     }
 
+    /// Remove the temporary share export, if any. Runs when the share
+    /// sheet ends (completed, cancelled or failed), on dismissal, and when
+    /// leaving the view. Only touches the tmp copy, never the source audio.
+    private func discardStagedExport() {
+        ShareStaging.discard(shareURL)
+        shareURL = nil
+    }
+
     private func prepareAndShare() {
+        discardStagedExport()
         prepareError = nil
         isPreparing = true
         Task {
@@ -989,7 +1004,7 @@ struct VerlaufDetailView: View {
                         shareURL = merged
                     } else {
                         let src = d.directory.appending(path: chunkFilenames[0])
-                        shareURL = try Self.stageInTempForSharing(
+                        shareURL = try ShareStaging.stage(
                             sourceURL: src,
                             baseName: "voicediary-note-\(Self.sanitize(d.note.id))"
                         )
@@ -1055,31 +1070,6 @@ struct VerlaufDetailView: View {
             }
         }
         return entry.segmentURLs.map { titlesByLeaf[$0.lastPathComponent] }
-    }
-
-    /// Copy a file from the app sandbox into the system temporary
-    /// directory under a colon-free filename, AND drop iOS data
-    /// protection so the share-sheet extension (running in a separate
-    /// process) can actually read it. Files that inherit
-    /// `.completeFileProtection` from Application Support produce a
-    /// silent "Speichern fehlgeschlagen" / "Öffnen fehlgeschlagen" in
-    /// the share sheet because the receiving extension can't open
-    /// them while the owning process holds them open.
-    private static func stageInTempForSharing(sourceURL: URL, baseName: String) throws -> URL {
-        let dest = FileManager.default.temporaryDirectory
-            .appending(path: "\(baseName).m4a")
-        if FileManager.default.fileExists(atPath: dest.path) {
-            try FileManager.default.removeItem(at: dest)
-        }
-        // Read into memory + write with .noFileProtection so the new
-        // file is readable by other processes (Files, Mail, etc.).
-        // copyItem would inherit the source's protection class and
-        // re-introduce the bug.
-        let data = try Data(contentsOf: sourceURL)
-        try data.write(to: dest, options: [.atomic, .noFileProtection])
-        try? (dest as NSURL).setResourceValue(URLFileProtection.none,
-                                              forKey: .fileProtectionKey)
-        return dest
     }
 
     private static func sanitize(_ s: String) -> String {
@@ -1464,6 +1454,8 @@ private struct NoteRow: View {
 
 struct ShareSheet: UIViewControllerRepresentable {
     let items: [Any]
+    /// Fires once the activity ends, whether completed, cancelled or failed.
+    var completion: UIActivityViewController.CompletionWithItemsHandler?
 
     func makeUIViewController(context: Context) -> UIActivityViewController {
         // Plain URL passing — NSItemProvider wrapping was tried but
@@ -1471,7 +1463,9 @@ struct ShareSheet: UIViewControllerRepresentable {
         // multi-segment LaunchServices error. The real fix lives in
         // AudioMerger, which now produces files in the same on-disk
         // format as the working single-segment fast path.
-        UIActivityViewController(activityItems: items, applicationActivities: nil)
+        let vc = UIActivityViewController(activityItems: items, applicationActivities: nil)
+        vc.completionWithItemsHandler = completion
+        return vc
     }
     func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }
