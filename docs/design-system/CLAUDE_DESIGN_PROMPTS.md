@@ -285,7 +285,7 @@ Output:
 
 ---
 
-## Prompt 7 — Onboarding (M11 — not yet implemented)
+## Prompt 7 — Onboarding (M11 — superseded by the reduced first-run gate)
 
 Use when: planning M11. Paste this when starting the onboarding sequence design.
 
@@ -373,7 +373,7 @@ Snapshot of what feels off as of the last dogfood pass. Re-prioritise; don't try
 | 4 | VoiceSettingsView preview button | Hard to spot; users default to selecting a voice without previewing | Prompt 4 |
 | 5 | DoneCard | Session ID feels like the most important thing on screen | Prompt 5 |
 | 6 | CaptureView (Aufnahme tab) | The "talk to me" intent isn't clear before the user has read the docs | Prompt 6 |
-| 7 | Onboarding — not yet implemented | M11 placeholder | Prompt 7 |
+| 7 | Onboarding — superseded by the reduced first-run gate | M11 placeholder | Prompt 7 |
 | 8 | Server review templates | Drift from iOS look-and-feel; old grey palette | Prompt 8 |
 
 ---
