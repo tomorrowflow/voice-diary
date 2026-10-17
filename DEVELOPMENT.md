@@ -440,7 +440,7 @@ Exit: skip a day, catch up next evening. Drive-bys from morning surface in match
 - Reset-app action.
 - Every screen built with `Theme.*` and `DSButtonStyle`; status indicators use the colour-coded `StatusBadge` pattern from `ServerSettingsView`.
 
-Exit: clean install → onboarding → ready to capture without editing any file manually. The bar is UX-6a's first-run gate (#30), not the dropped §14 wizard (DOC-8).
+Exit: clean install → onboarding → ready to capture without editing any file manually. **Met** by UX-6a's reduced first-run flow: server setup, then the permission-priming screen, then the capture screen (`OnboardingGate.swift`, `OnboardingFlowView.swift`). The bar is that gate, not the full SPEC §14 wizard, which was intentionally dropped (DOC-8).
 
 #### M12 — Polish
 
