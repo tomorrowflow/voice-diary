@@ -245,6 +245,63 @@ struct OpenerPrefetcherTests {
         #expect(!engine.prefetchedTexts.contains("alt"))
     }
 
+    @Test("a prefetch issued before a session clear is dropped when it reaches the actor afterwards")
+    func staleGenerationIsRejected() async {
+        let engine = FakeEngine()
+        let counter = Counter()
+        let prefetcher = OpenerPrefetcher(engineFor: { _ in engine })
+        let provider: OpenerPrefetcher.SpanProvider = {
+            await counter.increment()
+            return [SpokenSpan(text: "alt", language: "de")]
+        }
+
+        // The old session's fan-out read generation 0, then the session was
+        // cleared (generation 1) before its call got to the actor.
+        await prefetcher.cancelAll(generation: 1)
+        await prefetcher.prefetch(segmentID: "s01", spans: provider, generation: 0)
+
+        #expect(await prefetcher.consume(segmentID: "s01") == nil)
+        #expect(await counter.value == 0)
+        #expect(engine.prefetchedTexts.isEmpty)
+
+        // The restarted session, under the new generation, queues normally.
+        await prefetcher.prefetch(
+            segmentID: "s01",
+            spans: { [SpokenSpan(text: "neu", language: "de")] },
+            generation: 1
+        )
+        let script = await prefetcher.consume(segmentID: "s01")
+        #expect(script?.utterances.map(\.text) == ["neu"])
+    }
+
+    @Test("a stale prefetch racing a session clear never leaves anything behind")
+    func staleFanOutRacingClear() async {
+        for _ in 0..<100 {
+            let engine = FakeEngine()
+            let prefetcher = OpenerPrefetcher(engineFor: { _ in engine })
+            // Whichever of the two reaches the actor first, the old session's
+            // opener must not survive into the cleared caches.
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask {
+                    await prefetcher.prefetch(
+                        segmentID: "s01",
+                        spans: { [SpokenSpan(text: "alt", language: "de")] },
+                        generation: 0
+                    )
+                }
+                group.addTask { await prefetcher.cancelAll(generation: 1) }
+            }
+
+            #expect(await prefetcher.consume(segmentID: "s01") == nil)
+            // Nothing the old session synthesised may be left undiscarded;
+            // a cancelled synth cleans up asynchronously, so poll (bounded).
+            for _ in 0..<400 where engine.prefetchedTexts.count != engine.discardedTexts.count {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            #expect(engine.prefetchedTexts.count == engine.discardedTexts.count)
+        }
+    }
+
     @Test("a synth cancelled mid-way discards the utterances it already produced")
     func cancelMidSynthDiscardsPartial() async {
         let gate = Gate()

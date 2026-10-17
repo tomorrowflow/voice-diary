@@ -283,9 +283,12 @@ public final class WalkthroughCoordinator {
     /// after each listening phase begins; read by `speakOpenerScript` and
     /// `eventOpenerSpans` when the opener actually fires.
     private let openerPrefetcher = OpenerPrefetcher()
-    /// Bumped by every `clearPrefetchedOpeners()`, so the deferred
-    /// fan-out of an earlier session can tell it has been superseded and
-    /// stop queuing prefetches into the freshly cleared prefetcher.
+    /// Bumped by every `clearPrefetchedOpeners()`. Each prefetch carries the
+    /// generation it was issued under and `openerPrefetcher` rejects any
+    /// older than its last `cancelAll(generation:)`, so the deferred
+    /// fan-out of an earlier session can't queue into the cleared caches
+    /// even if the clear lands during its hop to the actor. The checks
+    /// against it on the coordinator side only end the loop early.
     private var prefetchGeneration = 0
 
     /// Pre-generated note summaries, keyed by `VoiceNote.id` (the seed
@@ -4342,17 +4345,22 @@ public final class WalkthroughCoordinator {
     /// The prefetcher first resolves the opener text (FM for calendar
     /// events), then synthesises each span via the appropriate engine's
     /// `prefetch(_:language:)`.
+    ///
+    /// `generation` defaults to the current one, read before the hop to the
+    /// actor; fan-outs pass the generation they started under instead.
     private func prefetchOpener(
         stepIndex: Int,
         eventIndex: Int?,
-        language: OpenerLanguage
+        language: OpenerLanguage,
+        generation: Int? = nil
     ) async {
+        let generation = generation ?? prefetchGeneration
         guard let (segmentID, provider) = openerProviderForPrefetch(
             stepIndex: stepIndex,
             eventIndex: eventIndex,
             language: language
         ) else { return }
-        await openerPrefetcher.prefetch(segmentID: segmentID, spans: provider)
+        await openerPrefetcher.prefetch(segmentID: segmentID, spans: provider, generation: generation)
     }
 
     /// Convenience: prefetch the opener for "the step after the one
@@ -4406,7 +4414,7 @@ public final class WalkthroughCoordinator {
         let generation = prefetchGeneration
 
         // Tier 1: just the first opener.
-        await prefetchOpener(stepIndex: 0, eventIndex: 0, language: language)
+        await prefetchOpener(stepIndex: 0, eventIndex: 0, language: language, generation: generation)
 
         // Tier 2: trampoline that waits for the first prefetch to land,
         // then fans out the rest. Spawned on the MainActor so it
@@ -4448,11 +4456,17 @@ public final class WalkthroughCoordinator {
             case .calendar(let evts):
                 for evtIdx in 0..<evts.count {
                     guard generation == prefetchGeneration else { return }
-                    await prefetchOpener(stepIndex: stepIdx, eventIndex: evtIdx, language: language)
+                    await prefetchOpener(
+                        stepIndex: stepIdx, eventIndex: evtIdx,
+                        language: language, generation: generation
+                    )
                 }
             case .general, .voiceNote:
                 guard generation == prefetchGeneration else { return }
-                await prefetchOpener(stepIndex: stepIdx, eventIndex: nil, language: language)
+                await prefetchOpener(
+                    stepIndex: stepIdx, eventIndex: nil,
+                    language: language, generation: generation
+                )
             }
         }
     }
@@ -4486,10 +4500,11 @@ public final class WalkthroughCoordinator {
         // notes so a clean slate is the right default. These and the
         // generation bump run synchronously, ahead of the actor hop.
         prefetchGeneration += 1
+        let generation = prefetchGeneration
         for (_, task) in noteSummaryTasks { task.cancel() }
         noteSummaryTasks.removeAll()
         noteSummaryCache.removeAll()
-        await openerPrefetcher.cancelAll()
+        await openerPrefetcher.cancelAll(generation: generation)
     }
 
     // MARK: - Opening intro -------------------------------------------
