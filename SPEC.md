@@ -571,12 +571,15 @@ The server hands todos to the existing `document_processor.py` pipeline. The pip
 | Setting | Values |
 |---|---|
 | App language | `System (recommended) / Deutsch` (see §12.1) |
+| Recording language | `Auto (recommended) / Deutsch / English` (see §12.1) |
+| Response language | `Match (recommended) / Deutsch / English` (see §12.1) |
 | German voice | Combined Apple Premium / Piper / Voxtral list (see §12.1); bundled Piper default: Thorsten (high) |
 | English voice | Combined Apple Premium / Piper / Voxtral list (see §12.1); bundled Piper default: Lessac (high) |
 
-The separate `Recording language` / `Response language` pickers this table used to list
-were collapsed into the single **App language** toggle (§12.1, `AppLanguage`): `System`
-resolves to `de` on a German device and `en` otherwise, `Deutsch` forces `de`. Per-event
+The **App language** toggle (§12.1, `AppLanguage`) sets the session language: `System` resolves
+to `de` on a German device and `en` otherwise, `Deutsch` forces `de`. `Recording language`
+(`RecordingLanguage`) and `Response language` (`ResponseLanguage`) override it for one side
+each: `Auto` / `Match` follow the session language, `Deutsch` / `English` force it. Per-event
 language detection can still override the spoken voice, gated by the "Detect language per
 event" toggle (§12.1) — see §9.3.
 
@@ -989,12 +992,19 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
 
 **Language & voice** (UX-13a)
 - App language: `System (recommended) | Deutsch` (default: `System`; Mehr → Sprache,
-  `LanguageSettingsView`) — one toggle, not the separate recording/response pickers this
-  section used to describe. `System` follows the iPhone's language and falls back to English on
+  `LanguageSettingsView`). `System` follows the iPhone's language and falls back to English on
   any device whose system language isn't German; `Deutsch` locks German regardless of the system
   setting. This toggle sets the surrounding opener's base language; whether an individual
   event title/attendee name inside that opener gets its own detected-language voice is
   controlled separately by "Detect language per event" below.
+- Recording language: `Auto (recommended) | Deutsch | English` (default: `Auto`; same screen,
+  stored in `UserDefaults` as `RecordingLanguage`). Sets the language the wake-word listener
+  opens in and the language tag stamped on a transcribed segment. `Auto` follows the session
+  language for listening and keeps the `de` transcript tag.
+- Response language: `Match (recommended) | Deutsch | English` (default: `Match`; same screen,
+  stored as `ResponseLanguage`). Sets the language the AI speaks, summarises and prompts in
+  (`OpenerLanguage.current`) and the manifest's `response_language_setting` (`match_input` for
+  `Match`, else `de` / `en`). `Match` follows the session language.
 - German voice / English voice: one combined list per language (`VoiceSettingsView`) —
   installed Apple Premium voices, bundled Piper voices, and reachable server (Voxtral) voices
   side by side; the selected row's prefix (`piper:` / `voxtral:` / neither) is what

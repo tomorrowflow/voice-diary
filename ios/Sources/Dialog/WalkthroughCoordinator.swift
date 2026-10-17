@@ -3816,7 +3816,7 @@ public final class WalkthroughCoordinator {
             todos_implicit_rejected: rejectedImplicit,
             drive_by_seeds_surfaced: surfacedNoteIDs,
             ai_prompts: aiPrompts,
-            response_language_setting: "match_input"
+            response_language_setting: ResponseLanguage.current.manifestValue
         )
     }
 
@@ -4749,7 +4749,10 @@ public final class WalkthroughCoordinator {
     }
 
     @discardableResult
-    private func runWakeWordWindow(language: OpenerLanguage) async -> WakeWindowOutcome {
+    private func runWakeWordWindow(language sessionLanguage: OpenerLanguage) async -> WakeWindowOutcome {
+        // The recording-language picker decides what we listen for;
+        // "Auto" listens in the language the session is running in.
+        let language = RecordingLanguage.current.resolve(auto: sessionLanguage)
         // Don't keep the window open across a state change. If the
         // user already advanced manually (or the X tap moved us to
         // .idle) we just bail.

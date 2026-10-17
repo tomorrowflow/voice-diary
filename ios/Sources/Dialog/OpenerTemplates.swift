@@ -19,13 +19,14 @@ public enum OpenerSlot: String, Sendable {
 public enum OpenerLanguage: String, Sendable {
     case de, en
 
-    /// Snapshot of the user's current language preference (the toggle in
-    /// "Mehr → Sprache"). Centralising the call here means every default
-    /// argument in the coordinator + opener pipeline reads from one
-    /// place. `LanguageDetector` still overrides per event title.
+    /// Snapshot of the language the AI speaks in: the app-language toggle
+    /// in "Mehr → Sprache", unless the response-language picker overrides
+    /// it. Centralising the call here means every default argument in the
+    /// coordinator + opener pipeline reads from one place.
+    /// `LanguageDetector` still overrides per event title.
     @MainActor
     public static var current: OpenerLanguage {
-        AppLanguage.shared.isGerman ? .de : .en
+        ResponseLanguage.current.resolve(match: AppLanguage.shared.isGerman ? .de : .en)
     }
 }
 
