@@ -283,6 +283,10 @@ public final class WalkthroughCoordinator {
     /// after each listening phase begins; read by `speakOpenerScript` and
     /// `eventOpenerSpans` when the opener actually fires.
     private let openerPrefetcher = OpenerPrefetcher()
+    /// Bumped by every `clearPrefetchedOpeners()`, so the deferred
+    /// fan-out of an earlier session can tell it has been superseded and
+    /// stop queuing prefetches into the freshly cleared prefetcher.
+    private var prefetchGeneration = 0
 
     /// Pre-generated note summaries, keyed by `VoiceNote.id` (the seed
     /// id string). Filled at session start by `prefetchAllNoteSummaries`;
@@ -4399,6 +4403,7 @@ public final class WalkthroughCoordinator {
     /// from their pre-rendered audio without touching the model.
     private func prefetchAllOpeners(language: OpenerLanguage) async {
         guard !plan.isEmpty else { return }
+        let generation = prefetchGeneration
 
         // Tier 1: just the first opener.
         await prefetchOpener(stepIndex: 0, eventIndex: 0, language: language)
@@ -4411,7 +4416,8 @@ public final class WalkthroughCoordinator {
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.waitForFirstPrefetch()
-            await self.prefetchRemainingOpeners(language: language)
+            await self.prefetchRemainingOpeners(language: language, generation: generation)
+            guard generation == self.prefetchGeneration else { return }
             self.prefetchAllNoteSummaries(language: language)
         }
     }
@@ -4436,14 +4442,16 @@ public final class WalkthroughCoordinator {
     /// Fan-out for the deferred tier. `prefetchOpener`'s internal
     /// dedup makes the first-opener call a no-op, so we don't need a
     /// special case to skip it.
-    private func prefetchRemainingOpeners(language: OpenerLanguage) async {
+    private func prefetchRemainingOpeners(language: OpenerLanguage, generation: Int) async {
         for (stepIdx, step) in plan.enumerated() {
             switch step {
             case .calendar(let evts):
                 for evtIdx in 0..<evts.count {
+                    guard generation == prefetchGeneration else { return }
                     await prefetchOpener(stepIndex: stepIdx, eventIndex: evtIdx, language: language)
                 }
             case .general, .voiceNote:
+                guard generation == prefetchGeneration else { return }
                 await prefetchOpener(stepIndex: stepIdx, eventIndex: nil, language: language)
             }
         }
@@ -4475,8 +4483,9 @@ public final class WalkthroughCoordinator {
     private func clearPrefetchedOpeners() async {
         // Note summaries are keyed by note ID which is stable across
         // sessions, but a new session may surface a different set of
-        // notes so a clean slate is the right default. Cleared before the
-        // actor hop so no caller sees them half-dropped.
+        // notes so a clean slate is the right default. These and the
+        // generation bump run synchronously, ahead of the actor hop.
+        prefetchGeneration += 1
         for (_, task) in noteSummaryTasks { task.cancel() }
         noteSummaryTasks.removeAll()
         noteSummaryCache.removeAll()

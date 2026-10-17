@@ -59,14 +59,16 @@ actor OpenerPrefetcher {
         let token = nextToken
         nextToken += 1
         let engineFor = engineFor
-        let task = Task {
-            await Self.synthesize(segmentID: segmentID, spans: spans, engineFor: engineFor)
+        // `finish` runs inside the task, so anyone awaiting `task.value`
+        // (`consume`, `waitUntilSettled`) resumes after the bookkeeping.
+        let task = Task { [weak self] in
+            let result = await Self.synthesize(
+                segmentID: segmentID, spans: spans, engineFor: engineFor
+            )
+            await self?.finish(segmentID: segmentID, token: token, result: result)
+            return result
         }
         inFlight[segmentID] = InFlight(token: token, task: task)
-        Task { [weak self] in
-            let result = await task.value
-            await self?.finish(segmentID: segmentID, token: token, result: result)
-        }
     }
 
     /// Resolve the prefetched script for `segmentID`, awaiting the in-flight
@@ -119,8 +121,8 @@ actor OpenerPrefetcher {
         // A `cancelAll` while generating dropped (or replaced) this task;
         // its result must not seed the cache of the restarted session.
         guard textTasks[segmentID] == task else { return spans }
-        // Set cache *before* clearing the task so a brand-new caller that
-        // arrives in this window still finds either the cache or the task.
+        // Cache and drop the task in one non-suspending step, cache first,
+        // so a caller arriving at any point finds either the task or the cache.
         textCache[segmentID] = spans
         textTasks.removeValue(forKey: segmentID)
         return spans
