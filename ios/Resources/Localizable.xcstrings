@@ -284,6 +284,16 @@
         }
       }
     },
+    "A quiet note when a recording has been saved. Recording works without it." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ein leiser Hinweis, wenn eine Aufnahme gespeichert wurde. Aufnehmen funktioniert auch ohne."
+          }
+        }
+      }
+    },
     "Accepted" : {
       "localizations" : {
         "de" : {
@@ -1775,6 +1785,16 @@
         }
       }
     },
+    "Notifications" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Mitteilungen"
+          }
+        }
+      }
+    },
     "Nothing older than %@ on the device." : {
       "extractionState" : "stale",
       "localizations" : {
@@ -3191,6 +3211,16 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Voice Diary"
+          }
+        }
+      }
+    },
+    "Voice Diary asks for these next. You can change them later under More → Permissions." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Voice Diary fragt als Nächstes danach. Du kannst sie später unter Mehr → Berechtigungen ändern."
           }
         }
       }

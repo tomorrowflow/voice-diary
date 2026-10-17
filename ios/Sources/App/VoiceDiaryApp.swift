@@ -75,14 +75,10 @@ struct VoiceDiaryApp: App {
                     let retagged = LocalStore.migrateProtectionClass()
                     Diag.log("LocalStore.migrateProtectionClass touched=\(retagged)")
 
-                    // Notifications first (transient capture-complete
-                    // toasts). Then mic + speech-recognition prompts
-                    // up-front — see `Permissions.swift` for why we
-                    // request these at launch instead of lazy. Then
-                    // drain any pending capture intent (Action Button
-                    // press while the app was suspended).
-                    await CaptureNotifications.shared.requestAuthorisationIfNeeded()
-                    await Permissions.requestStartupPermissions()
+                    // Drain any pending capture intent (Action Button
+                    // press while the app was suspended). No permission
+                    // dialogs at launch — the first-run onboarding
+                    // primes them, see `Permissions.swift`.
                     await IntentRouter.processPending(reason: "task")
                     DarwinIntentBridge.shared.start { @Sendable in
                         Task { @MainActor in
@@ -230,7 +226,8 @@ enum IntentRouter {
 
 struct RootView: View {
     @State private var router = AppRouter.shared
-    @State private var showServerSetup = OnboardingGate.needsServerSetup()
+    @State private var onboardingStep: OnboardingFlowView.Step? =
+        OnboardingGate.needsServerSetup() ? .server : nil
 
     var body: some View {
         // Four primary tabs in the bottom rail; secondary destinations
@@ -264,10 +261,16 @@ struct RootView: View {
         }
         .font(Theme.font.body)
         .tint(Theme.color.text.primary)
-        .fullScreenCover(isPresented: $showServerSetup) {
-            ServerSettingsView {
-                OnboardingGate.markServerSetupDone()
-                showServerSetup = false
+        .fullScreenCover(item: $onboardingStep) { step in
+            OnboardingFlowView(start: step) { onboardingStep = nil }
+        }
+        .task {
+            // A returning user with a server can still have capture
+            // permissions the system never asked about (a reinstall
+            // keeps the Keychain). Fresh installs reach the priming
+            // step through the server step instead.
+            if onboardingStep == nil, await OnboardingGate.needsPermissionPriming() {
+                onboardingStep = .permissions
             }
         }
     }
