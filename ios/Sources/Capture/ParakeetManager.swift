@@ -152,12 +152,12 @@ public actor ParakeetManager {
 
     // --- helpers ---------------------------------------------------------
 
-    /// Extract the detected language tag from the ASR result. FluidAudio's
-    /// `ASRResult` does not currently expose a per-utterance language code
-    /// (as of v0.12.x), so we default to "de" for v1; M9 (multilingual)
-    /// will revisit this when the English voice + auto-detect routing
-    /// lands. The server's Whisper sidecar still acts as a tiebreaker.
+    /// Language tag for a transcript. FluidAudio's `ASRResult` does not
+    /// currently expose a per-utterance language code (as of v0.12.x), so
+    /// an explicit recording-language choice is what we stamp; "Auto"
+    /// keeps the "de" default. The server's Whisper sidecar still acts as
+    /// a tiebreaker.
     private func detectedLanguage(from _: ASRResult) -> String {
-        return "de"
+        RecordingLanguage.current.transcriptLanguage
     }
 }
