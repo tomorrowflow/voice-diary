@@ -9,8 +9,7 @@ Source: `ios/Sources/UI/Walkthrough/WalkthroughView.swift`, `RootView` in
 - Not reachable without a tap (manual): *Start session*, the day picker (`<`, `Today`, `>`),
   *Open settings* in the error card.
 
-The first-launch system prompt covers the screen until a person answers it
-(`first-launch.md`).
+On a fresh install the first-run Server and Permissions screens come first (`first-launch.md`).
 
 ## Expected (once the prompt is answered)
 
