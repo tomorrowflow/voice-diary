@@ -190,6 +190,9 @@ public enum AudioMerger {
         if FileManager.default.fileExists(atPath: scratch.path) {
             try? FileManager.default.removeItem(at: scratch)
         }
+        // Also covers a throw mid-merge, which would otherwise leave the
+        // partial scratch file in the output's directory.
+        defer { try? FileManager.default.removeItem(at: scratch) }
 
         // Inner scope so the AVAudioFile writer deinits BEFORE we read
         // the file back. AVAudioFile finalises the m4a container (mdat
@@ -255,8 +258,8 @@ public enum AudioMerger {
             throw MergeError.emptyInput
         }
 
-        // Move the scratch to the output path and apply .noFileProtection
-        // so share-sheet receivers (separate process) can read it.
+        // Move the scratch to the output path and apply the app-wide
+        // protection class (the share extension runs while unlocked).
         // Using replaceItemAt is atomic: if a crash occurs between the
         // writer deinit and here, the scratch file survives on disk
         // rather than being lost.
@@ -264,30 +267,31 @@ public enum AudioMerger {
         try? FileManager.default.removeItem(at: scratch)
     }
 
-    /// Copy `src` to `dest` with `.noFileProtection` so the file can be
-    /// read by share-sheet receivers (separate process) without loading
-    /// the whole file into RAM. Replaces any existing file at `dest`.
-    private static func copyOut(from src: URL, to dest: URL) throws {
+    /// Copy `src` to `dest` with the app-wide protection class so the file
+    /// can be read by share-sheet receivers (separate process) without
+    /// loading the whole file into RAM. Replaces any existing file at `dest`.
+    static func copyOut(
+        from src: URL,
+        to dest: URL,
+        protect: ShareStaging.ProtectionSetter = ShareStaging.setProtection
+    ) throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: dest.path) {
             try fm.removeItem(at: dest)
         }
         try fm.copyItem(at: src, to: dest)
-        try? (dest as NSURL).setResourceValue(URLFileProtection.none,
-                                              forKey: .fileProtectionKey)
+        protect(dest, LocalStore.protectionClass)
     }
 
-    /// Write the bytes to `dest` with `.noFileProtection` so the file
-    /// can be read by share-sheet receivers running outside our app
-    /// container, then explicitly drop protection on the resulting file
-    /// for belt-and-braces (some iOS versions ignore the write option).
+    /// Write the bytes to `dest` with the app-wide protection class, then
+    /// set it explicitly on the resulting file (some iOS versions ignore
+    /// the write option).
     private static func writeOut(data: Data, to dest: URL) throws {
         if FileManager.default.fileExists(atPath: dest.path) {
             try FileManager.default.removeItem(at: dest)
         }
-        try data.write(to: dest, options: [.atomic, .noFileProtection])
-        try? (dest as NSURL).setResourceValue(URLFileProtection.none,
-                                              forKey: .fileProtectionKey)
+        try data.write(to: dest, options: [.atomic, LocalStore.dataProtectionWriteOption])
+        LocalStore.applyProtection(to: dest)
     }
 
     /// Convenience: write the merged file into the system temp directory
@@ -305,12 +309,18 @@ public enum AudioMerger {
         let url = FileManager.default.temporaryDirectory
             .appending(path: "voicediary-\(safe).m4a")
 
-        try await merge(
-            segments: segments,
-            titles: titles,
-            titleLanguage: titleLanguage,
-            outputURL: url
-        )
+        do {
+            try await merge(
+                segments: segments,
+                titles: titles,
+                titleLanguage: titleLanguage,
+                outputURL: url
+            )
+        } catch {
+            // Don't leave a half-written export behind in tmp.
+            ShareStaging.discard(url)
+            throw error
+        }
         return url
     }
 
