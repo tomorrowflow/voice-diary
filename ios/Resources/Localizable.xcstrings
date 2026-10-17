@@ -409,6 +409,66 @@
         }
       }
     },
+    "Auto (recommended)" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Automatisch (empfohlen)"
+          }
+        }
+      }
+    },
+    "Match (recommended)" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Angleichen (empfohlen)"
+          }
+        }
+      }
+    },
+    "Recording language" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Aufnahmesprache"
+          }
+        }
+      }
+    },
+    "Response language" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Antwortsprache"
+          }
+        }
+      }
+    },
+    "The language Voice Diary listens for while you record. \"Auto\" follows the language of the session." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Sprache, auf die Voice Diary bei der Aufnahme hört. „Automatisch“ folgt der Sprache der Sitzung."
+          }
+        }
+      }
+    },
+    "The language Voice Diary speaks back in. \"Match\" follows the language of the session." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Sprache, in der Voice Diary dir antwortet. „Angleichen“ folgt der Sprache der Sitzung."
+          }
+        }
+      }
+    },
     "Appears in the walkthrough header during this section." : {
       "localizations" : {
         "de" : {

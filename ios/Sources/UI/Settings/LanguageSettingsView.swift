@@ -1,6 +1,8 @@
 import SwiftUI
 
-/// Settings surface for the app-level language toggle. Two modes:
+/// Settings surface for the app-level language toggle, plus the recording
+/// and response overrides (`RecordingLanguage`, `ResponseLanguage`).
+/// The app toggle has two modes:
 ///
 ///   • System (default) — UI + spoken prompts follow `Bundle.main`'s
 ///     preferred localization, which collapses to English on any device
@@ -21,6 +23,8 @@ import SwiftUI
 /// exists (system prompts, empty blocks, the free-reflection closer).
 public struct LanguageSettingsView: View {
     @State private var appLanguage = AppLanguage.shared
+    @AppStorage(RecordingLanguage.storageKey) private var recordingLanguage = RecordingLanguage.auto
+    @AppStorage(ResponseLanguage.storageKey) private var responseLanguage = ResponseLanguage.match
 
     public init() {}
 
@@ -52,6 +56,38 @@ public struct LanguageSettingsView: View {
                         Text("App language")
                     } footer: {
                         Text("\"System\" follows your iPhone language. Voice Diary ships with English and German — any other system language falls back to English. \"Deutsch\" forces German regardless of the system setting.")
+                    }
+
+                    Section {
+                        Picker(selection: $recordingLanguage) {
+                            Text("Auto (recommended)").tag(RecordingLanguage.auto)
+                            Text("Deutsch").tag(RecordingLanguage.de)
+                            Text("English").tag(RecordingLanguage.en)
+                        } label: {
+                            Text("Recording language")
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    } header: {
+                        Text("Recording language")
+                    } footer: {
+                        Text("The language Voice Diary listens for while you record. \"Auto\" follows the language of the session.")
+                    }
+
+                    Section {
+                        Picker(selection: $responseLanguage) {
+                            Text("Match (recommended)").tag(ResponseLanguage.match)
+                            Text("Deutsch").tag(ResponseLanguage.de)
+                            Text("English").tag(ResponseLanguage.en)
+                        } label: {
+                            Text("Response language")
+                        }
+                        .pickerStyle(.inline)
+                        .labelsHidden()
+                    } header: {
+                        Text("Response language")
+                    } footer: {
+                        Text("The language Voice Diary speaks back in. \"Match\" follows the language of the session.")
                     }
 
                     Section {
