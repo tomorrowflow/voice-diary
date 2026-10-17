@@ -56,7 +56,7 @@ In Xcode → *VoiceDiary target* → *Signing & Capabilities*:
 xcodebuild -scheme VoiceDiary -destination 'platform=iOS,name=Lukas iPhone' build
 ```
 
-Or just press ▶ in Xcode. On first launch you'll get the microphone-permission prompt.
+Or just press ▶ in Xcode. On first launch the onboarding gate asks for the server first; the system permission dialogs appear only after you tap Continue on the permission-priming screen.
 
 ---
 
@@ -191,6 +191,6 @@ ios/
 - **App Intents + Action Button + WidgetKit + ActivityKit.** Deferred to M4.
 - **Walkthrough state machine + Apple FM dialog + wake-word + multilingual TTS.** Deferred to M5–M9.
 - **Full SPEC §14 onboarding (Tailscale check, Action Button binding, voice preview).** Intentionally dropped; the reduced first-run gate (server setup + permission priming) is what shipped for M11.
-- **`URLSessionConfiguration.background`** so uploads survive app suspension. Currently using the default config — fine for foreground-only dogfooding. Switch in M11.
+- **`URLSessionConfiguration.background`** so uploads survive app suspension. Currently using the default config — fine for foreground-only dogfooding. Not tied to a milestone.
 
 Each item maps 1:1 to a story in `.planning/stories/`.

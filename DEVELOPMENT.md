@@ -436,11 +436,11 @@ Exit: skip a day, catch up next evening. Drive-bys from morning surface in match
 #### M11 — Settings & onboarding
 
 - Full settings UI (all sections in SPEC §12).
-- Onboarding: UX-6a's first-run gate (#30) — server setup + explicit permission priming. The rest of the original SPEC §14 flow (voice preview, workday hours, widget install, Action Button deep link, first drive-by tutorial) was dropped at the 2026-07-04 grill and is intentionally not being built (DOC-8). UX-6a is implemented: server setup (UX-7) is followed by a permissions screen (`OnboardingFlowView.swift`), and no permission dialog fires at launch.
+- Onboarding: UX-6a's first-run gate — server setup + explicit permission priming. The rest of the original SPEC §14 flow (voice preview, workday hours, widget install, Action Button deep link, first drive-by tutorial) was dropped at the 2026-07-04 grill and is intentionally not being built (DOC-8). Server setup (UX-7) is followed by a permissions screen (`OnboardingFlowView.swift`), and no permission dialog fires at launch.
 - Reset-app action.
 - Every screen built with `Theme.*` and `DSButtonStyle`; status indicators use the colour-coded `StatusBadge` pattern from `ServerSettingsView`.
 
-Exit: clean install → onboarding → ready to capture without editing any file manually. **Met** by UX-6a's reduced first-run flow: server setup, then the permission-priming screen, then the capture screen (`OnboardingGate.swift`, `OnboardingFlowView.swift`). The bar is that gate, not the full SPEC §14 wizard, which was intentionally dropped (DOC-8).
+Exit: clean install → onboarding → ready to capture without editing any file manually. **Met** by UX-6a's reduced first-run flow: server setup, then the permission-priming screen, then the tab bar with Recording one tap away (`OnboardingGate.swift`, `OnboardingFlowView.swift`). The bar is that gate, not the full SPEC §14 wizard, which was intentionally dropped (DOC-8).
 
 #### M12 — Polish
 
