@@ -23,6 +23,7 @@ import Foundation
 //   • Cancellation — `cancelAll` cancels in-flight work, deletes cached
 //     audio and forgets everything; a cancelled run that finishes late is
 //     discarded instead of resurrected, even if the segment was re-queued.
+//     A `prefetch` from before the last `cancelAll(generation:)` is rejected.
 
 actor OpenerPrefetcher {
     typealias Prefetched = PrefetchedScript
@@ -42,6 +43,8 @@ actor OpenerPrefetcher {
     /// Tokens whose result a `consume` call took over while the synth was
     /// still running; the completion handler must not discard those.
     private var claimed: Set<Int> = []
+    /// Newest session generation seen via `cancelAll(generation:)`.
+    private var currentGeneration = 0
 
     init(engineFor: @escaping @Sendable (String) -> any TTSEngine = { VoiceRegistry.engine(for: $0) }) {
         self.engineFor = engineFor
@@ -53,7 +56,17 @@ actor OpenerPrefetcher {
     /// when a prefetch (in flight or completed) already exists. `spans` runs
     /// inside the background task, so it may await the LLM; same-language
     /// neighbours coalesce so the synth runs once per language bucket.
-    func prefetch(segmentID: String, spans: @escaping SpanProvider) {
+    ///
+    /// `generation` is the caller's session generation, read before it hops
+    /// here. A request older than the last `cancelAll(generation:)` belongs
+    /// to a session that has since been cleared and is dropped; the check
+    /// and the enqueue run in one step on the actor, so a clear can never
+    /// fall between them.
+    func prefetch(segmentID: String, spans: @escaping SpanProvider, generation: Int = 0) {
+        guard generation >= currentGeneration else {
+            Diag.log("prefetchOpener: stale session, dropped \(segmentID)")
+            return
+        }
         guard ready[segmentID] == nil, inFlight[segmentID] == nil else { return }
         Diag.log("prefetchOpener: queued \(segmentID)")
         let token = nextToken
@@ -87,7 +100,11 @@ actor OpenerPrefetcher {
     /// including the composed opener text, since a restarted session
     /// re-fetches the calendar and must regenerate openers from scratch.
     /// Safe to call repeatedly.
-    func cancelAll() {
+    ///
+    /// `generation` is the session generation the caller has just moved to;
+    /// later `prefetch` calls carrying an older one are rejected.
+    func cancelAll(generation: Int = 0) {
+        currentGeneration = max(currentGeneration, generation)
         for pending in inFlight.values { pending.task.cancel() }
         inFlight.removeAll()
         for script in ready.values { discard(script) }
@@ -135,6 +152,7 @@ actor OpenerPrefetcher {
         spans: SpanProvider,
         engineFor: @Sendable (String) -> any TTSEngine
     ) async -> Prefetched? {
+        if Task.isCancelled { return nil }
         let coalesced = (await spans()).coalesced()
         if coalesced.isEmpty || Task.isCancelled { return nil }
         var utterances: [PrefetchedUtterance] = []
