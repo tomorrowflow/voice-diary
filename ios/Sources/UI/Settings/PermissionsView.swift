@@ -3,8 +3,8 @@ import Speech
 import SwiftUI
 import UIKit
 
-/// Manual fallback for the auto-request that runs at app launch
-/// (`Permissions.requestStartupPermissions()`). Shows the *current*
+/// Manual fallback for the first-run permission priming
+/// (`PermissionPrimingView`). Shows the *current*
 /// status of microphone and speech-recognition access and lets the
 /// user trigger the system request again. iOS silently no-ops the
 /// request once a status has been cached — the only way to flip
@@ -274,8 +274,8 @@ public struct PermissionsView: View {
         // SwiftUI button action (likely a Swift 6 strict-concurrency
         // collision in the completion-handler signature). The wrapper
         // is `withCheckedThrowingContinuation`-based, fully async, and
-        // is the same path used at app launch + by the walkthrough's
-        // wake-word window.
+        // is the same path used by the first-run priming + the
+        // walkthrough's wake-word window.
         Task { @MainActor in
             do {
                 try await AppleStreamingRecognizer.requestAuthorization()
