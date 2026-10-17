@@ -34,7 +34,10 @@ public enum RecordingLanguage: String, Sendable, CaseIterable, Identifiable {
     /// Language tag stamped on a transcribed segment. Parakeet reports no
     /// language of its own, so `.auto` keeps the historical "de" default.
     public var transcriptLanguage: String {
-        resolve(auto: .de).rawValue
+        switch self {
+        case .auto, .de: return OpenerLanguage.de.rawValue
+        case .en:        return OpenerLanguage.en.rawValue
+        }
     }
 }
 
