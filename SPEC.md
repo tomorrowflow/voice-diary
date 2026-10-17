@@ -1148,10 +1148,10 @@ first capture. Today that's two steps, shown full-screen over the tabs by `RootV
    microphone and speech recognition.
 ```
 
-There is no first-run wizard beyond that: voice preview and the rest haven't landed. The voice pickers
+There is no first-run wizard beyond that: voice preview and the rest were intentionally dropped. The voice pickers
 (`VoiceSettingsView`, §12.1) exist only as ordinary Settings (Mehr) screens the developer opens
 manually. An Action Button binding prompt and a first-run drive-by tutorial ("Hallo Voice Diary")
-don't exist in code at all yet.
+are intentionally not built.
 
 Graph OAuth setup is a one-time step the user runs on the server (`server/scripts/msgraph_bootstrap.py`) before first iOS launch — not on the phone.
 
