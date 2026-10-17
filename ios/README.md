@@ -64,7 +64,7 @@ Or just press ▶ in Xcode. On first launch the onboarding gate asks for the ser
 
 The app stores the Tailscale URL + bearer token in Keychain. First launch shows a reduced onboarding gate (server setup, then permission priming); the full SPEC §14 flow was intentionally dropped. To change the server later:
 
-1. Launch the app → *Server* tab.
+1. Launch the app → *More* → *Server*.
 2. Paste the Tailscale URL of your `server/` deployment, e.g. `http://my-server.tailnet.ts.net:8000`.
 3. Paste the value of `IOS_BEARER_TOKEN` from `server/.env` (see `server/README.md` step 5 for how to issue one).
 4. Tap *Speichern*. The status row then shows `ok (6 upstream)` if `/health` reports healthy.
@@ -79,7 +79,7 @@ Run these scenarios after every iOS or server change. They cover what M3 needs t
 
 ### 1. Reachability
 
-- *Server* tab → *Server prüfen*. Expect `ok (6 upstream)`.
+- *More* → *Server* → *Server prüfen*. Expect `ok (6 upstream)`.
 - Stop the Whisper sidecar on the host (`docker compose stop whisper`) → tap again → expect `degraded: whisper=down`.
 - Bring it back up → expect `ok` again.
 
