@@ -627,6 +627,12 @@ public final class WalkthroughCoordinator {
         dir.appending(path: Self.pauseMarkerFilename)
     }
 
+    /// Seam for the protection-class test. The marker is written when
+    /// the app pauses, possibly with the screen locked.
+    static func writePauseMarkerData(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: [.atomic, LocalStore.dataProtectionWriteOption])
+    }
+
     private func writePauseMarker(activeSegmentID: String?) {
         guard let dir = sessionDir else { return }
         let marker: PauseMarker? = {
@@ -690,8 +696,7 @@ public final class WalkthroughCoordinator {
             enc.outputFormatting = [.prettyPrinted, .sortedKeys]
             enc.dateEncodingStrategy = .iso8601
             let data = try enc.encode(marker)
-            try data.write(to: pauseMarkerURL(in: dir),
-                           options: [.atomic, .completeFileProtection])
+            try Self.writePauseMarkerData(data, to: pauseMarkerURL(in: dir))
         } catch {
             Log.app.warning("pause marker write failed: \(String(describing: error), privacy: .public)")
         }
