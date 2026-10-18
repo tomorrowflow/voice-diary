@@ -278,33 +278,18 @@ public final class WalkthroughCoordinator {
     /// hang `playNoteAudio`.
     private var notePlaybackContinuation: CheckedContinuation<Void, Never>?
 
-    /// Pre-synthesised opener scripts keyed by their target segment ID.
-    /// Populated by `prefetchOpener` running in the background after each
-    /// listening phase begins, consumed by `speakOpenerScript` when the
-    /// next opener actually fires. The hot win is Piper: synthesising a
-    /// 60-character opener is ~400–800 ms of VITS work, and this cache
-    /// runs that work during the user's reflection silence so the gap
-    /// after "Weiter" is just AVAudioPlayer startup (~tens of ms).
-    /// Apple voices inherit a no-op `prefetch` and stay on the live
-    /// `speak()` path with no behaviour change.
-    private var prefetchedOpeners: [String: PrefetchedScript] = [:]
-    /// Background tasks for prefetches that haven't completed yet.
-    /// `consumePrefetched` awaits these before falling through to the
-    /// live-speak fallback, so a half-finished prefetch still delivers
-    /// its head start instead of being thrown away.
-    private var prefetchTasks: [String: Task<PrefetchedScript?, Never>] = [:]
-
-    /// Composed opener *text* (spans), keyed by segment ID. The event
-    /// opener is now LLM-prepared (SPEC §11): the text is generated once
-    /// — usually during prefetch — and reused by `runEvent` so the
-    /// recorded `ai_prompt` and `lastSpoken` exactly match the audio that
-    /// actually plays. Without this cache the prefetch (LLM) and the live
-    /// record path would each call the model and could diverge.
-    private var openerScriptCache: [String: [SpokenSpan]] = [:]
-    /// In-flight opener-text generations, keyed by segment ID. Dedupes a
-    /// concurrent prefetch + live request for the same opener onto one FM
-    /// call. Stored value is `nil`-safe: callers await `.value`.
-    private var openerTextTasks: [String: Task<[SpokenSpan], Never>] = [:]
+    /// Pre-synthesised opener audio and composed opener text, with their
+    /// dedup, consume-once and cancel semantics. Filled by `prefetchOpener`
+    /// after each listening phase begins; read by `speakOpenerScript` and
+    /// `eventOpenerSpans` when the opener actually fires.
+    private let openerPrefetcher = OpenerPrefetcher()
+    /// Bumped by every `clearPrefetchedOpeners()`. Each prefetch carries the
+    /// generation it was issued under and `openerPrefetcher` rejects any
+    /// older than its last `cancelAll(generation:)`, so the deferred
+    /// fan-out of an earlier session can't queue into the cleared caches
+    /// even if the clear lands during its hop to the actor. The checks
+    /// against it on the coordinator side only end the loop early.
+    private var prefetchGeneration = 0
 
     /// Pre-generated note summaries, keyed by `VoiceNote.id` (the seed
     /// id string). Filled at session start by `prefetchAllNoteSummaries`;
@@ -377,7 +362,7 @@ public final class WalkthroughCoordinator {
         surfacedNoteIDs = []
         deferredNoteIDs = []
         droppedNoteIDs = []
-        clearPrefetchedOpeners()
+        await clearPrefetchedOpeners()
         syncLiveActivity()
         Task { await ParakeetManager.shared.warmUp() }
         // Pre-arm the AVAudioSession in the foreground. Without this, the
@@ -447,7 +432,7 @@ public final class WalkthroughCoordinator {
         // general intros, voiceNote closings, and note summaries.
         // See `prefetchAllOpeners` for the rationale (CPU sharing
         // on `PiperTTS.prefetch` is the actual delay vector).
-        prefetchAllOpeners(language: language)
+        await prefetchAllOpeners(language: language)
         // Opening intro: orient the user on the day + the rough
         // shape of what's coming. SPEC §6 calls for a "briefing"
         // before the per-event loop; this fills that slot with a
@@ -869,7 +854,7 @@ public final class WalkthroughCoordinator {
         surfacedNoteIDs = []
         deferredNoteIDs = []
         droppedNoteIDs = []
-        clearPrefetchedOpeners()
+        await clearPrefetchedOpeners()
         syncLiveActivity()
         Task { await ParakeetManager.shared.warmUp() }
         do { try await engine.prepareSession() }
@@ -939,7 +924,7 @@ public final class WalkthroughCoordinator {
             case (nil, nil):     return nil
             }
         }()
-        prefetchAllOpeners(language: language)
+        await prefetchAllOpeners(language: language)
         // No day-overview intro on pickup — the user already knows
         // what day they're in, and stacking a briefing on top of
         // the pre-intro cue feels chatty. Fresh `begin()` still
@@ -968,9 +953,9 @@ public final class WalkthroughCoordinator {
         // the opener phase below the runEvent/runStep tail picks up
         // the warmed cache via `speakOpenerScript`.
         if marker.phase != .briefing {
-            prefetchOpener(stepIndex: marker.stepIndex,
-                           eventIndex: marker.eventIndex,
-                           language: language)
+            await prefetchOpener(stepIndex: marker.stepIndex,
+                                 eventIndex: marker.eventIndex,
+                                 language: language)
         }
         switch marker.phase {
         case .briefing:
@@ -1062,9 +1047,9 @@ public final class WalkthroughCoordinator {
         // visit step 0, and it steals CPU from the Piper synth pass we
         // actually need. Bumping the priority here hides the LLM +
         // synth cost behind the pre-intro's ~2 s playback.
-        prefetchOpener(stepIndex: marker.stepIndex,
-                       eventIndex: marker.eventIndex,
-                       language: language)
+        await prefetchOpener(stepIndex: marker.stepIndex,
+                             eventIndex: marker.eventIndex,
+                             language: language)
 
         // 1. Pre-intro — frames the pickup.
         let preIntro = language == .de
@@ -1119,7 +1104,7 @@ public final class WalkthroughCoordinator {
                     step: marker.stepIndex,
                     language: language
                 )
-                prefetchNextOpener(
+                await prefetchNextOpener(
                     afterStep: marker.stepIndex,
                     eventIndex: evtIdx,
                     language: language
@@ -1141,7 +1126,7 @@ public final class WalkthroughCoordinator {
                     step: marker.stepIndex,
                     language: language
                 )
-                prefetchNextOpener(
+                await prefetchNextOpener(
                     afterStep: marker.stepIndex,
                     eventIndex: nil,
                     language: language
@@ -1722,7 +1707,7 @@ public final class WalkthroughCoordinator {
         // session. Their cached WAVs go to /tmp; the discard call here
         // makes sure we don't leak the files until the system reaper
         // kicks in.
-        clearPrefetchedOpeners()
+        await clearPrefetchedOpeners()
         // Keep the pause marker (if any) on disk. Cancel preserves the
         // session_dir + its m4a files by design — "recordings until
         // this point shall be stored" — and the pickup intent should
@@ -2009,7 +1994,7 @@ public final class WalkthroughCoordinator {
             // the next event in this calendar block, or — if this was
             // the last event — the first opener of the next plan step
             // (general / note / next calendar block).
-            prefetchNextOpener(
+            await prefetchNextOpener(
                 afterStep: stepIndex,
                 eventIndex: eventIndex,
                 language: language
@@ -2064,7 +2049,7 @@ public final class WalkthroughCoordinator {
                 step: stepIndex,
                 language: language
             )
-            prefetchNextOpener(
+            await prefetchNextOpener(
                 afterStep: stepIndex,
                 eventIndex: nil,
                 language: language
@@ -2923,7 +2908,7 @@ public final class WalkthroughCoordinator {
         // and let the audio session deactivate cleanly. The next
         // walkthrough will pre-arm again from foreground.
         await engine.shutdown()
-        clearPrefetchedOpeners()
+        await clearPrefetchedOpeners()
         Task { await loadRecordedDates(around: selectedDate) }
     }
 
@@ -4200,23 +4185,12 @@ public final class WalkthroughCoordinator {
         segmentID: String,
         language: OpenerLanguage
     ) async -> [SpokenSpan] {
-        // The cache check and the task lookup run with no `await` between
-        // them, so on the MainActor they're atomic w.r.t. other tasks.
-        if let cached = openerScriptCache[segmentID] { return cached }
-        if let task = openerTextTasks[segmentID] { return await task.value }
-        let task = Task<[SpokenSpan], Never> { [weak self] in
+        await openerPrefetcher.composedSpans(segmentID: segmentID) { [weak self] in
             guard let self else { return [] }
             return await self.generateEventOpenerSpans(
                 event: event, index: index, total: total, language: language
             )
         }
-        openerTextTasks[segmentID] = task
-        let spans = await task.value
-        // Set cache *before* clearing the task so a brand-new caller that
-        // arrives in this window still finds either the cache or the task.
-        openerScriptCache[segmentID] = spans
-        openerTextTasks.removeValue(forKey: segmentID)
-        return spans
     }
 
     /// Try Apple FM for a varied, day-aware opener; fall back to the
@@ -4278,8 +4252,8 @@ public final class WalkthroughCoordinator {
     // MARK: - Opener prefetch -----------------------------------------
 
     /// Speak the opener for `segmentID`. Uses the cached prefetched
-    /// script when available (reaped from `prefetchedOpeners` /
-    /// `prefetchTasks`), otherwise falls back to a live speak of
+    /// script when available (consumed from `openerPrefetcher`), otherwise
+    /// falls back to a live speak of
     /// `fallbackSpans` — same end behaviour as `speak(script:)` so the
     /// non-prefetch path is bit-identical to before.
     ///
@@ -4293,7 +4267,7 @@ public final class WalkthroughCoordinator {
         segmentID: String,
         fallbackSpans: [SpokenSpan]
     ) async {
-        if let prefetched = await consumePrefetched(segmentID: segmentID),
+        if let prefetched = await openerPrefetcher.consume(segmentID: segmentID),
            !prefetched.isEmpty {
             Diag.log(
                 "speakOpener: prefetched cache hit \(segmentID), \(prefetched.utterances.count) utt"
@@ -4333,7 +4307,7 @@ public final class WalkthroughCoordinator {
         stepIndex: Int,
         eventIndex: Int?,
         language: OpenerLanguage
-    ) -> (segmentID: String, provider: @MainActor () async -> [SpokenSpan])? {
+    ) -> (segmentID: String, provider: OpenerPrefetcher.SpanProvider)? {
         guard stepIndex >= 0, stepIndex < plan.count else { return nil }
         switch plan[stepIndex] {
         case .calendar(let evts):
@@ -4342,7 +4316,7 @@ public final class WalkthroughCoordinator {
             let segID = makeEventSegmentID(stepIndex: stepIndex, eventIndex: i)
             let evt = evts[i]
             let total = evts.count
-            let provider: @MainActor () async -> [SpokenSpan] = { [weak self] in
+            let provider: OpenerPrefetcher.SpanProvider = { [weak self] in
                 await self?.eventOpenerSpans(
                     event: evt, index: i, total: total,
                     segmentID: segID, language: language
@@ -4365,68 +4339,28 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    /// Spawn a background prefetch task for a specific upcoming
-    /// opener. No-op when a prefetch (in-flight or completed) already
-    /// exists for this segment, or when the position has no opener
-    /// to speak. The Task first resolves the opener text (FM for calendar
+    /// Queue a background prefetch for a specific upcoming opener. No-op
+    /// when `openerPrefetcher` already holds one (in flight or completed)
+    /// for this segment, or when the position has no opener to speak.
+    /// The prefetcher first resolves the opener text (FM for calendar
     /// events), then synthesises each span via the appropriate engine's
-    /// `prefetch(_:language:)`; same-language adjacent spans coalesce so
-    /// the synth runs once per language bucket. Running on the MainActor
-    /// is fine: both the FM call and the synth `await` off-actor.
+    /// `prefetch(_:language:)`.
+    ///
+    /// `generation` defaults to the current one, read before the hop to the
+    /// actor; fan-outs pass the generation they started under instead.
     private func prefetchOpener(
         stepIndex: Int,
         eventIndex: Int?,
-        language: OpenerLanguage
-    ) {
+        language: OpenerLanguage,
+        generation: Int? = nil
+    ) async {
+        let generation = generation ?? prefetchGeneration
         guard let (segmentID, provider) = openerProviderForPrefetch(
             stepIndex: stepIndex,
             eventIndex: eventIndex,
             language: language
         ) else { return }
-        guard prefetchedOpeners[segmentID] == nil,
-              prefetchTasks[segmentID] == nil else { return }
-        Diag.log("prefetchOpener: queued \(segmentID)")
-        let task: Task<PrefetchedScript?, Never> = Task { @MainActor in
-            let coalesced = (await provider()).coalesced()
-            if coalesced.isEmpty || Task.isCancelled { return nil }
-            var utts: [PrefetchedUtterance] = []
-            for span in coalesced {
-                if Task.isCancelled { return nil }
-                let utt = await VoiceRegistry
-                    .engine(for: span.language)
-                    .prefetch(span.text, language: span.language)
-                utts.append(utt)
-            }
-            if Task.isCancelled { return nil }
-            return PrefetchedScript(segmentID: segmentID, utterances: utts)
-        }
-        prefetchTasks[segmentID] = task
-        Task { [weak self] in
-            let result = await task.value
-            await MainActor.run { [weak self] in
-                guard let self else { return }
-                // The session may have been cancelled or restarted
-                // before this resolved; in that case our prefetchTasks
-                // entry will already have been cleared by
-                // clearPrefetchedOpeners(), and we shouldn't resurrect
-                // it. Only stash the result if the slot still exists.
-                guard self.prefetchTasks[segmentID] != nil else {
-                    if let script = result {
-                        for utt in script.utterances {
-                            VoiceRegistry.engine(for: utt.language).discard(utt)
-                        }
-                    }
-                    return
-                }
-                self.prefetchTasks.removeValue(forKey: segmentID)
-                if let script = result {
-                    self.prefetchedOpeners[segmentID] = script
-                    Diag.log("prefetchOpener: ready \(segmentID)")
-                } else {
-                    Diag.log("prefetchOpener: cancelled \(segmentID)")
-                }
-            }
-        }
+        await openerPrefetcher.prefetch(segmentID: segmentID, spans: provider, generation: generation)
     }
 
     /// Convenience: prefetch the opener for "the step after the one
@@ -4437,22 +4371,22 @@ public final class WalkthroughCoordinator {
         afterStep currentStep: Int,
         eventIndex: Int?,
         language: OpenerLanguage
-    ) {
+    ) async {
         if let eIdx = eventIndex,
            currentStep < plan.count,
            case .calendar(let evts) = plan[currentStep],
            eIdx + 1 < evts.count {
-            prefetchOpener(stepIndex: currentStep, eventIndex: eIdx + 1, language: language)
+            await prefetchOpener(stepIndex: currentStep, eventIndex: eIdx + 1, language: language)
             return
         }
-        prefetchOpener(stepIndex: currentStep + 1, eventIndex: nil, language: language)
+        await prefetchOpener(stepIndex: currentStep + 1, eventIndex: nil, language: language)
     }
 
     /// First-step prefetch used at session start. Hides the Piper
     /// synth pass behind the opening intro's playback time.
-    private func prefetchFirstOpener(language: OpenerLanguage) {
+    private func prefetchFirstOpener(language: OpenerLanguage) async {
         guard !plan.isEmpty else { return }
-        prefetchOpener(stepIndex: 0, eventIndex: nil, language: language)
+        await prefetchOpener(stepIndex: 0, eventIndex: nil, language: language)
     }
 
     /// Session-start pre-generation, two-tier.
@@ -4475,30 +4409,31 @@ public final class WalkthroughCoordinator {
     /// suspends and any not-yet-generated opener falls through to
     /// Apple FM via `ChainDialogLLM`. Already-cached openers replay
     /// from their pre-rendered audio without touching the model.
-    private func prefetchAllOpeners(language: OpenerLanguage) {
+    private func prefetchAllOpeners(language: OpenerLanguage) async {
         guard !plan.isEmpty else { return }
+        let generation = prefetchGeneration
 
         // Tier 1: just the first opener.
-        prefetchOpener(stepIndex: 0, eventIndex: 0, language: language)
+        await prefetchOpener(stepIndex: 0, eventIndex: 0, language: language, generation: generation)
 
         // Tier 2: trampoline that waits for the first prefetch to land,
         // then fans out the rest. Spawned on the MainActor so it
-        // inherits this actor's isolation and can read the prefetch
-        // task map safely. `prefetchOpener` is internally dedup'd, so
-        // calling it again for event 0 inside the fan-out is a no-op.
+        // inherits this actor's isolation and can read `plan` safely.
+        // `prefetchOpener` is internally dedup'd, so calling it again
+        // for event 0 inside the fan-out is a no-op.
         Task { @MainActor [weak self] in
             guard let self else { return }
             await self.waitForFirstPrefetch()
-            self.prefetchRemainingOpeners(language: language)
+            await self.prefetchRemainingOpeners(language: language, generation: generation)
+            guard generation == self.prefetchGeneration else { return }
             self.prefetchAllNoteSummaries(language: language)
         }
     }
 
-    /// Block on the first opener's prefetch task value. Both the
-    /// completed map and the in-flight task map are consulted; either
-    /// match returns. The caller doesn't *need* the script, just the
-    /// fact that the work is done so the rest can fire without
-    /// stealing CPU from it.
+    /// Block until the first opener's prefetch has finished (completed
+    /// or in flight; either returns). The caller doesn't *need* the
+    /// script, just the fact that the work is done so the rest can fire
+    /// without stealing CPU from it.
     private func waitForFirstPrefetch() async {
         guard !plan.isEmpty else { return }
         let segID: String
@@ -4509,24 +4444,29 @@ public final class WalkthroughCoordinator {
         case .general, .voiceNote:
             segID = "s\(zeroPad(1))"
         }
-        if prefetchedOpeners[segID] != nil { return }
-        if let task = prefetchTasks[segID] {
-            _ = await task.value
-        }
+        await openerPrefetcher.waitUntilSettled(segmentID: segID)
     }
 
     /// Fan-out for the deferred tier. `prefetchOpener`'s internal
     /// dedup makes the first-opener call a no-op, so we don't need a
     /// special case to skip it.
-    private func prefetchRemainingOpeners(language: OpenerLanguage) {
+    private func prefetchRemainingOpeners(language: OpenerLanguage, generation: Int) async {
         for (stepIdx, step) in plan.enumerated() {
             switch step {
             case .calendar(let evts):
                 for evtIdx in 0..<evts.count {
-                    prefetchOpener(stepIndex: stepIdx, eventIndex: evtIdx, language: language)
+                    guard generation == prefetchGeneration else { return }
+                    await prefetchOpener(
+                        stepIndex: stepIdx, eventIndex: evtIdx,
+                        language: language, generation: generation
+                    )
                 }
             case .general, .voiceNote:
-                prefetchOpener(stepIndex: stepIdx, eventIndex: nil, language: language)
+                guard generation == prefetchGeneration else { return }
+                await prefetchOpener(
+                    stepIndex: stepIdx, eventIndex: nil,
+                    language: language, generation: generation
+                )
             }
         }
     }
@@ -4551,51 +4491,20 @@ public final class WalkthroughCoordinator {
         }
     }
 
-    /// Resolve a prefetched script for `segmentID`, awaiting the
-    /// in-flight task if it hasn't completed yet (so a partial
-    /// prefetch still delivers its head start). Removes the entry
-    /// from both the in-flight map and the completed map so each
-    /// prefetched script is consumed exactly once.
-    private func consumePrefetched(segmentID: String) async -> PrefetchedScript? {
-        if let cached = prefetchedOpeners.removeValue(forKey: segmentID) {
-            prefetchTasks.removeValue(forKey: segmentID)
-            return cached
-        }
-        if let task = prefetchTasks.removeValue(forKey: segmentID) {
-            let result = await task.value
-            // Recheck the completed map: while we were awaiting, the
-            // continuation Task in `prefetchOpener` may have written
-            // the result there already.
-            prefetchedOpeners.removeValue(forKey: segmentID)
-            return result
-        }
-        return nil
-    }
-
     /// Drop everything: cancel in-flight prefetches, discard cached
-    /// WAVs from /tmp, clear both maps. Safe to call repeatedly.
-    private func clearPrefetchedOpeners() {
-        for (_, task) in prefetchTasks {
-            task.cancel()
-        }
-        prefetchTasks.removeAll()
-        for (_, script) in prefetchedOpeners {
-            for utt in script.utterances {
-                VoiceRegistry.engine(for: utt.language).discard(utt)
-            }
-        }
-        prefetchedOpeners.removeAll()
-        // Drop composed opener text too — a restarted session re-fetches
-        // the calendar and must regenerate openers from scratch.
-        for (_, task) in openerTextTasks { task.cancel() }
-        openerTextTasks.removeAll()
-        openerScriptCache.removeAll()
-        // And the note summaries — they're keyed by note ID which is
-        // stable across sessions, but a new session may surface a
-        // different set of notes so a clean slate is the right default.
+    /// WAVs from /tmp, clear the opener caches and the note-summary
+    /// caches. Safe to call repeatedly.
+    private func clearPrefetchedOpeners() async {
+        // Note summaries are keyed by note ID which is stable across
+        // sessions, but a new session may surface a different set of
+        // notes so a clean slate is the right default. These and the
+        // generation bump run synchronously, ahead of the actor hop.
+        prefetchGeneration += 1
+        let generation = prefetchGeneration
         for (_, task) in noteSummaryTasks { task.cancel() }
         noteSummaryTasks.removeAll()
         noteSummaryCache.removeAll()
+        await openerPrefetcher.cancelAll(generation: generation)
     }
 
     // MARK: - Opening intro -------------------------------------------
