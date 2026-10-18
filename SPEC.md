@@ -742,6 +742,17 @@ Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-ana
 
 `status` is `processed`, `failed` or `pending_analysis`. `error` is the free-form string and is unchanged. `code` and `upstream` are optional machine-readable fields using the failure catalogue in §10.6.1; both are `null` when the segment did not fail, when the error is not an upstream failure, and for sessions written before they existed (the status is stored as JSON, so old rows simply lack the keys). Clients must treat a null `code` as "unknown reason" and fall back to `error` / `status`.
 
+The session-level `state` in the same responses is derived from the segment statuses:
+
+| `state` | When |
+|---|---|
+| `processing` | The server accepted the session and is still running it. |
+| `done` | Every segment is `processed`. |
+| `failed` | Every segment is `failed`. |
+| `partial` | Anything else, including any `pending_analysis` segment: all pending, `processed` + `pending_analysis`, or a mix with `failed`. |
+
+A session whose analysis or ingest failed therefore reports `partial`, never `done`, until a retry (§10.6.1) processes its pending segments. The startup sweep (§10.6.1) does not look at `done` sessions. Sessions persisted as `done` with a `pending_analysis` segment before this derivation existed are corrected to `partial` by the first sweep after the upgrade.
+
 ### 10.6 Retry & offline behaviour
 
 - On upload failure, back off exponentially (1s, 2s, 4s, 8s, 30s, 60s, ... max 10 min). When the
@@ -792,8 +803,8 @@ recovers. Two mechanisms retry it:
   `session_busy` if another narrative run for the same session is already in flight — a concurrent
   retry (double tap), the original background ingest, or the startup sweep; nothing is run and the
   caller can retry once the other run has finished.
-- **Startup sweep** — on app start, the server retries every session with a `pending_analysis`
-  segment, one at a time, best-effort. A session's retry failing is logged and leaves it
+- **Startup sweep** — on app start, the server retries every non-`done` session with a
+  `pending_analysis` segment, one at a time, best-effort. A session's retry failing is logged and leaves it
   `pending_analysis` (retryable again on the next start, or via the route above); it does not block
   the rest of the sweep or app startup. A session that is already busy (see `session_busy` above)
   is skipped. The sweep also covers sessions left `processing` by a process that died mid-run:

@@ -129,10 +129,12 @@ async def _asr_reachable() -> bool:
 
 
 def derive_session_state(results: list[SegmentResult]) -> str:
-    failed_count = sum(1 for r in results if r.status == "failed")
-    if failed_count == 0:
+    """`done` only when every segment is `processed`, `failed` when every one
+    failed, otherwise `partial` — including any `pending_analysis` segment
+    (BUG-114/#114)."""
+    if all(r.status == "processed" for r in results):
         return "done"
-    if failed_count == len(results):
+    if all(r.status == "failed" for r in results):
         return "failed"
     return "partial"
 
@@ -518,8 +520,9 @@ class SessionProcessor:
     async def retry_stuck_sessions_on_startup(self) -> None:
         """Best-effort startup sweep (issue #52).
 
-        Retries every session with a `pending_analysis` segment, one at a
-        time (bounded by the sessions table, sequential so a heavy analysis
+        Retries every non-`done` session with a `pending_analysis` segment
+        (legacy `done` rows that still have one are first corrected to
+        `partial`, BUG-114/#114), one at a time (bounded by the sessions table, sequential so a heavy analysis
         call doesn't pile up concurrently with others). Also picks up
         sessions left `processing` by a prior process (BUG-53/#53); sessions
         active in this process hold the in-flight claim and are skipped. A
@@ -528,6 +531,16 @@ class SessionProcessor:
         never raise, since `main.py`'s lifespan runs this without blocking app
         start.
         """
+        try:
+            corrected = await db.correct_legacy_done_sessions()
+            if corrected:
+                logger.info(
+                    "startup retry sweep: marked %d legacy done session(s) with pending segments partial",
+                    corrected,
+                )
+        except Exception as exc:  # noqa: BLE001 — best-effort, never blocks the sweep
+            logger.warning("startup retry sweep: legacy done-row correction failed: %s", exc)
+
         try:
             session_ids = await db.list_pending_analysis_session_ids()
         except Exception:  # noqa: BLE001 — best-effort, never blocks startup
