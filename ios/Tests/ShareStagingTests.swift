@@ -217,6 +217,51 @@ struct ShareStagingTests {
         #expect(try Data(contentsOf: source) == payload)
     }
 
+    /// Runs `ShareStaging.adopt` inside a task that is cancelled (or not)
+    /// before the adoption step, as when the view disappears mid-merge.
+    private func adopt(_ staged: URL, cancelFirst: Bool) async -> (adopted: Bool, assigned: URL?) {
+        let gate = AsyncStream<Void>.makeStream()
+        let task = Task { () -> (Bool, URL?) in
+            for await _ in gate.stream { break }
+            var assigned: URL?
+            let adopted = ShareStaging.adopt(staged) { assigned = $0 }
+            return (adopted, assigned)
+        }
+        if cancelFirst { task.cancel() }
+        gate.continuation.yield()
+        let result = await task.value
+        return (result.0, result.1)
+    }
+
+    @Test("an export prepared after the view went away is deleted, not adopted")
+    func cancelledPrepareDiscardsExport() async throws {
+        let dir = try makeDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try makeSource(in: dir)
+        let staged = try ShareStaging.stage(sourceURL: source, baseName: "export", in: dir)
+
+        let result = await adopt(staged, cancelFirst: true)
+
+        #expect(!result.adopted)
+        #expect(result.assigned == nil)
+        #expect(!exists(staged))
+        #expect(exists(source))
+    }
+
+    @Test("an export prepared while the view is still there is adopted and kept")
+    func activePrepareAdoptsExport() async throws {
+        let dir = try makeDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let source = try makeSource(in: dir)
+        let staged = try ShareStaging.stage(sourceURL: source, baseName: "export", in: dir)
+
+        let result = await adopt(staged, cancelFirst: false)
+
+        #expect(result.adopted)
+        #expect(result.assigned == staged)
+        #expect(exists(staged))
+    }
+
     @Test("discard is idempotent and ignores nil or missing files")
     func discardIsIdempotent() throws {
         let dir = try makeDir()

@@ -314,6 +314,7 @@ struct VerlaufDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var shareURL: URL?
     @State private var isPreparing: Bool = false
+    @State private var prepareTask: Task<Void, Never>?
     @State private var prepareError: String?
     @State private var showShare: Bool = false
     @State private var serverStatus: ServerClient.SessionStatusResponse?
@@ -401,6 +402,8 @@ struct VerlaufDetailView: View {
         .task { await loadServerStatus() }
         .onDisappear {
             player.stop()
+            prepareTask?.cancel()
+            prepareTask = nil
             discardStagedExport()
         }
         .confirmationDialog(
@@ -967,8 +970,12 @@ struct VerlaufDetailView: View {
         discardStagedExport()
         prepareError = nil
         isPreparing = true
-        Task {
+        prepareTask?.cancel()
+        // Held so leaving the view cancels it: the merge below keeps
+        // running, but its result is then discarded instead of adopted.
+        prepareTask = Task {
             do {
+                let staged: URL
                 switch item {
                 case .voiceNote(let d):
                     // Note audio sits in Application Support under a
@@ -995,16 +1002,15 @@ struct VerlaufDetailView: View {
                             isPreparing = false
                             return
                         }
-                        let merged = try await AudioMerger.mergedTempFile(
+                        staged = try await AudioMerger.mergedTempFile(
                             for: d.note.id,
                             segments: chunkURLs,
                             titles: nil,
                             titleLanguage: d.note.language
                         )
-                        shareURL = merged
                     } else {
                         let src = d.directory.appending(path: chunkFilenames[0])
-                        shareURL = try ShareStaging.stage(
+                        staged = try ShareStaging.stage(
                             sourceURL: src,
                             baseName: "voicediary-note-\(Self.sanitize(d.note.id))"
                         )
@@ -1033,15 +1039,17 @@ struct VerlaufDetailView: View {
                     let titles = existing.count == w.segmentURLs.count
                         ? Self.titlesForSegments(in: w)
                         : nil
-                    let merged = try await AudioMerger.mergedTempFile(
+                    staged = try await AudioMerger.mergedTempFile(
                         for: w.sessionID,
                         segments: existing,
                         titles: titles,
                         titleLanguage: language
                     )
-                    shareURL = merged
                 }
                 isPreparing = false
+                // The view may have disappeared during the merge; then the
+                // export is deleted rather than left in tmp with no sheet.
+                guard ShareStaging.adopt(staged, assign: { shareURL = $0 }) else { return }
                 showShare = true
             } catch {
                 isPreparing = false
