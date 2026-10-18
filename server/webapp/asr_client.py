@@ -3,7 +3,7 @@
 Owns the two things every audio-ingest caller needs: normalising arbitrary
 input audio to 16 kHz mono WAV via `ffmpeg`, and POSTing that WAV to the
 Whisper `/asr` sidecar. `main.py` (manual ingest upload/retry) and
-`routers/sessions.py` (iOS session ingest) both drive this client instead
+`session_processing.py` (iOS session ingest) both drive this client instead
 of keeping their own near-identical copies.
 
 Testability: the httpx transport is injectable via the constructor's

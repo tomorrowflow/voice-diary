@@ -1,33 +1,24 @@
 """iOS session ingest router.
 
 `POST /api/sessions` accepts the multipart bundle described in SPEC §10.2,
-persists it under `data/sessions/{session_id}/`, and runs the per-segment
-pipeline:
+persists it under `data/sessions/{session_id}/` and hands it to
+`session_processing` (ARCH-2), which runs the per-segment pipeline in a
+`BackgroundTasks` task; progress is poll-able via
+`GET /api/sessions/{id}/status`. `POST /api/sessions/{id}/retry-analysis` is
+the manual retry entry. Both, and the startup sweep `main.py` runs, go through
+`session_processing.get_processor()`.
 
-    AAC-LC m4a  →  ffmpeg → 16 kHz mono WAV
-                →  Whisper sidecar
-                →  correction (dictionary + few-shot LLM correction, shared
-                   with the HTMX review flow — #51)
-                →  entity_detector (4-pass with calendar_ref shortcut) +
-                   dismissal filtering
-                →  document_processor (LightRAG context + analysis + ingest)
-
-For ≤ 5 segments we process synchronously and return the per-segment
-results. Larger sessions are kicked into a `BackgroundTasks` queue and
-poll-able via `GET /api/sessions/{id}/status`.
-
-Failures on a single segment do not fail the whole session; the response
-records each segment's status individually.
+This module is HTTP only: multipart parsing, bundle storage, and mapping the
+lifecycle's results and `SessionError`s to responses. Failures on a single
+segment do not fail the whole session; the status records each segment
+individually.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import re
 import shutil
-from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import (
@@ -43,27 +34,9 @@ from fastapi import (
 # parent class, so `isinstance(part, fastapi.UploadFile)` is always False.
 from starlette.datastructures import UploadFile
 
-import asr_client
-import correction
 import db
-import narrative
-import transcript_ingest
-import upstream_failure
-from logging_setup import bind_session_id
-from paths import sessions_dir
-from models import (
-    CalendarEventSegment,
-    DriveBySegment,
-    EmptyBlockSegment,
-    FreeReflectionSegment,
-    Manifest,
-    Segment,
-    SegmentResult,
-    SessionAccepted,
-    SessionStatus,
-    Todo,
-    utcnow_iso,
-)
+import session_processing
+from models import Manifest, SessionAccepted, SessionStatus
 from routers.auth import require_bearer
 
 logger = logging.getLogger(__name__)
@@ -71,44 +44,17 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_bearer)])
 
-
-def _sessions_data_dir() -> Path:
-    return sessions_dir()
-
-
-async def _whisper_reachable() -> bool:
-    return await asr_client.get_default_client().reachable()
-
-
-# In-memory cache over the `session_ingests` table (SRV-A6). Fast path for
-# same-process polling; `db.get_session_status` backs a cache miss (e.g.
-# after a restart) so status and pending_analysis retryability survive.
-_session_status: dict[str, SessionStatus] = {}
-_status_lock = asyncio.Lock()
-# Sessions with a narrative run in flight (original background ingest, a
-# manual retry-analysis, or the startup sweep). A second run of the same
-# session would save another `processed_documents` version per transcript and
-# ingest `diary:{date}` into LightRAG twice. Guarded by `_status_lock`;
-# single-process app, so an in-process set is enough.
-_sessions_in_flight: set[str] = set()
-
-_INTERRUPTED_ERROR = (
-    "interrupted: no transcript was persisted before the server stopped processing this session"
-)
+# How the lifecycle's refusals surface over HTTP; the detail is the error code.
+_ERROR_STATUS: dict[type[session_processing.SessionError], int] = {
+    session_processing.SessionNotFound: status.HTTP_404_NOT_FOUND,
+    session_processing.SessionManifestMissing: status.HTTP_404_NOT_FOUND,
+    session_processing.SessionBusy: status.HTTP_409_CONFLICT,
+    session_processing.SessionNotRetryable: status.HTTP_409_CONFLICT,
+}
 
 
-async def _try_begin_session_run(session_id: str) -> bool:
-    """Claim `session_id` for a run; False if one is already in flight."""
-    async with _status_lock:
-        if session_id in _sessions_in_flight:
-            return False
-        _sessions_in_flight.add(session_id)
-        return True
-
-
-async def _end_session_run(session_id: str) -> None:
-    async with _status_lock:
-        _sessions_in_flight.discard(session_id)
+def _http_error(exc: session_processing.SessionError) -> HTTPException:
+    return HTTPException(status_code=_ERROR_STATUS[type(exc)], detail=exc.code)
 
 
 # --- multipart parsing ----------------------------------------------------
@@ -163,7 +109,7 @@ async def post_session(
         ) from exc
 
     session_id = parsed.session_id
-    session_dir = _sessions_data_dir() / _slug_session_id(session_id)
+    session_dir = session_processing.session_dir_for(session_id)
     if session_dir.exists():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -215,86 +161,26 @@ async def post_session(
             detail=f"missing_parts: {sorted(missing)}; received: {received_field_names}",
         )
 
-    received_at = utcnow_iso()
-    pending_results = [
-        SegmentResult(segment_id=seg.segment_id, status="pending_analysis")
-        for seg in parsed.segments
-    ]
-
-    # Claim the session before its `processing` row exists, not when the
-    # background task starts: the startup sweep treats an unclaimed
-    # `processing` row as orphaned by a dead process, and a retry arriving
-    # before the task is scheduled must still see it busy.
-    # `_process_session_bg` releases the claim.
-    await _try_begin_session_run(session_id)
-    try:
-        async with _status_lock:
-            _session_status[session_id] = SessionStatus(
-                session_id=session_id,
-                received_at=received_at,
-                state="processing",
-                segments=pending_results,
-            )
-        # Persist before we answer 200 — the in-memory map above is a cache;
-        # this row is what survives a restart (SRV-A6).
-        await db.create_session_status(
-            session_id=session_id,
-            received_at=received_at,
-            state="processing",
-            segments=[r.model_dump() for r in pending_results],
-        )
-
-        # Cheap pre-flight: Whisper is the one upstream we cannot work around.
-        # If it's down we surface 503 early rather than persisting a useless bundle.
-        if not await _whisper_reachable():
-            shutil.rmtree(session_dir, ignore_errors=True)
-            async with _status_lock:
-                _session_status.pop(session_id, None)
-            await db.delete_session_status(session_id)
-            raise upstream_failure.whisper_unavailable()
-    except BaseException:
-        await _end_session_run(session_id)
-        raise
+    processor = session_processing.get_processor()
+    accepted = await processor.accept(parsed, session_dir)
 
     # Always process asynchronously. iOS polls /api/sessions/{id}/status
     # if it wants per-segment results; the upload itself returns immediately
     # so URLSession's idle timeout doesn't fire on long Ollama/LightRAG
     # passes (SPEC §10.5).
-    background_tasks.add_task(_process_session_bg, parsed, session_dir)
+    background_tasks.add_task(processor.run_accepted, parsed, session_dir)
 
     return SessionAccepted(
         session_id=session_id,
-        received_at=received_at,
+        received_at=accepted.received_at,
         processing_status_url=f"/api/sessions/{session_id}/status",
-        segments=pending_results,
+        segments=accepted.segments,
     )
-
-
-async def _lookup_session_status(session_id: str) -> SessionStatus | None:
-    """Cache-then-db lookup shared by the status and retry-analysis routes.
-
-    A cache miss (e.g. after a restart) falls back to the persisted row
-    (SRV-A6) and repopulates the cache from it.
-    """
-    async with _status_lock:
-        status_obj = _session_status.get(session_id)
-    if status_obj is not None:
-        return status_obj
-
-    persisted = await db.get_session_status(session_id)
-    if persisted is None:
-        return None
-    # `get_session_status` returns exactly SessionStatus's fields (segments as
-    # dicts), so model_validate reconstructs it without restating each field.
-    status_obj = SessionStatus.model_validate(persisted)
-    async with _status_lock:
-        _session_status.setdefault(session_id, status_obj)
-    return status_obj
 
 
 @router.get("/api/sessions/{session_id}/status", response_model=SessionStatus)
 async def session_status(session_id: str) -> SessionStatus:
-    status_obj = await _lookup_session_status(session_id)
+    status_obj = await session_processing.get_processor().get_status(session_id)
     if status_obj is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -307,255 +193,15 @@ async def session_status(session_id: str) -> SessionStatus:
 async def retry_analysis(session_id: str) -> SessionStatus:
     """Retry a session stuck in `pending_analysis` (issue #52).
 
-    Rebuilds the session-level narrative input from what's persisted (the
-    manifest on disk plus each segment's transcript row) and re-runs the
-    shared narrative stage. 404 if the session is unknown; 409 if none of
-    its segments are actually `pending_analysis`; 409 `session_busy` if a
-    run for the session (original ingest, another retry, the startup sweep)
-    is already in flight.
-    """
-    status_obj = await _lookup_session_status(session_id)
-    if status_obj is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="session_not_found",
-        )
-
-    if not await _try_begin_session_run(session_id):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="session_busy",
-        )
-    try:
-        if not any(s.status == "pending_analysis" for s in status_obj.segments):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="session_not_retryable",
-            )
-
-        return await _retry_session_analysis(session_id, status_obj)
-    finally:
-        await _end_session_run(session_id)
-
-
-async def retry_stuck_sessions_on_startup() -> None:
-    """Best-effort startup sweep (issue #52).
-
-    Retries every session with a `pending_analysis` segment, one at a
-    time (bounded by the sessions table, sequential so a heavy analysis
-    call doesn't pile up concurrently with others). Also picks up sessions
-    left `processing` by a prior process (BUG-53/#53); sessions active in
-    this process hold the in-flight claim and are skipped. A session's retry
-    failing is logged and left `pending_analysis` — the manual retry route,
-    or the next startup, can pick it up again. Must never raise, since
-    `main.py`'s lifespan runs this without blocking app start.
+    404 if the session is unknown or its manifest is gone; 409 if none of its
+    segments are actually `pending_analysis`; 409 `session_busy` if a run for
+    the session (original ingest, another retry, the startup sweep) is
+    already in flight.
     """
     try:
-        session_ids = await db.list_pending_analysis_session_ids()
-    except Exception:  # noqa: BLE001 — best-effort, never blocks startup
-        logger.exception("startup retry sweep: failed to list pending_analysis sessions")
-        return
-
-    for session_id in session_ids:
-        if not await _try_begin_session_run(session_id):
-            logger.info("startup retry sweep: session %s busy, skipping", session_id)
-            continue
-        try:
-            status_obj = await _lookup_session_status(session_id)
-            if status_obj is None:
-                continue
-            if status_obj.state == "processing":
-                # We hold the in-flight claim, so no run in this process owns
-                # this session: it was interrupted. Segments without a
-                # persisted transcript can never be retried.
-                status_obj = await _fail_untranscribed_segments(session_id, status_obj)
-            retried = await _retry_session_analysis(session_id, status_obj)
-        except HTTPException as exc:
-            # Nothing to retry (no transcripts, manifest gone): an expected
-            # outcome for an interrupted session, so one line, no traceback.
-            logger.warning(
-                "startup retry sweep: session %s not retryable: %s", session_id, exc.detail,
-            )
-            continue
-        except Exception as exc:  # noqa: BLE001 — one session's failure must not stop the rest
-            logger.warning("startup retry sweep: session %s retry failed: %s", session_id, exc)
-            continue
-        finally:
-            await _end_session_run(session_id)
-        # A narrative failure doesn't raise — it comes back as segments still
-        # `pending_analysis` with an `analysis_pending: …` error.
-        errors = [
-            s.error for s in retried.segments
-            if s.status == "pending_analysis" and s.error and s.error.startswith("analysis_pending:")
-        ]
-        if errors:
-            logger.warning(
-                "startup retry sweep: session %s retry failed again, left pending_analysis: %s",
-                session_id, errors[0],
-            )
-
-
-async def _retry_session_analysis(session_id: str, status_obj: SessionStatus) -> SessionStatus:
-    """Rebuild the session-level narrative input from what's persisted and
-    re-run the narrative stage for every `pending_analysis` segment.
-
-    The manifest (segment order, headers, todos) comes back from the
-    on-disk `manifest.json` written by `post_session`. Each segment's
-    transcript (corrected text where present, entities) comes back from its
-    `transcripts` row. If analysis already completed and saved a document
-    for every pending segment but the LightRAG ingest failed, we re-ingest
-    that saved narrative instead of re-running analysis
-    (`_retry_via_saved_document`).
-    """
-    session_dir = _sessions_data_dir() / _slug_session_id(session_id)
-    manifest_path = session_dir / "manifest.json"
-    if not manifest_path.exists():
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="session_manifest_missing",
-        )
-    parsed = Manifest.model_validate(json.loads(manifest_path.read_bytes()))
-    segments_by_id = {seg.segment_id: seg for seg in parsed.segments}
-
-    artifacts: list[_SegmentArtifact] = []
-    for seg_result in status_obj.segments:
-        if seg_result.status != "pending_analysis" or seg_result.transcript_id is None:
-            continue
-        segment = segments_by_id.get(seg_result.segment_id)
-        if segment is None:
-            continue
-        transcript = await db.get_transcript(seg_result.transcript_id)
-        if transcript is None:
-            continue
-        artifacts.append(
-            _SegmentArtifact(
-                segment=segment,
-                transcript_id=seg_result.transcript_id,
-                raw_text=transcript.get("raw_text") or "",
-                corrected_text=(
-                    transcript.get("corrected_text") or transcript.get("raw_text") or ""
-                ),
-                # Pre-BUG-55 rows have the pipeline's entities in `entities_json`.
-                entities=_parse_entities_json(
-                    transcript.get("detected_entities_json")
-                    or transcript.get("entities_json")
-                ),
-            )
-        )
-
-    if not artifacts:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="session_not_retryable",
-        )
-
-    retried_ids = {art.segment.segment_id for art in artifacts}
-    try:
-        if not await _retry_via_saved_document(artifacts):
-            todos_by_segment = _todos_grouped_by_segment(parsed)
-            await _run_session_document_processor(
-                manifest=parsed, artifacts=artifacts, todos_by_segment=todos_by_segment,
-            )
-    except Exception as exc:  # noqa: BLE001
-        # Same handling as `_process_session`: the transcripts are safe in
-        # Postgres, so keep the segments `pending_analysis` (retryable again)
-              # and report that status rather than a 500. The sweep logs it per session;
-        # the route returns it to the caller.
-        updated_segments = [
-            SegmentResult(
-                segment_id=r.segment_id,
-                status="pending_analysis",
-                transcript_id=r.transcript_id,
-                error=f"analysis_pending: {exc}",
-                **upstream_failure.failure_fields(exc),
-            )
-            if r.segment_id in retried_ids
-            else r
-            for r in status_obj.segments
-        ]
-    else:
-        updated_segments = [
-            SegmentResult(segment_id=r.segment_id, status="processed", transcript_id=r.transcript_id)
-            if r.segment_id in retried_ids
-            else r
-            for r in status_obj.segments
-        ]
-    new_state = _derive_session_state(updated_segments)
-    await _persist_session_status(session_id, new_state, updated_segments)
-
-    async with _status_lock:
-        return _session_status[session_id]
-
-
-async def _fail_untranscribed_segments(session_id: str, status_obj: SessionStatus) -> SessionStatus:
-    """Settle an interrupted session's segments that never got a transcript.
-
-    Phase 1 persists a segment's transcript ID as soon as it is done with it
-    (`_persist_phase_1_progress`), so a `pending_analysis` segment without
-    one was cut off mid-transcription; mark it `failed` with a clear error.
-    """
-    segments = [
-        SegmentResult(segment_id=r.segment_id, status="failed", error=_INTERRUPTED_ERROR)
-        if r.status == "pending_analysis" and r.transcript_id is None
-        else r
-        for r in status_obj.segments
-    ]
-    state = _derive_session_state(segments)
-    await _persist_session_status(session_id, state, segments)
-    return status_obj.model_copy(update={"state": state, "segments": segments})
-
-
-async def _retry_via_saved_document(artifacts: list[_SegmentArtifact]) -> bool:
-    """Ingest-only retry shortcut.
-
-    If analysis already completed and saved a `processed_documents` row for
-    every artifact, the latest rows are all the same whole-session narrative
-    (`_run_session_document_processor` saves one combined document against
-    every segment), and the LightRAG ingest itself failed (rows unmarked),
-    re-ingest that saved narrative rather than re-running analysis.
-
-    Returns `False` (no-op, caller re-analyzes) if any artifact has no saved
-    document yet, every document is already marked ingested, or the latest
-    documents diverge (e.g. a newer single-segment document from the review
-    UI) — ingesting `docs[0]` and marking every row would otherwise record a
-    narrative that was never ingested.
-
-    A mix of marked and unmarked rows of the same narrative means a previous
-    run ingested it and died part-way through marking: just mark the
-    remainder.
-    """
-    docs: list[dict] = []
-    for art in artifacts:
-        doc = await db.get_latest_processed_document(art.transcript_id)
-        if doc is None:
-            return False
-        docs.append(doc)
-
-    def _metadata(doc: dict) -> dict:
-        metadata = doc["metadata"]
-        return json.loads(metadata) if isinstance(metadata, str) else metadata
-
-    narratives = {
-        (doc["document_markdown"], json.dumps(_metadata(doc), sort_keys=True))
-        for doc in docs
-    }
-    unmarked = [doc for doc in docs if not doc.get("lightrag_ingested")]
-    if len(narratives) != 1 or not unmarked:
-        return False
-
-    if len(unmarked) == len(docs):
-        await narrative.sync_and_ingest(docs[0]["document_markdown"], _metadata(docs[0]))
-    for doc in unmarked:
-        await db.mark_document_ingested(doc["id"])
-    return True
-
-
-def _parse_entities_json(raw: object) -> list[dict]:
-    if not raw:
-        return []
-    if isinstance(raw, str):
-        return json.loads(raw)
-    return raw
+        return await session_processing.get_processor().retry_analysis(session_id)
+    except session_processing.SessionError as exc:
+        raise _http_error(exc) from exc
 
 
 @router.get("/api/sessions/dates")
@@ -608,481 +254,3 @@ async def session_dates(
             "SELECT DISTINCT date FROM transcripts ORDER BY date"
         )
     return {"dates": [r["date"].isoformat() for r in rows]}
-
-
-# --- per-segment pipeline -------------------------------------------------
-
-
-def _derive_session_state(results: list[SegmentResult]) -> str:
-    failed_count = sum(1 for r in results if r.status == "failed")
-    if failed_count == 0:
-        return "done"
-    if failed_count == len(results):
-        return "failed"
-    return "partial"
-
-
-async def _persist_session_status(
-    session_id: str, state: str, segments: list[SegmentResult]
-) -> None:
-    """Write-through: update the in-memory cache (if present) and the
-    persisted row (SRV-A6) so status survives a restart."""
-    async with _status_lock:
-        current = _session_status.get(session_id)
-        if current is not None:
-            current.state = state
-            current.segments = segments
-    await db.update_session_status(
-        session_id=session_id,
-        state=state,
-        segments=[s.model_dump() for s in segments],
-    )
-
-
-async def _persist_phase_1_progress(
-    parsed: Manifest, results_by_id: dict[str, SegmentResult]
-) -> None:
-    """Persist each segment's phase-1 outcome (transcript ID or failure) while
-    the session is still `processing` (BUG-53/#53), so a crash before the
-    final write doesn't strand `session_ingests` rows with null transcript
-    IDs. Best-effort: the final write in `_process_session` still lands."""
-    segments = [
-        results_by_id.get(seg.segment_id)
-        or SegmentResult(segment_id=seg.segment_id, status="pending_analysis")
-        for seg in parsed.segments
-    ]
-    try:
-        await _persist_session_status(parsed.session_id, "processing", segments)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "session %s: could not persist phase 1 progress: %s", parsed.session_id, exc,
-        )
-
-
-async def _process_session_bg(parsed: Manifest, session_dir: Path) -> None:
-    """Background-task wrapper. `_process_session` persists status itself
-    (memory cache + db row) on success; this only handles the crash path.
-    Releases the in-flight claim `post_session` took, on success or failure."""
-    try:
-        await _process_session(parsed, session_dir)
-    except Exception:  # pragma: no cover — defensive
-        logger.exception("session %s background processing crashed", parsed.session_id)
-        async with _status_lock:
-            current = _session_status.get(parsed.session_id)
-            if current is not None:
-                current.state = "failed"
-        await db.mark_session_failed(parsed.session_id)
-    finally:
-        await _end_session_run(parsed.session_id)
-
-
-@dataclass
-class _SegmentArtifact:
-    """Per-segment outputs handed off to the session-level analysis stage."""
-
-    segment: Segment
-    transcript_id: int
-    raw_text: str
-    corrected_text: str
-    entities: list[dict] = field(default_factory=list)
-
-
-async def _process_session(parsed: Manifest, session_dir: Path) -> list[SegmentResult]:
-    """Two-phase pipeline.
-
-    Phase 1: per-segment Whisper + correction + entity detection. Each
-    segment's transcript and entities are persisted independently.
-
-    Phase 2: a single session-level pass — one LightRAG context query, one
-    Ollama analysis, one narrative, one LightRAG ingest under
-    `diary:{date}`. This replaces the previous per-segment ingest (which
-    accidentally collapsed to one document per day anyway, since every
-    segment shared the `diary:{date}` ID and the last writer won).
-    """
-    bind_session_id(parsed.session_id)
-    todos_by_segment = _todos_grouped_by_segment(parsed)
-    results_by_id: dict[str, SegmentResult] = {}
-    artifacts: list[_SegmentArtifact] = []
-
-    # Phase 1 — per segment
-    for seg in parsed.segments:
-        try:
-            artifact = await _process_segment(
-                manifest=parsed,
-                segment=seg,
-                session_dir=session_dir,
-            )
-            artifacts.append(artifact)
-            # Provisional state until phase 2 confirms analysis succeeded.
-            results_by_id[seg.segment_id] = SegmentResult(
-                segment_id=seg.segment_id,
-                status="pending_analysis",
-                transcript_id=artifact.transcript_id,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "session %s segment %s failed: %s",
-                parsed.session_id, seg.segment_id, exc,
-            )
-            results_by_id[seg.segment_id] = SegmentResult(
-                segment_id=seg.segment_id, status="failed", error=str(exc),
-                **upstream_failure.failure_fields(exc),
-            )
-        await _persist_phase_1_progress(parsed, results_by_id)
-
-    # Phase 2 — session-level analysis + LightRAG ingest (only if anything transcribed)
-    if artifacts:
-        try:
-            await _run_session_document_processor(
-                manifest=parsed,
-                artifacts=artifacts,
-                todos_by_segment=todos_by_segment,
-            )
-            for art in artifacts:
-                results_by_id[art.segment.segment_id] = SegmentResult(
-                    segment_id=art.segment.segment_id,
-                    status="processed",
-                    transcript_id=art.transcript_id,
-                )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "session %s document_processor failed: %s — leaving segments pending",
-                parsed.session_id, exc,
-            )
-            # Transcripts are already in Postgres; analysis can be retried later.
-            for art in artifacts:
-                results_by_id[art.segment.segment_id] = SegmentResult(
-                    segment_id=art.segment.segment_id,
-                    status="pending_analysis",
-                    transcript_id=art.transcript_id,
-                    error=f"analysis_pending: {exc}",
-                    **upstream_failure.failure_fields(exc),
-                )
-
-    # Preserve manifest segment order in the response.
-    results = [results_by_id[seg.segment_id] for seg in parsed.segments]
-
-    await _persist_session_status(
-        parsed.session_id, _derive_session_state(results), results
-    )
-    return results
-
-
-async def _process_segment(
-    *,
-    manifest: Manifest,
-    segment: Segment,
-    session_dir: Path,
-) -> _SegmentArtifact:
-    """Per-segment pipeline up to entity detection.
-
-    Returns an artifact with the persisted transcript ID and detected
-    entities. Document analysis + LightRAG ingest happen once per session
-    in `_run_session_document_processor`.
-    """
-    audio_path = session_dir / segment.audio_file
-    if not audio_path.exists():
-        raise FileNotFoundError(f"segment audio missing on disk: {segment.audio_file}")
-    audio_bytes = audio_path.read_bytes()
-    language = (segment.language or "de").split("-")[0]
-
-    # 1-2. ffmpeg → Whisper → persisted transcript row, via the core shared
-    # with main.py's /api/ingest/upload (SRV-A7).
-    suffix = Path(segment.audio_file).suffix
-    transcribed = await transcript_ingest.transcribe_and_persist(
-        audio_bytes,
-        src_suffix=suffix or ".m4a",
-        filename=f"{manifest.session_id}::{segment.segment_id}{suffix}",
-        date=manifest.date.isoformat(),
-        author="Florian Wolf",
-        language=language,
-    )
-    transcript_id = transcribed.transcript_id
-    raw_transcript = transcribed.raw_text
-
-    # 3-4. Dictionary corrections → vector few-shot LLM correction (falls
-    # back to the pre-LLM text on failure) → entity detection → dismissal
-    # filtering — the same non-interactive chain the HTMX review flow runs
-    # (#51). For calendar_event segments we additionally seed the persons
-    # dict with the manifest's canonical attendee names so the detector
-    # resolves them deterministically (Graph already gave us the truth — no
-    # need to fuzzy-match again).
-    persons_dict = await db.load_person_dictionary()
-    terms_dict = await db.load_term_dictionary()
-    if isinstance(segment, CalendarEventSegment):
-        seed_persons = _attendees_to_canonical_names(segment.calendar_ref.attendees)
-        if seed_persons:
-            persons_dict = _seed_persons_into_dict(persons_dict, seed_persons)
-    text_corrections = await db.load_text_corrections()
-    dismissals = await db.load_entity_dismissals()
-
-    result = await correction.correct_and_detect_entities(
-        raw_transcript,
-        persons=persons_dict,
-        terms=terms_dict,
-        text_corrections=text_corrections,
-        dismissals=dismissals,
-    )
-    corrected_text = result.corrected_text
-
-    # Convert dataclass instances to dicts in the shape document_processor
-    # expects (the HTMX review flow stores `text` for the canonical name).
-    entities: list[dict] = []
-    for d in result.entities:
-        item = d.to_dict()
-        item["text"] = d.canonical or d.original_text
-        item["type"] = d.entity_type
-        entities.append(item)
-
-    # Always persist, even when correction left the text unchanged —
-    # otherwise the detected entities are lost and a retry-analysis (#52)
-    # rebuilding the session narrative from Postgres would see none. Goes to
-    # `detected_entities_json`, not `save_draft`: status='saved' and
-    # `entities_json` are reserved for human review (BUG-55), and the review
-    # page skips SSE processing for transcripts that carry them.
-    await db.save_detected_entities(transcript_id, corrected_text, json.dumps(entities))
-
-    return _SegmentArtifact(
-        segment=segment,
-        transcript_id=transcript_id,
-        raw_text=raw_transcript,
-        corrected_text=corrected_text,
-        entities=entities,
-    )
-
-
-def _attendees_to_canonical_names(attendees: list[str]) -> list[str]:
-    """Strip emails to local-parts and Title-case for the entity seed list."""
-    out: list[str] = []
-    for entry in attendees:
-        local = entry.split("@", 1)[0].strip()
-        if not local:
-            continue
-        # `firstname.lastname` → `Firstname Lastname`
-        cleaned = re.sub(r"[._]+", " ", local).strip()
-        cleaned = " ".join(part.capitalize() for part in cleaned.split() if part)
-        if cleaned:
-            out.append(cleaned)
-    return out
-
-
-def _seed_persons_into_dict(
-    persons_dict: list[dict], seed_names: list[str]
-) -> list[dict]:
-    """Ensure each calendar attendee appears in the persons dict so the
-    detector resolves them on Pass 1 (exact match)."""
-    existing = {(p.get("canonical_name") or "").lower() for p in persons_dict}
-    augmented = list(persons_dict)
-    for name in seed_names:
-        if name.lower() in existing:
-            continue
-        first = name.split()[0] if name.split() else ""
-        augmented.append({
-            "id": None,
-            "canonical_name": name,
-            "first_name": first,
-            "role": "",
-            "department": "",
-            "company": "",
-            "context": "",
-            "variations": [],
-        })
-        existing.add(name.lower())
-    return augmented
-
-
-def _todos_grouped_by_segment(manifest: Manifest) -> dict[str, list[Todo]]:
-    grouped: dict[str, list[Todo]] = {}
-    for seg in manifest.segments:
-        if isinstance(seg, CalendarEventSegment):
-            grouped.setdefault(seg.segment_id, []).extend(seg.todos_detected)
-    for todo in manifest.todos_implicit_confirmed:
-        if todo.source_segment_id:
-            grouped.setdefault(todo.source_segment_id, []).append(todo)
-    return grouped
-
-
-def _format_todo_block(todos: list[Todo]) -> str:
-    """Render todos as a German prose block appended to the narrative."""
-    if not todos:
-        return ""
-    lines = ["", "## Offene Punkte"]
-    for todo in todos:
-        due = f" (fällig {todo.due})" if todo.due else ""
-        lines.append(f"- {todo.text} — Status: {todo.status}{due}")
-    return "\n".join(lines)
-
-
-async def _run_session_document_processor(
-    *,
-    manifest: Manifest,
-    artifacts: list[_SegmentArtifact],
-    todos_by_segment: dict[str, list[Todo]],
-) -> None:
-    """Run the shared narrative stage once per session, then the
-    session-specific parts around it.
-
-    Concatenates all transcribed segments (with per-segment headers so the
-    analysis LLM can still reason about meeting boundaries), unions the
-    detected entities, and delegates context → summary → analysis →
-    narrative markdown → metadata to `narrative.build_day_narrative` (the
-    same stage `main.py`'s SSE review flow uses — SRV-A1/#50). The todo
-    block and the multi-transcript save stay session-specific, since the
-    SSE path has neither.
-
-    The combined narrative is saved as a `processed_documents` row against
-    every segment's transcript_id so any segment-level read path keeps
-    working. Each of those rows is marked `lightrag_ingested` once the
-    LightRAG ingest succeeds — mirroring `main.py`'s manual
-    `/api/documents/{id}/ingest` route — so `/process/{id}` doesn't show an
-    already-ingested day as pending and the re-ingest button doesn't re-post
-    it.
-    """
-    date_str = manifest.date.isoformat()
-    combined_text = _build_combined_transcript(artifacts)
-    merged_entities = _merge_entities([art.entities for art in artifacts])
-
-    # Trust boundary: `combined_text` is transcribed speech (untrusted
-    # input) flowing into Ollama, and `analysis`/`markdown` are its
-    # unvalidated output — a prompt-injection surface into the
-    # knowledge-graph narrative. Accepted risk for a single-user tool
-    # (no other reader of the LightRAG-ingested markdown); see SEC-6 /
-    # docs/REVIEW-2026-07-04.md. Unlike `harvest_llm.extract_work_activities`,
-    # this path has no structured fields (category, hours, ...) to
-    # allowlist or bound — it's freeform narrative markdown end to end.
-    result = await narrative.build_day_narrative(combined_text, merged_entities, date_str)
-
-    markdown = result.markdown
-    todo_block = _format_session_todo_block(manifest, artifacts, todos_by_segment)
-    if todo_block:
-        markdown = f"{markdown.rstrip()}\n{todo_block}\n"
-
-    # Save the combined document against every segment's transcript so any
-    # transcript-id-keyed read path returns the canonical day narrative.
-    doc_ids: list[int] = []
-    for art in artifacts:
-        saved = await db.save_processed_document(
-            transcript_id=art.transcript_id,
-            document_markdown=markdown,
-            analysis_json=result.analysis,
-            context_summary=result.context_summary,
-            metadata=result.metadata,
-        )
-        doc_ids.append(saved["id"])
-
-    await narrative.sync_and_ingest(markdown, result.metadata)
-
-    # Only reached once ingest succeeds — a failure above propagates to the
-    # caller, which leaves these rows unmarked and the segments
-    # `pending_analysis` so they stay retryable.
-    for doc_id in doc_ids:
-        await db.mark_document_ingested(doc_id)
-
-
-def _build_combined_transcript(artifacts: list[_SegmentArtifact]) -> str:
-    """Concatenate all transcribed segments with German per-segment headers.
-
-    The headers preserve enough context (meeting title, time range,
-    attendees) for `analyze_transcript` to attribute relationships and
-    decisions to the right block, even though the LLM now sees one combined
-    text instead of one per call.
-    """
-    blocks: list[str] = []
-    for art in artifacts:
-        text = (art.corrected_text or "").strip()
-        if not text:
-            continue
-        header = _segment_header(art.segment)
-        blocks.append(f"{header}\n\n{text}")
-    return "\n\n".join(blocks)
-
-
-def _segment_header(segment: Segment) -> str:
-    if isinstance(segment, CalendarEventSegment):
-        ref = segment.calendar_ref
-        title = (ref.title or "Termin").strip()
-        time_range = _format_time_range(ref.start, ref.end)
-        attendees = _attendees_to_canonical_names(ref.attendees)
-        attendee_str = (
-            f", Teilnehmer: {', '.join(attendees)}" if attendees else ""
-        )
-        return f"## Termin: {title}{time_range}{attendee_str}"
-    if isinstance(segment, DriveBySegment):
-        time_str = _extract_hhmm(segment.captured_at)
-        return f"## Notiz unterwegs{(' um ' + time_str) if time_str else ''}"
-    if isinstance(segment, FreeReflectionSegment):
-        time_str = _extract_hhmm(segment.captured_at) if segment.captured_at else ""
-        return f"## Freie Reflexion{(' um ' + time_str) if time_str else ''}"
-    if isinstance(segment, EmptyBlockSegment):
-        return f"## Zeitblock {segment.time_range.start}–{segment.time_range.end}"
-    return f"## Abschnitt {segment.segment_id}"
-
-
-def _format_time_range(start: str, end: str) -> str:
-    s = _extract_hhmm(start)
-    e = _extract_hhmm(end)
-    if s and e:
-        return f" ({s}–{e})"
-    if s:
-        return f" (ab {s})"
-    return ""
-
-
-_HHMM_RE = re.compile(r"\b(\d{2}):(\d{2})\b")
-
-
-def _extract_hhmm(value: str | None) -> str:
-    if not value:
-        return ""
-    m = _HHMM_RE.search(value)
-    if not m:
-        return ""
-    return f"{m.group(1)}:{m.group(2)}"
-
-
-def _merge_entities(per_segment: list[list[dict]]) -> list[dict]:
-    """Union entities across segments, deduplicated by (type, lowercase name).
-
-    First occurrence wins so we keep whatever role/company metadata the
-    detector attached on first sight.
-    """
-    seen: set[tuple[str, str]] = set()
-    merged: list[dict] = []
-    for entities in per_segment:
-        for ent in entities:
-            ent_type = (ent.get("type") or ent.get("entity_type") or "").upper()
-            name = (ent.get("text") or ent.get("canonical") or "").strip().lower()
-            if not name:
-                continue
-            key = (ent_type, name)
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append(ent)
-    return merged
-
-
-def _format_session_todo_block(
-    manifest: Manifest,
-    artifacts: list[_SegmentArtifact],
-    todos_by_segment: dict[str, list[Todo]],
-) -> str:
-    """Aggregate every segment's todos plus any unattached implicit todos."""
-    todos: list[Todo] = []
-    seen_ids = {art.segment.segment_id for art in artifacts}
-    for segment_id, segment_todos in todos_by_segment.items():
-        if segment_id in seen_ids:
-            todos.extend(segment_todos)
-    # Implicit-confirmed todos without a source segment are not in
-    # `todos_by_segment`; include them so the day's narrative captures them.
-    for todo in manifest.todos_implicit_confirmed:
-        if not todo.source_segment_id:
-            todos.append(todo)
-    return _format_todo_block(todos)
-
-
-def _slug_session_id(session_id: str) -> str:
-    """Filesystem-safe slug for the session directory."""
-    return re.sub(r"[^A-Za-z0-9._-]+", "_", session_id)
-
-
