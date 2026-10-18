@@ -56,15 +56,15 @@ In Xcode → *VoiceDiary target* → *Signing & Capabilities*:
 xcodebuild -scheme VoiceDiary -destination 'platform=iOS,name=Florian iPhone' build
 ```
 
-Or just press ▶ in Xcode. On first launch you'll get the microphone-permission prompt.
+Or just press ▶ in Xcode. On first launch the onboarding gate asks for the server first; the system permission dialogs appear only after you tap Continue on the permission-priming screen.
 
 ---
 
 ## Configure server access
 
-The app stores the Tailscale URL + bearer token in Keychain. There is **no production onboarding yet** — that lands in M11. For now:
+The app stores the Tailscale URL + bearer token in Keychain. First launch shows a reduced onboarding gate (server setup, then permission priming); the full SPEC §14 flow was intentionally dropped. To change the server later:
 
-1. Launch the app → *Server* tab.
+1. Launch the app → *More* → *Server*.
 2. Paste the Tailscale URL of your `server/` deployment, e.g. `http://my-server.tailnet.ts.net:8000`.
 3. Paste the value of `IOS_BEARER_TOKEN` from `server/.env` (see `server/README.md` step 5 for how to issue one).
 4. Tap *Speichern*. The status row then shows `ok (6 upstream)` if `/health` reports healthy.
@@ -79,7 +79,7 @@ Run these scenarios after every iOS or server change. They cover what M3 needs t
 
 ### 1. Reachability
 
-- *Server* tab → *Server prüfen*. Expect `ok (6 upstream)`.
+- *More* → *Server* → *Server prüfen*. Expect `ok (6 upstream)`.
 - Stop the Whisper sidecar on the host (`docker compose stop whisper`) → tap again → expect `degraded: whisper=down`.
 - Bring it back up → expect `ok` again.
 
@@ -190,7 +190,7 @@ ios/
 - **sherpa-onnx xcframework + Piper voices.** Deferred to M5 alongside the walkthrough state machine. Drop the xcframework into `Resources/` (or add via Xcode → *Add Files*), then place `de_DE-thorsten-high.onnx`/`.json` and `en_US-lessac-high.onnx`/`.json` plus the espeak-ng data dir under `Resources/Models/`.
 - **App Intents + Action Button + WidgetKit + ActivityKit.** Deferred to M4.
 - **Walkthrough state machine + Apple FM dialog + wake-word + multilingual TTS.** Deferred to M5–M9.
-- **Production onboarding (Tailscale check, Action Button binding, voice preview).** Deferred to M11.
-- **`URLSessionConfiguration.background`** so uploads survive app suspension. Currently using the default config — fine for foreground-only dogfooding. Switch in M11.
+- **Full SPEC §14 onboarding (Tailscale check, Action Button binding, voice preview).** Intentionally dropped; the reduced first-run gate (server setup + permission priming) is what shipped for M11.
+- **`URLSessionConfiguration.background`** so uploads survive app suspension. Currently using the default config — fine for foreground-only dogfooding. Not tied to a milestone.
 
 Each item maps 1:1 to a story in `.planning/stories/`.
