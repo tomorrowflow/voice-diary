@@ -567,6 +567,32 @@ async def save_draft(transcript_id: int, request: Request):
     return {"status": "saved", "new_dictionary_entries": new_entries}
 
 
+# Strong references to in-flight review vector-store writes: the event loop
+# only keeps weak references to tasks, so an unreferenced one can be
+# garbage-collected mid-flight and its failure would never be observed.
+_review_vector_tasks: set[asyncio.Task] = set()
+
+
+def _retain_review_vector_task(coro, transcript_id: int) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    _review_vector_tasks.add(task)
+
+    def _finished(done: asyncio.Task) -> None:
+        _review_vector_tasks.discard(done)
+        if done.cancelled():
+            logger.warning("Vector store task for transcript %s was cancelled", transcript_id)
+        elif done.exception() is not None:
+            logger.warning(
+                "Failed to store vectors for transcript %s: %s",
+                transcript_id,
+                done.exception(),
+                exc_info=done.exception(),
+            )
+
+    task.add_done_callback(_finished)
+    return task
+
+
 @legacy_router.post("/api/transcripts/{transcript_id}/submit")
 async def submit_review(transcript_id: int, request: Request):
     """
@@ -654,70 +680,67 @@ async def submit_review(transcript_id: int, request: Request):
         transcript_date = body.get("date", str(date_module.today()))
 
         async def _store_vectors():
-            try:
-                # Remove existing vectors for this transcript to prevent duplicates
-                await vector_store.delete_transcript_vectors(transcript_id)
+            # Remove existing vectors for this transcript to prevent duplicates
+            await vector_store.delete_transcript_vectors(transcript_id)
 
-                # Store text edits as correction contexts
-                for edit in body.get("text_edits", []):
-                    old_word = edit.get("oldWord", "").strip()
-                    new_word = edit.get("newWord", "").strip()
-                    if old_word and new_word and old_word != new_word:
-                        # Find position in corrected text
-                        match = re.search(re.escape(new_word), corrected_text)
-                        if match:
-                            await vector_store.store_correction_context(
-                                original_text=old_word,
-                                corrected_text=new_word,
-                                full_text=corrected_text,
-                                start=match.start(),
-                                end=match.end(),
-                                correction_type="text_edit",
-                                transcript_id=transcript_id,
-                                transcript_date=transcript_date,
-                            )
-
-                # Store entity corrections and confirmed entities
-                for ent in body.get("entities", []):
-                    start = ent.get("start", 0)
-                    end = ent.get("end", 0)
-                    original = ent.get("original", ent.get("text", ""))
-                    canonical = ent.get("text", "")
-
-                    # Store entity correction context if original differs from canonical
-                    if ent.get("is_correction") and original.lower() != canonical.lower():
+            # Store text edits as correction contexts
+            for edit in body.get("text_edits", []):
+                old_word = edit.get("oldWord", "").strip()
+                new_word = edit.get("newWord", "").strip()
+                if old_word and new_word and old_word != new_word:
+                    # Find position in corrected text
+                    match = re.search(re.escape(new_word), corrected_text)
+                    if match:
                         await vector_store.store_correction_context(
-                            original_text=original,
-                            corrected_text=canonical,
+                            original_text=old_word,
+                            corrected_text=new_word,
                             full_text=corrected_text,
-                            start=start,
-                            end=end,
-                            correction_type="entity_correction",
+                            start=match.start(),
+                            end=match.end(),
+                            correction_type="text_edit",
                             transcript_id=transcript_id,
                             transcript_date=transcript_date,
                         )
 
-                    # Store confirmed/corrected entity as usage sample
-                    await vector_store.store_entity_sample(
-                        entity_canonical=canonical,
-                        entity_type=ent.get("type", ""),
-                        entity_id=ent.get("dictionary_id") or ent.get("dictionaryId"),
-                        source=ent.get("source", ""),
+            # Store entity corrections and confirmed entities
+            for ent in body.get("entities", []):
+                start = ent.get("start", 0)
+                end = ent.get("end", 0)
+                original = ent.get("original", ent.get("text", ""))
+                canonical = ent.get("text", "")
+
+                # Store entity correction context if original differs from canonical
+                if ent.get("is_correction") and original.lower() != canonical.lower():
+                    await vector_store.store_correction_context(
                         original_text=original,
+                        corrected_text=canonical,
                         full_text=corrected_text,
                         start=start,
                         end=end,
-                        match_type=ent.get("match_type", ""),
-                        action="corrected" if ent.get("is_correction") else "confirmed",
+                        correction_type="entity_correction",
                         transcript_id=transcript_id,
                         transcript_date=transcript_date,
                     )
 
-                logger.info("Stored vectors for transcript %s", transcript_id)
-            except Exception as e:
-                logger.warning("Failed to store vectors for transcript %s: %s", transcript_id, e)
+                # Store confirmed/corrected entity as usage sample
+                await vector_store.store_entity_sample(
+                    entity_canonical=canonical,
+                    entity_type=ent.get("type", ""),
+                    entity_id=ent.get("dictionary_id") or ent.get("dictionaryId"),
+                    source=ent.get("source", ""),
+                    original_text=original,
+                    full_text=corrected_text,
+                    start=start,
+                    end=end,
+                    match_type=ent.get("match_type", ""),
+                    action="corrected" if ent.get("is_correction") else "confirmed",
+                    transcript_id=transcript_id,
+                    transcript_date=transcript_date,
+                )
 
-        asyncio.create_task(_store_vectors())
+            logger.info("Stored vectors for transcript %s", transcript_id)
+
+        _retain_review_vector_task(_store_vectors(), transcript_id)
 
     return {"status": "submitted"}
 
