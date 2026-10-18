@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 import UIKit
@@ -35,18 +36,27 @@ struct ShareStagingTests {
     /// simulator ignores per-file protection, so reading the class back
     /// from disk can't tell `.none` from the real class there.
     private final class ProtectionRecorder: @unchecked Sendable {
+        struct Call {
+            let url: URL
+            let protection: URLFileProtection
+            /// Bytes on disk when the class was applied; `nil` if the file
+            /// didn't exist yet.
+            let sizeAtCall: Int?
+        }
+
         private let lock = NSLock()
-        private var calls: [(url: URL, protection: URLFileProtection)] = []
+        private var calls: [Call] = []
 
         var setter: ShareStaging.ProtectionSetter {
             { [self] url, protection in
+                let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? nil
                 lock.lock()
-                calls.append((url, protection))
+                calls.append(Call(url: url, protection: protection, sizeAtCall: size))
                 lock.unlock()
             }
         }
 
-        var recorded: [(url: URL, protection: URLFileProtection)] {
+        var recorded: [Call] {
             lock.lock()
             defer { lock.unlock() }
             return calls
@@ -104,6 +114,60 @@ struct ShareStagingTests {
         #expect(recorder.recorded.first?.protection == LocalStore.protectionClass)
         #expect(try Data(contentsOf: output) == payload)
         #expect(exists(source))
+    }
+
+    /// A short mono AAC `.m4a` the real merge path can decode.
+    private func makeToneSegment(in dir: URL, name: String) throws -> URL {
+        let url = dir.appending(path: name)
+        let sampleRate = 44_100.0
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: 1))
+        let frames = AVAudioFrameCount(sampleRate / 2)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames))
+        buffer.frameLength = frames
+        let samples = try #require(buffer.floatChannelData?[0])
+        for index in 0..<Int(frames) {
+            samples[index] = 0.3 * sin(Float(index) * 0.05)
+        }
+        // Scope so the writer finalises the m4a before it is read back.
+        do {
+            let writer = try AVAudioFile(
+                forWriting: url,
+                settings: [
+                    AVFormatIDKey: kAudioFormatMPEG4AAC,
+                    AVSampleRateKey: sampleRate,
+                    AVNumberOfChannelsKey: 1,
+                ]
+            )
+            try writer.write(from: buffer)
+        }
+        return url
+    }
+
+    @Test("the multi-segment scratch file is protected from creation and the export is tagged")
+    func multiSegmentScratchIsProtected() async throws {
+        let dir = try makeDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let first = try makeToneSegment(in: dir, name: "a.m4a")
+        let second = try makeToneSegment(in: dir, name: "b.m4a")
+        let output = dir.appending(path: "merged.m4a")
+        let scratch = dir.appending(path: "merged.scratch.m4a")
+        let recorder = ProtectionRecorder()
+
+        try await AudioMerger.merge(segments: [first, second], outputURL: output, protect: recorder.setter)
+
+        let recorded = recorder.recorded
+        // First call: the scratch, tagged while still empty — before any
+        // diary audio is written into it.
+        #expect(recorded.first?.url == scratch)
+        #expect(recorded.first?.sizeAtCall == 0)
+        #expect(recorded.allSatisfy { $0.protection == LocalStore.protectionClass })
+        // Last call: the final export.
+        #expect(recorded.last?.url == output)
+        // The merge still produces a playable file and cleans its scratch.
+        let merged = try AVAudioFile(forReading: output)
+        #expect(merged.length > 0)
+        #expect(!exists(scratch))
+        #expect(exists(first) && exists(second))
     }
 
     @Test("mergedTempFile stages a readable copy in tmp and leaves the source")
