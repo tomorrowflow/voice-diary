@@ -1,178 +1,115 @@
-"""Upstream failure contract on the session routes (UFH-01, ADR 0002):
-Whisper preflight, and `code` / `upstream` on segment results."""
+"""Upstream failure contract on the session lifecycle (UFH-01, ADR 0002):
+`code` / `upstream` on segment results. The Whisper preflight 503 and the
+status route's `code` / `upstream` fields are covered in `test_sessions.py`."""
 
 from __future__ import annotations
 
 import asyncio
 
 import httpx
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 import db
-import routers.sessions as sessions_router
-from tests.test_sessions import (
-    _FakeSessionIngests,
-    _auth,
-    _bundle,
-    _client,
-    _fake_document_processor_pipeline,
-    _manifest,
-    _segment_row,
-    _setup,
-    _stub_pending_session_for_retry,
-    _two_segment_manifest,
+import upstream_failure
+from routers import sessions as sessions_router
+from tests.session_helpers import (
+    FakeSessionIngests,
+    NarrativeStage,
+    SegmentPipeline,
+    auth,
+    fake_document_processor_pipeline,
+    fresh_processor,
+    manifest_dict,
+    segment_row,
+    stage_bundle,
+    stage_pending_session,
+    two_segment_manifest,
 )
 
 
-def test_post_session_503s_with_whisper_unavailable_contract_and_persists_nothing(
-    monkeypatch, tmp_path
-):
-    _setup(monkeypatch)
-    monkeypatch.setenv("DATA_DIR", str(tmp_path))
-
-    async def fake_whisper_unreachable() -> bool:
-        return False
-
-    created: list[str] = []
-
-    async def fake_create_session_status(session_id, received_at, state, segments) -> None:
-        created.append(session_id)
-
-    deleted: list[str] = []
-
-    async def fake_delete_session_status(session_id) -> None:
-        deleted.append(session_id)
-
-    monkeypatch.setattr(sessions_router, "_whisper_reachable", fake_whisper_unreachable)
-    monkeypatch.setattr(db, "create_session_status", fake_create_session_status)
-    monkeypatch.setattr(db, "delete_session_status", fake_delete_session_status)
-
-    resp = _client().post("/api/sessions", files=_bundle("sess-ufh-pre"), headers=_auth())
-
-    assert resp.status_code == 503
-    assert resp.json() == {
-        "detail": "whisper_unavailable",
-        "code": "whisper_unavailable",
-        "upstream": "whisper",
-        "retryable": True,
-    }
-    assert "retry-after" not in resp.headers
-    # Nothing persisted: the status row written for the claim is rolled back,
-    # there is no cache entry, and no bundle is left on disk.
-    assert created == deleted == ["sess-ufh-pre"]
-    assert "sess-ufh-pre" not in sessions_router._session_status
-    session_dir = sessions_router._sessions_data_dir() / sessions_router._slug_session_id("sess-ufh-pre")
-    assert not session_dir.exists()
+def _run_session(monkeypatch, tmp_path, session_id, *, failing=None, manifest=None):
+    """The original ingest's background run for `session_id`'s bundle, with
+    phase 1 stubbed; returns `(ingests, narrative stage)`."""
+    processor = fresh_processor(monkeypatch)
+    manifest = manifest if manifest is not None else manifest_dict(session_id)
+    parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, manifest)
+    ingests = FakeSessionIngests(
+        session_id, "processing", [segment_row(s["segment_id"], "pending_analysis") for s in manifest["segments"]],
+    ).install(monkeypatch)
+    SegmentPipeline(monkeypatch, transcript_ids={"s01": 5, "s02": 6}, failing=failing)
+    stage = NarrativeStage(monkeypatch)
+    return processor, parsed, session_dir, ingests, stage
 
 
-def test_process_session_records_code_on_a_segment_whose_whisper_call_fails_mid_run(
-    monkeypatch, tmp_path
-):
+def _segments_after_analysis_failure(monkeypatch, tmp_path, session_id, exc):
+    """One transcribed segment whose narrative stage raises `exc`; returns the
+    persisted segment row."""
+    processor, parsed, session_dir, ingests, stage = _run_session(monkeypatch, tmp_path, session_id)
+    stage.analysis_error = exc
+
+    asyncio.run(processor.run_accepted(parsed, session_dir))
+
+    return ingests.row["segments"][0]
+
+
+def test_run_records_code_on_a_segment_whose_whisper_call_fails_mid_run(monkeypatch, tmp_path):
     from asr_client import AsrTimeoutError
-    from models import Manifest
 
-    _setup(monkeypatch)
     session_id = "sess-ufh-whisper"
-    parsed = Manifest.model_validate(_two_segment_manifest(session_id))
-    ingests = _FakeSessionIngests(
-        session_id, "processing", [_segment_row("s01", "pending_analysis"), _segment_row("s02", "pending_analysis")]
+    processor, parsed, session_dir, ingests, _ = _run_session(
+        monkeypatch, tmp_path, session_id,
+        failing={"s02": AsrTimeoutError("whisper read timed out")},
+        manifest=two_segment_manifest(session_id),
     )
-    ingests.install(monkeypatch)
 
-    async def fake_process_segment(*, manifest, segment, session_dir):
-        if segment.segment_id == "s02":
-            raise AsrTimeoutError("whisper read timed out")
-        return sessions_router._SegmentArtifact(
-            segment=segment, transcript_id=11, raw_text="hallo", corrected_text="hallo",
-        )
+    asyncio.run(processor.run_accepted(parsed, session_dir))
 
-    async def fake_run_processor(*, manifest, artifacts, todos_by_segment):
-        return None
-
-    monkeypatch.setattr(sessions_router, "_process_segment", fake_process_segment)
-    monkeypatch.setattr(sessions_router, "_run_session_document_processor", fake_run_processor)
-
-    results = asyncio.run(sessions_router._process_session(parsed, tmp_path))
-
-    assert results[1].model_dump() == {
-        "segment_id": "s02", "status": "failed", "transcript_id": None,
-        "error": "whisper read timed out", "code": "whisper_timeout", "upstream": "whisper",
-    }
-    assert ingests.updates[-1][1][1] == _segment_row(
+    assert ingests.row["segments"][1] == segment_row(
         "s02", "failed", error="whisper read timed out", code="whisper_timeout", upstream="whisper",
     )
     # The transcribed segment is untouched by the other's failure.
-    assert results[0].code is None and results[0].upstream is None
+    assert ingests.row["segments"][0] == segment_row("s01", "processed", 5)
 
 
-def _run_session_with_analysis_failure(monkeypatch, tmp_path, session_id, exc):
-    """`_process_session` for one transcribed segment whose narrative stage
-    raises `exc`; returns the (single) segment result."""
-    from models import Manifest
-
-    _setup(monkeypatch)
-    parsed = Manifest.model_validate(_manifest(session_id))
-    _FakeSessionIngests(session_id, "processing", [_segment_row("s01", "pending_analysis")]).install(
-        monkeypatch
-    )
-
-    async def fake_process_segment(*, manifest, segment, session_dir):
-        return sessions_router._SegmentArtifact(
-            segment=segment, transcript_id=5, raw_text="hallo", corrected_text="hallo",
-        )
-
-    async def failing_run_processor(*, manifest, artifacts, todos_by_segment):
-        raise exc
-
-    monkeypatch.setattr(sessions_router, "_process_segment", fake_process_segment)
-    monkeypatch.setattr(sessions_router, "_run_session_document_processor", failing_run_processor)
-
-    return asyncio.run(sessions_router._process_session(parsed, tmp_path))[0]
-
-
-def test_process_session_records_code_when_ollama_fails_in_the_analysis_phase(monkeypatch, tmp_path):
+def test_run_records_code_when_ollama_fails_in_the_analysis_phase(monkeypatch, tmp_path):
     from ollama_client import OllamaUnavailableError
 
-    result = _run_session_with_analysis_failure(
+    row = _segments_after_analysis_failure(
         monkeypatch, tmp_path, "sess-ufh-ollama", OllamaUnavailableError("connection refused"),
     )
 
-    assert result.model_dump() == {
-        "segment_id": "s01", "status": "pending_analysis", "transcript_id": 5,
-        "error": "analysis_pending: connection refused",
-        "code": "ollama_unavailable", "upstream": "ollama",
-    }
+    assert row == segment_row(
+        "s01", "pending_analysis", 5, "analysis_pending: connection refused",
+        code="ollama_unavailable", upstream="ollama",
+    )
 
 
-def test_process_session_records_code_when_lightrag_fails_in_the_ingest_phase(monkeypatch, tmp_path):
+def test_run_records_code_when_lightrag_fails_in_the_ingest_phase(monkeypatch, tmp_path):
     from lightrag_client import LightRAGTimeoutError
 
-    result = _run_session_with_analysis_failure(
+    row = _segments_after_analysis_failure(
         monkeypatch, tmp_path, "sess-ufh-lightrag", LightRAGTimeoutError("no answer in 300s"),
     )
 
-    assert result.status == "pending_analysis"
-    assert result.error == "analysis_pending: no answer in 300s"
-    assert (result.code, result.upstream) == ("lightrag_timeout", "lightrag")
+    assert row["status"] == "pending_analysis"
+    assert row["error"] == "analysis_pending: no answer in 300s"
+    assert (row["code"], row["upstream"]) == ("lightrag_timeout", "lightrag")
 
 
-def test_process_session_classifies_a_raw_httpx_timeout_from_the_analysis_path(monkeypatch, tmp_path):
+def test_run_classifies_a_raw_httpx_timeout_from_the_analysis_path(monkeypatch, tmp_path):
     """The analysis call talks to Ollama with plain httpx; the real narrative
     stage must turn its raw timeout into `ollama_timeout`, error text intact."""
     import document_processor
-    from models import Manifest
 
-    _setup(monkeypatch)
-    _fake_document_processor_pipeline(monkeypatch)
     session_id = "sess-ufh-raw-timeout"
-    parsed = Manifest.model_validate(_manifest(session_id))
-    _FakeSessionIngests(session_id, "processing", [_segment_row("s01", "pending_analysis")]).install(
-        monkeypatch
-    )
-
-    async def fake_process_segment(*, manifest, segment, session_dir):
-        return sessions_router._SegmentArtifact(
-            segment=segment, transcript_id=5, raw_text="hallo", corrected_text="hallo",
-        )
+    processor = fresh_processor(monkeypatch)
+    parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
+    ingests = FakeSessionIngests(
+        session_id, "processing", [segment_row("s01", "pending_analysis")]
+    ).install(monkeypatch)
+    SegmentPipeline(monkeypatch, transcript_ids={"s01": 5})
+    fake_document_processor_pipeline(monkeypatch)
 
     async def raw_timeout(enriched, *, transport=None):
         raise httpx.ReadTimeout("read timed out")
@@ -180,103 +117,47 @@ def test_process_session_classifies_a_raw_httpx_timeout_from_the_analysis_path(m
     async def save_doc(**kwargs):
         raise AssertionError("analysis failed; nothing must be saved")
 
-    monkeypatch.setattr(sessions_router, "_process_segment", fake_process_segment)
     monkeypatch.setattr(document_processor, "analyze_transcript", raw_timeout)
     monkeypatch.setattr(db, "save_processed_document", save_doc)
 
-    result = asyncio.run(sessions_router._process_session(parsed, tmp_path))[0]
+    asyncio.run(processor.run_accepted(parsed, session_dir))
 
-    assert (result.status, result.code, result.upstream) == ("pending_analysis", "ollama_timeout", "ollama")
-    assert result.error == "analysis_pending: read timed out"
+    assert ingests.row["segments"][0] == segment_row(
+        "s01", "pending_analysis", 5, "analysis_pending: read timed out",
+        code="ollama_timeout", upstream="ollama",
+    )
 
 
-def test_process_session_leaves_code_null_for_an_unclassifiable_error(monkeypatch, tmp_path):
-    result = _run_session_with_analysis_failure(
+def test_run_leaves_code_null_for_an_unclassifiable_error(monkeypatch, tmp_path):
+    row = _segments_after_analysis_failure(
         monkeypatch, tmp_path, "sess-ufh-unknown", RuntimeError("disk full"),
     )
 
-    assert result.error == "analysis_pending: disk full"
-    assert result.code is None and result.upstream is None
+    assert row["error"] == "analysis_pending: disk full"
+    assert row["code"] is None and row["upstream"] is None
 
 
-def test_retry_analysis_records_code_and_upstream_on_the_still_pending_segment(monkeypatch, tmp_path):
+def test_retry_analysis_route_returns_code_and_upstream_on_the_still_pending_segment(monkeypatch, tmp_path):
     from ollama_client import OllamaTimeoutError
 
-    _setup(monkeypatch)
-    session_id = "sess-ufh-retry"
-    persisted_updates = _stub_pending_session_for_retry(monkeypatch, tmp_path, session_id)
+    fresh_processor(monkeypatch)
+    ingests = stage_pending_session(monkeypatch, tmp_path, "sess-ufh-retry")
+    stage = NarrativeStage(monkeypatch)
+    stage.analysis_error = OllamaTimeoutError("no answer in 600s")
+    app = FastAPI()
+    upstream_failure.install(app)
+    app.include_router(sessions_router.router)
+    client = TestClient(app)
 
-    async def fake_get_latest_processed_document(transcript_id: int) -> dict | None:
-        return None
-
-    async def failing_run_processor(**kwargs):
-        raise OllamaTimeoutError("no answer in 600s")
-
-    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest_processed_document)
-    monkeypatch.setattr(sessions_router, "_run_session_document_processor", failing_run_processor)
-
-    resp = _client().post(f"/api/sessions/{session_id}/retry-analysis", headers=_auth())
+    resp = client.post("/api/sessions/sess-ufh-retry/retry-analysis", headers=auth())
 
     assert resp.status_code == 200
-    expected = {
-        "segment_id": "s01", "status": "pending_analysis", "transcript_id": 5,
-        "error": "analysis_pending: no answer in 600s",
-        "code": "ollama_timeout", "upstream": "ollama",
-    }
+    expected = segment_row(
+        "s01", "pending_analysis", 5, "analysis_pending: no answer in 600s",
+        code="ollama_timeout", upstream="ollama",
+    )
     assert resp.json()["segments"] == [expected]
-    assert persisted_updates == [(session_id, resp.json()["state"], [expected])]
+    assert ingests.updates == [(resp.json()["state"], [expected])]
     # The status route returns them too.
-    status_resp = _client().get(f"/api/sessions/{session_id}/status", headers=_auth())
+    status_resp = client.get("/api/sessions/sess-ufh-retry/status", headers=auth())
     assert status_resp.json()["segments"] == [expected]
-
-
-def test_status_reads_a_row_written_before_the_contract_with_null_code_and_upstream(monkeypatch):
-    """Rows in `session_ingests.segments` written before UFH-01 lack the keys."""
-    _setup(monkeypatch)
-
-    async def fake_get_session_status(session_id: str) -> dict | None:
-        return {
-            "session_id": "sess-old",
-            "received_at": "2026-07-01T10:00:00Z",
-            "state": "partial",
-            "segments": [
-                {"segment_id": "s01", "status": "failed", "transcript_id": None, "error": "whisper exploded"},
-                {
-                    "segment_id": "s02", "status": "pending_analysis", "transcript_id": 3,
-                    "error": "analysis_pending: ollama unreachable",
-                },
-            ],
-        }
-
-    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
-
-    resp = _client().get("/api/sessions/sess-old/status", headers=_auth())
-
-    assert resp.status_code == 200
-    segments = resp.json()["segments"]
-    assert [(s["code"], s["upstream"]) for s in segments] == [(None, None), (None, None)]
-    assert segments[0]["error"] == "whisper exploded"
-
-
-def test_status_returns_code_and_upstream_from_a_persisted_row(monkeypatch):
-    _setup(monkeypatch)
-
-    async def fake_get_session_status(session_id: str) -> dict | None:
-        return {
-            "session_id": "sess-new",
-            "received_at": "2026-07-01T10:00:00Z",
-            "state": "failed",
-            "segments": [
-                {
-                    "segment_id": "s01", "status": "failed", "transcript_id": None,
-                    "error": "whisper down", "code": "whisper_unavailable", "upstream": "whisper",
-                },
-            ],
-        }
-
-    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
-
-    resp = _client().get("/api/sessions/sess-new/status", headers=_auth())
-
-    assert resp.json()["segments"][0]["code"] == "whisper_unavailable"
-    assert resp.json()["segments"][0]["upstream"] == "whisper"

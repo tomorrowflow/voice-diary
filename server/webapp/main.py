@@ -97,9 +97,9 @@ async def lifespan(app: FastAPI):
     # pending_analysis by a prior crash/restart. Fire-and-forget so a slow
     # LLM/LightRAG retry never delays the app coming up; kept on app.state
     # so the task isn't garbage-collected mid-flight.
-    from routers.sessions import retry_stuck_sessions_on_startup
+    import session_processing
     app.state.startup_retry_sweep_task = asyncio.create_task(
-        retry_stuck_sessions_on_startup()
+        session_processing.get_processor().retry_stuck_sessions_on_startup()
     )
 
     yield
@@ -1262,7 +1262,7 @@ async def _ingest_audio_to_transcript(
     """Pipeline: ffmpeg → Whisper → persist. Returns (transcript_id, review_url, text).
 
     Delegates the shared transcribe+persist core to `transcript_ingest`
-    (SRV-A7) — the same core `routers/sessions.py` drives per segment.
+    (SRV-A7) — the same core `session_processing` drives per segment.
     """
     src_suffix = Path(filename).suffix.lower() or ".mp3"
     result = await transcript_ingest.transcribe_and_persist(

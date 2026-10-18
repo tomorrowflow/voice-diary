@@ -1,6 +1,6 @@
 """Tests for `transcript_ingest.transcribe_and_persist` (SRV-A7).
 
-`main.py`'s `/api/ingest/upload` and `routers/sessions.py`'s per-segment
+`main.py`'s `/api/ingest/upload` and `session_processing`'s per-segment
 pipeline both drove their own copy of "ffmpeg -> Whisper -> insert
 `transcripts` row". This module is the shared core; these tests pin its
 behavior against a fake `AsrClient` and a monkeypatched `db.create_transcript`
