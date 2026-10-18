@@ -5,8 +5,10 @@ import json
 import logging
 import os
 import re
+from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from datetime import date as date_module, datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
@@ -573,7 +575,7 @@ async def save_draft(transcript_id: int, request: Request):
 _review_vector_tasks: set[asyncio.Task] = set()
 
 
-def _retain_review_vector_task(coro, transcript_id: int) -> asyncio.Task:
+def _retain_review_vector_task(coro: Coroutine[Any, Any, None], transcript_id: int) -> asyncio.Task:
     task = asyncio.create_task(coro)
     _review_vector_tasks.add(task)
 

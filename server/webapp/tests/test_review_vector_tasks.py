@@ -110,3 +110,30 @@ def test_failing_vector_write_is_logged_and_released(monkeypatch, caplog):
         for r in caplog.records
     )
     assert main._review_vector_tasks == set()
+
+
+def test_cancelled_vector_write_is_logged_and_released(monkeypatch, caplog):
+    started = asyncio.Event()
+
+    async def delete_transcript_vectors(transcript_id):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(vector_store, "delete_transcript_vectors", delete_transcript_vectors)
+
+    async def run():
+        await main.submit_review(5, _FakeRequest(BODY))
+        (task,) = main._review_vector_tasks
+        await started.wait()
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.sleep(0)
+
+    with caplog.at_level(logging.WARNING, logger=main.logger.name):
+        asyncio.run(run())
+
+    assert any(
+        "Vector store task for transcript 5 was cancelled" in r.getMessage()
+        for r in caplog.records
+    )
+    assert main._review_vector_tasks == set()
