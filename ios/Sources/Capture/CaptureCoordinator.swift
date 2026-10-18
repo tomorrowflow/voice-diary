@@ -445,7 +445,7 @@ public final class CaptureCoordinator {
         note: VoiceNote,
         into dir: URL,
         write: (Data, URL) throws -> Void = { data, url in
-            try data.write(to: url, options: [.atomic, .completeFileProtection])
+            try data.write(to: url, options: [.atomic, LocalStore.dataProtectionWriteOption])
         }
     ) throws {
         let json = dir.appending(path: "metadata.json")

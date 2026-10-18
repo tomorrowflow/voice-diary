@@ -565,8 +565,13 @@ struct VerlaufDetailView: View {
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         if let data = try? encoder.encode(note) {
-            try? data.write(to: metaURL, options: [.atomic, .completeFileProtection])
+            try? Self.writeVoiceNoteMetadata(data, to: metaURL)
         }
+    }
+
+    /// Seam for the protection-class test.
+    static func writeVoiceNoteMetadata(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: [.atomic, LocalStore.dataProtectionWriteOption])
     }
 
     /// Delete one surfaced note. A surfaced note is a standalone drive-by
