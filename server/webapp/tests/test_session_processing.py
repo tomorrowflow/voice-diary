@@ -683,6 +683,41 @@ def test_retry_resumes_only_the_untranscribed_segments_of_a_mixed_session(monkey
     assert ingests.row["segments"] == [segment_row("s01", "processed", 41), segment_row("s02", "processed", 42)]
 
 
+def test_retry_resumes_an_untranscribed_segment_even_when_another_ones_transcript_row_is_gone(monkeypatch, tmp_path):
+    processor = fresh_processor(monkeypatch)
+    session_id = "sess-resume-row-gone"
+    _, ingests = _stage_untranscribed_session(
+        monkeypatch, tmp_path, session_id,
+        [segment_row("s01", "pending_analysis", 9, "analysis_pending: boom"), segment_row("s02", "pending_analysis")],
+    )
+    pipeline = SegmentPipeline(monkeypatch, transcript_ids={"s02": 12})
+    stub_transcripts(monkeypatch, [])
+    stage = NarrativeStage(monkeypatch)
+
+    asyncio.run(processor.retry_analysis(session_id))
+
+    assert [c["filename"] for c in pipeline.transcribe_calls] == [f"{session_id}::s02.m4a"]
+    assert len(stage.runs) == 1
+    assert ingests.row["segments"][1] == segment_row("s02", "processed", 12)
+
+
+def test_retry_that_is_not_retryable_resumes_nothing(monkeypatch, tmp_path):
+    processor = fresh_processor(monkeypatch)
+    session_id = "sess-nothing-to-resume"
+    stage_bundle(monkeypatch, tmp_path, session_id)
+    ingests = FakeSessionIngests(
+        session_id, "done", [segment_row("s01", "pending_analysis", 9, "analysis_pending: boom")]
+    ).install(monkeypatch)
+    pipeline = SegmentPipeline(monkeypatch)
+    stub_transcripts(monkeypatch, [])
+
+    with pytest.raises(SessionNotRetryable):
+        asyncio.run(processor.retry_analysis(session_id))
+
+    assert pipeline.transcribe_calls == []
+    assert ingests.updates == []
+
+
 def test_retry_fails_a_resumed_segment_when_transcription_fails_and_continues_with_the_rest(monkeypatch, tmp_path):
     processor = fresh_processor(monkeypatch)
     session_id = "sess-resume-whisper-fails"
