@@ -398,13 +398,13 @@ class SessionProcessor:
     async def retry_analysis(self, session_id: str) -> SessionStatus:
         """Retry a session stuck in `pending_analysis` (issue #52).
 
-        Segments that never got a transcript are first resumed from the stored
-        audio (`_resume_untranscribed_segments`, BUG-112). Rebuilds the
-        session-level narrative input from what's persisted (the manifest on
-        disk plus each segment's transcript row) and re-runs the shared
-        narrative stage. A narrative failure doesn't raise: it comes
-        back as segments still `pending_analysis` with an `analysis_pending: …`
-        error.
+        Rebuilds the session-level narrative input from what's persisted (the
+        manifest on disk plus each segment's transcript row) and re-runs the
+        shared narrative stage. Segments that never got a transcript are
+        resumed from the stored audio (`_resume_untranscribed_segments`,
+        BUG-112) and join that input. A narrative failure doesn't raise: it
+        comes back as segments still `pending_analysis` with an
+        `analysis_pending: …` error.
 
         Raises `SessionNotFound` if the session is unknown, `SessionBusy` if a
         run for it (original ingest, another retry, the startup sweep) is
@@ -476,7 +476,7 @@ class SessionProcessor:
 
         # Decide retryability before any side effect: with no transcript row to
         # narrate and nothing untranscribed to resume, there is no work.
-        if not artifacts and not _has_untranscribed_segment(status_obj.segments):
+        if not artifacts and not any(_is_untranscribed(r) for r in status_obj.segments):
             raise SessionNotRetryable()
 
         segment_results, resumed = await self._resume_untranscribed_segments(
@@ -554,7 +554,7 @@ class SessionProcessor:
         results = list(status_obj.segments)
         artifacts: list[_SegmentArtifact] = []
         for index, current in enumerate(results):
-            if current.status != "pending_analysis" or current.transcript_id is not None:
+            if not _is_untranscribed(current):
                 continue
             segment = segments_by_id.get(current.segment_id)
             try:
@@ -651,8 +651,9 @@ def get_processor() -> SessionProcessor:
     return _default
 
 
-def _has_untranscribed_segment(segments: list[SegmentResult]) -> bool:
-    return any(s.status == "pending_analysis" and s.transcript_id is None for s in segments)
+def _is_untranscribed(result: SegmentResult) -> bool:
+    """A segment cut off before its transcript was persisted (BUG-112)."""
+    return result.status == "pending_analysis" and result.transcript_id is None
 
 
 # --- saved-document retry -------------------------------------------------

@@ -683,6 +683,24 @@ def test_retry_resumes_only_the_untranscribed_segments_of_a_mixed_session(monkey
     assert ingests.row["segments"] == [segment_row("s01", "processed", 41), segment_row("s02", "processed", 42)]
 
 
+def test_retry_narrates_a_resumed_segment_before_a_rebuilt_one_in_manifest_order(monkeypatch, tmp_path):
+    processor = fresh_processor(monkeypatch)
+    session_id = "sess-resume-first"
+    _, ingests = _stage_untranscribed_session(
+        monkeypatch, tmp_path, session_id,
+        [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis", 42, "analysis_pending: boom")],
+    )
+    SegmentPipeline(monkeypatch, transcript_ids={"s01": 41})
+    stub_transcripts(monkeypatch, [42])
+    stage = NarrativeStage(monkeypatch)
+
+    asyncio.run(processor.retry_analysis(session_id))
+
+    assert stage.runs[0]["text"].index("hallo welt") < stage.runs[0]["text"].index("text-42")
+    assert [doc["id"] for doc in stage.documents.values()] == [141, 142]
+    assert ingests.row["segments"] == [segment_row("s01", "processed", 41), segment_row("s02", "processed", 42)]
+
+
 def test_retry_resumes_an_untranscribed_segment_even_when_another_ones_transcript_row_is_gone(monkeypatch, tmp_path):
     processor = fresh_processor(monkeypatch)
     session_id = "sess-resume-row-gone"
