@@ -152,7 +152,8 @@ public enum AudioMerger {
         segments: [URL],
         titles: [String?]? = nil,
         titleLanguage: String = "de-DE",
-        outputURL: URL
+        outputURL: URL,
+        protect: ShareStaging.ProtectionSetter = ShareStaging.setProtection
     ) async throws {
         guard !segments.isEmpty else { throw MergeError.emptyInput }
 
@@ -163,7 +164,7 @@ public enum AudioMerger {
         if segments.count == 1 && !needsAnnouncements {
             // Use a file copy instead of Data(contentsOf:) to avoid
             // materialising the whole audio file in RAM.
-            try copyOut(from: segments[0], to: outputURL)
+            try copyOut(from: segments[0], to: outputURL, protect: protect)
             return
         }
 
@@ -193,6 +194,11 @@ public enum AudioMerger {
         // Also covers a throw mid-merge, which would otherwise leave the
         // partial scratch file in the output's directory.
         defer { try? FileManager.default.removeItem(at: scratch) }
+        // The scratch holds real diary audio too, and survives a crash.
+        // Create it empty with the app-wide class so `AVAudioFile` writes
+        // into an already-protected file instead of an unprotected one.
+        try Data().write(to: scratch, options: [.atomic, LocalStore.dataProtectionWriteOption])
+        protect(scratch, LocalStore.protectionClass)
 
         // Inner scope so the AVAudioFile writer deinits BEFORE we read
         // the file back. AVAudioFile finalises the m4a container (mdat
@@ -218,6 +224,8 @@ public enum AudioMerger {
                 commonFormat: .pcmFormatFloat32,
                 interleaved: false
             )
+            // Re-assert in case the writer replaced the file we created.
+            protect(scratch, LocalStore.protectionClass)
 
             let chunkFrames: AVAudioFrameCount = 8192
             for (index, segmentURL) in segments.enumerated() {
@@ -263,7 +271,7 @@ public enum AudioMerger {
         // Using replaceItemAt is atomic: if a crash occurs between the
         // writer deinit and here, the scratch file survives on disk
         // rather than being lost.
-        try copyOut(from: scratch, to: outputURL)
+        try copyOut(from: scratch, to: outputURL, protect: protect)
         try? FileManager.default.removeItem(at: scratch)
     }
 
