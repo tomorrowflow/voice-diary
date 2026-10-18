@@ -1537,65 +1537,25 @@ private struct TodoConfirmationCard: View {
         )
     }
 
-    /// Build a 5-line window around the todo's source phrase. Returns
-    /// the lines plus the (optional) range of the matched phrase inside
-    /// the joined excerpt — `nil` when the phrase couldn't be located,
-    /// in which case the caller still renders the window but skips the
-    /// highlight.
-    private struct Excerpt {
-        let text: String
-        let highlightRange: Range<String.Index>?
-    }
-
-    private func excerpt(for candidate: Todo?) -> Excerpt? {
+    /// The 5-sentence window around the todo's source phrase, selected by
+    /// `TranscriptExcerpt`. `nil` when the todo has no source segment or
+    /// the transcript has no sentences.
+    private func excerpt(for candidate: Todo?) -> TranscriptExcerpt.Selection? {
         guard let candidate,
               let segID = candidate.source_segment_id,
               let transcript = coordinator.transcript(forSegmentID: segID)
         else { return nil }
-
-        // Resolve the phrase to highlight: prefer the verbatim source
-        // quote (always exact for explicit; populated by the LLM for
-        // implicit when it complied), fall back to the candidate text.
-        let needle = (candidate.source_quote?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
-            $0.isEmpty ? nil : $0
-        } ?? candidate.text
-
-        // Tokenise the transcript into "lines" — the corrected
-        // transcripts are usually one long paragraph, so we sentence-
-        // split on .!? rather than \n, then re-trim.
-        let lines = sentences(in: transcript)
-        guard !lines.isEmpty else { return nil }
-
-        let lowerLines = lines.map { $0.lowercased() }
-        let lowerNeedle = needle.lowercased()
-
-        var matchIdx = lowerLines.firstIndex { $0.contains(lowerNeedle) }
-        if matchIdx == nil {
-            // Token-overlap fallback for paraphrased implicit todos.
-            matchIdx = bestTokenOverlap(needle: lowerNeedle, lines: lowerLines)
-        }
-
-        // Always show 5 lines centred on the match (or the tail of the
-        // transcript when no match could be located).
-        let center = matchIdx ?? max(lines.count - 1, 0)
-        let start = max(center - 2, 0)
-        let end = min(start + 5, lines.count)
-        let actualStart = max(end - 5, 0)
-        let window = Array(lines[actualStart..<end])
-        let joined = window.joined(separator: " ")
-
-        if let matchIdx,
-           matchIdx >= actualStart, matchIdx < end,
-           let span = locate(needle: needle, in: joined) {
-            return Excerpt(text: joined, highlightRange: span)
-        }
-        return Excerpt(text: joined, highlightRange: nil)
+        return TranscriptExcerpt.select(
+            transcript: transcript,
+            sourceQuote: candidate.source_quote,
+            candidateText: candidate.text
+        )
     }
 
     /// Render the excerpt with the matched span tinted, wrapped in
     /// language-appropriate quotation marks. German uses low/high
     /// guillemets („…"), English uses curly quotes ("…").
-    private func excerptText(_ ex: Excerpt) -> Text {
+    private func excerptText(_ ex: TranscriptExcerpt.Selection) -> Text {
         let (open, close) = AppLanguage.shared.isGerman
             ? ("\u{201E}", "\u{201C}")   // „ … "
             : ("\u{201C}", "\u{201D}")   // “ … ”
@@ -1616,51 +1576,6 @@ private struct TodoConfirmationCard: View {
             + closeQuote
     }
 
-    /// Sentence-split a transcript on `.`, `!`, `?` (with a trailing
-    /// space or end of string). Strips empties + whitespace.
-    private func sentences(in text: String) -> [String] {
-        var out: [String] = []
-        var current = ""
-        for ch in text {
-            current.append(ch)
-            if ch == "." || ch == "!" || ch == "?" {
-                let trimmed = current.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty { out.append(trimmed) }
-                current = ""
-            }
-        }
-        let tail = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !tail.isEmpty { out.append(tail) }
-        return out
-    }
-
-    /// Cheap fuzzy match: split the needle into tokens (lowercased,
-    /// length ≥ 4) and pick the line with the highest token-presence
-    /// ratio. Returns nil when no line shares any meaningful tokens.
-    private func bestTokenOverlap(needle: String, lines: [String]) -> Int? {
-        let tokens = needle
-            .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { $0.count >= 4 }
-        guard !tokens.isEmpty else { return nil }
-
-        var bestIdx: Int? = nil
-        var bestScore: Int = 0
-        for (i, line) in lines.enumerated() {
-            let score = tokens.reduce(0) { $0 + (line.contains($1) ? 1 : 0) }
-            if score > bestScore {
-                bestScore = score
-                bestIdx = i
-            }
-        }
-        return bestScore >= 1 ? bestIdx : nil
-    }
-
-    /// Locate a substring case-insensitively. Returns the range over
-    /// the *original* (cased) string so the returned slice preserves
-    /// the transcript's casing.
-    private func locate(needle: String, in haystack: String) -> Range<String.Index>? {
-        haystack.range(of: needle, options: .caseInsensitive)
-    }
 }
 
 private struct DoneCard: View {
