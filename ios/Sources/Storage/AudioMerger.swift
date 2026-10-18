@@ -152,7 +152,8 @@ public enum AudioMerger {
         segments: [URL],
         titles: [String?]? = nil,
         titleLanguage: String = "de-DE",
-        outputURL: URL
+        outputURL: URL,
+        protect: ShareStaging.ProtectionSetter = ShareStaging.setProtection
     ) async throws {
         guard !segments.isEmpty else { throw MergeError.emptyInput }
 
@@ -163,7 +164,7 @@ public enum AudioMerger {
         if segments.count == 1 && !needsAnnouncements {
             // Use a file copy instead of Data(contentsOf:) to avoid
             // materialising the whole audio file in RAM.
-            try copyOut(from: segments[0], to: outputURL)
+            try copyOut(from: segments[0], to: outputURL, protect: protect)
             return
         }
 
@@ -190,6 +191,14 @@ public enum AudioMerger {
         if FileManager.default.fileExists(atPath: scratch.path) {
             try? FileManager.default.removeItem(at: scratch)
         }
+        // Also covers a throw mid-merge, which would otherwise leave the
+        // partial scratch file in the output's directory.
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        // The scratch holds real diary audio too, and survives a crash.
+        // Create it empty with the app-wide class so `AVAudioFile` writes
+        // into an already-protected file instead of an unprotected one.
+        try Data().write(to: scratch, options: [.atomic, LocalStore.dataProtectionWriteOption])
+        protect(scratch, LocalStore.protectionClass)
 
         // Inner scope so the AVAudioFile writer deinits BEFORE we read
         // the file back. AVAudioFile finalises the m4a container (mdat
@@ -215,6 +224,8 @@ public enum AudioMerger {
                 commonFormat: .pcmFormatFloat32,
                 interleaved: false
             )
+            // Re-assert in case the writer replaced the file we created.
+            protect(scratch, LocalStore.protectionClass)
 
             let chunkFrames: AVAudioFrameCount = 8192
             for (index, segmentURL) in segments.enumerated() {
@@ -255,39 +266,40 @@ public enum AudioMerger {
             throw MergeError.emptyInput
         }
 
-        // Move the scratch to the output path and apply .noFileProtection
-        // so share-sheet receivers (separate process) can read it.
+        // Move the scratch to the output path and apply the app-wide
+        // protection class (the share extension runs while unlocked).
         // Using replaceItemAt is atomic: if a crash occurs between the
         // writer deinit and here, the scratch file survives on disk
         // rather than being lost.
-        try copyOut(from: scratch, to: outputURL)
+        try copyOut(from: scratch, to: outputURL, protect: protect)
         try? FileManager.default.removeItem(at: scratch)
     }
 
-    /// Copy `src` to `dest` with `.noFileProtection` so the file can be
-    /// read by share-sheet receivers (separate process) without loading
-    /// the whole file into RAM. Replaces any existing file at `dest`.
-    private static func copyOut(from src: URL, to dest: URL) throws {
+    /// Copy `src` to `dest` with the app-wide protection class so the file
+    /// can be read by share-sheet receivers (separate process) without
+    /// loading the whole file into RAM. Replaces any existing file at `dest`.
+    static func copyOut(
+        from src: URL,
+        to dest: URL,
+        protect: ShareStaging.ProtectionSetter = ShareStaging.setProtection
+    ) throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: dest.path) {
             try fm.removeItem(at: dest)
         }
         try fm.copyItem(at: src, to: dest)
-        try? (dest as NSURL).setResourceValue(URLFileProtection.none,
-                                              forKey: .fileProtectionKey)
+        protect(dest, LocalStore.protectionClass)
     }
 
-    /// Write the bytes to `dest` with `.noFileProtection` so the file
-    /// can be read by share-sheet receivers running outside our app
-    /// container, then explicitly drop protection on the resulting file
-    /// for belt-and-braces (some iOS versions ignore the write option).
+    /// Write the bytes to `dest` with the app-wide protection class, then
+    /// set it explicitly on the resulting file (some iOS versions ignore
+    /// the write option).
     private static func writeOut(data: Data, to dest: URL) throws {
         if FileManager.default.fileExists(atPath: dest.path) {
             try FileManager.default.removeItem(at: dest)
         }
-        try data.write(to: dest, options: [.atomic, .noFileProtection])
-        try? (dest as NSURL).setResourceValue(URLFileProtection.none,
-                                              forKey: .fileProtectionKey)
+        try data.write(to: dest, options: [.atomic, LocalStore.dataProtectionWriteOption])
+        LocalStore.applyProtection(to: dest)
     }
 
     /// Convenience: write the merged file into the system temp directory
@@ -305,12 +317,18 @@ public enum AudioMerger {
         let url = FileManager.default.temporaryDirectory
             .appending(path: "voicediary-\(safe).m4a")
 
-        try await merge(
-            segments: segments,
-            titles: titles,
-            titleLanguage: titleLanguage,
-            outputURL: url
-        )
+        do {
+            try await merge(
+                segments: segments,
+                titles: titles,
+                titleLanguage: titleLanguage,
+                outputURL: url
+            )
+        } catch {
+            // Don't leave a half-written export behind in tmp.
+            ShareStaging.discard(url)
+            throw error
+        }
         return url
     }
 
