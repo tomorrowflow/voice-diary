@@ -47,6 +47,20 @@ public enum ShareStaging {
         try? FileManager.default.removeItem(at: url)
     }
 
+    /// Hand a freshly staged export to `assign`, unless the surrounding task
+    /// was cancelled while it was being prepared — e.g. the view went away
+    /// during the merge. Then nobody will present a share sheet for it, so
+    /// delete it here. Returns whether `assign` ran.
+    @discardableResult
+    public static func adopt(_ url: URL, assign: (URL) -> Void) -> Bool {
+        guard !Task.isCancelled else {
+            discard(url)
+            return false
+        }
+        assign(url)
+        return true
+    }
+
     /// Completion handler for `UIActivityViewController` that removes
     /// `url` however the share ended — completed, cancelled, or failed.
     public static func discardingHandler(
