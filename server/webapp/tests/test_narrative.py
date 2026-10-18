@@ -1,6 +1,6 @@
 """Tests for `narrative.build_day_narrative` / `narrative.sync_and_ingest` —
 the one shared narrative stage both `routers/review_stream.py::process_document_stream` (HTMX
-SSE) and `routers/sessions.py::_run_session_document_processor` (iOS
+SSE) and `session_processing._run_session_document_processor` (iOS
 sessions) delegate to (SRV-A1/#50).
 
 Fakes are injected at the ports (`NarrativePorts.lightrag_client` wired to

@@ -12,7 +12,6 @@ import asyncio
 import json
 import logging
 import threading
-from types import SimpleNamespace
 
 import correction
 import db
@@ -20,122 +19,8 @@ import fluency_checker
 import main
 import narrative
 import routers.review_stream as review_stream
-import routers.sessions as sessions_router
+import session_processing
 import vector_store
-
-
-def _art(transcript_id: int):
-    return SimpleNamespace(transcript_id=transcript_id)
-
-
-def _doc(doc_id: int, markdown: str, *, ingested: bool, metadata=None) -> dict:
-    return {
-        "id": doc_id,
-        "document_markdown": markdown,
-        "metadata": metadata if metadata is not None else {"date": "2026-07-01"},
-        "lightrag_ingested": ingested,
-    }
-
-
-def _stub_retry_db(monkeypatch, docs_by_transcript: dict[int, dict]):
-    ingested: list[tuple[str, dict]] = []
-    marked: list[int] = []
-
-    async def fake_get_latest(transcript_id):
-        return docs_by_transcript[transcript_id]
-
-    async def fake_sync_and_ingest(markdown, metadata, *, lightrag_client=None):
-        ingested.append((markdown, metadata))
-        return {}
-
-    async def fake_mark(doc_id):
-        marked.append(doc_id)
-
-    monkeypatch.setattr(db, "get_latest_processed_document", fake_get_latest)
-    monkeypatch.setattr(sessions_router.narrative, "sync_and_ingest", fake_sync_and_ingest)
-    monkeypatch.setattr(db, "mark_document_ingested", fake_mark)
-    return ingested, marked
-
-
-# --- (1) ingest-only shortcut ---------------------------------------------
-
-
-def test_retry_shortcut_declines_when_a_latest_document_diverges(monkeypatch):
-    """One segment's latest document is a different (single-segment) narrative
-    than the whole-session one: must re-analyze, not ingest docs[0] and mark
-    both rows ingested."""
-    ingested, marked = _stub_retry_db(
-        monkeypatch,
-        {
-            1: _doc(10, "# whole session", ingested=False),
-            2: _doc(11, "# single segment only", ingested=False),
-        },
-    )
-
-    result = asyncio.run(sessions_router._retry_via_saved_document([_art(1), _art(2)]))
-
-    assert result is False
-    assert ingested == []
-    assert marked == []
-
-
-def test_retry_shortcut_declines_when_metadata_diverges(monkeypatch):
-    ingested, marked = _stub_retry_db(
-        monkeypatch,
-        {
-            1: _doc(10, "# same", ingested=False, metadata={"date": "2026-07-01"}),
-            2: _doc(11, "# same", ingested=False, metadata={"date": "2026-07-02"}),
-        },
-    )
-
-    assert asyncio.run(sessions_router._retry_via_saved_document([_art(1), _art(2)])) is False
-    assert ingested == [] and marked == []
-
-
-def test_retry_shortcut_ingests_identical_unmarked_documents_once(monkeypatch):
-    ingested, marked = _stub_retry_db(
-        monkeypatch,
-        {
-            1: _doc(10, "# whole session", ingested=False, metadata='{"date": "2026-07-01"}'),
-            2: _doc(11, "# whole session", ingested=False),
-        },
-    )
-
-    assert asyncio.run(sessions_router._retry_via_saved_document([_art(1), _art(2)])) is True
-    assert ingested == [("# whole session", {"date": "2026-07-01"})]
-    assert marked == [10, 11]
-
-
-def test_retry_shortcut_marks_only_the_remainder_when_some_rows_already_marked(monkeypatch):
-    """A previous run ingested the narrative then died part-way through
-    marking: the marked rows prove the ingest happened, so mark the rest
-    without re-ingesting."""
-    ingested, marked = _stub_retry_db(
-        monkeypatch,
-        {
-            1: _doc(10, "# whole session", ingested=True),
-            2: _doc(11, "# whole session", ingested=False),
-            3: _doc(12, "# whole session", ingested=False),
-        },
-    )
-
-    result = asyncio.run(sessions_router._retry_via_saved_document([_art(1), _art(2), _art(3)]))
-
-    assert result is True
-    assert ingested == []
-    assert marked == [11, 12]
-
-
-def test_retry_shortcut_declines_when_all_marked_or_any_missing(monkeypatch):
-    ingested, marked = _stub_retry_db(
-        monkeypatch,
-        {1: _doc(10, "# a", ingested=True), 2: _doc(11, "# a", ingested=True)},
-    )
-    assert asyncio.run(sessions_router._retry_via_saved_document([_art(1), _art(2)])) is False
-
-    _stub_retry_db(monkeypatch, {1: _doc(10, "# a", ingested=False), 2: None})
-    assert asyncio.run(sessions_router._retry_via_saved_document([_art(1), _art(2)])) is False
-    assert ingested == [] and marked == []
 
 
 # --- (2) SSE bridge cancellation ------------------------------------------
@@ -279,7 +164,9 @@ def test_lifespan_cancels_and_awaits_sweep_before_closing_pool(monkeypatch):
     monkeypatch.setattr(db, "close_pool", fake_close_pool)
     monkeypatch.setattr(vector_store, "VECTOR_SEARCH_ENABLED", False)
     monkeypatch.setattr(vector_store, "close", fake_vs_close)
-    monkeypatch.setattr(sessions_router, "retry_stuck_sessions_on_startup", fake_sweep)
+    monkeypatch.setattr(
+        session_processing.get_processor(), "retry_stuck_sessions_on_startup", fake_sweep
+    )
 
     async def run():
         state["started"] = asyncio.Event()

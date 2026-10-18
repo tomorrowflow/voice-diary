@@ -1,6 +1,6 @@
 """Shared transcribe-and-persist core (SRV-A7).
 
-`main.py`'s manual `/api/ingest/upload` route and `routers/sessions.py`'s
+`main.py`'s manual `/api/ingest/upload` route and `session_processing`'s
 per-segment iOS pipeline each drove audio through ffmpeg + Whisper and then
 inserted a `transcripts` row, via two separate near-identical copies of the
 glue. `asr_client.AsrClient` already unified the ffmpeg/Whisper half
