@@ -2,7 +2,8 @@ import Foundation
 import Testing
 @testable import VoiceDiary
 
-// SEC-45 / #45: the pause marker and the voice-note metadata are written
+// SEC-45 / #45: the session journal (which holds the pause marker) and the
+// voice-note metadata are written
 // while the screen may be locked, so they must take the app-wide
 // `completeUntilFirstUserAuthentication` class. `.complete` makes the
 // write fail once the device locks.
@@ -30,7 +31,7 @@ struct MetadataProtectionTests {
             .deletingLastPathComponent().deletingLastPathComponent()
         let sites = [
             ("Sources/Capture/CaptureCoordinator.swift", "static func writeMetadata("),
-            ("Sources/Dialog/WalkthroughCoordinator.swift", "static func writePauseMarkerData("),
+            ("Sources/Dialog/SessionBundle.swift", "static func writeJournalData("),
             ("Sources/UI/Verlauf/VerlaufView.swift", "static func writeVoiceNoteMetadata("),
         ]
         for (path, marker) in sites {
@@ -62,14 +63,14 @@ struct MetadataProtectionTests {
         #expect(try Data(contentsOf: url).count > 0)
     }
 
-    @Test("pause marker uses the app-wide class and stays readable")
-    func pauseMarker() throws {
+    @Test("session journal uses the app-wide class and stays readable")
+    func sessionJournal() throws {
         let dir = try scratchDir()
         defer { try? FileManager.default.removeItem(at: dir) }
-        let payload = Data(#"{"phase":"listening"}"#.utf8)
-        let url = dir.appending(path: "pause_state.json")
+        let payload = Data(#"{"pauseMarker":{"phase":"listening"}}"#.utf8)
+        let url = dir.appending(path: SessionBundle.journalFilename)
 
-        try WalkthroughCoordinator.writePauseMarkerData(payload, to: url)
+        try SessionBundle.writeJournalData(payload, to: url)
 
         try expectAppWideProtection(url, expecting: payload)
     }

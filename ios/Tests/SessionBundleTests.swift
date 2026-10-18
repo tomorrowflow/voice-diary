@@ -3,7 +3,8 @@ import Testing
 @testable import VoiceDiary
 
 // IOS-SB-46 / #46: the session bundle owns the walkthrough's audio files and
-// manifest. Everything runs against a temporary root and a fake audio
+// manifest. IOS-SB-47 / #47: it also journals its state so a reopened bundle
+// restores pickup. Everything runs against a temporary root and a fake audio
 // adapter, so no audio engine or AVFoundation export is involved.
 
 /// Merges by concatenating the chunk files, or fails on demand, and reports
@@ -40,6 +41,13 @@ private final class FakeBundleAudio: SessionBundleAudio, @unchecked Sendable {
 }
 
 private struct CaptureFailure: Error {}
+
+/// A journal disk that rejects writes while `failing` and counts attempts.
+@MainActor
+private final class FlakyDisk {
+    var failing = true
+    var attempts = 0
+}
 
 @Suite("SessionBundle")
 @MainActor
@@ -195,22 +203,21 @@ struct SessionBundleTests {
         #expect(try Data(contentsOf: #require(bundle.audioURL(forSegmentID: "s01e02c2"))) == Data("B".utf8))
     }
 
-    @Test("adopted on-disk chunks make the next recording continue after them")
-    func adoptContinuesChunkNumbers() async throws {
+    @Test("a reopened bundle continues the chunk numbers after the restored chunks")
+    func reopenContinuesChunkNumbers() async throws {
         let root = try scratchRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let bundle = try makeBundle(root: root)
-        bundle.adopt(.calendarEvent(CalendarEventSegment(
-            segment_id: "s01e02", calendar_ref: calendarRef, audio_file: "segments/s01e02.m4a"
-        )))
-        bundle.adopt(.calendarEvent(CalendarEventSegment(
-            segment_id: "s01e02c2", calendar_ref: calendarRef, audio_file: "segments/s01e02c2.m4a"
-        )))
+        for payload in ["A", "B"] {
+            try await bundle.record(event(), capture: writing(payload))
+            _ = bundle.finishCurrent()
+        }
+        let reopened = try SessionBundle.open(bundle.directory, audio: FakeBundleAudio())
 
-        try await bundle.record(event(), capture: writing("C"))
+        try await reopened.record(event(), capture: writing("C"))
 
-        #expect(bundle.currentSegmentID == "s01e02c3")
-        #expect(bundle.segments.map(\.segmentID) == ["s01e02", "s01e02c2", "s01e02c3"])
+        #expect(reopened.currentSegmentID == "s01e02c3")
+        #expect(reopened.segments.map(\.segmentID) == ["s01e02", "s01e02c2", "s01e02c3"])
     }
 
     @Test("finishCurrent returns the stopped recording once and clears it")
@@ -633,18 +640,191 @@ struct SessionBundleTests {
         let upload = await bundle.finalize(date: "2026-10-18", responseLanguage: "de")
 
         let manifestURL = bundle.directory.appending(path: LocalStore.manifestFilename)
+        let journalURL = bundle.directory.appending(path: SessionBundle.journalFilename)
         var created = [bundle.directory]
         let enumerator = try #require(FileManager.default.enumerator(at: bundle.directory, includingPropertiesForKeys: nil))
         created += enumerator.compactMap { $0 as? URL }
         #expect(created.count >= 5)
         for url in created {
-            // The manifest snapshot is written with the app-wide write option.
-            if url.lastPathComponent != manifestURL.lastPathComponent {
+            // The manifest snapshot and the journal are written with the
+            // app-wide write option.
+            if url.lastPathComponent != manifestURL.lastPathComponent,
+               url.lastPathComponent != journalURL.lastPathComponent {
                 #expect(protected.contains(url.standardizedFileURL.path), "\(url.lastPathComponent) not protected")
             }
             #expect(LocalStore.currentProtection(of: url) == LocalStore.protectionClass, "\(url.lastPathComponent)")
         }
         #expect(upload.files.count == 3)
+    }
+
+    // MARK: - journal
+
+    private let pauseMarker = SessionBundle.PauseMarker(
+        phase: .listening, kind: .event, stepIndex: 0, eventIndex: 1, sectionID: nil,
+        elapsedSeconds: 133, activeSegmentID: "s01e02", pausedAt: Date(timeIntervalSince1970: 1_760_000_000)
+    )
+
+    private func json(_ value: some Encodable) throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(decoding: try encoder.encode(value), as: UTF8.self)
+    }
+
+    @Test("a reopened bundle restores segments, transcripts, prompts, verdicts, notes and the pause marker")
+    func reopenRestoresEverything() async throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = try makeBundle(root: root)
+        let section = GeneralSection(id: "sec-1", title: "Wins", introText: "Was lief gut?")
+        let todo = Todo(text: "Angebot prüfen", type: "implicit", source_segment_id: "s01e02")
+        try await bundle.record(.general(baseID: "s01", section: section), capture: writing("G"))
+        _ = bundle.finishCurrent()
+        try await bundle.record(event(), capture: writing("A"))
+        _ = bundle.finishCurrent()
+        bundle.recordTranscript(segmentID: "s01", text: "Gut gelaufen", language: "de-DE", todos: [])
+        bundle.recordTranscript(segmentID: "s01e02", text: "Planung besprochen", language: "de-DE", todos: [todo])
+        bundle.recordPrompt(role: "opener", segmentID: "s01e02", text: "Wie war Planning?")
+        bundle.recordTodoConfirmed(todo)
+        bundle.recordTodoRejected(text: "Kaffee holen", sourceSegmentID: "s01e02")
+        try await bundle.record(.reflection(baseID: "s03"), capture: writing("R"))
+        bundle.attachVoiceNotes([try makeVoiceNote("seed-1", in: root)], excluding: [])
+        bundle.setPauseMarker(pauseMarker)
+
+        let reopened = try SessionBundle.open(bundle.directory, audio: FakeBundleAudio())
+
+        #expect(reopened.sessionID == bundle.sessionID)
+        #expect(try json(reopened.segments) == json(bundle.segments))
+        #expect(reopened.transcript(forSegmentID: "s01e02") == "Planung besprochen")
+        #expect(reopened.surfacedNoteIDs == ["seed-1"])
+        #expect(reopened.confirmedTodoCount == 1)
+        #expect(reopened.pauseMarker == pauseMarker)
+        #expect(reopened.latestRecordedSegment?.segmentID == "s03")
+        #expect(reopened.currentSegmentID == nil)
+        let before = await bundle.finalize(date: "2026-10-18", responseLanguage: "de")
+        let after = await reopened.finalize(date: "2026-10-18", responseLanguage: "de")
+        #expect(try json(after.manifest) == json(before.manifest))
+        #expect(after.manifest.ai_prompts.map(\.text) == ["Wie war Planning?"])
+        #expect(after.manifest.todos_implicit_rejected.map(\.text) == ["Kaffee holen"])
+    }
+
+    @Test("a bundle without a journal cannot be opened for pickup")
+    func openWithoutJournal() async throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = try makeBundle(root: root)
+        try await bundle.record(event(), capture: writing("A"))
+        try FileManager.default.removeItem(at: bundle.directory.appending(path: SessionBundle.journalFilename))
+
+        #expect(throws: SessionBundle.OpenError.self) {
+            try SessionBundle.open(bundle.directory, audio: FakeBundleAudio())
+        }
+        // The audio is untouched, so the session stays uploadable and deletable.
+        #expect(FileManager.default.fileExists(atPath: bundle.directory.appending(path: "segments/s01e02.m4a").path))
+    }
+
+    @Test("a failed journal write never escapes a mutator and the next write recovers")
+    func journalWriteFailure() async throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let disk = FlakyDisk()
+        let bundle = try SessionBundle.create(
+            in: root, sessionID: "2026-10-18T20:15:00+02:00", audio: FakeBundleAudio(),
+            writeJournal: { data, url in
+                disk.attempts += 1
+                if disk.failing { throw CocoaError(.fileWriteOutOfSpace) }
+                try SessionBundle.writeJournalData(data, to: url)
+            }
+        )
+
+        try await bundle.record(event(), capture: writing("A"))
+        _ = bundle.finishCurrent()
+        bundle.recordTranscript(segmentID: "s01e02", text: "Planung", language: "de-DE", todos: [])
+        bundle.recordPrompt(role: "opener", segmentID: "s01e02", text: "Hallo")
+        bundle.recordTodoConfirmed(Todo(text: "a"))
+        bundle.recordTodoRejected(text: "b", sourceSegmentID: nil)
+        bundle.setPauseMarker(pauseMarker)
+        bundle.clearPauseMarker()
+        bundle.attachVoiceNotes([try makeVoiceNote("seed-1", in: root)], excluding: [])
+        bundle.clearSurfacedNotes()
+        bundle.dropCurrent(fallbackSegmentID: "s09")
+        let upload = await bundle.finalize(date: "2026-10-18", responseLanguage: "de")
+
+        #expect(disk.attempts >= 10)
+        #expect(bundle.transcript(forSegmentID: "s01e02") == "Planung")
+        #expect(upload.manifest.ai_prompts.count == 1)
+        #expect(throws: SessionBundle.OpenError.self) {
+            try SessionBundle.open(bundle.directory, audio: FakeBundleAudio())
+        }
+
+        disk.failing = false
+        bundle.recordPrompt(role: "closing", segmentID: nil, text: "Gute Nacht")
+        let reopened = try SessionBundle.open(bundle.directory, audio: FakeBundleAudio())
+        #expect(reopened.transcript(forSegmentID: "s01e02") == "Planung")
+    }
+
+    @Test("a new recording supersedes the pause marker, and clearing it is journaled")
+    func pauseMarkerLifecycle() async throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = try makeBundle(root: root)
+        try await bundle.record(event(), capture: writing("A"))
+        _ = bundle.finishCurrent()
+        bundle.setPauseMarker(pauseMarker)
+        #expect(try SessionBundle.open(bundle.directory, audio: FakeBundleAudio()).pauseMarker == pauseMarker)
+
+        bundle.clearPauseMarker()
+        #expect(try SessionBundle.open(bundle.directory, audio: FakeBundleAudio()).pauseMarker == nil)
+
+        bundle.setPauseMarker(pauseMarker)
+        try await bundle.record(event(), capture: writing("B"))
+        #expect(bundle.pauseMarker == nil)
+        #expect(try SessionBundle.open(bundle.directory, audio: FakeBundleAudio()).pauseMarker == nil)
+    }
+
+    @Test("the latest recorded segment skips attached voice notes")
+    func latestRecordedSegment() async throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = try makeBundle(root: root)
+        #expect(bundle.latestRecordedSegment == nil)
+        try await bundle.record(event(), capture: writing("A"))
+        _ = bundle.finishCurrent()
+        try await bundle.record(event(), capture: writing("B"))
+        _ = bundle.finishCurrent()
+        bundle.attachVoiceNotes([try makeVoiceNote("seed-1", in: root)], excluding: [])
+
+        #expect(bundle.latestRecordedSegment?.segmentID == "s01e02c2")
+        #expect(bundle.chunks(sharingRecordingWith: "s01e02").map(\.segmentID) == ["s01e02", "s01e02c2"])
+    }
+
+    @Test("a segment whose audio is gone is dropped on open and the drop is journaled")
+    func openDropsMissingAudio() async throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = try makeBundle(root: root)
+        try await bundle.record(event(), capture: writing("A"))
+        _ = bundle.finishCurrent()
+        try await bundle.record(event(), capture: writing("B"))
+        _ = bundle.finishCurrent()
+        try FileManager.default.removeItem(at: try #require(bundle.audioURL(forSegmentID: "s01e02c2")))
+
+        let reopened = try SessionBundle.open(bundle.directory, audio: FakeBundleAudio())
+
+        #expect(reopened.segments.map(\.segmentID) == ["s01e02"])
+        #expect(try SessionBundle.open(bundle.directory, audio: FakeBundleAudio()).segments.count == 1)
+    }
+
+    @Test("the journal is replaced atomically and leaves no temporary file behind")
+    func journalAtomicReplace() throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appending(path: SessionBundle.journalFilename)
+
+        try SessionBundle.writeJournalData(Data("first".utf8), to: url)
+        try SessionBundle.writeJournalData(Data("second".utf8), to: url)
+
+        #expect(try Data(contentsOf: url) == Data("second".utf8))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path) == [SessionBundle.journalFilename])
     }
 
     // MARK: - ids
