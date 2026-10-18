@@ -57,31 +57,50 @@ def test_list_pending_analysis_session_ids_filters_by_segment_status(monkeypatch
     assert result == ["sess-partial"]
 
 
-def test_list_pending_analysis_session_ids_includes_sessions_persisted_as_done(monkeypatch):
-    """`_derive_session_state` only counts `failed` segments, so a session
-    whose analysis failed is persisted as `done` with every segment still
-    `pending_analysis` — the most common stuck case. The query must not
-    exclude it by filtering on `state`."""
-    pool = _FakePool(
-        [
-            {
-                "session_id": "sess-analysis-failed",
-                "segments": json.dumps(
-                    [{"segment_id": "s01", "status": "pending_analysis", "transcript_id": 3, "error": "boom"}]
-                ),
-            }
-        ]
+def test_list_pending_analysis_session_ids_excludes_done_sessions(monkeypatch):
+    """BUG-114/#114: `done` means every segment is `processed`, so a `done` row
+    is never a sweep candidate — even a legacy one that still has a
+    `pending_analysis` segment (`correct_legacy_done_sessions` fixes those
+    first). A session whose analysis failed is `partial`."""
+    pending = json.dumps(
+        [{"segment_id": "s01", "status": "pending_analysis", "transcript_id": 3, "error": "boom"}]
     )
+    rows = [
+        {"session_id": "sess-analysis-failed", "state": "partial", "segments": pending},
+        {"session_id": "sess-legacy-done", "state": "done", "segments": pending},
+    ]
 
     async def fake_get_pool():
-        return pool
+        return _FakePool(rows)
 
     monkeypatch.setattr(db, "get_pool", fake_get_pool)
 
-    result = asyncio.run(db.list_pending_analysis_session_ids())
+    assert asyncio.run(db.list_pending_analysis_session_ids()) == ["sess-analysis-failed"]
 
-    assert result == ["sess-analysis-failed"]
-    assert "WHERE" not in pool.queries[0]
+
+def test_correct_legacy_done_sessions_marks_done_rows_with_pending_segments_partial(monkeypatch):
+    """BUG-114/#114: one idempotent UPDATE; it only matches `done` rows with a
+    `pending_analysis` segment, so after the first run it matches nothing."""
+    executed: list[tuple] = []
+
+    class _Pool:
+        async def execute(self, query, *args):
+            executed.append((query, args))
+            return "UPDATE 2"
+
+    async def fake_get_pool():
+        return _Pool()
+
+    monkeypatch.setattr(db, "get_pool", fake_get_pool)
+
+    assert asyncio.run(db.correct_legacy_done_sessions()) == 2
+
+    query, args = executed[0]
+    assert "UPDATE session_ingests" in query
+    assert "SET state = 'partial'" in query
+    assert "state = 'done'" in query
+    assert "pending_analysis" in query
+    assert args == ()
 
 
 def test_list_pending_analysis_session_ids_includes_processing_sessions(monkeypatch):
@@ -140,18 +159,20 @@ def test_failed_retry_status_stays_persisted_and_swept_as_pending_analysis(monke
         async def execute(self, query, *args):
             executed.append((query, args))
 
-    pool = _Pool([{"session_id": "sess-retry-failed", "segments": json.dumps(segments)}])
+    pool = _Pool(
+        [{"session_id": "sess-retry-failed", "state": "partial", "segments": json.dumps(segments)}]
+    )
 
     async def fake_get_pool():
         return pool
 
     monkeypatch.setattr(db, "get_pool", fake_get_pool)
 
-    asyncio.run(db.update_session_status("sess-retry-failed", "done", segments))
+    asyncio.run(db.update_session_status("sess-retry-failed", "partial", segments))
 
     query, args = executed[0]
     assert "UPDATE session_ingests" in query
     assert args[0] == "sess-retry-failed"
-    assert args[1] == "done"
+    assert args[1] == "partial"
     assert json.loads(args[2]) == segments
     assert asyncio.run(db.list_pending_analysis_session_ids()) == ["sess-retry-failed"]
