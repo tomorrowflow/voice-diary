@@ -95,7 +95,8 @@ class SessionBusy(SessionError):
 
 
 class SessionNotRetryable(SessionError):
-    """Nothing to retry: no segment is `pending_analysis` with a transcript."""
+    """Nothing to retry: no segment is `pending_analysis`, or the pending ones
+    have no transcript row left to narrate and nothing was resumed."""
 
     code = "session_not_retryable"
 
@@ -550,6 +551,7 @@ class SessionProcessor:
         original ingest. Each outcome is persisted as it lands, so a second
         crash keeps the transcript IDs already saved.
         """
+        bind_session_id(session_id)
         segments_by_id = {seg.segment_id: seg for seg in parsed.segments}
         session_dir = session_dir_for(session_id)
         results = list(status_obj.segments)
