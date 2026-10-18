@@ -168,7 +168,10 @@ public final class WakeWordDetector: @unchecked Sendable {
             for token in tokens {
                 let dist = Self.levenshtein(token, phrase.canonical)
                 if dist <= phrase.maxDistance {
-                    Diag.log("WakeWordDetector MATCH token='\(token)' canonical='\(phrase.canonical)' lev=\(dist) → action=\(phrase.action.rawValue)")
+                    // `Diag.log` takes a plain String and publishes it whole; the
+                    // token is a fragment of the transcript, so log it here with
+                    // `.private`. Same logger and level as `Diag.log`.
+                    Log.app.notice("WakeWordDetector MATCH token='\(token, privacy: .private)' canonical='\(phrase.canonical, privacy: .public)' lev=\(dist, privacy: .public) → action=\(phrase.action.rawValue, privacy: .public)")
                     fired.insert(phrase.action)
                     onMatch(phrase.action, phrase.canonical)
                     return
