@@ -450,11 +450,11 @@ final class SessionBundle {
             try? fm.removeItem(at: tempURL)
             return nil
         }
-        // The merged data now exists only in the temp file, so clear the
-        // first chunk's path and move it into place before deleting more.
+        // Swap the merged file in for the first chunk, which occupies the
+        // output path. The replacement is atomic: when it fails the first
+        // chunk is still in place, so the unmerged group stays uploadable.
         do {
-            if fm.fileExists(atPath: outputURL.path) { try fm.removeItem(at: outputURL) }
-            try fm.moveItem(at: tempURL, to: outputURL)
+            _ = try fm.replaceItemAt(outputURL, withItemAt: tempURL)
         } catch {
             Log.audio.warning(
                 "merge: \(baseID, privacy: .public) move-into-place failed: \(String(describing: error), privacy: .public)"
@@ -463,7 +463,7 @@ final class SessionBundle {
             return nil
         }
         protect(outputURL)
-        // The first chunk's file was replaced by the move; delete the rest.
+        // The first chunk's file was replaced by the merge; delete the rest.
         for url in chunkURLs.dropFirst() { try? fm.removeItem(at: url) }
 
         guard let merged = Self.mergedSegment(group, baseID: baseID, audioFile: outputPath) else {

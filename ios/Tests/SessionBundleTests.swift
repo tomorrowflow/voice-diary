@@ -13,10 +13,14 @@ private final class FakeBundleAudio: SessionBundleAudio, @unchecked Sendable {
     private var rates: [Double]
     private var _mergeCalls: [[String]] = []
     let failMerge: Bool
+    /// The merge reports success but writes no output file, so moving the
+    /// result into place fails.
+    let skipOutput: Bool
 
-    init(rates: [Double] = [48_000], failMerge: Bool = false) {
+    init(rates: [Double] = [48_000], failMerge: Bool = false, skipOutput: Bool = false) {
         self.rates = rates
         self.failMerge = failMerge
+        self.skipOutput = skipOutput
     }
 
     var mergeCalls: [[String]] { lock.withLock { _mergeCalls } }
@@ -24,6 +28,7 @@ private final class FakeBundleAudio: SessionBundleAudio, @unchecked Sendable {
     func merge(chunks: [URL], into output: URL) async throws {
         lock.withLock { _mergeCalls.append(chunks.map(\.lastPathComponent)) }
         if failMerge { throw CocoaError(.fileWriteUnknown) }
+        if skipOutput { return }
         var merged = Data()
         for chunk in chunks { merged.append(try Data(contentsOf: chunk)) }
         try merged.write(to: output)
@@ -509,6 +514,30 @@ struct SessionBundleTests {
             atPath: bundle.directory.appending(path: "segments").path
         ).sorted()
         #expect(names == ["s01e02.m4a", "s01e02c2.m4a"])
+    }
+
+    @Test("a merge that cannot be moved into place leaves every chunk file on disk and uploadable")
+    func finalizeMoveIntoPlaceFailure() async throws {
+        let root = try scratchRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundle = try makeBundle(root: root, audio: FakeBundleAudio(skipOutput: true))
+        for payload in ["A", "B", "C"] {
+            try await bundle.record(event(), capture: writing(payload))
+            _ = bundle.finishCurrent()
+        }
+
+        let upload = await bundle.finalize(date: "2026-10-18", responseLanguage: "de")
+
+        #expect(upload.manifest.segments.map(\.segmentID) == ["s01e02", "s01e02c2", "s01e02c3"])
+        #expect(Set(upload.files.keys) == audioFiles(of: upload.manifest))
+        for (path, payload) in zip(["segments/s01e02.m4a", "segments/s01e02c2.m4a", "segments/s01e02c3.m4a"], ["A", "B", "C"]) {
+            let url = try #require(upload.files[path])
+            #expect(try Data(contentsOf: url) == Data(payload.utf8), "\(path) lost or changed")
+        }
+        let names = try FileManager.default.contentsOfDirectory(
+            atPath: bundle.directory.appending(path: "segments").path
+        ).sorted()
+        #expect(names == ["s01e02.m4a", "s01e02c2.m4a", "s01e02c3.m4a"])
     }
 
     @Test("manifest audio_file keys equal the upload files keys, and the snapshot on disk matches")
