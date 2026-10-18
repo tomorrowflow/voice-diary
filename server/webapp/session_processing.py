@@ -448,19 +448,9 @@ class SessionProcessor:
         parsed = Manifest.model_validate(json.loads(manifest_path.read_bytes()))
         segments_by_id = {seg.segment_id: seg for seg in parsed.segments}
 
-        # `status_obj` is the live cache entry, which the resume below rewrites.
-        segments_before = status_obj.segments
-        segment_results, resumed = await self._resume_untranscribed_segments(
-            session_id, parsed, status_obj
-        )
-        artifacts = list(resumed)
-        resumed_ids = {art.segment.segment_id for art in resumed}
-        for seg_result in segment_results:
-            if (
-                seg_result.status != "pending_analysis"
-                or seg_result.transcript_id is None
-                or seg_result.segment_id in resumed_ids
-            ):
+        artifacts: list[_SegmentArtifact] = []
+        for seg_result in status_obj.segments:
+            if seg_result.status != "pending_analysis" or seg_result.transcript_id is None:
                 continue
             segment = segments_by_id.get(seg_result.segment_id)
             if segment is None:
@@ -484,16 +474,23 @@ class SessionProcessor:
                 )
             )
 
+        # Decide retryability before any side effect: with no transcript row to
+        # narrate and nothing untranscribed to resume, there is no work.
+        if not artifacts and not _has_untranscribed_segment(status_obj.segments):
+            raise SessionNotRetryable()
+
+        segment_results, resumed = await self._resume_untranscribed_segments(
+            session_id, parsed, status_obj
+        )
+        artifacts.extend(resumed)
         # Narrative order is manifest order, whether a segment was resumed or
         # rebuilt from its transcript row.
         order = {seg.segment_id: i for i, seg in enumerate(parsed.segments)}
         artifacts.sort(key=lambda art: order[art.segment.segment_id])
 
         if not artifacts:
-            if segment_results == segments_before:
-                raise SessionNotRetryable()
             # Every segment that was resumed failed: nothing to narrate, but
-            # the outcome is settled (and persisted below), not an error.
+            # the outcome is settled, not an error.
             await self._persist_status(
                 session_id, derive_session_state(segment_results), segment_results
             )
@@ -652,6 +649,10 @@ def get_processor() -> SessionProcessor:
     if _default is None:
         _default = SessionProcessor()
     return _default
+
+
+def _has_untranscribed_segment(segments: list[SegmentResult]) -> bool:
+    return any(s.status == "pending_analysis" and s.transcript_id is None for s in segments)
 
 
 # --- saved-document retry -------------------------------------------------
