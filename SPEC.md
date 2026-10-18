@@ -781,7 +781,8 @@ recovers. Two mechanisms retry it:
   narrative input from what's persisted: the manifest on disk (segment order, headers, todos) plus
   each `pending_analysis` segment's transcript row (corrected text where present, else raw;
   entities from `detected_entities_json`, falling back to `entities_json` for rows ingested before
-  the column existed), then re-runs the shared narrative stage
+  the column existed; a segment without a transcript is first resumed from its stored audio, see
+  "Resuming a session that never reached transcription" below), then re-runs the shared narrative stage
   (`narrative.build_day_narrative` + `narrative.sync_and_ingest`). If a `processed_documents` row
   already exists for every pending segment and isn't marked ingested (an ingest-only failure —
   analysis succeeded, only LightRAG failed), it re-ingests that saved narrative instead of
@@ -836,8 +837,8 @@ transcript, in manifest order. The session `state` is derived from the outcomes 
 `partial` when some segments failed, `failed` when all did); no new segment or session status
 exists. If every segment fails, the route returns that `failed` status with `200` (not `409`) and
 the sweep leaves the session settled. The route still answers `409 session_not_retryable`
-when no segment is `pending_analysis`, or when none of the pending segments has a transcript row to
-narrate. `session_busy` applies as above.
+when no segment is `pending_analysis`, or when a pending segment's stored transcript row is gone and
+there was nothing to resume. `session_busy` applies as above.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
 Voxtral) is down, slow or answers with an error, the server reports it in one shape. `detail` stays

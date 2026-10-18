@@ -362,6 +362,38 @@ def test_retry_analysis_returns_partial_with_200_when_some_audio_is_missing(monk
     assert "audio missing on disk" in body["segments"][1]["error"]
 
 
+def test_retry_analysis_returns_failed_with_200_when_no_audio_is_left(monkeypatch, tmp_path):
+    fresh_processor(monkeypatch)
+    _, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-resume-none", two_segment_manifest("sess-resume-none"))
+    for audio in (session_dir / "segments").iterdir():
+        audio.unlink()
+    FakeSessionIngests(
+        "sess-resume-none", "processing",
+        [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")],
+    ).install(monkeypatch)
+    NarrativeStage(monkeypatch)
+
+    resp = _client().post("/api/sessions/sess-resume-none/retry-analysis", headers=auth())
+
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "failed"
+    assert [s["status"] for s in resp.json()["segments"]] == ["failed", "failed"]
+
+
+def test_retry_analysis_409s_when_the_pending_transcript_rows_are_gone(monkeypatch, tmp_path):
+    fresh_processor(monkeypatch)
+    stage_bundle(monkeypatch, tmp_path, "sess-rows-gone")
+    FakeSessionIngests(
+        "sess-rows-gone", "done", [segment_row("s01", "pending_analysis", 9, "analysis_pending: boom")]
+    ).install(monkeypatch)
+    stub_transcripts(monkeypatch, [])
+
+    resp = _client().post("/api/sessions/sess-rows-gone/retry-analysis", headers=auth())
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "session_not_retryable"
+
+
 def test_retry_analysis_returns_the_pending_status_with_200_when_analysis_fails_again(monkeypatch, tmp_path):
     """BUG-56/#56: the narrative stage failing again on retry must not 500 —
     the segments stay `pending_analysis` with an `analysis_pending: …` error,
