@@ -1205,7 +1205,7 @@ async def reset_ingest_upload_for_retry(upload_id: int):
 
 # --- Session ingest status (SRV-A6) ---
 #
-# Persisted mirror of routers/sessions.py's in-memory status map. That map
+# Persisted mirror of session_processing's in-memory status map. That map
 # is a per-process cache for the polling-happy path; these rows are what
 # survives a restart and make pending_analysis segments retryable.
 
