@@ -1096,7 +1096,8 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
 ~/Library/Application Support/VoiceDiary/
 ├── sessions/
 │   └── 2026-04-24T19:30:00+02:00/
-│       ├── manifest.json
+│       ├── manifest.json     # written when the walkthrough finishes
+│       ├── journal.json      # session bundle state, see §13.1.1
 │       ├── segments/
 │       │   ├── s01.m4a
 │       │   └── ...
@@ -1111,7 +1112,28 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
     └── calendar_cache/       # short-lived, for current session
 ```
 
-### 13.1.1 Server-side data layout
+### 13.1.1 Session bundle journal
+
+While a walkthrough runs, the session bundle keeps `journal.json` in its session directory. After
+every change it rewrites the whole file: segment metadata (including each segment's `calendar_ref`),
+transcripts, AI prompts, todo verdicts, attached voice notes, the chunk counters and recorded sample
+rates, and the pause marker. The write is atomic (temp file and rename) and uses the app-wide file
+protection class (`completeUntilFirstUserAuthentication`), so it succeeds with the screen locked. A
+failed write is logged to the app log and Diagnostics and never interrupts the walkthrough; the next
+change writes the full state again. The manifest schema (§10.3) is unchanged: the journal is local
+state, never uploaded.
+
+Pickup after a pause, cancel or app kill restores the bundle from the journal, so segments keep the
+metadata they were recorded with and pre-kill transcripts and prompts survive, even when the day's
+calendar has since changed. Pickup re-enters at the pause marker, else at the latest recorded segment,
+located in the current plan by its calendar event or section, never by its id. A new recording
+clears the pause marker.
+
+The journal replaces the former `pause_state.json` and the plan-based reconstruction of segments from
+audio files. A session directory without a journal (created before it existed) cannot be picked up;
+it is still uploaded or deleted like any other.
+
+### 13.1.2 Server-side data layout
 
 ```
 server/data/

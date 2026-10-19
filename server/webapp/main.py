@@ -9,7 +9,6 @@ from collections.abc import Coroutine
 from contextlib import asynccontextmanager
 from datetime import date as date_module, datetime, timedelta
 from typing import Any
-from zoneinfo import ZoneInfo
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -27,12 +26,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from fastapi.templating import Jinja2Templates  # noqa: E402
 
+import analysis_route  # noqa: E402
 import asr_client  # noqa: E402
 import bind_guard  # noqa: E402
 import correction  # noqa: E402
 import db  # noqa: E402
 import document_processor  # noqa: E402
 import llm_validator  # noqa: E402
+from msgraph_client import to_local_iso  # noqa: E402
 import harvest_patterns  # noqa: E402
 import harvest_llm  # noqa: E402
 import narrative  # noqa: E402
@@ -54,6 +55,11 @@ async def lifespan(app: FastAPI):
     # before any other startup work, so a misconfigured deploy never reaches
     # the point of binding all interfaces.
     bind_guard.enforce_tailnet_bind()
+
+    # BAR-01: validate ANALYSIS_ROUTE and its Blindfold settings before any
+    # other startup work. A bad value refuses to start rather than quietly
+    # running the analysis locally; routed, it logs the egress WARNING.
+    analysis_route.configure()
 
     # Log configuration on startup
     logger.info("=== Diary Processor starting ===")
@@ -355,25 +361,6 @@ async def ingest_document(doc_id: int):
 # ─── Calendar ─────────────────────────────────────────────────────────
 
 
-LOCAL_TZ = ZoneInfo(os.getenv("TZ", "Europe/Berlin"))
-
-def _to_local_iso(iso_str: str) -> str:
-    """Convert an ISO datetime string (possibly UTC) to local timezone."""
-    if not iso_str:
-        return iso_str
-    # Remove trailing 'Z' and parse
-    clean = iso_str.replace("Z", "+00:00")
-    try:
-        dt = datetime.fromisoformat(clean)
-        if dt.tzinfo is None:
-            # Naive datetimes from Microsoft Graph are UTC
-            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-        dt = dt.astimezone(LOCAL_TZ)
-        return dt.isoformat()
-    except (ValueError, TypeError):
-        return iso_str
-
-
 async def _fetch_calendar_events(date_str: str) -> list[dict]:
     """Fetch raw Graph-shaped calendar events for the given local date.
 
@@ -382,7 +369,6 @@ async def _fetch_calendar_events(date_str: str) -> list[dict]:
     (`start.dateTime`, `attendees[i].emailAddress.name`, …) so the
     existing UI layers don't need to change.
     """
-    from datetime import time as _time
     import fixtures
     from msgraph_client import (
         MSGraphError,
@@ -398,31 +384,12 @@ async def _fetch_calendar_events(date_str: str) -> list[dict]:
     if fixtures.fixture_mode():
         return fixtures.load_calendar_events(date_str)
 
-    start_local = datetime.combine(d, _time.min, tzinfo=LOCAL_TZ)
-    end_local = start_local + timedelta(days=1)
-    start_utc = start_local.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.0000000")
-    end_utc = end_local.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.0000000")
-
     try:
         client = await get_client()
-        data = await client.get_json(
-            "/me/calendarView",
-            params={
-                "startDateTime": start_utc,
-                "endDateTime": end_utc,
-                "$top": 100,
-                "$orderby": "start/dateTime",
-                "$select": (
-                    "id,subject,start,end,isAllDay,showAs,bodyPreview,"
-                    "responseStatus,organizer,attendees,recurrence,webLink"
-                ),
-            },
-        )
+        return await client.events_for_day(d)
     except (MSGraphNotBootstrapped, MSGraphError) as exc:
         logger.warning("calendar fetch failed for %s: %s", date_str, exc)
         return []
-
-    return data.get("value", []) or []
 
 
 @legacy_router.get("/api/calendar/{date_str}")
@@ -1072,8 +1039,8 @@ async def harvest_suggest(date: str):
     # to MS Graph via the same _fetch_calendar_events helper.
     calendar_events = []
     for ev in await _fetch_calendar_events(date):
-        start = _to_local_iso(ev.get("start", {}).get("dateTime", ""))
-        end = _to_local_iso(ev.get("end", {}).get("dateTime", ""))
+        start = to_local_iso(ev.get("start"))
+        end = to_local_iso(ev.get("end"))
         if not start or "T" not in start:
             continue
         if ev.get("showAs") in ("free", "tentative"):
