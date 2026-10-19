@@ -781,7 +781,8 @@ recovers. Two mechanisms retry it:
   narrative input from what's persisted: the manifest on disk (segment order, headers, todos) plus
   each `pending_analysis` segment's transcript row (corrected text where present, else raw;
   entities from `detected_entities_json`, falling back to `entities_json` for rows ingested before
-  the column existed), then re-runs the shared narrative stage
+  the column existed; a segment without a transcript is first resumed from its stored audio, see
+  "Resuming a session that never reached transcription" below), then re-runs the shared narrative stage
   (`narrative.build_day_narrative` + `narrative.sync_and_ingest`). If a `processed_documents` row
   already exists for every pending segment and isn't marked ingested (an ingest-only failure —
   analysis succeeded, only LightRAG failed), it re-ingests that saved narrative instead of
@@ -799,9 +800,10 @@ recovers. Two mechanisms retry it:
   is skipped. The sweep also covers sessions left `processing` by a process that died mid-run:
   phase 1 persists each segment's `pending_analysis` + `transcript_id` (or `failed` + error) to
   `session_ingests` as it finishes, so such a session keeps the IDs of everything transcribed
-  before the crash. The sweep marks its segments without a transcript `failed` (`interrupted: no
-  transcript was persisted …`) and retries the rest. A session that cannot be retried (no
-  transcript at all, manifest missing) is logged as one line, without a traceback.
+  before the crash. Its segments without a transcript are resumed from the stored bundle (see
+  below), then the narrative runs for all of them. A session that cannot be retried (manifest
+  missing, or no segment left with a transcript row to narrate) is logged as one line, without a
+  traceback.
 
 **The app drives the route.** Once per foreground (the first `scenePhase == .active` at launch, then
 the first one after each `.background`; the same hook that kicks the upload queue, but an
@@ -821,8 +823,22 @@ All three paths share one in-process, per-session in-flight guard (single-proces
 when the run ends whether it succeeded or failed. Without it, overlapping runs would each save
 another `processed_documents` version per transcript and ingest `diary:{date}` into LightRAG twice.
 
-A segment that failed before transcription (no transcript row) is out of scope for both — that
-needs the audio re-uploaded, not a narrative retry.
+**Resuming a session that never reached transcription.** A `pending_analysis` segment with no
+`transcript_id` (the process died, or the session was cut off, before its transcript was persisted)
+is resumed by both the sweep and the route from the stored bundle — re-uploading is not possible,
+because the bundle already exists. Before the narrative stage, each such segment runs the same
+phase 1 as the original ingest (`manifest.json` for its metadata, the stored audio through ffmpeg →
+Whisper → correction → entity detection → transcript persistence) and its new `transcript_id` is
+persisted as it lands. A segment that cannot be resumed becomes `failed` with an explicit `error`,
+exactly as in the original ingest: `segment audio missing on disk: <audio_file>` when the audio file
+is gone, `segment <id> is not in manifest.json` when the manifest does not list it, or the upstream
+error when Whisper or another stage fails. The narrative then runs over every segment that has a
+transcript, in manifest order. The session `state` is derived from the outcomes as usual (`done`,
+`partial` when some segments failed, `failed` when all did); no new segment or session status
+exists. If every segment fails, the route returns that `failed` status with `200` (not `409`) and
+the sweep leaves the session settled. The route still answers `409 session_not_retryable`
+when no segment is `pending_analysis`, or when a pending segment's stored transcript row is gone and
+there was nothing to resume. `session_busy` applies as above.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
 Voxtral) is down, slow or answers with an error, the server reports it in one shape. `detail` stays

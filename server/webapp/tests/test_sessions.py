@@ -40,7 +40,10 @@ from tests.session_helpers import (
     bundle,
     fresh_processor,
     segment_row,
+    stage_bundle,
     stage_pending_session,
+    stub_transcripts,
+    two_segment_manifest,
 )
 
 
@@ -312,6 +315,83 @@ def test_retry_analysis_rebuilds_the_narrative_and_returns_the_done_status(monke
     assert len(stage.runs) == 1
     assert ingests.updates == [("done", body["segments"])]
     assert client.get("/api/sessions/sess-retry-full/status", headers=auth()).json() == body
+
+
+def test_retry_analysis_resumes_a_session_that_never_reached_transcription(monkeypatch, tmp_path):
+    """BUG-112: segments without a transcript ID are transcribed from the
+    stored audio — the route answers 200 with the done status, not 409."""
+    fresh_processor(monkeypatch)
+    stage_bundle(monkeypatch, tmp_path, "sess-resume-route", two_segment_manifest("sess-resume-route"))
+    ingests = FakeSessionIngests(
+        "sess-resume-route", "processing",
+        [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")],
+    ).install(monkeypatch)
+    SegmentPipeline(monkeypatch, transcript_ids={"s01": 11, "s02": 12})
+    stage = NarrativeStage(monkeypatch)
+
+    client = _client()
+    resp = client.post("/api/sessions/sess-resume-route/retry-analysis", headers=auth())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "done"
+    assert body["segments"] == [segment_row("s01", "processed", 11), segment_row("s02", "processed", 12)]
+    assert len(stage.runs) == 1
+    assert ingests.row["state"] == "done"
+    assert client.get("/api/sessions/sess-resume-route/status", headers=auth()).json() == body
+
+
+def test_retry_analysis_returns_partial_with_200_when_some_audio_is_missing(monkeypatch, tmp_path):
+    fresh_processor(monkeypatch)
+    _, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-resume-gone", two_segment_manifest("sess-resume-gone"))
+    (session_dir / "segments" / "s02.m4a").unlink()
+    FakeSessionIngests(
+        "sess-resume-gone", "processing",
+        [segment_row("s01", "pending_analysis", 5), segment_row("s02", "pending_analysis")],
+    ).install(monkeypatch)
+    stub_transcripts(monkeypatch, [5])
+    NarrativeStage(monkeypatch)
+
+    resp = _client().post("/api/sessions/sess-resume-gone/retry-analysis", headers=auth())
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["state"] == "partial"
+    assert body["segments"][0] == segment_row("s01", "processed", 5)
+    assert body["segments"][1]["status"] == "failed"
+    assert "audio missing on disk" in body["segments"][1]["error"]
+
+
+def test_retry_analysis_returns_failed_with_200_when_no_audio_is_left(monkeypatch, tmp_path):
+    fresh_processor(monkeypatch)
+    _, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-resume-none", two_segment_manifest("sess-resume-none"))
+    for audio in (session_dir / "segments").iterdir():
+        audio.unlink()
+    FakeSessionIngests(
+        "sess-resume-none", "processing",
+        [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")],
+    ).install(monkeypatch)
+    NarrativeStage(monkeypatch)
+
+    resp = _client().post("/api/sessions/sess-resume-none/retry-analysis", headers=auth())
+
+    assert resp.status_code == 200
+    assert resp.json()["state"] == "failed"
+    assert [s["status"] for s in resp.json()["segments"]] == ["failed", "failed"]
+
+
+def test_retry_analysis_409s_when_the_pending_transcript_rows_are_gone(monkeypatch, tmp_path):
+    fresh_processor(monkeypatch)
+    stage_bundle(monkeypatch, tmp_path, "sess-rows-gone")
+    FakeSessionIngests(
+        "sess-rows-gone", "done", [segment_row("s01", "pending_analysis", 9, "analysis_pending: boom")]
+    ).install(monkeypatch)
+    stub_transcripts(monkeypatch, [])
+
+    resp = _client().post("/api/sessions/sess-rows-gone/retry-analysis", headers=auth())
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "session_not_retryable"
 
 
 def test_retry_analysis_returns_the_pending_status_with_200_when_analysis_fails_again(monkeypatch, tmp_path):
