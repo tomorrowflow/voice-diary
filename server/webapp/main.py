@@ -870,8 +870,7 @@ async def data_clear_dictionary():
 
 @legacy_router.post("/api/data/reset")
 async def data_reset():
-    await db.reset_all_data()
-    await session_processing.get_processor().clear_all()
+    await session_processing.get_processor().reset_all_data()
     return {"status": "ok"}
 
 

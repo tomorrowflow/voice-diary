@@ -119,6 +119,70 @@ def test_reset_works_when_there_is_no_sessions_directory(monkeypatch, tmp_path):
     assert resp.status_code == 200
 
 
+def test_reset_waits_for_an_upload_in_its_gate_and_holds_new_uploads_back(monkeypatch, tmp_path):
+    """An upload writes its bundle and then persists its row. A reset must not
+    run between the two (it would leave a session record after a successful
+    reset), and an upload arriving during the reset must wait for it."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    processor = fresh_processor(monkeypatch)
+    events: list[str] = []
+
+    async def reset_all_data() -> None:
+        events.append("db reset")
+
+    monkeypatch.setattr(db, "reset_all_data", reset_all_data)
+
+    async def scenario() -> None:
+        in_gate = asyncio.Event()
+        finish_upload = asyncio.Event()
+
+        async def upload(name: str, *, hold: bool) -> None:
+            async with processor.upload_gate():
+                events.append(f"{name} in")
+                in_gate.set()
+                if hold:
+                    await finish_upload.wait()
+            events.append(f"{name} out")
+
+        first = asyncio.create_task(upload("first", hold=True))
+        await in_gate.wait()
+
+        reset = asyncio.create_task(processor.reset_all_data())
+        await asyncio.sleep(0.05)
+        assert "db reset" not in events, "reset ran while an upload was inside the gate"
+
+        second = asyncio.create_task(upload("second", hold=False))
+        await asyncio.sleep(0.05)
+        assert "second in" not in events, "an upload entered the gate during a pending reset"
+
+        finish_upload.set()
+        await asyncio.wait_for(asyncio.gather(first, reset, second), timeout=2)
+
+    asyncio.run(scenario())
+
+    assert events == ["first in", "first out", "db reset", "second in", "second out"]
+
+
+def test_a_failed_reset_releases_the_gate(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    processor = fresh_processor(monkeypatch)
+
+    async def boom() -> None:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(db, "reset_all_data", boom)
+
+    async def scenario() -> None:
+        try:
+            await processor.reset_all_data()
+        except RuntimeError:
+            pass
+        async with processor.upload_gate():
+            pass
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=2))
+
+
 def test_reset_requires_the_bearer_token(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     fresh_processor(monkeypatch)
