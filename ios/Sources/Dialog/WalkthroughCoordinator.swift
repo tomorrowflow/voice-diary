@@ -197,23 +197,12 @@ public final class WalkthroughCoordinator {
     /// Snapshot of the state we paused FROM, so `resume()` knows which
     /// step to re-enter. Nil whenever `isPaused == false`.
     private var pausedAtState: WalkthroughState?
-    /// On-disk record of the most recent pause, persisted into the
-    /// session dir so `beginPickup` can re-enter at the right step
-    /// even after an app kill. Mirrors `pausedAtState` but encoded
-    /// (state has associated values that can't trivially round-trip
-    /// through Codable, so we project into a flat struct).
-    fileprivate struct PauseMarker: Codable, Sendable {
-        enum Phase: String, Codable { case briefing, opener, listening }
-        enum Kind: String, Codable { case event, general, voiceNote }
-        let phase: Phase
-        let kind: Kind?
-        let stepIndex: Int
-        let eventIndex: Int?
-        let sectionID: String?
-        let elapsedSeconds: Int
-        let activeSegmentID: String?
-        let pausedAt: Date
-    }
+    /// The record of the most recent pause, journaled by the session
+    /// bundle so `beginPickup` can re-enter at the right step even after
+    /// an app kill. Mirrors `pausedAtState` but encoded (state has
+    /// associated values that can't trivially round-trip through Codable,
+    /// so we project into a flat struct).
+    fileprivate typealias PauseMarker = SessionBundle.PauseMarker
     /// AVAudioPlayer + delegate proxy retained across the "last 5s"
     /// playback inside `playLastSeconds(of:seconds:)` so the closure
     /// can return while the player keeps the delegate alive.
@@ -483,8 +472,8 @@ public final class WalkthroughCoordinator {
         switch start.mode {
         case .fresh:
             await runPlan(targetDate: start.targetDate, language: start.language)
-        case .resume(let existingDir):
-            await continuePickup(existingDir: existingDir, targetDate: start.targetDate, language: start.language)
+        case .resume:
+            await continuePickup(targetDate: start.targetDate, language: start.language)
         }
     }
 
@@ -559,6 +548,10 @@ public final class WalkthroughCoordinator {
                 // Skip dirs that already finished (manifest written).
                 let manifestURL = dir.appending(path: LocalStore.manifestFilename)
                 if FileManager.default.fileExists(atPath: manifestURL.path) { continue }
+                // Without a journal the session cannot be restored, so
+                // there is nothing to pick up.
+                let journalURL = dir.appending(path: SessionBundle.journalFilename)
+                if !FileManager.default.fileExists(atPath: journalURL.path) { continue }
                 // Need at least one real m4a to be worth resuming.
                 let segmentsDir = dir.appending(path: "segments", directoryHint: .isDirectory)
                 let segmentFiles = (try? FileManager.default.contentsOfDirectory(
@@ -586,20 +579,7 @@ public final class WalkthroughCoordinator {
 
     // MARK: - Pause marker persistence
 
-    private static let pauseMarkerFilename = "pause_state.json"
-
-    private func pauseMarkerURL(in dir: URL) -> URL {
-        dir.appending(path: Self.pauseMarkerFilename)
-    }
-
-    /// Seam for the protection-class test. The marker is written when
-    /// the app pauses, possibly with the screen locked.
-    static func writePauseMarkerData(_ data: Data, to url: URL) throws {
-        try data.write(to: url, options: [.atomic, LocalStore.dataProtectionWriteOption])
-    }
-
     private func writePauseMarker(activeSegmentID: String?) {
-        guard let dir = sessionDir else { return }
         let marker: PauseMarker? = {
             switch state {
             case .briefing:
@@ -656,157 +636,111 @@ public final class WalkthroughCoordinator {
             }
         }()
         guard let marker else { return }
-        do {
-            let enc = JSONEncoder()
-            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
-            enc.dateEncodingStrategy = .iso8601
-            let data = try enc.encode(marker)
-            try Self.writePauseMarkerData(data, to: pauseMarkerURL(in: dir))
-        } catch {
-            Log.app.warning("pause marker write failed: \(String(describing: error), privacy: .public)")
-        }
+        bundle?.setPauseMarker(marker)
     }
 
     private func deletePauseMarker() {
-        guard let dir = sessionDir else { return }
-        try? FileManager.default.removeItem(at: pauseMarkerURL(in: dir))
+        bundle?.clearPauseMarker()
     }
 
-    private func readPauseMarker(from dir: URL) -> PauseMarker? {
-        let url = pauseMarkerURL(in: dir)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        let dec = JSONDecoder()
-        dec.dateDecodingStrategy = .iso8601
-        return try? dec.decode(PauseMarker.self, from: data)
-    }
-
-    /// Fallback when no `pause_state.json` exists: derive a marker
-    /// purely from the bundle segments that `loadExistingSegments`
-    /// just populated. Picks the highest `(stepIndex, eventIndex,
-    /// chunkIndex)` and synthesises a `listening`-phase marker so
-    /// pickup runs the rich opener-replay + tail-playback flow at
-    /// the actual last-recorded position. Used for cancel-then-pickup
-    /// or app-kill-then-pickup, where the user never tapped Pause.
-    private func inferPickupPoint() -> PauseMarker? {
-        struct Score {
-            let stepIndex: Int
-            let eventIndex: Int  // -1 when the step isn't a calendar block
-            let chunkIndex: Int
-            let actualID: String
-        }
+    /// Where pickup re-enters. The pause marker when the user paused;
+    /// otherwise the step of the latest recorded segment, as after an app
+    /// kill or a cancel. The step is found in the current plan by what
+    /// the segment says it recorded (its calendar event or section), never
+    /// by its id, so a calendar that changed since the kill cannot move
+    /// the user onto another event. Nil when that step no longer exists.
+    private func pickupMarker() -> PauseMarker? {
         guard let bundle else { return nil }
-        var best: Score?
-        for seg in bundle.segments {
-            let actualID: String
-            switch seg {
-            case .calendarEvent(let v):  actualID = v.segment_id
-            case .freeReflection(let v): actualID = v.segment_id
-            case .generalSection(let v): actualID = v.segment_id
-            case .voiceNote, .emptyBlock: continue
-            }
-            let (baseID, chunkIdx) = SessionBundle.parseSegmentID(actualID)
-            guard let parsed = parseBaseSegmentID(baseID) else { continue }
-            let candidate = Score(
-                stepIndex: parsed.step,
-                eventIndex: parsed.event ?? -1,
-                chunkIndex: chunkIdx,
-                actualID: actualID
+        if let saved = bundle.pauseMarker {
+            // Only a listening pause names a recorded segment to relocate.
+            guard saved.phase == .listening,
+                  let id = saved.activeSegmentID,
+                  let segment = bundle.segment(withID: id) else { return saved }
+            guard let spot = planPosition(of: segment) else { return nil }
+            return PauseMarker(
+                phase: .listening,
+                kind: spot.kind,
+                stepIndex: spot.stepIndex,
+                eventIndex: spot.eventIndex,
+                sectionID: spot.sectionID,
+                elapsedSeconds: saved.elapsedSeconds,
+                activeSegmentID: id,
+                pausedAt: saved.pausedAt
             )
-            if best == nil
-                || candidate.stepIndex > best!.stepIndex
-                || (candidate.stepIndex == best!.stepIndex
-                    && candidate.eventIndex > best!.eventIndex)
-                || (candidate.stepIndex == best!.stepIndex
-                    && candidate.eventIndex == best!.eventIndex
-                    && candidate.chunkIndex > best!.chunkIndex) {
-                best = candidate
-            }
         }
-        guard let best, best.stepIndex >= 0, best.stepIndex < plan.count else {
-            return nil
-        }
-        let kind: PauseMarker.Kind
-        let eventIndex: Int?
-        let sectionID: String?
-        switch plan[best.stepIndex] {
-        case .calendar:
-            kind = .event
-            eventIndex = best.eventIndex >= 0 ? best.eventIndex : nil
-            sectionID = nil
-            guard eventIndex != nil else { return nil }
-        case .general(let section):
-            kind = .general
-            eventIndex = nil
-            sectionID = section.id
-        case .voiceNote:
-            kind = .voiceNote
-            eventIndex = nil
-            sectionID = nil
-        }
-        // Sum the recorded duration of every chunk that belongs to
-        // the picked base id, so the timer resumes at the total time
-        // spent in this meeting/section instead of snapping to 00:00.
-        // Sync probe via `AVAudioPlayer(contentsOf:)` reads the m4a
-        // duration atom in microseconds without decoding samples.
-        let baseID = SessionBundle.parseSegmentID(best.actualID).baseID
+        guard let latest = bundle.latestRecordedSegment,
+              let spot = planPosition(of: latest) else { return nil }
+        // Sum the recorded duration of every chunk of this step, so the
+        // timer resumes at the total time spent in this meeting/section
+        // instead of snapping to 00:00. `AVAudioPlayer(contentsOf:)` reads
+        // the m4a duration atom without decoding samples.
         var elapsed: Double = 0
-        for seg in bundle.segments {
-            let id: String
-            switch seg {
-            case .calendarEvent(let v):  id = v.segment_id
-            case .freeReflection(let v): id = v.segment_id
-            case .generalSection(let v): id = v.segment_id
-            case .voiceNote, .emptyBlock: continue
-            }
-            guard SessionBundle.parseSegmentID(id).baseID == baseID,
-                  let url = bundle.audioURL(forSegmentID: id),
+        for chunk in bundle.chunks(sharingRecordingWith: latest.segmentID) {
+            guard let url = bundle.audioURL(forSegmentID: chunk.segmentID),
                   let player = try? AVAudioPlayer(contentsOf: url)
             else { continue }
             elapsed += player.duration
         }
         return PauseMarker(
             phase: .listening,
-            kind: kind,
-            stepIndex: best.stepIndex,
-            eventIndex: eventIndex,
-            sectionID: sectionID,
+            kind: spot.kind,
+            stepIndex: spot.stepIndex,
+            eventIndex: spot.eventIndex,
+            sectionID: spot.sectionID,
             elapsedSeconds: Int(elapsed.rounded()),
-            activeSegmentID: best.actualID,
+            activeSegmentID: latest.segmentID,
             pausedAt: Date()
         )
     }
 
-    /// Parse a *base* segment id (no `c<N>` suffix) into its plan-step
-    /// and optional event indices. `s03` → step 2, no event. `s01e04`
-    /// → step 0, event 3.
-    private func parseBaseSegmentID(_ base: String) -> (step: Int, event: Int?)? {
-        let ns = base as NSString
-        guard let regex = try? NSRegularExpression(pattern: #"^s(\d+)(?:e(\d+))?$"#),
-              let match = regex.firstMatch(
-                  in: base,
-                  options: [],
-                  range: NSRange(location: 0, length: ns.length)
-              ),
-              let s = Int(ns.substring(with: match.range(at: 1)))
-        else { return nil }
-        let step = s - 1
-        let eRange = match.range(at: 2)
-        if eRange.location == NSNotFound { return (step, nil) }
-        guard let e = Int(ns.substring(with: eRange)) else { return (step, nil) }
-        return (step, e - 1)
+    /// The plan step a recorded segment belongs to in the current plan.
+    private func planPosition(of segment: Segment) -> (
+        kind: PauseMarker.Kind, stepIndex: Int, eventIndex: Int?, sectionID: String?
+    )? {
+        for (stepIndex, step) in plan.enumerated() {
+            switch (step, segment) {
+            case (.calendar(let events), .calendarEvent(let recorded)):
+                if let eventIndex = events.firstIndex(where: {
+                    $0.graph_event_id == recorded.calendar_ref.graph_event_id
+                }) {
+                    return (.event, stepIndex, eventIndex, nil)
+                }
+            case (.general(let section), .generalSection(let recorded)):
+                if section.id == recorded.section_id {
+                    return (.general, stepIndex, nil, section.id)
+                }
+            case (.voiceNote, .freeReflection):
+                return (.voiceNote, stepIndex, nil, nil)
+            default:
+                continue
+            }
+        }
+        return nil
     }
 
     /// Continue an unfinished session for `date`. Reuses the existing
     /// session dir (so the prior audio survives), re-runs the
-    /// walkthrough plan from step 0, and adopts the on-disk files into the
-    /// session bundle so newly-recorded segments don't collide with them
-    /// (a re-record of `s01e02` becomes `s01e02c2`). Falls back to
-    /// `begin()` when no unfinished session is detected.
+    /// walkthrough plan from step 0, and restores the session bundle from
+    /// its journal so newly-recorded segments don't collide with the
+    /// earlier ones (a re-record of `s01e02` becomes `s01e02c2`). Falls
+    /// back to `begin()` when no unfinished session is detected, or when
+    /// it has no journal and so cannot be picked up.
     public func beginPickup(today: Date? = nil, language: OpenerLanguage = .current) async {
         guard case .idle = state else { return }
         let targetDate = today ?? selectedDate
         let existingDir = await loadUnfinishedSession(forDate: targetDate)
         guard let existingDir else {
+            await begin(today: targetDate, language: language)
+            return
+        }
+        let restored: SessionBundle
+        do {
+            restored = try SessionBundle.open(existingDir, audio: EngineSessionBundleAudio(engine: engine))
+        } catch {
+            Log.app.warning(
+                "pickup: cannot restore \(existingDir.lastPathComponent, privacy: .public): \(String(describing: error), privacy: .public)"
+            )
+            unfinishedSessionURL = nil
             await begin(today: targetDate, language: language)
             return
         }
@@ -838,12 +772,8 @@ public final class WalkthroughCoordinator {
         do { try await engine.prepareSession() }
         catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
         guard calendarGate.isCurrent(attempt) else { return }
-        bundle = SessionBundle(
-            directory: existingDir,
-            sessionID: existingDir.lastPathComponent,
-            audio: EngineSessionBundleAudio(engine: engine)
-        )
-        sessionID = existingDir.lastPathComponent
+        bundle = restored
+        sessionID = restored.sessionID
         if CalendarFreeMarker.isMarked(in: existingDir) {
             // The session was started without the calendar. Rebuild that
             // plan without fetching: a fetch that now succeeds would add a
@@ -858,54 +788,24 @@ public final class WalkthroughCoordinator {
             events = fetched
         }
         calendarGate.finishPreparing(attempt)
-        await continuePickup(existingDir: existingDir, targetDate: targetDate, language: language)
+        await continuePickup(targetDate: targetDate, language: language)
     }
 
     /// The part of a resume that needs the calendar settled: rebuild the
-    /// plan, replay the recorded segments and re-enter where the user left
-    /// off.
-    private func continuePickup(existingDir: URL, targetDate: Date, language: OpenerLanguage) async {
+    /// plan and re-enter where the user left off. The segments themselves
+    /// were restored from the journal; only those whose transcription the
+    /// kill interrupted are transcribed again.
+    private func continuePickup(targetDate: Date, language: OpenerLanguage) async {
         plan = await buildPlan(forDate: targetDate)
         if plan.isEmpty {
             await finishUploadOrConfirmTodos()
             return
         }
-        // Replay the existing segment files into the in-memory
-        // structures so they survive into the eventual upload, AND
-        // so the resume counter knows about them (next recording on
-        // the same step picks up at `c<N>`).
-        loadExistingSegments(in: existingDir, plan: plan)
-        // Resolve where the user actually left off. Two sources:
-        //   1. On-disk pause marker (only present if the user
-        //      tapped Pause explicitly — carries exact phase +
-        //      elapsedSeconds; can be stale across cancel→advance
-        //      cycles).
-        //   2. Disk inference — synthesised `listening` marker
-        //      pointing at the highest (step, event, chunk) m4a.
-        //      Always current with disk truth.
-        // Combine: pick whichever is FURTHER ALONG. A position-
-        // newer inference wins over a stale marker; a position-
-        // equal-or-older marker wins because it carries phase +
-        // elapsed details inference can't reconstruct.
-        // Final fall-through to `runStep(at: 0)` only when neither
-        // source produced anything (empty / mangled dir).
-        let marker: PauseMarker? = {
-            let saved = readPauseMarker(from: existingDir)
-            let inferred = inferPickupPoint()
-            switch (saved, inferred) {
-            case (let s?, let i?):
-                let sScore = (s.stepIndex, s.eventIndex ?? -1)
-                let iScore = (i.stepIndex, i.eventIndex ?? -1)
-                if iScore.0 > sScore.0
-                    || (iScore.0 == sScore.0 && iScore.1 > sScore.1) {
-                    return i
-                }
-                return s
-            case (let s?, nil):  return s
-            case (nil, let i?):  return i
-            case (nil, nil):     return nil
-            }
-        }()
+        retranscribeUntranscribedSegments()
+        // The pause marker when the user paused, else the latest
+        // recorded segment; `runStep(at: 0)` only when neither names a
+        // step in this plan.
+        let marker = pickupMarker()
         await prefetchAllOpeners(language: language)
         // No day-overview intro on pickup — the user already knows
         // what day they're in, and stacking a briefing on top of
@@ -1246,113 +1146,25 @@ public final class WalkthroughCoordinator {
         c.resume()
     }
 
-    /// Adopt the m4a files left behind in an unfinished session dir into
-    /// the session bundle. Each old file is also queued for
-    /// (re-)finalisation so its transcript and todo extraction run
-    /// before the eventual upload.
-    private func loadExistingSegments(in dir: URL, plan: [PlanStep]) {
+    /// Queue finalisation (transcript and todo extraction, written back
+    /// through the bundle) for every restored walkthrough segment the app
+    /// was killed before transcribing. Segments whose transcript the
+    /// journal holds are left alone.
+    private func retranscribeUntranscribedSegments() {
         guard let bundle else { return }
-        let segmentsDir = dir.appending(path: "segments", directoryHint: .isDirectory)
-        guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: segmentsDir,
-            includingPropertiesForKeys: nil
-        ) else { return }
-        let m4a = urls
-            .filter {
-                $0.pathExtension.lowercased() == "m4a"
-                    && !M4AWriter.isOrphanTempURL($0)
+        for segment in bundle.segments {
+            switch segment {
+            case .calendarEvent, .freeReflection, .generalSection: break
+            case .voiceNote, .emptyBlock: continue
             }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for url in m4a {
-            let stem = url.deletingPathExtension().lastPathComponent
-            let baseID = SessionBundle.parseSegmentID(stem).baseID
-            let path = "segments/\(url.lastPathComponent)"
-            // Only register the file if we can also build a Segment
-            // record for it — files that can't be mapped (e.g. plan
-            // shape changed) would otherwise upload as orphans the
-            // manifest doesn't reference.
-            guard let seg = makeReconstructedSegment(
-                baseID: baseID,
-                actualID: stem,
-                audioPath: path,
-                plan: plan
-            ) else {
-                Log.app.warning(
-                    "pickup: dropping orphan audio file \(url.lastPathComponent, privacy: .public) — no matching plan step"
-                )
-                continue
-            }
-            // Adopting also bumps the bundle's chunk counter to at least
-            // this index, so the next recording of the base id skips past
-            // the on-disk file rather than overwriting it.
-            bundle.adopt(seg)
-            // Re-transcribe — finalise() handles the rest (todos +
-            // setting transcript on the segment record).
+            let id = segment.segmentID
+            guard bundle.transcript(forSegmentID: id) == nil,
+                  let url = bundle.audioURL(forSegmentID: id) else { continue }
             let task = Task { [weak self] in
                 guard let self else { return }
-                await self.finalise(segmentID: stem, url: url)
+                await self.finalise(segmentID: id, url: url)
             }
             pendingFinalisation.append(task)
-        }
-    }
-
-    /// Build a Segment record for a reloaded m4a, looking up the
-    /// matching plan step (and event index for calendar segments).
-    /// Returns nil when the base id falls outside the current plan
-    /// (e.g. plan length changed between sessions).
-    private func makeReconstructedSegment(
-        baseID: String,
-        actualID: String,
-        audioPath: String,
-        plan: [PlanStep]
-    ) -> Segment? {
-        // base id formats: "sNN" or "sNNeMM"
-        let ns = baseID as NSString
-        guard let regex = try? NSRegularExpression(pattern: #"^s(\d+)(?:e(\d+))?$"#),
-              let match = regex.firstMatch(
-                  in: baseID,
-                  options: [],
-                  range: NSRange(location: 0, length: ns.length)
-              ),
-              let stepIdx = Int(ns.substring(with: match.range(at: 1))).map({ $0 - 1 })
-        else { return nil }
-        guard stepIdx >= 0, stepIdx < plan.count else { return nil }
-        let eventIdxRange = match.range(at: 2)
-        let eventIdx: Int? = eventIdxRange.location == NSNotFound
-            ? nil
-            : Int(ns.substring(with: eventIdxRange)).map { $0 - 1 }
-
-        switch plan[stepIdx] {
-        case .calendar(let evts):
-            guard let evtIdx = eventIdx, evtIdx >= 0, evtIdx < evts.count else { return nil }
-            let event = evts[evtIdx]
-            let calRef = CalendarRef(
-                graph_event_id: event.graph_event_id,
-                title: event.subject,
-                start: event.start,
-                end: event.end,
-                attendees: event.attendees.map { $0.email.isEmpty ? $0.name : $0.email },
-                rsvp_status: event.rsvp_status
-            )
-            return .calendarEvent(CalendarEventSegment(
-                segment_id: actualID,
-                calendar_ref: calRef,
-                audio_file: audioPath
-            ))
-        case .general(let section):
-            return .generalSection(GeneralSectionSegment(
-                segment_id: actualID,
-                section_id: section.id,
-                title: section.title,
-                prompt_text: section.introText,
-                audio_file: audioPath
-            ))
-        case .voiceNote:
-            return .freeReflection(FreeReflectionSegment(
-                segment_id: actualID,
-                audio_file: audioPath,
-                captured_at: ISO8601DateFormatter().string(from: Date())
-            ))
         }
     }
 
@@ -1661,11 +1473,11 @@ public final class WalkthroughCoordinator {
         // makes sure we don't leak the files until the system reaper
         // kicks in.
         await clearPrefetchedOpeners()
-        // Keep the pause marker (if any) on disk. Cancel preserves the
-        // session_dir + its m4a files by design — "recordings until
-        // this point shall be stored" — and the pickup intent should
-        // survive alongside them. `finishUpload()` is the only path
-        // that strips the marker.
+        // Keep the pause marker (if any) in the bundle journal. Cancel
+        // preserves the session_dir + its m4a files by design —
+        // "recordings until this point shall be stored" — and the pickup
+        // intent should survive alongside them. `finishUpload()` and
+        // `resume()` are the only paths that strip the marker.
         state = .idle
         isPaused = false
         pausedAtState = nil
