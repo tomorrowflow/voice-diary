@@ -142,7 +142,7 @@ def test_reset_waits_for_an_upload_in_its_gate_and_holds_new_uploads_back(monkey
                 in_gate.set()
                 if hold:
                     await finish_upload.wait()
-            events.append(f"{name} out")
+                events.append(f"{name} out")
 
         first = asyncio.create_task(upload("first", hold=True))
         await in_gate.wait()
@@ -181,6 +181,51 @@ def test_a_failed_reset_releases_the_gate(monkeypatch, tmp_path):
             pass
 
     asyncio.run(asyncio.wait_for(scenario(), timeout=2))
+
+
+def test_a_reset_cancelled_while_waiting_for_an_upload_releases_the_gate(monkeypatch, tmp_path):
+    """Cancelling the reset (e.g. the admin's request is dropped) while an
+    upload is still inside the gate must not leave later uploads and resets
+    waiting forever."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    processor = fresh_processor(monkeypatch)
+    resets: list[str] = []
+
+    async def reset_all_data() -> None:
+        resets.append("db reset")
+
+    monkeypatch.setattr(db, "reset_all_data", reset_all_data)
+
+    async def scenario() -> None:
+        in_gate = asyncio.Event()
+        finish_upload = asyncio.Event()
+
+        async def upload() -> None:
+            async with processor.upload_gate():
+                in_gate.set()
+                await finish_upload.wait()
+
+        first = asyncio.create_task(upload())
+        await in_gate.wait()
+
+        reset = asyncio.create_task(processor.reset_all_data())
+        await asyncio.sleep(0.05)
+        reset.cancel()
+        try:
+            await reset
+        except asyncio.CancelledError:
+            pass
+        assert resets == []
+
+        finish_upload.set()
+        await first
+        async with processor.upload_gate():
+            pass
+        await processor.reset_all_data()
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=2))
+
+    assert resets == ["db reset"]
 
 
 def test_reset_requires_the_bearer_token(monkeypatch, tmp_path):
