@@ -1467,12 +1467,13 @@ def test_sweep_marks_a_session_failed_when_none_of_its_audio_is_left(monkeypatch
 def test_sweep_logs_one_line_without_traceback_for_a_non_retryable_session(monkeypatch, tmp_path, caplog):
     """BUG-53/#53: a session whose pending segments point at transcript rows
     that are gone can't be retried. The sweep says so in one warning line —
-    no traceback."""
+    no traceback. Staged as `partial`, the state BUG-114 gives such a session;
+    a legacy `done` row would add BUG-114's separate marking line."""
     processor = fresh_processor(monkeypatch)
     session_id = "sess-transcripts-gone"
     stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     FakeSessionIngests(
-        session_id, "done",
+        session_id, "partial",
         [segment_row("s01", "pending_analysis", 61, "analysis_pending: boom"),
          segment_row("s02", "pending_analysis", 62, "analysis_pending: boom")],
     ).install(monkeypatch)
@@ -1487,7 +1488,7 @@ def test_sweep_logs_one_line_without_traceback_for_a_non_retryable_session(monke
     assert len(lines) == 1
     assert session_id in lines[0].getMessage()
     assert "not retryable" in lines[0].getMessage()
-    assert lines[0].exc_info is None
+    assert all(r.exc_info is None for r in caplog.records)
 
 
 def test_sweep_logs_one_line_without_traceback_when_the_manifest_is_missing(monkeypatch, tmp_path, caplog):
