@@ -53,6 +53,28 @@ def test_transcript_stream_generator_close_cancels_correction_task(monkeypatch):
     assert state.get("cancelled") is True
 
 
+def test_transcript_stream_correction_failure_emits_error_and_stops(monkeypatch):
+    async def fake_correct(raw_text, *, persons, terms, text_corrections=None,
+                           dismissals=None, on_step=None):
+        raise ValueError("kaboom")
+
+    monkeypatch.setattr(correction, "correct_and_detect_entities", fake_correct)
+
+    async def fluency_must_not_run(text):
+        raise AssertionError("must not run after a failed correction")
+
+    monkeypatch.setattr(fluency_checker, "FLUENCY_CHECK_ENABLED", True)
+    monkeypatch.setattr(fluency_checker, "check_fluency", fluency_must_not_run)
+
+    async def run():
+        return [e async for e in review_stream._process_transcript_events("x", [], [], [], [])]
+
+    events = asyncio.run(run())
+
+    assert [e["event"] for e in events] == ["error"]
+    assert json.loads(events[0]["data"]) == {"message": "Transcript correction failed: kaboom"}
+
+
 def test_document_stream_generator_close_cancels_narrative_task(monkeypatch):
     state = {}
 
