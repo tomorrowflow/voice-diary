@@ -176,6 +176,10 @@ class FakeSessionIngests:
                 row["state"] = "partial"
             return len(legacy)
 
+        async def reset_all_data() -> None:
+            self.rows.clear()
+
+        monkeypatch.setattr(db, "reset_all_data", reset_all_data)
         monkeypatch.setattr(db, "get_session_status", get_session_status)
         monkeypatch.setattr(db, "create_session_status", create_session_status)
         monkeypatch.setattr(db, "update_session_status", update_session_status)

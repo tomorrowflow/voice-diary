@@ -121,6 +121,17 @@ def session_dir_for(session_id: str) -> Path:
     return sessions_dir() / slug_session_id(session_id)
 
 
+def _remove_all_bundles() -> None:
+    root = sessions_dir()
+    if not root.is_dir():
+        return
+    for entry in root.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+
 async def _asr_reachable() -> bool:
     return await asr_client.get_default_client().reachable()
 
@@ -208,6 +219,15 @@ class SessionProcessor:
         async with self._lock:
             self._status.setdefault(session_id, status_obj)
         return status_obj
+
+    async def clear_all(self) -> None:
+        """Forget every session in this process: empty the status cache and
+        delete every bundle under `data/sessions/` (MIG-115/#115). The admin
+        reset calls it after `db.reset_all_data` has dropped the
+        `session_ingests` rows. The sessions directory itself stays."""
+        async with self._lock:
+            self._status.clear()
+        await asyncio.to_thread(_remove_all_bundles)
 
     async def _persist_status(
         self, session_id: str, state: str, segments: list[SegmentResult]
