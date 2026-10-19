@@ -1294,6 +1294,31 @@ def test_sweep_skips_a_session_with_a_retry_in_flight(monkeypatch, tmp_path, cap
     assert any("busy" in r.getMessage() and session_id in r.getMessage() for r in caplog.records)
 
 
+def test_retries_of_different_sessions_run_in_parallel(monkeypatch, tmp_path):
+    """The claim is per session: a retry for another session is not serialized
+    behind it. Both analyses must be inside the narrative stage at once, or the
+    barrier times out."""
+    processor = fresh_processor(monkeypatch)
+    _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-par-a": 5, "sess-par-b": 6})
+    stage = NarrativeStage(monkeypatch)
+
+    async def scenario():
+        both_running = asyncio.Barrier(2)
+
+        async def before_analysis(run):
+            await asyncio.wait_for(both_running.wait(), 5)
+
+        stage.before_analysis = before_analysis
+        return await asyncio.gather(
+            processor.retry_analysis("sess-par-a"), processor.retry_analysis("sess-par-b")
+        )
+
+    results = asyncio.run(scenario())
+
+    assert [r.segments[0].status for r in results] == ["processed", "processed"]
+    assert len(stage.runs) == 2
+
+
 def test_sweep_skips_a_processing_session_active_in_this_process(monkeypatch, tmp_path):
     """BUG-53/#53: a `processing` row with null transcript IDs is normal while
     this process is still working on it — the sweep must neither fail its
