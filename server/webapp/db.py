@@ -1273,28 +1273,49 @@ async def delete_session_status(session_id: str) -> None:
     await pool.execute("DELETE FROM session_ingests WHERE session_id = $1", session_id)
 
 
+async def correct_legacy_done_sessions() -> int:
+    """Mark `done` rows that still have a `pending_analysis` segment `partial`.
+
+    BUG-114/#114: before the fix a session whose analysis failed was persisted
+    as `done`. `done` now means every segment is `processed`, and the sweep no
+    longer looks at `done` rows, so those legacy rows are corrected before it
+    lists its candidates. Idempotent: once corrected, no row matches. Returns
+    the number of rows corrected.
+    """
+    pool = await get_pool()
+    result = await pool.execute(
+        """
+        UPDATE session_ingests
+        SET state = 'partial', updated_at = NOW()
+        WHERE state = 'done' AND segments @> '[{"status": "pending_analysis"}]'::jsonb
+    """
+    )
+    return int(result.rsplit(" ", 1)[-1])
+
+
 async def list_pending_analysis_session_ids() -> list[str]:
     """Session ids the startup retry sweep should look at.
 
-    Backs the sweep (#52): sessions with at least one segment stuck in
-    `pending_analysis`, plus (BUG-53/#53) every session still `processing`
+    Backs the sweep (#52): non-`done` sessions with at least one segment stuck
+    in `pending_analysis`, plus (BUG-53/#53) every session still `processing`
     — the process that was running it died before finishing, so its
     segments need recovering even if none is `pending_analysis` yet. The
-    caller skips sessions that are active in the current process. Doesn't
-    otherwise filter on `state`: `_derive_session_state` only counts
-    `failed` segments, so a session whose analysis failed is persisted as
-    `done` while its segments are still `pending_analysis`. The filter runs
-    in Python — this table is small (one row per session).
+    caller skips sessions that are active in the current process. `done`
+    sessions (every segment `processed`, BUG-114/#114) are never candidates;
+    `correct_legacy_done_sessions` fixes the old rows that said `done` with a
+    pending segment. The filter runs in Python — this table is small (one row
+    per session).
     """
     pool = await get_pool()
     rows = await pool.fetch("SELECT session_id, state, segments FROM session_ingests")
     result = []
     for row in rows:
+        state = row.get("state")
         segments = row["segments"]
         if isinstance(segments, str):
             segments = json.loads(segments)
-        if row.get("state") == "processing" or any(
-            s.get("status") == "pending_analysis" for s in segments
+        if state == "processing" or (
+            state != "done" and any(s.get("status") == "pending_analysis" for s in segments)
         ):
             result.append(row["session_id"])
     return result
