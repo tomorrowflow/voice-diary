@@ -16,14 +16,25 @@ import asyncio
 import logging
 import math
 import os
+from datetime import date as date_type, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 import msal
 import requests
 
 logger = logging.getLogger(__name__)
+
+UTC = ZoneInfo("UTC")
+LOCAL_TZ = ZoneInfo(os.getenv("TZ", "Europe/Berlin"))
+
+_GRAPH_UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.0000000"
+_EVENT_FIELDS = (
+    "id,subject,start,end,isAllDay,showAs,bodyPreview,"
+    "responseStatus,organizer,attendees,recurrence,webLink"
+)
 
 
 GRAPH_AUTHORITY = "https://login.microsoftonline.com"
@@ -50,6 +61,40 @@ class MSGraphError(RuntimeError):
     def __init__(self, message: str, *, retry_after: float | None = None) -> None:
         super().__init__(message)
         self.retry_after = retry_after
+
+
+def local_day_bounds_utc(day: date_type) -> tuple[str, str]:
+    """`(start, end)` of the `LOCAL_TZ` calendar day as Graph UTC timestamps.
+
+    `end` is the next local midnight, so a DST day spans 23 or 25 hours.
+    """
+    start_local = datetime.combine(day, time.min, tzinfo=LOCAL_TZ)
+    end_local = start_local + timedelta(days=1)
+    return (
+        start_local.astimezone(UTC).strftime(_GRAPH_UTC_FORMAT),
+        end_local.astimezone(UTC).strftime(_GRAPH_UTC_FORMAT),
+    )
+
+
+def to_local_iso(graph_dt: dict | None) -> str:
+    """Convert Graph's `{dateTime, timeZone}` pair to a `LOCAL_TZ` ISO 8601 string."""
+    if not graph_dt:
+        return ""
+    raw = graph_dt.get("dateTime", "")
+    if not raw:
+        return ""
+    tz_name = graph_dt.get("timeZone") or "UTC"
+    try:
+        # Graph datetimes are naive; pair them with the declared zone.
+        dt = datetime.fromisoformat(raw.replace("Z", ""))
+        if dt.tzinfo is None:
+            try:
+                dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+            except Exception:
+                dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(LOCAL_TZ).isoformat()
+    except (ValueError, TypeError):
+        return raw
 
 
 def _cache_path() -> Path:
@@ -250,6 +295,25 @@ class MSGraphClient:
                 raise MSGraphError(f"bad_response: expected a JSON object, got {type(data).__name__}")
             return data
         raise MSGraphError("rate_limited: backoff_exhausted")  # pragma: no cover
+
+    async def events_for_day(self, day: date_type) -> list[dict[str, Any]]:
+        """Graph-shaped events of the `LOCAL_TZ` calendar day, via `calendarView`.
+
+        The one day query every calendar consumer goes through. Failures
+        leave as MSGraphError / MSGraphNotBootstrapped.
+        """
+        start, end = local_day_bounds_utc(day)
+        data = await self.get_json(
+            "/me/calendarView",
+            params={
+                "startDateTime": start,
+                "endDateTime": end,
+                "$top": 100,
+                "$orderby": "start/dateTime",
+                "$select": _EVENT_FIELDS,
+            },
+        )
+        return data.get("value", []) or []
 
 
 # --- module-level lazy singleton ------------------------------------------

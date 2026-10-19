@@ -18,6 +18,7 @@ import asyncio
 import correction
 import transcript_corrector
 import vector_store
+from dictionary import DictionarySnapshot
 from entity_detector import DetectedEntity
 
 
@@ -45,11 +46,11 @@ def test_dictionary_correction_is_applied_before_llm_correction(monkeypatch):
     result = _run(
         correction.correct_and_detect_entities(
             "Ich fahre nach Berlim heute.",
-            persons=[],
-            terms=[],
-            text_corrections=[
-                {"original_text": "Berlim", "corrected_text": "Berlin", "case_sensitive": False}
-            ],
+            snapshot=DictionarySnapshot(
+                text_corrections=[
+                    {"original_text": "Berlim", "corrected_text": "Berlin", "case_sensitive": False}
+                ]
+            ),
         )
     )
 
@@ -70,9 +71,7 @@ def test_dismissed_entity_is_filtered_out(monkeypatch):
     result = _run(
         correction.correct_and_detect_entities(
             "Martin war im Baumarkt.",
-            persons=[],
-            terms=[],
-            dismissals=["Baumarkt"],
+            snapshot=DictionarySnapshot(dismissals=["Baumarkt"]),
         )
     )
 
@@ -92,8 +91,7 @@ def test_llm_correction_failure_falls_back_to_pre_llm_text(monkeypatch):
     result = _run(
         correction.correct_and_detect_entities(
             "Der Text bleibt unveraendert.",
-            persons=[],
-            terms=[],
+            snapshot=DictionarySnapshot(),
         )
     )
 

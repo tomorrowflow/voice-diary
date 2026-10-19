@@ -44,6 +44,12 @@ _Avoid_: error string, error message (those are free-form and may change)
 An upstream whose outage never changes the overall `/health` status and never blocks a workflow. Today only Voxtral: the app consults its health entry only when a Voxtral voice is selected, and falls back to Piper/Apple per utterance.
 _Avoid_: soft dependency, non-critical
 
+### Transcript correction
+
+**Dictionary**:
+What the user has taught the server about their own vocabulary: persons and terms with their variations, learned text corrections, and entity dismissals. Both transcript pipelines (the HTMX review stream and the iOS per-segment pipeline) read it as one snapshot, loaded once per run, and pass it to the shared correction chain.
+_Avoid_: word list, lexicon, vocabulary
+
 ### Analysis routing
 
 **Narrative analysis**:

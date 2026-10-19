@@ -25,6 +25,7 @@ import correction
 import fluency_checker
 import routers.review_stream as review_stream
 import vector_store
+from dictionary import DictionarySnapshot
 from entity_detector import DetectedEntity
 
 
@@ -44,9 +45,7 @@ def _entity(text: str) -> DetectedEntity:
 
 
 def test_happy_path_relays_correction_steps_then_fluency_and_entities(monkeypatch):
-    async def fake_correct_and_detect_entities(
-        raw_text, *, persons, terms, text_corrections=None, dismissals=None, on_step=None
-    ):
+    async def fake_correct_and_detect_entities(raw_text, *, snapshot=None, on_step=None):
         on_step("log", {"message": "Applying dictionary corrections...", "level": "info"})
         on_step("log", {"message": "Detecting entities...", "level": "info"})
         return correction.CorrectionResult(
@@ -66,9 +65,7 @@ def test_happy_path_relays_correction_steps_then_fluency_and_entities(monkeypatc
     monkeypatch.setattr(review_stream, "validate_entities_stream", fake_validate_entities_stream)
 
     events = _collect(
-        review_stream._process_transcript_events(
-            "hallo welt", persons=[], terms=[], text_corrections=[], dismissals=[]
-        )
+        review_stream._process_transcript_events("hallo welt", DictionarySnapshot())
     )
     names = [e["event"] for e in events]
 
@@ -93,10 +90,8 @@ def test_dismissed_entities_never_reach_llm_validation(monkeypatch):
     """The dismissal filtering now happens inside
     `correction.correct_and_detect_entities`; this endpoint must forward
     whatever entity list it returns, unfiltered further."""
-    async def fake_correct_and_detect_entities(
-        raw_text, *, persons, terms, text_corrections=None, dismissals=None, on_step=None
-    ):
-        assert dismissals == ["Baumarkt"]
+    async def fake_correct_and_detect_entities(raw_text, *, snapshot=None, on_step=None):
+        assert snapshot.is_dismissed("Baumarkt")
         return correction.CorrectionResult(corrected_text=raw_text, entities=[_entity("Martin")])
 
     monkeypatch.setattr(correction, "correct_and_detect_entities", fake_correct_and_detect_entities)
@@ -113,8 +108,7 @@ def test_dismissed_entities_never_reach_llm_validation(monkeypatch):
 
     _collect(
         review_stream._process_transcript_events(
-            "Martin war im Baumarkt.", persons=[], terms=[], text_corrections=[],
-            dismissals=["Baumarkt"],
+            "Martin war im Baumarkt.", DictionarySnapshot(dismissals=["Baumarkt"])
         )
     )
 
