@@ -28,10 +28,12 @@ from sse_starlette.sse import EventSourceResponse
 
 import correction
 import db
+import dictionary
 import fluency_checker
 import llm_validator
 import narrative
 import vector_store
+from dictionary import DictionarySnapshot
 from llm_validator import validate_entities_stream
 from routers.auth import require_bearer
 
@@ -58,25 +60,17 @@ async def process_transcript_stream(transcript_id: int):
     if not transcript:
         return JSONResponse({"error": "not found"}, 404)
 
-    # Pre-load all data needed for the pipeline
-    persons = await db.load_person_dictionary()
-    terms = await db.load_term_dictionary()
-    text_corrections = await db.load_text_corrections()
-    dismissals = await db.load_entity_dismissals()
+    # Pre-load the Dictionary before streaming starts
+    snapshot = await dictionary.load_dictionary_snapshot()
 
     raw_text = transcript["raw_text"]
 
-    return EventSourceResponse(
-        _process_transcript_events(raw_text, persons, terms, text_corrections, dismissals)
-    )
+    return EventSourceResponse(_process_transcript_events(raw_text, snapshot))
 
 
 async def _process_transcript_events(
     raw_text: str,
-    persons: list[dict],
-    terms: list[dict],
-    text_corrections: list[dict],
-    dismissals: list[str],
+    snapshot: DictionarySnapshot | None = None,
 ):
     """Bridges `correction.correct_and_detect_entities`'s callback-shaped
     `on_step` progress into this endpoint's async-generator SSE shape (the
@@ -99,10 +93,7 @@ async def _process_transcript_events(
         try:
             return await correction.correct_and_detect_entities(
                 raw_text,
-                persons=persons,
-                terms=terms,
-                text_corrections=text_corrections,
-                dismissals=dismissals,
+                snapshot=snapshot,
                 on_step=on_step,
             )
         finally:

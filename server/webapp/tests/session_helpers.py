@@ -23,9 +23,11 @@ from typing import Awaitable, Callable
 
 import correction
 import db
+import dictionary
 import narrative
 import session_processing
 import transcript_ingest
+from dictionary import DictionarySnapshot
 from models import Manifest
 
 BEARER = "test-token"
@@ -266,31 +268,28 @@ class SegmentPipeline:
             transcript_id = self._ids.setdefault(segment_id, 10 + len(self._ids))
             return transcript_ingest.TranscribedSegment(transcript_id=transcript_id, raw_text="hallo welt")
 
-        async def correct_and_detect_entities(
-            raw_text, *, persons, terms, text_corrections=None, dismissals=None, on_step=None
-        ):
+        async def correct_and_detect_entities(raw_text, *, snapshot=None, on_step=None):
             self.correct_calls.append({
-                "raw_text": raw_text, "persons": persons, "terms": terms,
-                "text_corrections": text_corrections, "dismissals": dismissals,
+                "raw_text": raw_text, "persons": snapshot.persons, "terms": snapshot.terms,
+                "text_corrections": snapshot.text_corrections,
+                "dismissals": sorted(snapshot.dismissals),
             })
             if correct is not None:
                 return await correct(raw_text)
             return correction.CorrectionResult(corrected_text=raw_text)
 
-        def loader(value):
-            async def load():
-                return value if value is not None else []
-            return load
+        async def load_dictionary_snapshot():
+            return DictionarySnapshot(
+                persons=persons or [], terms=terms or [],
+                text_corrections=text_corrections or [], dismissals=dismissals or [],
+            )
 
         async def save_detected_entities(transcript_id, text, detected_entities_json):
             self.saved_entities.append((transcript_id, text, detected_entities_json))
 
         monkeypatch.setattr(transcript_ingest, "transcribe_and_persist", transcribe_and_persist)
         monkeypatch.setattr(correction, "correct_and_detect_entities", correct_and_detect_entities)
-        monkeypatch.setattr(db, "load_person_dictionary", loader(persons))
-        monkeypatch.setattr(db, "load_term_dictionary", loader(terms))
-        monkeypatch.setattr(db, "load_text_corrections", loader(text_corrections))
-        monkeypatch.setattr(db, "load_entity_dismissals", loader(dismissals))
+        monkeypatch.setattr(dictionary, "load_dictionary_snapshot", load_dictionary_snapshot)
         monkeypatch.setattr(db, "save_detected_entities", save_detected_entities)
 
 
