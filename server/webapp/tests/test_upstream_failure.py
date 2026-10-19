@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 import narrative
 import upstream_failure
 from asr_client import AsrEngineError, AsrTimeoutError, AsrUnavailableError
+from document_processor import UnreadableLlmResponse
 from enrichment import EnrichmentSummariserUnavailable
 from lightrag_client import LightRAGEngineError, LightRAGTimeoutError, LightRAGUnavailableError
 from msgraph_client import MSGraphError, MSGraphNotBootstrapped
@@ -169,15 +170,58 @@ RAW_OLLAMA = [
 
 @pytest.mark.parametrize("exc, code, upstream", RAW_OLLAMA, ids=[c[1] + "-" + type(c[0]).__name__ for c in RAW_OLLAMA])
 def test_raw_ollama_errors_are_classified(exc, code, upstream):
-    failure = upstream_failure.classify_raw_ollama_error(exc)
+    failure = upstream_failure.classify_raw_analysis_error(exc)
 
     assert (failure.code, failure.upstream) == (code, upstream)
     assert str(failure) == str(exc)
 
 
+def _status_error(status: int) -> httpx.HTTPStatusError:
+    return httpx.HTTPStatusError(
+        str(status), request=httpx.Request("POST", "http://x"), response=httpx.Response(status),
+    )
+
+
+RAW_BLINDFOLD = [
+    (httpx.ConnectError("refused"), "blindfold_unavailable", 503),
+    (httpx.RemoteProtocolError("dropped"), "blindfold_unavailable", 503),
+    (httpx.ReadTimeout("read timed out"), "blindfold_timeout", 503),
+    (RuntimeError("LLM analysis timed out after 30.0s"), "blindfold_timeout", 503),
+    (_status_error(500), "blindfold_engine_error", 502),
+    (_status_error(429), "blindfold_engine_error", 502),
+    (UnreadableLlmResponse("response body is not JSON"), "blindfold_engine_error", 502),
+]
+
+
+@pytest.mark.parametrize("exc, code, status_code", RAW_BLINDFOLD, ids=[c[1] + "-" + type(c[0]).__name__ for c in RAW_BLINDFOLD])
+def test_raw_errors_on_the_blindfold_route_are_classified(exc, code, status_code):
+    failure = upstream_failure.classify_raw_analysis_error(exc, "blindfold")
+
+    assert (failure.code, failure.upstream) == (code, "blindfold")
+    assert (failure.status_code, failure.retryable) == (status_code, True)
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_a_rejected_key_is_named_in_the_blindfold_message(status):
+    failure = upstream_failure.classify_raw_analysis_error(_status_error(status), "blindfold")
+
+    assert failure.code == "blindfold_engine_error"
+    assert failure.status_code == 502
+    assert "API key" in failure.message
+    assert str(status) in failure.message
+
+
+def test_an_unreadable_body_is_only_an_engine_error_on_the_blindfold_route():
+    exc = UnreadableLlmResponse("response body is not JSON")
+
+    assert upstream_failure.classify_raw_analysis_error(exc, "ollama") is None
+    assert isinstance(exc, ValueError)
+
+
 def test_unclassifiable_raw_error_gets_no_code():
-    assert upstream_failure.classify_raw_ollama_error(RuntimeError("disk full")) is None
-    assert upstream_failure.classify_raw_ollama_error(KeyError("normalized_text")) is None
+    for upstream in ("ollama", "blindfold"):
+        assert upstream_failure.classify_raw_analysis_error(RuntimeError("disk full"), upstream) is None
+        assert upstream_failure.classify_raw_analysis_error(KeyError("normalized_text"), upstream) is None
 
 
 def test_narrative_tags_raw_analysis_failures_and_keeps_the_message(monkeypatch):

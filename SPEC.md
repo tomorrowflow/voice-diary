@@ -731,7 +731,7 @@ Manifest-level fields tied to the drive-by section:
 }
 ```
 
-Processing (per-segment Whisper re-transcription + entity normalization, then a single session-level Ollama analysis + LightRAG ingest) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres.
+Processing (per-segment Whisper re-transcription + entity normalization, then a single session-level Ollama analysis + LightRAG ingest) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres. This holds when the analysis is routed to Blindfold (`ANALYSIS_ROUTE=blindfold`) too: its outage, timeout or error leaves the segments `pending_analysis` with a `blindfold_*` code (§10.6.1), and the server never retries that analysis on Ollama or any other provider. A retry or the startup sweep sends it to whichever route is then configured.
 
 Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-analysis` response, §10.6.1) have this shape:
 
@@ -852,7 +852,7 @@ when no segment is `pending_analysis`, or when a pending segment's stored transc
 there was nothing to resume. `session_busy` applies as above.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
-Voxtral) is down, slow or answers with an error, the server reports it in one shape. `detail` stays
+Voxtral, and Blindfold when the analysis route is `blindfold`) is down, slow or answers with an error, the server reports it in one shape. `detail` stays
 a string (`"<code>"` or `"<code>: <message>"`) so older app builds keep working; `code`, `upstream`
 and `retryable` are additional top-level fields:
 
@@ -886,12 +886,25 @@ routes, the read endpoints in §10.7 and `POST /api/tts/synthesize`.
 | `voxtral_timeout` | voxtral | 503 | yes |
 | `voxtral_engine_error` | voxtral | 502 | yes |
 | `unknown_voice` | voxtral | 400 | no |
+| `blindfold_unavailable` | blindfold | 503 | yes |
+| `blindfold_timeout` | blindfold | 503 | yes |
+| `blindfold_engine_error` | blindfold | 502 | yes |
+
+The `blindfold_*` codes occur only when `ANALYSIS_ROUTE=blindfold`, and only for the main analysis
+call: unavailable is a refused connection or DNS failure, timeout a call that outlives
+`BLINDFOLD_ANALYSIS_TIMEOUT`, and engine error any HTTP error status or a response body that is not
+JSON. A `401` or `403` says in the message that the API key was rejected. With the default route
+(`local`) no `blindfold_*` code can occur.
 
 At upload, Whisper being unreachable returns `503 whisper_unavailable` and persists nothing (no
 status row, no bundle on disk), so the app keeps the recording and retries. During processing, an
 error is given a `code` when it comes from one of the upstream clients, or when the session-level
-analysis call fails with a raw HTTP error to Ollama (classified as `ollama_unavailable`,
-`ollama_timeout` or `ollama_engine_error`); anything else leaves `code` null.
+analysis call fails with a raw HTTP error to its route's upstream (classified as
+`ollama_unavailable`, `ollama_timeout` or `ollama_engine_error` on the local route, and as
+`blindfold_unavailable`, `blindfold_timeout` or `blindfold_engine_error` on the Blindfold route);
+anything else leaves `code` null. A Blindfold failure is never answered by a call to Ollama or any
+other provider; the segments stay `pending_analysis` until a retry or the startup sweep succeeds
+under the route then configured.
 
 ### 10.7 Other backend endpoints
 
