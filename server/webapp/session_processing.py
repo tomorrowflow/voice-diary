@@ -41,9 +41,10 @@ import json
 import logging
 import re
 import shutil
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import AsyncIterator, Awaitable, Callable
 
 import asr_client
 import correction
@@ -184,6 +185,10 @@ class SessionProcessor:
         # transcript and ingest `diary:{date}` into LightRAG twice. Guarded by
         # `_lock`; single-process app, so an in-process set is enough.
         self._in_flight: set[str] = set()
+        # Upload gate (see `upload_gate` / `reset_all_data`).
+        self._gate = asyncio.Condition()
+        self._uploads_inside = 0
+        self._resetting = False
 
     # -- claims ------------------------------------------------------------
 
@@ -220,14 +225,42 @@ class SessionProcessor:
             self._status.setdefault(session_id, status_obj)
         return status_obj
 
-    async def clear_all(self) -> None:
-        """Forget every session in this process: empty the status cache and
-        delete every bundle under `data/sessions/` (MIG-115/#115). The admin
-        reset calls it after `db.reset_all_data` has dropped the
-        `session_ingests` rows. The sessions directory itself stays."""
-        async with self._lock:
-            self._status.clear()
-        await asyncio.to_thread(_remove_all_bundles)
+    # -- upload gate / reset ----------------------------------------------
+
+    @asynccontextmanager
+    async def upload_gate(self) -> AsyncIterator[None]:
+        """Held by an upload from writing its bundle until `accept()` has
+        persisted the session. A reset waits for the uploads inside it and
+        holds new ones back until it is done."""
+        async with self._gate:
+            await self._gate.wait_for(lambda: not self._resetting)
+            self._uploads_inside += 1
+        try:
+            yield
+        finally:
+            async with self._gate:
+                self._uploads_inside -= 1
+                self._gate.notify_all()
+
+    async def reset_all_data(self) -> None:
+        """The admin "Reset All Data" (MIG-115/#115): `db.reset_all_data`,
+        then forget every session in this process — empty the status cache and
+        delete every bundle under `data/sessions/` (the directory itself
+        stays). Runs with no upload inside the gate, so no upload can create a
+        row or bundle between the database reset and the bundle removal."""
+        async with self._gate:
+            await self._gate.wait_for(lambda: not self._resetting)
+            self._resetting = True
+            await self._gate.wait_for(lambda: self._uploads_inside == 0)
+        try:
+            await db.reset_all_data()
+            async with self._lock:
+                self._status.clear()
+            await asyncio.to_thread(_remove_all_bundles)
+        finally:
+            async with self._gate:
+                self._resetting = False
+                self._gate.notify_all()
 
     async def _persist_status(
         self, session_id: str, state: str, segments: list[SegmentResult]
