@@ -33,6 +33,7 @@ from typing import Awaitable, Callable
 
 import httpx
 
+import analysis_route
 import document_processor
 import upstream_failure
 from lightrag_client import LightRAGClient
@@ -144,9 +145,11 @@ async def build_day_narrative(
         await _emit(on_step, "step", {"step": "analysis", "state": "error"})
         await _emit(on_step, "log", {"message": f"Analysis failed: {error_msg}", "level": "error"})
         await _emit(on_step, "error", {"message": f"Analysis failed: {error_msg}"})
-        # The analysis call talks to Ollama with plain httpx; tag its raw
-        # failures with the shared code. The message (`str(exc)`) is unchanged.
-        failure = upstream_failure.classify_raw_ollama_error(e)
+        # The analysis call talks to its route's upstream with plain httpx; tag
+        # its raw failures with the shared code. The failure stays on that
+        # upstream: nothing here retries on another one (ADR 0004).
+        upstream = "blindfold" if analysis_route.current().is_blindfold else "ollama"
+        failure = upstream_failure.classify_raw_analysis_error(e, upstream)
         if failure is not None and failure is not e:
             raise failure from e
         raise
