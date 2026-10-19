@@ -27,6 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Stre
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from fastapi.templating import Jinja2Templates  # noqa: E402
 
+import analysis_route  # noqa: E402
 import asr_client  # noqa: E402
 import bind_guard  # noqa: E402
 import correction  # noqa: E402
@@ -53,6 +54,11 @@ async def lifespan(app: FastAPI):
     # before any other startup work, so a misconfigured deploy never reaches
     # the point of binding all interfaces.
     bind_guard.enforce_tailnet_bind()
+
+    # BAR-01: validate ANALYSIS_ROUTE and its Blindfold settings before any
+    # other startup work. A bad value refuses to start rather than quietly
+    # running the analysis locally; routed, it logs the egress WARNING.
+    analysis_route.configure()
 
     # Log configuration on startup
     logger.info("=== Diary Processor starting ===")
