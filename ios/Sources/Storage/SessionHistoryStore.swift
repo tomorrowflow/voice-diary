@@ -125,64 +125,14 @@ public enum SessionHistoryStore {
     // MARK: - Walkthrough enumeration
 
     private static func loadWalkthroughs() -> [WalkthroughEntry] {
-        guard let root = try? LocalStore.sessionsStagingDir(),
-              let names = try? FileManager.default.contentsOfDirectory(atPath: root.path)
-        else { return [] }
-
-        return names.compactMap { name -> WalkthroughEntry? in
-            let dir = root.appending(path: name, directoryHint: .isDirectory)
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir),
-                  isDir.boolValue else { return nil }
-
-            // Manifest snapshot is optional — older sessions predate it.
-            let manifestURL = dir.appending(path: LocalStore.manifestFilename)
-            let manifest: Manifest? = (try? Data(contentsOf: manifestURL))
-                .flatMap { try? JSONDecoder().decode(Manifest.self, from: $0) }
-
-            // Always enumerate the segments dir directly — works with or
-            // without the manifest.
-            let segmentsDir = dir.appending(path: "segments", directoryHint: .isDirectory)
-            let segmentURLs = (try? FileManager.default.contentsOfDirectory(
-                at: segmentsDir,
-                includingPropertiesForKeys: [.fileSizeKey],
-                options: [.skipsHiddenFiles]
-            ))?
-                // Keep `*.m4a`, drop in-progress / orphaned temp files.
-                // The writer's current temp pattern is `{stem}.tmp.m4a`
-                // (trailing extension is `.m4a`, so the legacy
-                // `pathExtension == "m4a"` check would now include them).
-                // The legacy pattern `{stem}.m4a.tmp` is also still
-                // present in older containers. `M4AWriter.isOrphanTempURL`
-                // is the single source of truth for both rules.
-                .filter { url in
-                    url.pathExtension.lowercased() == "m4a"
-                        && !M4AWriter.isOrphanTempURL(url)
-                }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
-
-            // Skip empty session dirs (interrupted before any segment).
-            guard !segmentURLs.isEmpty else { return nil }
-
-            // captured-at: prefer the session_id (ISO timestamp) when we
-            // have it; fall back to directory creation date.
-            let capturedAt: Date = {
-                if let manifest, let d = ISO8601DateFormatter().date(from: manifest.session_id) {
-                    return d
-                }
-                if let d = ISO8601DateFormatter().date(from: name.replacingOccurrences(of: "_", with: "+")) {
-                    return d
-                }
-                return (try? dir.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            }()
-
-            return WalkthroughEntry(
-                sessionID: manifest?.session_id ?? name,
-                date: manifest?.date ?? Self.shortDateFormatter.string(from: capturedAt),
-                capturedAt: capturedAt,
-                manifest: manifest,
-                segmentURLs: segmentURLs,
-                directory: dir
+        SessionBundle.list().map {
+            WalkthroughEntry(
+                sessionID: $0.sessionID,
+                date: $0.date,
+                capturedAt: $0.capturedAt,
+                manifest: $0.manifest,
+                segmentURLs: $0.audioFiles,
+                directory: $0.directory
             )
         }
     }
@@ -217,13 +167,6 @@ public enum SessionHistoryStore {
             return VoiceNoteEntry(note: note, directory: dir)
         }
     }
-
-    private static let shortDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
 
     // MARK: - Storage stats (Danger Zone)
 
