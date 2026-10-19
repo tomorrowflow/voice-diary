@@ -72,6 +72,12 @@ def _extract_chat_content(result: dict) -> str:
     return ""
 
 
+class UnreadableLlmResponse(ValueError):
+    """The chat endpoint answered 2xx but its body is not JSON. Still a
+    `ValueError`, as the bare decode error was; on the Blindfold route
+    `upstream_failure` reports it as `blindfold_engine_error`."""
+
+
 @dataclass(frozen=True)
 class _LlmTarget:
     """Where one chat call goes: destination, model, read timeout and, for
@@ -131,7 +137,11 @@ async def _call_llm(
             f"{target.base_url}/v1/chat/completions", json=payload, headers=target.headers
         )
         resp.raise_for_status()
-        return _extract_chat_content(resp.json())
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise UnreadableLlmResponse(f"response body is not JSON: {exc}") from exc
+        return _extract_chat_content(body)
 
 
 # --- LightRAG queries ---

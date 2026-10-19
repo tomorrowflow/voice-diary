@@ -58,6 +58,9 @@ class LlmTransport:
         self.requests: list[httpx.Request] = []
         self.unexpected: list[httpx.Request] = []
         self._status = {"ollama.test": ollama_status, "blindfold.test": blindfold_status}
+        # host -> an exception to raise, or a response to answer, for the
+        # analysis call (`fail`); the context summary is never affected.
+        self._analysis_failure: dict[str, Exception | httpx.Response] = {}
         transport = httpx.MockTransport(self._handle)
         real_client = httpx.AsyncClient
 
@@ -80,8 +83,21 @@ class LlmTransport:
         if self._status[host] != 200:
             return httpx.Response(self._status[host], text="upstream error")
         is_analysis = "response_format" in json.loads(request.content)
+        failure = self._analysis_failure.get(host)
+        if is_analysis and failure is not None:
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
         content = ANALYSIS_JSON if is_analysis else SUMMARY_TEXT
         return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    def fail(self, host: str, failure: Exception | httpx.Response | None) -> None:
+        """Make `host`'s analysis call raise `failure` (a transport error) or
+        answer it; `None` makes the host answer normally again."""
+        if failure is None:
+            self._analysis_failure.pop(host, None)
+        else:
+            self._analysis_failure[host] = failure
 
     def to(self, host: str) -> list[httpx.Request]:
         return [r for r in self.requests if r.url.host == host]
