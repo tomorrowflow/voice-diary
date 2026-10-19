@@ -597,8 +597,9 @@ def generate_narrative_document(enriched_ctx: dict, analysis: dict) -> str:
     return doc
 
 
-def build_document_metadata(enriched_ctx: dict) -> dict:
-    """Build metadata dict for the processed document."""
+def build_document_metadata(enriched_ctx: dict, *, route: str = analysis_route.LOCAL) -> dict:
+    """Build metadata dict for the processed document. `route` is the analysis
+    route that produced the analysis (BAR-04); it is stored as `analysis_route`."""
     date_str = enriched_ctx["date"]
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
@@ -619,6 +620,7 @@ def build_document_metadata(enriched_ctx: dict) -> dict:
         "type": "cto_journal",
         "language": "de",
         "author": enriched_ctx["diary_author"],
+        "analysis_route": route,
     }
 
 
