@@ -165,6 +165,54 @@ def test_post_session_accepts_the_bundle_then_processes_it_in_the_background(mon
     assert len(stage.runs) == 1
 
 
+def test_status_reports_failed_when_every_segment_failed(monkeypatch, tmp_path):
+    fresh_processor(monkeypatch)
+    _ingest_stubs(monkeypatch, tmp_path, "sess-all-failed", failing={"s01": RuntimeError("boom")})
+
+    client = _client()
+    client.post("/api/sessions", files=bundle("sess-all-failed"), headers=auth())
+
+    status = client.get("/api/sessions/sess-all-failed/status", headers=auth()).json()
+    assert status["state"] == "failed"
+    assert [s["status"] for s in status["segments"]] == ["failed"]
+
+
+def test_status_reports_partial_when_the_analysis_left_every_segment_pending(monkeypatch, tmp_path):
+    """BUG-114/#114: all-pending is `partial`, not `done`."""
+    fresh_processor(monkeypatch)
+    _, stage = _ingest_stubs(monkeypatch, tmp_path, "sess-all-pending", transcript_ids={"s01": 7})
+    stage.analysis_error = RuntimeError("ollama unreachable")
+
+    client = _client()
+    client.post("/api/sessions", files=bundle("sess-all-pending"), headers=auth())
+
+    status = client.get("/api/sessions/sess-all-pending/status", headers=auth()).json()
+    assert status["state"] == "partial"
+    assert [s["status"] for s in status["segments"]] == ["pending_analysis"]
+
+
+def test_status_reports_partial_for_processed_plus_pending_segments(monkeypatch, tmp_path):
+    """BUG-114/#114: a retry that fails again on a session that also has a
+    processed segment leaves it `partial`."""
+    fresh_processor(monkeypatch)
+    session_id = "sess-processed-plus-pending"
+    stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
+    FakeSessionIngests(
+        session_id, "partial",
+        [segment_row("s01", "processed", 4), segment_row("s02", "pending_analysis", 5, "analysis_pending: first")],
+    ).install(monkeypatch)
+    stub_transcripts(monkeypatch, [5])
+    NarrativeStage(monkeypatch).analysis_error = RuntimeError("ollama unreachable")
+
+    client = _client()
+    retry = client.post(f"/api/sessions/{session_id}/retry-analysis", headers=auth())
+
+    assert retry.status_code == 200
+    status = client.get(f"/api/sessions/{session_id}/status", headers=auth()).json()
+    assert status["state"] == "partial"
+    assert [s["status"] for s in status["segments"]] == ["processed", "pending_analysis"]
+
+
 def test_post_session_503s_with_whisper_unavailable_contract_and_persists_nothing(monkeypatch, tmp_path):
     """UFH-01: Whisper is the one upstream we can't work around — surface 503
     early, with nothing persisted: the status row written for the claim is

@@ -162,8 +162,19 @@ class FakeSessionIngests:
             return [
                 sid for sid, row in self.rows.items()
                 if row["state"] == "processing"
-                or any(seg["status"] == "pending_analysis" for seg in row["segments"])
+                or (row["state"] != "done"
+                    and any(seg["status"] == "pending_analysis" for seg in row["segments"]))
             ]
+
+        async def correct_legacy_done_sessions() -> int:
+            legacy = [
+                row for row in self.rows.values()
+                if row["state"] == "done"
+                and any(seg["status"] == "pending_analysis" for seg in row["segments"])
+            ]
+            for row in legacy:
+                row["state"] = "partial"
+            return len(legacy)
 
         monkeypatch.setattr(db, "get_session_status", get_session_status)
         monkeypatch.setattr(db, "create_session_status", create_session_status)
@@ -171,6 +182,7 @@ class FakeSessionIngests:
         monkeypatch.setattr(db, "delete_session_status", delete_session_status)
         monkeypatch.setattr(db, "mark_session_failed", mark_session_failed)
         monkeypatch.setattr(db, "list_pending_analysis_session_ids", list_pending_analysis_session_ids)
+        monkeypatch.setattr(db, "correct_legacy_done_sessions", correct_legacy_done_sessions)
         return self
 
 
@@ -211,7 +223,7 @@ def stage_pending_session(monkeypatch, tmp_path, session_id: str) -> FakeSession
     with its bundle on disk, ready for a retry."""
     stage_bundle(monkeypatch, tmp_path, session_id)
     ingests = FakeSessionIngests(
-        session_id, "done",
+        session_id, "partial",
         [segment_row("s01", "pending_analysis", 5, "analysis_pending: first failure")],
     ).install(monkeypatch)
 

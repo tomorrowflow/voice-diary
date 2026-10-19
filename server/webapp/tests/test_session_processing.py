@@ -199,6 +199,49 @@ def test_run_accepted_derives_the_final_state_from_the_segment_outcomes(
     assert len(stage.runs) == (0 if state == "failed" else 1)
 
 
+@pytest.mark.parametrize(
+    ("statuses", "state"),
+    [
+        (["processed", "processed"], "done"),
+        (["failed", "failed"], "failed"),
+        (["pending_analysis", "pending_analysis"], "partial"),
+        (["processed", "pending_analysis"], "partial"),
+        (["failed", "pending_analysis"], "partial"),
+        (["processed", "failed"], "partial"),
+    ],
+)
+def test_derive_session_state_from_the_segment_statuses(statuses, state):
+    """BUG-114/#114: `done` only when every segment is `processed`."""
+    results = [SegmentResult(segment_id=f"s{i:02d}", status=status) for i, status in enumerate(statuses)]
+
+    assert session_processing.derive_session_state(results) == state
+
+
+def test_run_accepted_reports_partial_when_the_analysis_leaves_every_segment_pending(
+    monkeypatch, tmp_path
+):
+    """BUG-114/#114: every segment transcribed but the session-level analysis
+    failed, so all of them are `pending_analysis` — not `done`."""
+    processor = fresh_processor(monkeypatch)
+    session_id = "sess-all-pending"
+    parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
+    ingests = FakeSessionIngests(
+        session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
+    ).install(monkeypatch)
+    SegmentPipeline(monkeypatch)
+    stage = NarrativeStage(monkeypatch)
+    stage.analysis_error = RuntimeError("ollama unreachable")
+
+    async def scenario():
+        await processor.run_accepted(parsed, session_dir)
+        return await processor.get_status(session_id)
+
+    cached = asyncio.run(scenario())
+
+    assert [s.status for s in cached.segments] == ["pending_analysis", "pending_analysis"]
+    assert ingests.row["state"] == cached.state == "partial"
+
+
 def test_run_accepted_marks_the_session_failed_when_processing_crashes(monkeypatch, tmp_path):
     processor = fresh_processor(monkeypatch)
     session_id = "sess-crash"
@@ -1061,9 +1104,9 @@ def _stage_stuck_sessions(monkeypatch, tmp_path, sessions: dict[str, int]) -> Fa
         stage_bundle(monkeypatch, tmp_path, session_id)
         segments = [segment_row("s01", "pending_analysis", transcript_id, "analysis_pending: boom")]
         if ingests is None:
-            ingests = FakeSessionIngests(session_id, "done", segments)
+            ingests = FakeSessionIngests(session_id, "partial", segments)
         else:
-            ingests.add(session_id, "done", segments)
+            ingests.add(session_id, "partial", segments)
     ingests.install(monkeypatch)
     stub_transcripts(monkeypatch, sessions.values())
     return ingests
@@ -1080,6 +1123,73 @@ def test_sweep_retries_every_stuck_session(monkeypatch, tmp_path):
     assert {sid: row["segments"][0]["status"] for sid, row in ingests.rows.items()} == {
         "sess-a": "processed", "sess-b": "processed",
     }
+
+
+def test_sweep_picks_up_a_legacy_done_row_with_pending_segments_once(monkeypatch, tmp_path):
+    """BUG-114/#114: rows written before the fix say `done` while a segment is
+    still `pending_analysis`. The sweep corrects them to `partial` and retries
+    them; once they settle as `done`, later sweeps leave them alone."""
+    processor = fresh_processor(monkeypatch)
+    ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-legacy": 5})
+    ingests.rows["sess-legacy"]["state"] = "done"
+    stage = NarrativeStage(monkeypatch)
+    stage.analysis_error = RuntimeError("ollama unreachable")
+
+    async def scenario():
+        await processor.retry_stuck_sessions_on_startup()
+        after_failed_retry = ingests.rows["sess-legacy"]["state"]
+        stage.analysis_error = None
+        await processor.retry_stuck_sessions_on_startup()
+        await processor.retry_stuck_sessions_on_startup()
+        return after_failed_retry
+
+    after_failed_retry = asyncio.run(scenario())
+
+    # Corrected, so it stays a candidate until a retry succeeds; then it drops out.
+    assert after_failed_retry == "partial"
+    assert len(stage.runs) == 2
+    assert ingests.rows["sess-legacy"]["state"] == "done"
+    assert ingests.rows["sess-legacy"]["segments"][0]["status"] == "processed"
+
+
+def test_sweep_leaves_done_sessions_alone(monkeypatch, tmp_path):
+    """BUG-114/#114: steady state — a `done` session (all processed) is not a
+    sweep candidate."""
+    processor = fresh_processor(monkeypatch)
+    ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-pending": 5})
+    ingests.add("sess-done", "done", [segment_row("s01", "processed", 6)])
+    stage = NarrativeStage(monkeypatch)
+    listed: list[list[str]] = []
+    list_candidates = db.list_pending_analysis_session_ids
+
+    async def recording_list() -> list[str]:
+        listed.append(await list_candidates())
+        return listed[-1]
+
+    monkeypatch.setattr(db, "list_pending_analysis_session_ids", recording_list)
+
+    asyncio.run(processor.retry_stuck_sessions_on_startup())
+
+    assert listed == [["sess-pending"]]
+    assert len(stage.runs) == 1
+    assert ingests.rows["sess-done"]["state"] == "done"
+
+
+def test_sweep_still_runs_when_the_legacy_correction_fails(monkeypatch, tmp_path, caplog):
+    processor = fresh_processor(monkeypatch)
+    ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-a": 5})
+    NarrativeStage(monkeypatch)
+
+    async def correct_legacy_done_sessions() -> int:
+        raise RuntimeError("db unreachable")
+
+    monkeypatch.setattr(db, "correct_legacy_done_sessions", correct_legacy_done_sessions)
+
+    with caplog.at_level(logging.INFO, logger=session_processing.logger.name):
+        asyncio.run(processor.retry_stuck_sessions_on_startup())
+
+    assert ingests.rows["sess-a"]["segments"][0]["status"] == "processed"
+    assert any("db unreachable" in r.getMessage() for r in _sweep_lines(caplog))
 
 
 def test_sweep_logs_one_line_per_session_whose_retry_fails_again(monkeypatch, tmp_path, caplog):
@@ -1360,7 +1470,7 @@ def test_sweep_logs_one_line_without_traceback_when_the_manifest_is_missing(monk
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     session_id = "sess-no-manifest"
     FakeSessionIngests(
-        session_id, "done", [segment_row("s01", "pending_analysis", 51, "analysis_pending: boom")]
+        session_id, "partial", [segment_row("s01", "pending_analysis", 51, "analysis_pending: boom")]
     ).install(monkeypatch)
     stub_transcripts(monkeypatch, [51])
     NarrativeStage(monkeypatch)
