@@ -393,3 +393,161 @@ def test_review_stream_routed_analysis_goes_to_blindfold(monkeypatch):
     assert analysis.headers["authorization"] == "Bearer sk-secret"
     assert [r.url.host for r in llm.summary_requests()] == ["ollama.test"]
     assert llm.unexpected == []
+
+
+# --- analysis_route recorded in the narrative metadata (BAR-04) ---
+
+
+def _saved_route(stage: NarrativeStage) -> str:
+    (doc,) = stage.documents.values()
+    return doc["metadata"]["analysis_route"]
+
+
+def _pend_again(ingests, processor) -> None:
+    ingests.row["state"] = "partial"
+    ingests.row["segments"] = [segment_row("s01", "pending_analysis", 5, "analysis_pending: x")]
+    processor._status.clear()
+
+
+def test_default_narrative_records_the_local_route(monkeypatch, tmp_path):
+    LlmTransport(monkeypatch)
+    _route(monkeypatch)
+
+    _, _, stage = _ingest_session(monkeypatch, tmp_path, "sess-meta-local")
+
+    assert _saved_route(stage) == "local"
+    assert stage.ingested[0][1]["analysis_route"] == "local"
+
+
+def test_routed_narrative_records_the_blindfold_route(monkeypatch, tmp_path):
+    LlmTransport(monkeypatch)
+    _route(monkeypatch, ROUTED_ENV)
+
+    _, _, stage = _ingest_session(monkeypatch, tmp_path, "sess-meta-routed")
+
+    assert _saved_route(stage) == "blindfold"
+    assert stage.ingested[0][1]["analysis_route"] == "blindfold"
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [(None, ROUTED_ENV), (ROUTED_ENV, None)],
+    ids=["local-to-blindfold", "blindfold-to-local"],
+)
+def test_retry_after_a_route_switch_records_the_route_it_ran_under(monkeypatch, tmp_path, before, after):
+    llm = LlmTransport(monkeypatch, **({"blindfold_status": 503} if before else {"ollama_status": 503}))
+    ingests = stage_pending_session(monkeypatch, tmp_path, "sess-meta-switch")
+    stage = NarrativeStage(monkeypatch, real_narrative=True)
+    _stub_lightrag(monkeypatch)
+    processor = fresh_processor(monkeypatch)
+
+    # The first run fails upstream, so the session is pending under `before`.
+    _route(monkeypatch, before)
+    asyncio.run(processor.retry_analysis("sess-meta-switch"))
+    assert ingests.row["segments"][0]["status"] == "pending_analysis"
+    assert stage.documents == {}
+
+    # The failing upstream comes back, the operator switches route, and retries.
+    llm._status.update({"ollama.test": 200, "blindfold.test": 200})
+    _pend_again(ingests, processor)
+    _route(monkeypatch, after)
+    asyncio.run(processor.retry_analysis("sess-meta-switch"))
+
+    assert ingests.row["segments"][0]["status"] == "processed"
+    assert _saved_route(stage) == ("blindfold" if after else "local")
+
+
+def test_ingest_only_retry_keeps_the_recorded_route_and_makes_no_analysis_call(monkeypatch, tmp_path):
+    llm = LlmTransport(monkeypatch)
+    ingests = stage_pending_session(monkeypatch, tmp_path, "sess-meta-ingest-only")
+    stage = NarrativeStage(monkeypatch, real_narrative=True)
+    _stub_lightrag(monkeypatch)
+    processor = fresh_processor(monkeypatch)
+
+    # Analysed through Blindfold; the LightRAG ingest then fails.
+    _route(monkeypatch, ROUTED_ENV)
+    stage.ingest_error = RuntimeError("lightrag down")
+    asyncio.run(processor.retry_analysis("sess-meta-ingest-only"))
+    assert ingests.row["segments"][0]["status"] == "pending_analysis"
+    assert _saved_route(stage) == "blindfold"
+    assert len(llm.analysis_requests()) == 1
+
+    # LightRAG is back, but the route in force is now local.
+    stage.ingest_error = None
+    _pend_again(ingests, processor)
+    _route(monkeypatch)
+    asyncio.run(processor.retry_analysis("sess-meta-ingest-only"))
+
+    assert ingests.row["segments"][0]["status"] == "processed"
+    assert len(llm.analysis_requests()) == 1
+    assert len(llm.summary_requests()) == 1
+    assert stage.ingested[-1][1]["analysis_route"] == "blindfold"
+    assert _saved_route(stage) == "blindfold"
+
+
+def test_ingest_only_retry_of_a_legacy_row_adds_no_route_and_reads_as_local(monkeypatch, tmp_path):
+    llm = LlmTransport(monkeypatch)
+    ingests = stage_pending_session(monkeypatch, tmp_path, "sess-meta-legacy")
+    stage = NarrativeStage(monkeypatch)
+    stage.save_document(5, "# saved", {"date": "2026-07-01"}, ingested=False)
+    processor = fresh_processor(monkeypatch)
+    _route(monkeypatch, ROUTED_ENV)
+
+    asyncio.run(processor.retry_analysis("sess-meta-legacy"))
+
+    assert ingests.row["segments"][0]["status"] == "processed"
+    assert llm.requests == []
+    assert stage.ingested == [("# saved", {"date": "2026-07-01"})]
+    assert analysis_route.recorded_route(stage.ingested[0][1]) == "local"
+
+
+def test_recorded_route_reads_a_missing_key_as_local():
+    assert analysis_route.recorded_route(None) == "local"
+    assert analysis_route.recorded_route({}) == "local"
+    assert analysis_route.recorded_route({"analysis_route": "local"}) == "local"
+    assert analysis_route.recorded_route({"analysis_route": "blindfold"}) == "blindfold"
+
+
+def test_the_narrative_markdown_does_not_depend_on_the_route(monkeypatch, tmp_path):
+    markdown = {}
+    for name, env in (("local", None), ("blindfold", ROUTED_ENV)):
+        LlmTransport(monkeypatch)
+        _route(monkeypatch, env)
+        _, _, stage = _ingest_session(monkeypatch, tmp_path / name, f"sess-md-{name}")
+        markdown[name] = stage.ingested[0][0]
+
+    assert markdown["local"] == markdown["blindfold"]
+    assert "analysis_route" not in markdown["local"]
+
+
+def test_review_stream_saves_the_route_it_ran_under(monkeypatch):
+    LlmTransport(monkeypatch)
+    _stub_lightrag(monkeypatch)
+    saved: list[dict] = []
+
+    async def save_processed_document(**kwargs):
+        saved.append(kwargs["metadata"])
+        return {"id": 42, "version": 1}
+
+    monkeypatch.setattr(db, "save_processed_document", save_processed_document)
+
+    _route(monkeypatch)
+    _review_events()
+    _route(monkeypatch, ROUTED_ENV)
+    _review_events()
+
+    assert [m["analysis_route"] for m in saved] == ["local", "blindfold"]
+
+
+def test_build_document_metadata_adds_only_the_route_key():
+    enriched = {"date": "2026-05-10", "diary_author": "Florian"}
+
+    default = document_processor.build_document_metadata(enriched)
+    routed = document_processor.build_document_metadata(enriched, route="blindfold")
+
+    assert default.pop("analysis_route") == "local"
+    assert routed.pop("analysis_route") == "blindfold"
+    assert default == routed
+    assert list(default) == [
+        "date", "iso_week", "quarter", "month", "year", "source", "type", "language", "author",
+    ]

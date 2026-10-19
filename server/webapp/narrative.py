@@ -33,6 +33,7 @@ from typing import Awaitable, Callable
 
 import httpx
 
+import analysis_route
 import document_processor
 import upstream_failure
 from lightrag_client import LightRAGClient
@@ -136,6 +137,9 @@ async def build_day_narrative(
         "log",
         {"message": "Analyzing transcript via LLM (this may take a while)...", "level": "info"},
     )
+    # The route is read at run time, so a retry or sweep records the route it
+    # ran under (BAR-04); it is the same one `analyze_transcript` follows.
+    route = analysis_route.current().name
     try:
         analysis = await document_processor.analyze_transcript(enriched, transport=ports.llm_transport)
     except Exception as e:
@@ -155,7 +159,7 @@ async def build_day_narrative(
     await _emit(on_step, "step", {"step": "analysis", "state": "done"})
 
     markdown = document_processor.generate_narrative_document(enriched, analysis)
-    metadata = document_processor.build_document_metadata(enriched)
+    metadata = document_processor.build_document_metadata(enriched, route=route)
 
     return NarrativeResult(
         context_summary=context_summary,
