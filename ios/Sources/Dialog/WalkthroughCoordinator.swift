@@ -22,7 +22,7 @@ import os
 
 @MainActor
 @Observable
-public final class WalkthroughCoordinator {
+public final class WalkthroughCoordinator: TodoConfirmationHost {
     public static let shared = WalkthroughCoordinator()
 
     public private(set) var state: WalkthroughState = .idle
@@ -104,7 +104,9 @@ public final class WalkthroughCoordinator {
     private var followUpUsed: [String: Bool] = [:]
     private var followUpRotation: Int = 0
     private var pendingFinalisation: [Task<Void, Never>] = []
-    public private(set) var pendingImplicitTodos: [Todo] = []
+    /// Implicit-todo confirmation sequence (candidates, spoken prompts,
+    /// voice answers). This coordinator is its host.
+    private let todoFlow = TodoConfirmationFlow()
     public var confirmedImplicitCount: Int { bundle?.confirmedTodoCount ?? 0 }
     // Seeded from the app-language preference (`Mehr → Sprache`), then
     // updated per opener as the per-utterance LanguageDetector picks
@@ -113,7 +115,6 @@ public final class WalkthroughCoordinator {
     // has fired.
     public private(set) var confirmationLanguage: OpenerLanguage = .current
     public private(set) var isAwaitingTodoAnswer: Bool = false
-    private var todoAnswerTask: Task<Void, Never>?
     /// Tracks the in-flight 6 s follow-up so we can abort it when the
     /// user resumes speaking before the AI finishes preparing/playing.
     /// Cancelling propagates through the LLM generation step *and*
@@ -290,6 +291,7 @@ public final class WalkthroughCoordinator {
     private var noteSummaryTasks: [String: Task<String, Never>] = [:]
 
     private init() {
+        todoFlow.host = self
         observeStateForIsland()
         // Adopt any orphan activity left over from a previous launch
         // (jetsam during walkthrough leaves the banner on the lock
@@ -334,7 +336,7 @@ public final class WalkthroughCoordinator {
         followUpRotation = 0
         statusHint = ""
         pendingFinalisation = []
-        pendingImplicitTodos = []
+        todoFlow.reset()
         confirmationLanguage = language
         isPaused = false
         pausedAtState = nil
@@ -824,7 +826,7 @@ public final class WalkthroughCoordinator {
         followUpRotation = 0
         statusHint = ""
         pendingFinalisation = []
-        pendingImplicitTodos = []
+        todoFlow.reset()
         confirmationLanguage = language
         isPaused = false
         pausedAtState = nil
@@ -1486,7 +1488,7 @@ public final class WalkthroughCoordinator {
             // the walkthrough on a candidate.
             interruptInFlight = true
             await cancelTTS()
-            await rejectCurrentTodo()
+            await todoFlow.rejectCurrent()
         case .briefing:
             // The intro briefing is just a single TTS line before the
             // first step; tapping Weiter here means "skip the intro,
@@ -1643,7 +1645,7 @@ public final class WalkthroughCoordinator {
         pickupPlayerHolder = nil
         resumePickupContinuation()
         timer?.invalidate(); timer = nil
-        await cancelTodoAnswerCapture()
+        await todoFlow.cancelAnswerCapture()
         // Engine.stop() finalises the in-flight segment file on disk —
         // that's what "recordings until this point shall be stored"
         // depends on. The local session dir survives; it just won't be
@@ -1706,7 +1708,7 @@ public final class WalkthroughCoordinator {
         // there.
         silenceLevel = 0
         lullDetector.stop()
-        await cancelTodoAnswerCapture()
+        await todoFlow.cancelAnswerCapture()
         await cancelTTS()
 
         // Persist the pause point to disk before any further work that
@@ -2628,7 +2630,7 @@ public final class WalkthroughCoordinator {
                     Log.app.info(
                         "segment \(segmentID, privacy: .public): \(novel.count, privacy: .public) implicit todo candidate(s)"
                     )
-                    self.pendingImplicitTodos.append(contentsOf: novel)
+                    self.todoFlow.add(novel)
                 }
             } catch {
                 Log.app.warning(
@@ -2682,8 +2684,8 @@ public final class WalkthroughCoordinator {
     }
 
     private func finishUploadOrConfirmTodos() async {
-        if !pendingImplicitTodos.isEmpty {
-            await beginTodoConfirmation()
+        if todoFlow.hasCandidates {
+            await todoFlow.begin()
             return
         }
         do { try await finishUpload() }
@@ -3118,173 +3120,63 @@ public final class WalkthroughCoordinator {
 
     // MARK: - Implicit-todo confirmation (M8 phase B) -----------------
 
-    public var currentTodoCandidate: Todo? {
-        guard case .confirmingTodos(let i) = state,
-              i >= 0, i < pendingImplicitTodos.count else { return nil }
-        return pendingImplicitTodos[i]
-    }
+    public var currentTodoCandidate: Todo? { todoFlow.currentCandidate }
 
-    public var todoCandidateProgress: (index: Int, total: Int)? {
+    public var todoCandidateProgress: (index: Int, total: Int)? { todoFlow.progress }
+
+    /// The coordinator's side of `TodoConfirmationFlow`: dialog state,
+    /// manifest, TTS, audio capture, transcription and upload.
+    var confirmingTodoIndex: Int? {
         guard case .confirmingTodos(let i) = state else { return nil }
-        return (i, pendingImplicitTodos.count)
+        return i
     }
 
-    public func confirmCurrentTodo() async {
-        await cancelTodoAnswerCapture()
-        guard case .confirmingTodos(let i) = state,
-              i >= 0, i < pendingImplicitTodos.count else { return }
-        let candidate = pendingImplicitTodos[i]
-        bundle?.recordTodoConfirmed(candidate)
-        recordAiPrompt(role: "todo_confirmed",
-                       segmentID: candidate.source_segment_id,
-                       text: candidate.text)
-        await advanceTodoConfirmation()
+    func showTodoCandidate(at index: Int) {
+        state = .confirmingTodos(index: index)
     }
 
-    public func rejectCurrentTodo() async {
-        await cancelTodoAnswerCapture()
-        guard case .confirmingTodos(let i) = state,
-              i >= 0, i < pendingImplicitTodos.count else { return }
-        let candidate = pendingImplicitTodos[i]
-        bundle?.recordTodoRejected(
-            text: candidate.text,
-            sourceSegmentID: candidate.source_segment_id
-        )
-        recordAiPrompt(role: "todo_rejected",
-                       segmentID: candidate.source_segment_id,
-                       text: candidate.text)
-        await advanceTodoConfirmation()
+    func recordTodoConfirmed(_ todo: Todo) {
+        bundle?.recordTodoConfirmed(todo)
     }
 
-    public func refineCurrentTodo(_ refined: String) async {
-        await cancelTodoAnswerCapture()
-        guard case .confirmingTodos(let i) = state,
-              i >= 0, i < pendingImplicitTodos.count else { return }
-        let trimmed = refined.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            await rejectCurrentTodo()
-            return
-        }
-        let original = pendingImplicitTodos[i]
-        let due = TodoExtractor.parseDueDate(in: trimmed, language: confirmationLanguage.rawValue)
-        bundle?.recordTodoConfirmed(Todo(
-            text: trimmed,
-            type: "implicit",
-            due: due,
-            status: "Offen",
-            source_segment_id: original.source_segment_id
-        ))
-        recordAiPrompt(role: "todo_refined",
-                       segmentID: original.source_segment_id,
-                       text: trimmed)
-        await advanceTodoConfirmation()
+    func recordTodoRejected(text: String, sourceSegmentID: String?) {
+        bundle?.recordTodoRejected(text: text, sourceSegmentID: sourceSegmentID)
     }
 
-    private func beginTodoConfirmation() async {
-        let lang = confirmationLanguage
-        let intro = lang == .de
-            ? "Mir sind ein paar mögliche Aufgaben aufgefallen. Lass uns kurz drüber gehen."
-            : "I noticed a few possible to-dos. Let's run through them quickly."
+    func recordTodoPrompt(role: String, segmentID: String?, text: String) {
+        recordAiPrompt(role: role, segmentID: segmentID, text: text)
+    }
 
-        // Harden against the intermittent dropped-intro race. The path
-        // into here is `ingestAndUpload → finishUploadOrConfirmTodos`,
-        // which already awaits all per-segment finalisation tasks; in
-        // practice that means the previous TTS engine state can still
-        // be in a transient "stopping" tail (Apple synth right after
-        // `stopSpeaking(at: .immediate)`, or Piper's serial queue with
-        // a cancelled-but-not-yet-drained Task at the head). Both
-        // engines occasionally swallow a `speak()` queued in that
-        // window. Two cheap fixes that compose:
-        //
-        //   1. `await cancelTTS()` puts both engines into a known-
-        //      empty state (no queued utterance, no pending player).
-        //   2. A short settle pause lets the audio session route +
-        //      `AVAudioEngine` no-op tap stabilise before we open a
-        //      fresh TTS continuation.
-        //
-        // Logged on entry + exit so a future "intro didn't play"
-        // report can be confirmed against the timeline instead of
-        // guessed at.
-        Diag.log("todo intro begin lang=\(lang.rawValue) candidates=\(pendingImplicitTodos.count)")
+    func settleSpeechBeforeIntro() async {
+        // `cancelTTS()` puts both engines into a known-empty state (no
+        // queued utterance, no pending player); the short pause lets the
+        // audio session route + `AVAudioEngine` no-op tap stabilise
+        // before a fresh TTS continuation opens.
         await cancelTTS()
         try? await Task.sleep(nanoseconds: 200_000_000)
-        lastSpoken = intro
-        recordAiPrompt(role: "todo_intro", segmentID: nil, text: intro)
-        await speak(intro, language: lang.rawValue)
-        Diag.log("todo intro spoken")
-        await advanceTodoConfirmation(initial: true)
     }
 
-    private func advanceTodoConfirmation(initial: Bool = false) async {
-        let nextIndex: Int = {
-            if initial { return 0 }
-            if case .confirmingTodos(let i) = state { return i + 1 }
-            return 0
-        }()
-
-        guard nextIndex < pendingImplicitTodos.count else {
-            do { try await finishUpload() }
-            catch {
-                self.error = "\(error)"
-                state = .failed("\(error)")
-            }
-            return
-        }
-
-        state = .confirmingTodos(index: nextIndex)
-        await speakCurrentTodoPrompt()
+    func speakTodoLine(_ text: String, language: OpenerLanguage) async {
+        lastSpoken = text
+        await speak(text, language: language.rawValue)
     }
 
-    private func speakCurrentTodoPrompt() async {
-        guard case .confirmingTodos(let i) = state,
-              i >= 0, i < pendingImplicitTodos.count else { return }
-        let candidate = pendingImplicitTodos[i]
-        let lang = confirmationLanguage
-        let total = pendingImplicitTodos.count
-        // Frame as a question so the yes/no affordance is obvious from
-        // the spoken line alone. With multiple candidates the leading
-        // "1 von 3" anchor still helps the user track progress.
-        // `TodoAnswerParser` recognises both keyword answers (ja / nein
-        // / anders) and refinements ("nimm lieber X stattdessen").
-        // Use German low/high guillemets ( U+201E … U+201C ) so the
-        // closing quote isn't an ASCII " that would terminate the
-        // string literal mid-interpolation.
-        let openQ  = "\u{201E}"
-        let closeQ = "\u{201C}"
-        let body: String
-        switch lang {
-        case .de:
-            body = total > 1
-                ? "\(i + 1) von \(total): Soll ich \(openQ)\(candidate.text)\(closeQ) übernehmen?"
-                : "Soll ich \(openQ)\(candidate.text)\(closeQ) übernehmen?"
-        case .en:
-            body = total > 1
-                ? "\(i + 1) of \(total): Should I keep \(openQ)\(candidate.text)\(closeQ)?"
-                : "Should I keep \(openQ)\(candidate.text)\(closeQ)?"
+    func transcribeTodoAnswer(at url: URL) async throws -> String {
+        try await ParakeetManager.shared.transcribe(audioURL: url).text
+    }
+
+    func finishAfterTodoConfirmation() async {
+        do { try await finishUpload() }
+        catch {
+            self.error = "\(error)"
+            state = .failed("\(error)")
         }
-        lastSpoken = body
-        recordAiPrompt(role: "todo_prompt",
-                       segmentID: candidate.source_segment_id,
-                       text: body)
-        await speak(body, language: lang.rawValue)
-        await beginTodoAnswerCapture(forCandidateIndex: i)
     }
 
     // MARK: - Voice answer capture (M8 phase B-2) ----------------------
 
-    private func beginTodoAnswerCapture(forCandidateIndex index: Int) async {
-        await cancelTodoAnswerCapture()
-        guard case .confirmingTodos(let i) = state, i == index else { return }
-
-        let task = Task { [weak self] in
-            guard let self else { return }
-            await self.runTodoAnswerCapture(forCandidateIndex: index)
-        }
-        todoAnswerTask = task
-    }
-
-    private func runTodoAnswerCapture(forCandidateIndex index: Int) async {
-        guard let sessionDir else { return }
+    func recordTodoAnswer(forCandidateIndex index: Int) async -> TodoAnswerRecording {
+        guard let sessionDir else { return .aborted }
         let url = sessionDir.appending(
             path: "segments/confirm_\(zeroPad(index)).m4a"
         )
@@ -3297,7 +3189,7 @@ public final class WalkthroughCoordinator {
             Log.app.warning(
                 "todo answer dir create failed: \(String(describing: error), privacy: .public)"
             )
-            return
+            return .aborted
         }
 
         // Cadence mirrors the regular listening loop, with todo-specific
@@ -3306,7 +3198,7 @@ public final class WalkthroughCoordinator {
         //   pre-speech 3 s  → open wake-word window. If the user says
         //                     "weiter"/"next"/"fertig"/"done" the
         //                     match handler routes via advance() →
-        //                     rejectCurrentTodo() and we never reach
+        //                     `todoFlow.rejectCurrent()` and we never reach
         //                     the transcribe path.
         //   post-speech 3 s → end of utterance, the user paused after
         //                     answering. Break the loop → transcribe.
@@ -3349,7 +3241,7 @@ public final class WalkthroughCoordinator {
             )
             detector.stop()
             detector.firePreSpeech = false
-            return
+            return .aborted
         }
 
         isAwaitingTodoAnswer = true
@@ -3421,7 +3313,7 @@ public final class WalkthroughCoordinator {
 
         if Task.isCancelled {
             try? await engine.stop()
-            return
+            return .aborted
         }
 
         do { _ = try await engine.stop() }
@@ -3432,62 +3324,12 @@ public final class WalkthroughCoordinator {
         }
         try? await Task.sleep(nanoseconds: 200_000_000)
 
-        guard case .confirmingTodos(let nowIndex) = state, nowIndex == index else { return }
-
-        if !userSpokeAnswer {
-            // 12 s pre-speech timeout: user neither answered nor said
-            // "weiter". Auto-skip this candidate. (The wake-word match
-            // path doesn't reach here — advance() cancelled this task
-            // before transcribe.)
-            Log.app.info("todo answer (\(index, privacy: .public)) → silent timeout, auto-reject")
-            await rejectCurrentTodo()
-            return
-        }
-        if hardTimeout {
-            Log.app.info("todo answer (\(index, privacy: .public)) → hard timeout, auto-reject")
-            await rejectCurrentTodo()
-            return
-        }
-
-        let transcript: ParakeetManager.Transcript
-        do {
-            transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
-        } catch {
-            Log.app.warning(
-                "todo answer transcribe failed: \(String(describing: error), privacy: .public)"
-            )
-            await rejectCurrentTodo()
-            return
-        }
-
-        recordAiPrompt(role: "todo_answer_voice",
-                       segmentID: pendingImplicitTodos[index].source_segment_id,
-                       text: transcript.text)
-
-        let outcome = TodoAnswerParser.parse(transcript.text)
-        Log.app.info(
-            "todo answer (\(index, privacy: .public)) → \(String(describing: outcome), privacy: .public) raw=\(transcript.text, privacy: .public)"
-        )
-
-        switch outcome {
-        case .confirm:          await confirmCurrentTodo()
-        case .reject:           await rejectCurrentTodo()
-        case .refine(let text): await refineCurrentTodo(text)
-        case .unknown:
-            // Couldn't classify the answer — auto-reject rather than
-            // strand the user on this candidate. The buttons that used
-            // to provide a manual hedge are gone (voice-first UX), so
-            // unknown answers behave like "no" to keep the walkthrough
-            // moving.
-            await rejectCurrentTodo()
-        }
+        if !userSpokeAnswer { return .silent }
+        if hardTimeout { return .hardTimeout }
+        return .recorded(url)
     }
 
-    private func cancelTodoAnswerCapture() async {
-        if let task = todoAnswerTask {
-            task.cancel()
-            todoAnswerTask = nil
-        }
+    func cancelTodoAnswerRecording() async {
         if isAwaitingTodoAnswer {
             _ = try? await engine.stop()
             answerLullDetector.stop()
@@ -3504,7 +3346,7 @@ public final class WalkthroughCoordinator {
     ) -> [Todo] {
         var seen: Set<String> = []
         for t in explicit { seen.insert(normaliseTodoKey(t.text)) }
-        for t in pendingImplicitTodos { seen.insert(normaliseTodoKey(t.text)) }
+        for t in todoFlow.candidates { seen.insert(normaliseTodoKey(t.text)) }
 
         let transcriptLower = transcriptText.lowercased()
         var out: [Todo] = []
@@ -4667,7 +4509,7 @@ public final class WalkthroughCoordinator {
     /// meaningful: the three listening segment-capture states, the
     /// per-candidate todo-confirmation pass (`.confirmingTodos`), and
     /// the per-note review step (`.noteReview`). In todo confirmation
-    /// a "weiter" match routes through `advance()` → `rejectCurrentTodo()`;
+    /// a "weiter" match routes through `advance()` → `todoFlow.rejectCurrent()`;
     /// in note review the extended phrase table also matches
     /// drop / defer / replay / rerecord. Used by `runWakeWordWindow`
     /// as a pre-flight to bail if the user already advanced before

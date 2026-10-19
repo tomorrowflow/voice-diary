@@ -169,7 +169,7 @@ public final class PiperTTS: NSObject, TTSEngine, @unchecked Sendable {
     /// otherwise spin up its own `AVAudioPlayer` and produce overlapping
     /// audio — the exact bug the user saw during todo confirmation when
     /// the voice-driven `runTodoAnswerCapture` and a manual UI tap both
-    /// dispatched `confirmCurrentTodo()` at the same time.
+    /// dispatched `TodoConfirmationFlow.confirmCurrent()` at the same time.
     public func speak(_ text: String, stem explicitStem: String?, language: String = "de") async {
         #if PIPER_TTS
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
