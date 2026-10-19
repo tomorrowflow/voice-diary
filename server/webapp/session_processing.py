@@ -123,6 +123,24 @@ def session_dir_for(session_id: str) -> Path:
     return sessions_dir() / slug_session_id(session_id)
 
 
+async def _finish_despite_cancellation(work: asyncio.Future) -> None:
+    """Wait for `work` to finish even if the caller is cancelled meanwhile,
+    then re-raise the cancellation (or `work`'s own error). The deletion of
+    the sessions can't be stopped halfway — its thread keeps running — so the
+    upload gate must stay closed until it is done."""
+    cancelled = False
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            pass  # surfaced by work.result() below
+    work.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 def _remove_all_bundles() -> None:
     root = sessions_dir()
     if not root.is_dir():
@@ -258,13 +276,16 @@ class SessionProcessor:
         try:
             async with self._gate:
                 await self._gate.wait_for(lambda: self._uploads_inside == 0)
-            await db.reset_all_data()
-            async with self._lock:
-                self._status.clear()
-            await asyncio.to_thread(_remove_all_bundles)
+            await _finish_despite_cancellation(asyncio.ensure_future(self._clear_everything()))
         finally:
             self._resetting = False
             await self._wake_gate_waiters()
+
+    async def _clear_everything(self) -> None:
+        await db.reset_all_data()
+        async with self._lock:
+            self._status.clear()
+        await asyncio.to_thread(_remove_all_bundles)
 
     async def _wake_gate_waiters(self) -> None:
         """Wake the gate's waiters after its state changed. Shielded so a

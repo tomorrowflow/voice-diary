@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import asyncio
+import threading
 
 from fastapi.testclient import TestClient
 
@@ -226,6 +227,57 @@ def test_a_reset_cancelled_while_waiting_for_an_upload_releases_the_gate(monkeyp
     asyncio.run(asyncio.wait_for(scenario(), timeout=2))
 
     assert resets == ["db reset"]
+
+
+def test_a_reset_cancelled_during_bundle_removal_keeps_the_gate_closed_until_it_is_done(
+    monkeypatch, tmp_path
+):
+    """The bundle removal runs in a thread that cancellation can't stop. If
+    the gate opened as soon as the reset was cancelled, an upload accepted
+    meanwhile would have its fresh bundle deleted by the removal."""
+    monkeypatch.setenv("DATA_DIR", str(tmp_path))
+    processor = fresh_processor(monkeypatch)
+    events: list[str] = []
+    removal_started = threading.Event()
+    let_removal_finish = threading.Event()
+
+    async def reset_all_data() -> None:
+        events.append("db reset")
+
+    def slow_remove_all_bundles() -> None:
+        removal_started.set()
+        let_removal_finish.wait(timeout=5)
+        events.append("bundles removed")
+
+    monkeypatch.setattr(db, "reset_all_data", reset_all_data)
+    monkeypatch.setattr(session_processing, "_remove_all_bundles", slow_remove_all_bundles)
+
+    async def scenario() -> None:
+        reset = asyncio.create_task(processor.reset_all_data())
+        while not removal_started.is_set():
+            await asyncio.sleep(0.01)
+        reset.cancel()
+
+        async def upload() -> None:
+            async with processor.upload_gate():
+                events.append("upload in")
+
+        upload_task = asyncio.create_task(upload())
+        await asyncio.sleep(0.05)
+        assert "upload in" not in events, "the gate opened before the removal finished"
+
+        let_removal_finish.set()
+        try:
+            await reset
+        except asyncio.CancelledError:
+            pass
+        else:
+            raise AssertionError("the cancellation should still reach the caller")
+        await asyncio.wait_for(upload_task, timeout=2)
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=5))
+
+    assert events == ["db reset", "bundles removed", "upload in"]
 
 
 def test_reset_requires_the_bearer_token(monkeypatch, tmp_path):
