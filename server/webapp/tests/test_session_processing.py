@@ -1306,7 +1306,7 @@ def test_retries_of_different_sessions_run_in_parallel(monkeypatch, tmp_path):
         both_running = asyncio.Barrier(2)
 
         async def before_analysis(run):
-            await asyncio.wait_for(both_running.wait(), 5)
+            await asyncio.wait_for(both_running.wait(), 0.5)
 
         stage.before_analysis = before_analysis
         return await asyncio.gather(
