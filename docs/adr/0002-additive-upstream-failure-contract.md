@@ -12,7 +12,7 @@ Decision: every upstream failure goes through one shared server helper and is re
 
 - `detail` — still a string (`"<code>"` or `"<code>: <message>"`), so installed apps keep working;
 - `code` — stable snake_case (e.g. `whisper_unavailable`, `ollama_timeout`, `msgraph_rate_limited`);
-- `upstream` — `whisper | ollama | lightrag | msgraph | voxtral`;
+- `upstream` — `whisper | ollama | lightrag | msgraph | voxtral`, plus `blindfold` when the analysis route is Blindfold (ADR 0004);
 - `retryable` — whether trying again later can succeed without operator action;
 - a `Retry-After` header where a wait is known.
 
