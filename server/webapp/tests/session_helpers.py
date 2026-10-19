@@ -302,9 +302,11 @@ class NarrativeStage:
     LightRAG ingest, `marked` each document marked ingested. Set
     `analysis_error` (an exception, or a function of the run returning one or
     `None`) / `ingest_error` to make that step fail; `before_analysis` is
-    awaited as analysis starts; `latch()` makes analysis block until released."""
+    awaited as analysis starts; `latch()` makes analysis block until released.
+    `real_narrative=True` keeps the real `narrative.build_day_narrative`, so the
+    caller's `document_processor` stubs / injected LLM transport take effect."""
 
-    def __init__(self, monkeypatch):
+    def __init__(self, monkeypatch, *, real_narrative: bool = False):
         self.runs: list[dict] = []
         self.ingested: list[tuple[str, dict]] = []
         self.marked: list[int] = []
@@ -356,7 +358,8 @@ class NarrativeStage:
                     doc["lightrag_ingested"] = True
             return {"id": doc_id, "lightrag_ingested_at": None}
 
-        monkeypatch.setattr(narrative, "build_day_narrative", build_day_narrative)
+        if not real_narrative:
+            monkeypatch.setattr(narrative, "build_day_narrative", build_day_narrative)
         monkeypatch.setattr(narrative, "sync_and_ingest", sync_and_ingest)
         monkeypatch.setattr(db, "save_processed_document", save_processed_document)
         monkeypatch.setattr(db, "get_latest_processed_document", get_latest_processed_document)
