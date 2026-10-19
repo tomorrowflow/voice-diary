@@ -14,22 +14,18 @@ support for `responseStatus.response` is unreliable.
 from __future__ import annotations
 
 import logging
-import os
-from datetime import date as date_type, datetime, time, timedelta
+from datetime import date as date_type
 from typing import Literal
-from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 import fixtures
 import upstream_failure
-from msgraph_client import get_client
+from msgraph_client import get_client, to_local_iso
 from routers.auth import require_bearer
 
 logger = logging.getLogger(__name__)
-
-LOCAL_TZ = ZoneInfo(os.getenv("TZ", "Europe/Berlin"))
 
 
 router = APIRouter(dependencies=[Depends(require_bearer)])
@@ -105,43 +101,14 @@ def _parse_rsvp_filter(raw: str | None) -> list[RsvpStatus]:
     return filtered
 
 
-def _local_day_bounds_iso(date_str: str) -> tuple[str, str]:
-    """Return (start_iso, end_iso) covering the local day in UTC for Graph."""
+def _parse_day(date_str: str) -> date_type:
     try:
-        d = date_type.fromisoformat(date_str)
+        return date_type.fromisoformat(date_str)
     except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"invalid_date: {exc}",
         ) from exc
-    start_local = datetime.combine(d, time.min, tzinfo=LOCAL_TZ)
-    end_local = start_local + timedelta(days=1)
-    # Graph's calendarView accepts UTC ISO 8601.
-    return (
-        start_local.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.0000000"),
-        end_local.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%S.0000000"),
-    )
-
-
-def _to_local_iso(graph_dt: dict | None) -> str:
-    """Convert Graph's `{dateTime, timeZone}` pair to local ISO 8601."""
-    if not graph_dt:
-        return ""
-    raw = graph_dt.get("dateTime", "")
-    if not raw:
-        return ""
-    tz_name = graph_dt.get("timeZone") or "UTC"
-    try:
-        # Graph datetimes are naive; pair them with the declared zone.
-        dt = datetime.fromisoformat(raw.replace("Z", ""))
-        if dt.tzinfo is None:
-            try:
-                dt = dt.replace(tzinfo=ZoneInfo(tz_name))
-            except Exception:
-                dt = dt.replace(tzinfo=ZoneInfo("UTC"))
-        return dt.astimezone(LOCAL_TZ).isoformat()
-    except (ValueError, TypeError):
-        return raw
 
 
 def _shape_event(raw: dict) -> CalendarEvent:
@@ -158,8 +125,8 @@ def _shape_event(raw: dict) -> CalendarEvent:
     return CalendarEvent(
         graph_event_id=raw.get("id", ""),
         subject=raw.get("subject") or "",
-        start=_to_local_iso(raw.get("start")),
-        end=_to_local_iso(raw.get("end")),
+        start=to_local_iso(raw.get("start")),
+        end=to_local_iso(raw.get("end")),
         is_all_day=bool(raw.get("isAllDay")),
         show_as=raw.get("showAs") or "",
         rsvp_status=_normalise_rsvp(response_status),
@@ -192,25 +159,12 @@ async def today_calendar(
         events.sort(key=lambda ev: ev.start)
         return TodayCalendarResponse(date=date, rsvp_filter=allowed, events=events)
 
-    start_iso, end_iso = _local_day_bounds_iso(date)
+    day = _parse_day(date)
 
     with upstream_failure.raise_as_failure():
         client = await get_client()
-        data = await client.get_json(
-            "/me/calendarView",
-            params={
-                "startDateTime": start_iso,
-                "endDateTime": end_iso,
-                "$top": 100,
-                "$orderby": "start/dateTime",
-                "$select": (
-                    "id,subject,start,end,isAllDay,showAs,bodyPreview,"
-                    "responseStatus,organizer,attendees,recurrence,webLink"
-                ),
-            },
-        )
+        raw_events = await client.events_for_day(day)
 
-    raw_events = data.get("value", [])
     events = [_shape_event(ev) for ev in raw_events]
     events = [ev for ev in events if ev.rsvp_status in allowed]
     events.sort(key=lambda ev: ev.start)
