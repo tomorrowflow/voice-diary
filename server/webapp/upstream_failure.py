@@ -8,9 +8,11 @@ known.
 
 `raise_as_failure` is how a route puts a client call on the contract.
 `failure_from_exception` maps each upstream client's exception classes to an
-`UpstreamFailure`; `classify_raw_ollama_error` does the same for the plain
+`UpstreamFailure`; `classify_raw_analysis_error` does the same for the plain
 `httpx` / `RuntimeError` failures that escape `document_processor`'s analysis
-path. `failure_fields` is what the sessions pipeline records on a segment.
+path, as `ollama_*` on the local route and `blindfold_*` on the Blindfold route
+(BAR-02, ADR 0004). `failure_fields` is what the sessions pipeline records on a
+segment.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from asr_client import AsrEngineError, AsrError, AsrTimeoutError, AsrUnavailableError
+from document_processor import UnreadableLlmResponse
 from enrichment import EnrichmentSummariserUnavailable
 from lightrag_client import (
     LightRAGEngineError,
@@ -47,7 +50,7 @@ from voxtral_client import (
     TTSUnknownVoiceError,
 )
 
-Upstream = Literal["whisper", "ollama", "lightrag", "msgraph", "voxtral"]
+Upstream = Literal["whisper", "ollama", "lightrag", "msgraph", "voxtral", "blindfold"]
 
 # (code, upstream, status, retryable) — the catalogue in the PRD / SPEC §10.6.1.
 _DOWN = 503
@@ -205,22 +208,39 @@ def raise_as_failure() -> Iterator[None]:
         raise failure from exc
 
 
-def classify_raw_ollama_error(exc: BaseException) -> UpstreamFailure | None:
+def classify_raw_analysis_error(
+    exc: BaseException, upstream: Literal["ollama", "blindfold"] = "ollama",
+) -> UpstreamFailure | None:
     """Classify what `document_processor`'s analysis call raises: it talks to
-    Ollama with plain `httpx` and signals a timeout with a bare `RuntimeError`.
-    Only call this at that boundary — outside it a `httpx` error says nothing
-    about which upstream failed. Unclassifiable errors return None."""
+    `upstream` (the analysis route's destination) with plain `httpx` and
+    signals a timeout with a bare `RuntimeError`. Only call this at that
+    boundary — outside it a `httpx` error says nothing about which upstream
+    failed. Unclassifiable errors return None.
+
+    On the Blindfold route an unreadable response body is an engine error too,
+    and a 401 / 403 says the key was rejected; the message never carries the
+    response body or the key."""
     typed = failure_from_exception(exc)
     if typed is not None:
         return typed
+    blindfold = upstream == "blindfold"
     if isinstance(exc, httpx.TimeoutException) or (
         isinstance(exc, RuntimeError) and str(exc).startswith("LLM analysis timed out")
     ):
-        return _make("ollama_timeout", "ollama", _DOWN, exc)
+        return _make(f"{upstream}_timeout", upstream, _DOWN, exc)
     if isinstance(exc, httpx.HTTPStatusError):
+        if blindfold:
+            status = exc.response.status_code
+            if status in (401, 403):
+                message = f"Blindfold rejected the API key (HTTP {status})"
+            else:
+                message = f"Blindfold answered with HTTP {status}"
+            return _make("blindfold_engine_error", "blindfold", _ERROR, RuntimeError(message))
         return _make("ollama_engine_error", "ollama", _ERROR, exc)
     if isinstance(exc, httpx.TransportError):
-        return _make("ollama_unavailable", "ollama", _DOWN, exc)
+        return _make(f"{upstream}_unavailable", upstream, _DOWN, exc)
+    if blindfold and isinstance(exc, UnreadableLlmResponse):
+        return _make("blindfold_engine_error", "blindfold", _ERROR, exc)
     return None
 
 
