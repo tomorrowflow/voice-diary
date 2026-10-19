@@ -525,55 +525,14 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         }
     }
 
-    /// Scan the local staging dir for an unfinished walkthrough session
-    /// whose ISO timestamp falls on `date`. "Unfinished" = the dir has
-    /// at least one m4a in `segments/` but no `manifest.json` (the
-    /// manifest is only written by `finishUpload()` after the user
-    /// completes the walkthrough). Sets `unfinishedSessionURL` to the
-    /// most-recent matching dir (or nil). Returns the URL for callers
-    /// that want it inline.
+    /// The directory of the unfinished walkthrough session started on
+    /// `date`'s calendar day, found through `SessionBundle.unfinished`.
+    /// Sets `unfinishedSessionURL` to it (or nil). Returns the URL for
+    /// callers that want it inline.
     @discardableResult
     public func loadUnfinishedSession(forDate date: Date) async -> URL? {
-        let cal = Calendar.current
-        let targetDay = cal.startOfDay(for: date)
-        let parser = ISO8601DateFormatter()
-        let found: URL? = await Task.detached(priority: .utility) { () -> URL? in
-            guard let root = try? LocalStore.sessionsStagingDir(),
-                  let names = try? FileManager.default.contentsOfDirectory(atPath: root.path)
-            else { return nil }
-            var candidates: [(url: URL, ts: Date)] = []
-            for name in names {
-                let dir = root.appending(path: name, directoryHint: .isDirectory)
-                var isDir: ObjCBool = false
-                guard FileManager.default.fileExists(atPath: dir.path, isDirectory: &isDir),
-                      isDir.boolValue else { continue }
-                // Skip dirs that already finished (manifest written).
-                let manifestURL = dir.appending(path: LocalStore.manifestFilename)
-                if FileManager.default.fileExists(atPath: manifestURL.path) { continue }
-                // Without a journal the session cannot be restored, so
-                // there is nothing to pick up.
-                let journalURL = dir.appending(path: SessionBundle.journalFilename)
-                if !FileManager.default.fileExists(atPath: journalURL.path) { continue }
-                // Need at least one real m4a to be worth resuming.
-                let segmentsDir = dir.appending(path: "segments", directoryHint: .isDirectory)
-                let segmentFiles = (try? FileManager.default.contentsOfDirectory(
-                    at: segmentsDir,
-                    includingPropertiesForKeys: nil
-                ))?.filter {
-                    $0.pathExtension.lowercased() == "m4a"
-                        && !M4AWriter.isOrphanTempURL($0)
-                } ?? []
-                guard !segmentFiles.isEmpty else { continue }
-                // session_id is the dir name (ISO timestamp). Match by
-                // calendar day so a session started at 23:50 yesterday
-                // still shows up tomorrow if the user picks "yesterday."
-                let ts: Date? = parser.date(from: name.replacingOccurrences(of: "_", with: "+"))
-                    ?? (try? dir.resourceValues(forKeys: [.creationDateKey]).creationDate)
-                if let ts, cal.isDate(cal.startOfDay(for: ts), inSameDayAs: targetDay) {
-                    candidates.append((dir, ts))
-                }
-            }
-            return candidates.max(by: { $0.ts < $1.ts })?.url
+        let found = await Task.detached(priority: .utility) {
+            SessionBundle.unfinished(on: date)?.directory
         }.value
         unfinishedSessionURL = found
         return found
