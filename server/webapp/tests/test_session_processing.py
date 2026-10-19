@@ -433,7 +433,7 @@ def test_segments_use_the_shared_correction_module(monkeypatch, tmp_path):
     assert len(pipeline.correct_calls) == 1
     assert pipeline.correct_calls[0] == {
         "raw_text": "hallo welt", "persons": persons, "terms": terms,
-        "text_corrections": text_corrections, "dismissals": dismissals,
+        "text_corrections": text_corrections, "dismissals": ["baumarkt"],
     }
     expected_entities = [
         {

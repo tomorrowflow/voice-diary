@@ -41,13 +41,14 @@ import json
 import logging
 import re
 import shutil
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Awaitable, Callable
 
 import asr_client
 import correction
 import db
+import dictionary
 import narrative
 import transcript_ingest
 import upstream_failure
@@ -767,21 +768,17 @@ async def _process_segment(
     # dict with the manifest's canonical attendee names so the detector
     # resolves them deterministically (Graph already gave us the truth — no
     # need to fuzzy-match again).
-    persons_dict = await db.load_person_dictionary()
-    terms_dict = await db.load_term_dictionary()
+    snapshot = await dictionary.load_dictionary_snapshot()
     if isinstance(segment, CalendarEventSegment):
         seed_persons = _attendees_to_canonical_names(segment.calendar_ref.attendees)
         if seed_persons:
-            persons_dict = _seed_persons_into_dict(persons_dict, seed_persons)
-    text_corrections = await db.load_text_corrections()
-    dismissals = await db.load_entity_dismissals()
+            snapshot = replace(
+                snapshot,
+                persons=_seed_persons_into_dict(snapshot.persons, seed_persons),
+            )
 
     result = await correction.correct_and_detect_entities(
-        raw_transcript,
-        persons=persons_dict,
-        terms=terms_dict,
-        text_corrections=text_corrections,
-        dismissals=dismissals,
+        raw_transcript, snapshot=snapshot
     )
     corrected_text = result.corrected_text
 

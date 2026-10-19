@@ -28,8 +28,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
+import dictionary
 import transcript_corrector
 import vector_store
+from dictionary import DictionarySnapshot
 from entity_detector import DetectedEntity, detect_entities
 
 logger = logging.getLogger(__name__)
@@ -105,22 +107,21 @@ async def _gather_correction_examples(text: str) -> list[dict]:
 async def correct_and_detect_entities(
     raw_text: str,
     *,
-    persons: list[dict],
-    terms: list[dict],
-    text_corrections: list[dict] | None = None,
-    dismissals: list[str] | None = None,
+    snapshot: DictionarySnapshot | None = None,
     on_step: OnStep | None = None,
 ) -> CorrectionResult:
     """Run dictionary corrections -> LLM correction -> entity detection ->
     dismissal filtering, emitting SSE-shaped `log` progress via `on_step` if
-    given.
+    given. Loads a Dictionary snapshot when the caller passes none.
     """
+    if snapshot is None:
+        snapshot = await dictionary.load_dictionary_snapshot()
     text = raw_text
 
     await _emit(on_step, "log", {"message": "Applying dictionary corrections...", "level": "info"})
     applied_corrections: list[dict] = []
-    if text_corrections:
-        text, applied_corrections = apply_text_corrections(text, text_corrections)
+    if snapshot.text_corrections:
+        text, applied_corrections = apply_text_corrections(text, snapshot.text_corrections)
 
     llm_corrections: list[dict] = []
     if transcript_corrector.LLM_CORRECTION_ENABLED:
@@ -148,13 +149,10 @@ async def correct_and_detect_entities(
         await _emit(on_step, "log", {"message": "LLM transcript correction disabled", "level": "info"})
 
     await _emit(on_step, "log", {"message": "Detecting entities...", "level": "info"})
-    entities = detect_entities(text=text, persons=persons, terms=terms)
-
-    if dismissals:
-        dismissals_lower = {d.lower() for d in dismissals}
-        entities = [
-            e for e in entities if e.original_text.lower() not in dismissals_lower
-        ]
+    entities = detect_entities(
+        text=text, persons=snapshot.persons, terms=snapshot.terms
+    )
+    entities = [e for e in entities if not snapshot.is_dismissed(e.original_text)]
 
     await _emit(on_step, "log", {"message": f"Found {len(entities)} entities", "level": "ok"})
 
