@@ -238,29 +238,43 @@ class SessionProcessor:
         try:
             yield
         finally:
-            async with self._gate:
-                self._uploads_inside -= 1
-                self._gate.notify_all()
+            self._uploads_inside -= 1
+            await self._wake_gate_waiters()
 
     async def reset_all_data(self) -> None:
         """The admin "Reset All Data" (MIG-115/#115): `db.reset_all_data`,
         then forget every session in this process — empty the status cache and
         delete every bundle under `data/sessions/` (the directory itself
         stays). Runs with no upload inside the gate, so no upload can create a
-        row or bundle between the database reset and the bundle removal."""
+        row or bundle between the database reset and the bundle removal.
+
+        `_resetting` is cleared on every exit, including cancellation while
+        waiting for the uploads to drain; otherwise every later upload and
+        reset would wait forever."""
         async with self._gate:
             await self._gate.wait_for(lambda: not self._resetting)
             self._resetting = True
-            await self._gate.wait_for(lambda: self._uploads_inside == 0)
         try:
+            async with self._gate:
+                await self._gate.wait_for(lambda: self._uploads_inside == 0)
             await db.reset_all_data()
             async with self._lock:
                 self._status.clear()
             await asyncio.to_thread(_remove_all_bundles)
         finally:
+            self._resetting = False
+            await self._wake_gate_waiters()
+
+    async def _wake_gate_waiters(self) -> None:
+        """Wake the gate's waiters after its state changed. Shielded so a
+        cancellation arriving while the gate lock is contended can't skip the
+        wake-up; the state itself is already updated by the caller."""
+
+        async def notify() -> None:
             async with self._gate:
-                self._resetting = False
                 self._gate.notify_all()
+
+        await asyncio.shield(notify())
 
     async def _persist_status(
         self, session_id: str, state: str, segments: list[SegmentResult]
