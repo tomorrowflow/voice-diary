@@ -68,10 +68,6 @@ from paths import sessions_dir
 
 logger = logging.getLogger(__name__)
 
-_INTERRUPTED_ERROR = (
-    "interrupted: no transcript was persisted before the server stopped processing this session"
-)
-
 
 # --- errors ---------------------------------------------------------------
 
@@ -99,7 +95,8 @@ class SessionBusy(SessionError):
 
 
 class SessionNotRetryable(SessionError):
-    """Nothing to retry: no segment is `pending_analysis` with a transcript."""
+    """Nothing to retry: no segment is `pending_analysis`, or the pending ones
+    have no transcript row left to narrate and nothing was resumed."""
 
     code = "session_not_retryable"
 
@@ -403,15 +400,19 @@ class SessionProcessor:
 
         Rebuilds the session-level narrative input from what's persisted (the
         manifest on disk plus each segment's transcript row) and re-runs the
-        shared narrative stage. A narrative failure doesn't raise: it comes
-        back as segments still `pending_analysis` with an `analysis_pending: …`
-        error.
+        shared narrative stage. Segments that never got a transcript are
+        resumed from the stored audio (`_resume_untranscribed_segments`,
+        BUG-112) and join that input. A narrative failure doesn't raise: it
+        comes back as segments still `pending_analysis` with an
+        `analysis_pending: …` error.
 
         Raises `SessionNotFound` if the session is unknown, `SessionBusy` if a
         run for it (original ingest, another retry, the startup sweep) is
         already in flight, `SessionNotRetryable` if none of its segments are
-        `pending_analysis`, and `SessionManifestMissing` if the bundle's
-        manifest is gone.
+        `pending_analysis` or none has a transcript row to narrate, and
+        `SessionManifestMissing` if the bundle's manifest is gone. A session
+        whose resumed segments all fail is not an error: it is persisted and
+        returned `failed`.
         """
         status_obj = await self.get_status(session_id)
         if status_obj is None:
@@ -473,8 +474,28 @@ class SessionProcessor:
                 )
             )
 
-        if not artifacts:
+        # Decide retryability before any side effect: with no transcript row to
+        # narrate and nothing untranscribed to resume, there is no work.
+        if not artifacts and not any(_is_untranscribed(r) for r in status_obj.segments):
             raise SessionNotRetryable()
+
+        segment_results, resumed = await self._resume_untranscribed_segments(
+            session_id, parsed, status_obj
+        )
+        artifacts.extend(resumed)
+        # Narrative order is manifest order, whether a segment was resumed or
+        # rebuilt from its transcript row.
+        order = {seg.segment_id: i for i, seg in enumerate(parsed.segments)}
+        artifacts.sort(key=lambda art: order[art.segment.segment_id])
+
+        if not artifacts:
+            # Every segment that was resumed failed: nothing to narrate, but
+            # the outcome is settled, not an error.
+            await self._persist_status(
+                session_id, derive_session_state(segment_results), segment_results
+            )
+            async with self._lock:
+                return self._status[session_id]
 
         retried_ids = {art.segment.segment_id for art in artifacts}
         try:
@@ -498,20 +519,68 @@ class SessionProcessor:
                 )
                 if r.segment_id in retried_ids
                 else r
-                for r in status_obj.segments
+                for r in segment_results
             ]
         else:
             updated_segments = [
                 SegmentResult(segment_id=r.segment_id, status="processed", transcript_id=r.transcript_id)
                 if r.segment_id in retried_ids
                 else r
-                for r in status_obj.segments
+                for r in segment_results
             ]
         new_state = derive_session_state(updated_segments)
         await self._persist_status(session_id, new_state, updated_segments)
 
         async with self._lock:
             return self._status[session_id]
+
+    async def _resume_untranscribed_segments(
+        self, session_id: str, parsed: Manifest, status_obj: SessionStatus
+    ) -> tuple[list[SegmentResult], list[_SegmentArtifact]]:
+        """Run phase 1 from the stored bundle for every `pending_analysis`
+        segment that has no transcript (BUG-112): the process died, or the
+        upload was cut off, before its transcript was persisted.
+
+        Returns the session's segment results with each resumed segment
+        updated, plus the resumed segments' artifacts. A segment that can't be
+        transcribed is `failed` with the reason (audio gone from disk, the
+        segment missing from the manifest, an upstream error), as in the
+        original ingest. Each outcome is persisted as it lands, so a second
+        crash keeps the transcript IDs already saved.
+        """
+        bind_session_id(session_id)
+        segments_by_id = {seg.segment_id: seg for seg in parsed.segments}
+        session_dir = session_dir_for(session_id)
+        results = list(status_obj.segments)
+        artifacts: list[_SegmentArtifact] = []
+        for index, current in enumerate(results):
+            if not _is_untranscribed(current):
+                continue
+            segment = segments_by_id.get(current.segment_id)
+            try:
+                if segment is None:
+                    raise LookupError(f"segment {current.segment_id} is not in manifest.json")
+                artifact = await _process_segment(
+                    manifest=parsed, segment=segment, session_dir=session_dir
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "session %s segment %s could not be resumed: %s",
+                    session_id, current.segment_id, exc,
+                )
+                results[index] = SegmentResult(
+                    segment_id=current.segment_id, status="failed", error=str(exc),
+                    **upstream_failure.failure_fields(exc),
+                )
+            else:
+                artifacts.append(artifact)
+                results[index] = SegmentResult(
+                    segment_id=current.segment_id,
+                    status="pending_analysis",
+                    transcript_id=artifact.transcript_id,
+                )
+            await self._persist_status(session_id, status_obj.state, list(results))
+        return results, artifacts
 
     # -- startup sweep -----------------------------------------------------
 
@@ -542,11 +611,9 @@ class SessionProcessor:
                 status_obj = await self.get_status(session_id)
                 if status_obj is None:
                     continue
-                if status_obj.state == "processing":
-                    # We hold the in-flight claim, so no run in this process
-                    # owns this session: it was interrupted. Segments without
-                    # a persisted transcript can never be retried.
-                    status_obj = await self._fail_untranscribed_segments(session_id, status_obj)
+                # We hold the in-flight claim, so no run in this process owns
+                # a `processing` session: it was interrupted, and its segments
+                # without a transcript are resumed from the stored audio.
                 retried = await self._retry_session_analysis(session_id, status_obj)
             except SessionError as exc:
                 # Nothing to retry (no transcripts, manifest gone): an expected
@@ -572,26 +639,6 @@ class SessionProcessor:
                     session_id, errors[0],
                 )
 
-    async def _fail_untranscribed_segments(
-        self, session_id: str, status_obj: SessionStatus
-    ) -> SessionStatus:
-        """Settle an interrupted session's segments that never got a transcript.
-
-        Phase 1 persists a segment's transcript ID as soon as it is done with
-        it (`_persist_phase_1_progress`), so a `pending_analysis` segment
-        without one was cut off mid-transcription; mark it `failed` with a
-        clear error.
-        """
-        segments = [
-            SegmentResult(segment_id=r.segment_id, status="failed", error=_INTERRUPTED_ERROR)
-            if r.status == "pending_analysis" and r.transcript_id is None
-            else r
-            for r in status_obj.segments
-        ]
-        state = derive_session_state(segments)
-        await self._persist_status(session_id, state, segments)
-        return status_obj.model_copy(update={"state": state, "segments": segments})
-
 
 _default: SessionProcessor | None = None
 
@@ -602,6 +649,11 @@ def get_processor() -> SessionProcessor:
     if _default is None:
         _default = SessionProcessor()
     return _default
+
+
+def _is_untranscribed(result: SegmentResult) -> bool:
+    """A segment cut off before its transcript was persisted (BUG-112)."""
+    return result.status == "pending_analysis" and result.transcript_id is None
 
 
 # --- saved-document retry -------------------------------------------------
