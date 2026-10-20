@@ -1,7 +1,8 @@
 """Upstream-aware health endpoint.
 
 `GET /health` probes Postgres, Qdrant, Whisper, LightRAG, Ollama, the MSAL
-token cache, and the optional Voxtral sidecar, and returns:
+token cache, the optional Voxtral sidecar and, only when
+`ANALYSIS_ROUTE=blindfold`, Blindfold, and returns:
 
     { "status": "ok" | "degraded" | "down",
       "upstream": { "postgres": "ok" | "down" | "skipped", ... } }
@@ -24,6 +25,8 @@ from typing import Literal
 import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
+
+import analysis_route
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +107,18 @@ async def _probe_ollama() -> ProbeResult:
     return await _probe_http("ollama", base.rstrip("/") + "/api/tags")
 
 
+async def _probe_blindfold() -> ProbeResult:
+    """Reachability check on the Blindfold base URL, only called when routed.
+
+    Any answer below 500 is `ok`, so the probe does not depend on Blindfold
+    serving `/v1/models`. It sends no API key: it checks the host is up, not
+    that the key is valid."""
+    route = analysis_route.current()
+    if not route.is_blindfold:
+        return "skipped"
+    return await _probe_http("blindfold", route.blindfold_base_url + "/v1/models")
+
+
 async def _probe_voxtral() -> ProbeResult:
     """Reachability check for the vLLM Omni sidecar. Uses voxtral_client's
     probe() helper with a tight timeout so a slow vLLM startup doesn't
@@ -179,5 +194,8 @@ async def health() -> HealthResponse:
         return_exceptions=False,
     )
     upstream: dict[str, ProbeResult] = dict(zip(names, probes))
+    # Only when routed: with the default route the response has no key.
+    if analysis_route.current().is_blindfold:
+        upstream["blindfold"] = await _probe_blindfold()
 
     return HealthResponse(status=overall_status(upstream), upstream=upstream)

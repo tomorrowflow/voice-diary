@@ -919,13 +919,15 @@ The iOS app also consumes these read endpoints on `server` over Tailscale:
 | `GET /calendar/event/{graph_event_id}` | Full detail for a specific event (for enrichment "tell me more about this meeting"). | MS Graph |
 | `GET /health` | Tailscale reachability + upstream health probe. Unauthenticated. Overall `status` rules below. | self |
 
-`/health` returns `{ "status", "upstream": { name: result } }`. Upstream results are `ok`, `down`, `skipped` (not configured), `not_bootstrapped` (Graph) or `fixture` (Graph in fixture mode). The overall `status` is:
+`/health` returns `{ "status", "upstream": { name: result } }`. The upstream entries are `postgres`, `qdrant`, `whisper`, `lightrag`, `ollama`, `msgraph`, `voxtral` and, only when routed, `blindfold`. Upstream results are `ok`, `down`, `skipped` (not configured), `not_bootstrapped` (Graph) or `fixture` (Graph in fixture mode). The overall `status` is:
 
 - `down`: `postgres` or `whisper` is `down` (no audio path is possible).
-- `degraded`: any other non-optional upstream (`qdrant`, `lightrag`, `ollama`, `msgraph`) is not `ok`, including Graph `not_bootstrapped`. `skipped` and `fixture` entries are ignored.
+- `degraded`: any other non-optional upstream (`qdrant`, `lightrag`, `ollama`, `msgraph`, and `blindfold` when present) is not `ok`, including Graph `not_bootstrapped`. `skipped` and `fixture` entries are ignored.
 - `ok`: otherwise.
 
 `voxtral` is an optional upstream: its entry reports the real probe result (`ok`, `down` or `skipped`) but never changes the overall `status`. The Graph probe checks the MSAL token cache, not live Graph.
+
+`blindfold` is present only when `ANALYSIS_ROUTE=blindfold`; with the default `local` route the key is absent and the response is exactly as without the feature. Its result is `ok` or `down`. The probe is a reachability check on `BLINDFOLD_BASE_URL`: `GET {BLINDFOLD_BASE_URL}/v1/models` with the same short timeout as the other probes and no API key. Any answer below HTTP 500 (a 401 or 404 included) is `ok`, so the probe does not depend on Blindfold serving that path; a connection failure, a timeout or a 5xx is `down`. A `blindfold` entry that is not `ok` makes the overall `status` `degraded` (a routed analysis will wait), never `down`: only `postgres` and `whisper` decide `down`. The `ollama` entry is unchanged when routed, because the context summary, correction and enrichment still use it.
 
 **Errors on these endpoints.** The routes above, plus `POST /api/tts/synthesize`, report upstream failures in the §10.6.1 shape (`detail` string, `code`, `upstream`, `retryable`) with the §10.6.1 status mapping:
 
