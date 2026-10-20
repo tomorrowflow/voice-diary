@@ -409,7 +409,7 @@ def fake_document_processor_pipeline(monkeypatch, *, ingest=None):
     def fake_generate_narrative_document(enriched, analysis):
         return "# narrative"
 
-    def fake_build_document_metadata(enriched):
+    def fake_build_document_metadata(enriched, *, route="local"):
         return {}
 
     async def fake_sync_incremental(triggered_by: str):
