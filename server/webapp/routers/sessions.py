@@ -110,6 +110,38 @@ async def post_session(
 
     session_id = parsed.session_id
     session_dir = session_processing.session_dir_for(session_id)
+    processor = session_processing.get_processor()
+    # Storing the bundle and persisting its row happen under the upload gate,
+    # so a data reset (MIG-115/#115) never runs between the two and leaves a
+    # session behind.
+    async with processor.upload_gate():
+        accepted = await _store_bundle_and_accept(processor, form, raw_manifest, parsed, session_dir)
+
+    # Always process asynchronously. iOS polls /api/sessions/{id}/status
+    # if it wants per-segment results; the upload itself returns immediately
+    # so URLSession's idle timeout doesn't fire on long Ollama/LightRAG
+    # passes (SPEC §10.5).
+    background_tasks.add_task(processor.run_accepted, parsed, session_dir)
+
+    return SessionAccepted(
+        session_id=session_id,
+        received_at=accepted.received_at,
+        processing_status_url=f"/api/sessions/{session_id}/status",
+        segments=accepted.segments,
+    )
+
+
+async def _store_bundle_and_accept(
+    processor: session_processing.SessionProcessor,
+    form,
+    raw_manifest: bytes,
+    parsed: Manifest,
+    session_dir: Path,
+) -> SessionStatus:
+    """Write the bundle under `session_dir` and have `processor` persist and
+    claim the session; 409 if the bundle already exists, 400 if parts are
+    missing (the partial bundle is removed)."""
+    session_id = parsed.session_id
     if session_dir.exists():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -161,21 +193,7 @@ async def post_session(
             detail=f"missing_parts: {sorted(missing)}; received: {received_field_names}",
         )
 
-    processor = session_processing.get_processor()
-    accepted = await processor.accept(parsed, session_dir)
-
-    # Always process asynchronously. iOS polls /api/sessions/{id}/status
-    # if it wants per-segment results; the upload itself returns immediately
-    # so URLSession's idle timeout doesn't fire on long Ollama/LightRAG
-    # passes (SPEC §10.5).
-    background_tasks.add_task(processor.run_accepted, parsed, session_dir)
-
-    return SessionAccepted(
-        session_id=session_id,
-        received_at=accepted.received_at,
-        processing_status_url=f"/api/sessions/{session_id}/status",
-        segments=accepted.segments,
-    )
+    return await processor.accept(parsed, session_dir)
 
 
 @router.get("/api/sessions/{session_id}/status", response_model=SessionStatus)
