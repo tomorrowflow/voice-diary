@@ -93,6 +93,12 @@ def from_env(env: Mapping[str, str] | None = None) -> AnalysisRoute:
     )
 
 
+def recorded_route(metadata: Mapping[str, object] | None) -> str:
+    """The route recorded in a saved narrative's metadata (`analysis_route`,
+    BAR-04). A row written before the key existed was analysed locally."""
+    return str((metadata or {}).get("analysis_route") or LOCAL)
+
+
 _active: AnalysisRoute | None = None
 
 
