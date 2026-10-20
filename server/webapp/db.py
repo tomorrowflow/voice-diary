@@ -926,6 +926,9 @@ async def get_transcript_by_date(date_str: str) -> dict | None:
 async def reset_all_data():
     pool = await get_pool()
     await pool.execute("TRUNCATE persons, terms, transcripts, review_log CASCADE")
+    # MIG-115/#115: session rows point at transcripts that were just deleted;
+    # left behind they break the sweep and block a re-upload of the session id.
+    await pool.execute("DELETE FROM session_ingests")
     try:
         await pool.execute("DELETE FROM harvest_entries")
     except Exception:
