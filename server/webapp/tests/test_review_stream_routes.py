@@ -110,8 +110,7 @@ def test_process_route_streams_events_in_order(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(db, "load_text_corrections", fake_list)
     monkeypatch.setattr(db, "load_entity_dismissals", fake_list)
 
-    async def fake_correct(raw_text, *, persons, terms, text_corrections=None,
-                           dismissals=None, on_step=None):
+    async def fake_correct(raw_text, *, snapshot=None, on_step=None):
         on_step("log", {"message": "Detecting entities...", "level": "info"})
         return correction.CorrectionResult(
             corrected_text="hallo Welt", entities=[_entity("Welt")]

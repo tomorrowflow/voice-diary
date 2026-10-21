@@ -731,7 +731,7 @@ Manifest-level fields tied to the drive-by section:
 }
 ```
 
-Processing (per-segment Whisper re-transcription + entity normalization, then a single session-level Ollama analysis + LightRAG ingest) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres.
+Processing (per-segment Whisper re-transcription + entity normalization, then a single session-level Ollama analysis + LightRAG ingest) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres. This holds when the analysis is routed to Blindfold (`ANALYSIS_ROUTE=blindfold`) too: its outage, timeout or error leaves the segments `pending_analysis` with a `blindfold_*` code (§10.6.1), and the server never retries that analysis on Ollama or any other provider. A retry or the startup sweep sends it to whichever route is then configured.
 
 Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-analysis` response, §10.6.1) have this shape:
 
@@ -852,7 +852,7 @@ when no segment is `pending_analysis`, or when a pending segment's stored transc
 there was nothing to resume. `session_busy` applies as above.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
-Voxtral) is down, slow or answers with an error, the server reports it in one shape. `detail` stays
+Voxtral, and Blindfold when the analysis route is `blindfold`) is down, slow or answers with an error, the server reports it in one shape. `detail` stays
 a string (`"<code>"` or `"<code>: <message>"`) so older app builds keep working; `code`, `upstream`
 and `retryable` are additional top-level fields:
 
@@ -886,12 +886,25 @@ routes, the read endpoints in §10.7 and `POST /api/tts/synthesize`.
 | `voxtral_timeout` | voxtral | 503 | yes |
 | `voxtral_engine_error` | voxtral | 502 | yes |
 | `unknown_voice` | voxtral | 400 | no |
+| `blindfold_unavailable` | blindfold | 503 | yes |
+| `blindfold_timeout` | blindfold | 503 | yes |
+| `blindfold_engine_error` | blindfold | 502 | yes |
+
+The `blindfold_*` codes occur only when `ANALYSIS_ROUTE=blindfold`, and only for the main analysis
+call: unavailable is a refused connection or DNS failure, timeout a call that outlives
+`BLINDFOLD_ANALYSIS_TIMEOUT`, and engine error any HTTP error status or a response body that is not
+JSON. A `401` or `403` says in the message that the API key was rejected. With the default route
+(`local`) no `blindfold_*` code can occur.
 
 At upload, Whisper being unreachable returns `503 whisper_unavailable` and persists nothing (no
 status row, no bundle on disk), so the app keeps the recording and retries. During processing, an
 error is given a `code` when it comes from one of the upstream clients, or when the session-level
-analysis call fails with a raw HTTP error to Ollama (classified as `ollama_unavailable`,
-`ollama_timeout` or `ollama_engine_error`); anything else leaves `code` null.
+analysis call fails with a raw HTTP error to its route's upstream (classified as
+`ollama_unavailable`, `ollama_timeout` or `ollama_engine_error` on the local route, and as
+`blindfold_unavailable`, `blindfold_timeout` or `blindfold_engine_error` on the Blindfold route);
+anything else leaves `code` null. A Blindfold failure is never answered by a call to Ollama or any
+other provider; the segments stay `pending_analysis` until a retry or the startup sweep succeeds
+under the route then configured.
 
 ### 10.7 Other backend endpoints
 
@@ -906,13 +919,15 @@ The iOS app also consumes these read endpoints on `server` over Tailscale:
 | `GET /calendar/event/{graph_event_id}` | Full detail for a specific event (for enrichment "tell me more about this meeting"). | MS Graph |
 | `GET /health` | Tailscale reachability + upstream health probe. Unauthenticated. Overall `status` rules below. | self |
 
-`/health` returns `{ "status", "upstream": { name: result } }`. Upstream results are `ok`, `down`, `skipped` (not configured), `not_bootstrapped` (Graph) or `fixture` (Graph in fixture mode). The overall `status` is:
+`/health` returns `{ "status", "upstream": { name: result } }`. The upstream entries are `postgres`, `qdrant`, `whisper`, `lightrag`, `ollama`, `msgraph`, `voxtral` and, only when routed, `blindfold`. Upstream results are `ok`, `down`, `skipped` (not configured), `not_bootstrapped` (Graph) or `fixture` (Graph in fixture mode). The overall `status` is:
 
 - `down`: `postgres` or `whisper` is `down` (no audio path is possible).
-- `degraded`: any other non-optional upstream (`qdrant`, `lightrag`, `ollama`, `msgraph`) is not `ok`, including Graph `not_bootstrapped`. `skipped` and `fixture` entries are ignored.
+- `degraded`: any other non-optional upstream (`qdrant`, `lightrag`, `ollama`, `msgraph`, and `blindfold` when present) is not `ok`, including Graph `not_bootstrapped`. `skipped` and `fixture` entries are ignored.
 - `ok`: otherwise.
 
 `voxtral` is an optional upstream: its entry reports the real probe result (`ok`, `down` or `skipped`) but never changes the overall `status`. The Graph probe checks the MSAL token cache, not live Graph.
+
+`blindfold` is present only when `ANALYSIS_ROUTE=blindfold`; with the default `local` route the key is absent and the response is exactly as without the feature. Its result is `ok` or `down`. The probe is a reachability check on `BLINDFOLD_BASE_URL`: `GET {BLINDFOLD_BASE_URL}/v1/models` with the same short timeout as the other probes and no API key. Any answer below HTTP 500 (a 401 or 404 included) is `ok`, so the probe does not depend on Blindfold serving that path; a connection failure, a timeout or a 5xx is `down`. A `blindfold` entry that is not `ok` makes the overall `status` `degraded` (a routed analysis will wait), never `down`: only `postgres` and `whisper` decide `down`. The `ollama` entry is unchanged when routed, because the context summary, correction and enrichment still use it.
 
 **Errors on these endpoints.** The routes above, plus `POST /api/tts/synthesize`, report upstream failures in the §10.6.1 shape (`detail` string, `code`, `upstream`, `retryable`) with the §10.6.1 status mapping:
 
@@ -1096,7 +1111,8 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
 ~/Library/Application Support/VoiceDiary/
 ├── sessions/
 │   └── 2026-04-24T19:30:00+02:00/
-│       ├── manifest.json
+│       ├── manifest.json     # written when the walkthrough finishes
+│       ├── journal.json      # session bundle state, see §13.1.1
 │       ├── segments/
 │       │   ├── s01.m4a
 │       │   └── ...
@@ -1111,7 +1127,28 @@ here; everything the team decided not to build a picker for lives in §12.2 inst
     └── calendar_cache/       # short-lived, for current session
 ```
 
-### 13.1.1 Server-side data layout
+### 13.1.1 Session bundle journal
+
+While a walkthrough runs, the session bundle keeps `journal.json` in its session directory. After
+every change it rewrites the whole file: segment metadata (including each segment's `calendar_ref`),
+transcripts, AI prompts, todo verdicts, attached voice notes, the chunk counters and recorded sample
+rates, and the pause marker. The write is atomic (temp file and rename) and uses the app-wide file
+protection class (`completeUntilFirstUserAuthentication`), so it succeeds with the screen locked. A
+failed write is logged to the app log and Diagnostics and never interrupts the walkthrough; the next
+change writes the full state again. The manifest schema (§10.3) is unchanged: the journal is local
+state, never uploaded.
+
+Pickup after a pause, cancel or app kill restores the bundle from the journal, so segments keep the
+metadata they were recorded with and pre-kill transcripts and prompts survive, even when the day's
+calendar has since changed. Pickup re-enters at the pause marker, else at the latest recorded segment,
+located in the current plan by its calendar event or section, never by its id. A new recording
+clears the pause marker.
+
+The journal replaces the former `pause_state.json` and the plan-based reconstruction of segments from
+audio files. A session directory without a journal (created before it existed) cannot be picked up;
+it is still uploaded or deleted like any other.
+
+### 13.1.2 Server-side data layout
 
 ```
 server/data/

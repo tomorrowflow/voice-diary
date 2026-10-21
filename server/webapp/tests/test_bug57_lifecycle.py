@@ -21,6 +21,7 @@ import narrative
 import routers.review_stream as review_stream
 import session_processing
 import vector_store
+from dictionary import DictionarySnapshot
 
 
 # --- (2) SSE bridge cancellation ------------------------------------------
@@ -29,8 +30,7 @@ import vector_store
 def test_transcript_stream_generator_close_cancels_correction_task(monkeypatch):
     state = {}
 
-    async def fake_correct(raw_text, *, persons, terms, text_corrections=None,
-                           dismissals=None, on_step=None):
+    async def fake_correct(raw_text, *, snapshot=None, on_step=None):
         state["task"] = asyncio.current_task()
         on_step("log", {"message": "started", "level": "info"})
         try:
@@ -43,7 +43,7 @@ def test_transcript_stream_generator_close_cancels_correction_task(monkeypatch):
     monkeypatch.setattr(fluency_checker, "FLUENCY_CHECK_ENABLED", False)
 
     async def run():
-        agen = review_stream._process_transcript_events("x", [], [], [], [])
+        agen = review_stream._process_transcript_events("x", DictionarySnapshot())
         first = await agen.__anext__()
         assert first["event"] == "log"
         await agen.aclose()
@@ -54,8 +54,7 @@ def test_transcript_stream_generator_close_cancels_correction_task(monkeypatch):
 
 
 def test_transcript_stream_correction_failure_emits_error_and_stops(monkeypatch):
-    async def fake_correct(raw_text, *, persons, terms, text_corrections=None,
-                           dismissals=None, on_step=None):
+    async def fake_correct(raw_text, *, snapshot=None, on_step=None):
         raise ValueError("kaboom")
 
     monkeypatch.setattr(correction, "correct_and_detect_entities", fake_correct)
@@ -67,7 +66,7 @@ def test_transcript_stream_correction_failure_emits_error_and_stops(monkeypatch)
     monkeypatch.setattr(fluency_checker, "check_fluency", fluency_must_not_run)
 
     async def run():
-        return [e async for e in review_stream._process_transcript_events("x", [], [], [], [])]
+        return [e async for e in review_stream._process_transcript_events("x", DictionarySnapshot())]
 
     events = asyncio.run(run())
 
