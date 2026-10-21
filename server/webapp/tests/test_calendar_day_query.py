@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import db
+import harvest
 import main
 import msgraph_client
 import routers.calendar as calendar_router
@@ -79,7 +80,7 @@ def graph(monkeypatch, tmp_path) -> FakeGraph:
 def app_client(monkeypatch) -> TestClient:
     monkeypatch.setenv("IOS_BEARER_TOKEN", BEARER)
     monkeypatch.delenv("MSGRAPH_FIXTURE_MODE", raising=False)
-    monkeypatch.setattr(main, "_harvest_pattern_db", {})
+    monkeypatch.setattr(harvest, "_pattern_db", {})
 
     async def nothing(*_args, **_kwargs):
         return None
