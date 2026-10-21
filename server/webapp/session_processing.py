@@ -11,10 +11,11 @@ The one server seam behind the three ways a session gets processed:
   stranded session once after a restart.
 
 `routers/sessions.py` only parses HTTP and maps this module's results and
-`SessionError`s to responses. Everything else lives here: the in-memory status
-cache over the `session_ingests` table (SRV-A6), the per-session in-flight
-claim that keeps two runs from saving two narratives for one session (BUG-54),
-the per-segment pipeline, and the narrative persistence.
+`SessionError`s to responses. Everything else lives here: the status
+transitions (persisted through a `SessionIngestRepository`, REF-122, which owns
+the status cache and the `session_ingests` table, SRV-A6), the per-session
+in-flight claim that keeps two runs from saving two narratives for one session
+(BUG-54), the per-segment pipeline, and the narrative persistence.
 
 Pipeline for one segment:
 
@@ -31,7 +32,8 @@ A failure on one segment does not fail the session; each segment's status is
 recorded individually.
 
 State lives on a `SessionProcessor`; the app uses the process-wide one from
-`get_processor()`, tests build their own.
+`get_processor()` (Postgres-backed), tests build their own over an in-memory
+repository.
 """
 
 from __future__ import annotations
@@ -67,6 +69,7 @@ from models import (
     utcnow_iso,
 )
 from paths import sessions_dir
+from session_repository import PostgresSessionIngests, SessionIngestRepository
 
 logger = logging.getLogger(__name__)
 
@@ -185,18 +188,21 @@ class SessionProcessor:
     """Owns session status and runs the processing lifecycle.
 
     `whisper_reachable` is the pre-flight used by `accept()`; Whisper is the
-    one upstream a session can't work around.
+    one upstream a session can't work around. `repository` holds the status
+    cache and the persisted `session_ingests` rows (SRV-A6, REF-122): the
+    Postgres adapter unless a test passes another.
     """
 
     def __init__(
-        self, *, whisper_reachable: Callable[[], Awaitable[bool]] = _asr_reachable
+        self,
+        *,
+        whisper_reachable: Callable[[], Awaitable[bool]] = _asr_reachable,
+        repository: SessionIngestRepository | None = None,
     ) -> None:
         self._whisper_reachable = whisper_reachable
-        # In-memory cache over the `session_ingests` table (SRV-A6). Fast path
-        # for same-process polling; `db.get_session_status` backs a cache miss
-        # (e.g. after a restart) so status and pending_analysis retryability
-        # survive.
-        self._status: dict[str, SessionStatus] = {}
+        self.repository: SessionIngestRepository = (
+            repository if repository is not None else PostgresSessionIngests()
+        )
         self._lock = asyncio.Lock()
         # Sessions with a narrative run in flight (original background ingest,
         # a manual retry-analysis, or the startup sweep). A second run of the
@@ -226,22 +232,16 @@ class SessionProcessor:
     # -- status ------------------------------------------------------------
 
     async def get_status(self, session_id: str) -> SessionStatus | None:
-        """Cache-then-db lookup. A cache miss (e.g. after a restart) falls
+        """Cache-then-row lookup. A cache miss (e.g. after a restart) falls
         back to the persisted row (SRV-A6) and repopulates the cache from it."""
-        async with self._lock:
-            status_obj = self._status.get(session_id)
-        if status_obj is not None:
-            return status_obj
+        return await self.repository.get(session_id)
 
-        persisted = await db.get_session_status(session_id)
-        if persisted is None:
-            return None
-        # `get_session_status` returns exactly SessionStatus's fields (segments
-        # as dicts), so model_validate reconstructs it without restating each
-        # field.
-        status_obj = SessionStatus.model_validate(persisted)
-        async with self._lock:
-            self._status.setdefault(session_id, status_obj)
+    async def _current_status(self, session_id: str) -> SessionStatus:
+        """The session's status after a transition was persisted. Only a data
+        reset that lands mid-run can make it vanish."""
+        status_obj = await self.repository.get(session_id)
+        if status_obj is None:
+            raise SessionNotFound()
         return status_obj
 
     # -- upload gate / reset ----------------------------------------------
@@ -262,9 +262,9 @@ class SessionProcessor:
 
     async def reset_all_data(self) -> None:
         """The admin "Reset All Data" (MIG-115/#115): `db.reset_all_data`,
-        then forget every session in this process — empty the status cache and
-        delete every bundle under `data/sessions/` (the directory itself
-        stays). Runs with no upload inside the gate, so no upload can create a
+        then forget every session — clear the repository (rows and status
+        cache) and delete every bundle under `data/sessions/` (the directory
+        itself stays). Runs with no upload inside the gate, so no upload can create a
         row or bundle between the database reset and the bundle removal.
 
         `_resetting` is cleared on every exit, including cancellation while
@@ -283,8 +283,7 @@ class SessionProcessor:
 
     async def _clear_everything(self) -> None:
         await db.reset_all_data()
-        async with self._lock:
-            self._status.clear()
+        await self.repository.clear()
         await asyncio.to_thread(_remove_all_bundles)
 
     async def _wake_gate_waiters(self) -> None:
@@ -301,18 +300,9 @@ class SessionProcessor:
     async def _persist_status(
         self, session_id: str, state: str, segments: list[SegmentResult]
     ) -> None:
-        """Write-through: update the in-memory cache (if present) and the
-        persisted row (SRV-A6) so status survives a restart."""
-        async with self._lock:
-            current = self._status.get(session_id)
-            if current is not None:
-                current.state = state
-                current.segments = segments
-        await db.update_session_status(
-            session_id=session_id,
-            state=state,
-            segments=[s.model_dump() for s in segments],
-        )
+        """Write-through: the repository updates the cached status (if
+        present) and the persisted row (SRV-A6) so status survives a restart."""
+        await self.repository.update(session_id, state, segments)
 
     async def _persist_phase_1_progress(
         self, parsed: Manifest, results_by_id: dict[str, SegmentResult]
@@ -365,22 +355,13 @@ class SessionProcessor:
                 state="processing",
                 segments=pending_results,
             )
-            async with self._lock:
-                self._status[session_id] = accepted
-            # Persist before we answer — the in-memory map above is a cache;
-            # this row is what survives a restart (SRV-A6).
-            await db.create_session_status(
-                session_id=session_id,
-                received_at=received_at,
-                state="processing",
-                segments=[r.model_dump() for r in pending_results],
-            )
+            # Persist before we answer — the cache is not enough; the row is
+            # what survives a restart (SRV-A6).
+            await self.repository.create(accepted)
 
             if not await self._whisper_reachable():
                 shutil.rmtree(session_dir, ignore_errors=True)
-                async with self._lock:
-                    self._status.pop(session_id, None)
-                await db.delete_session_status(session_id)
+                await self.repository.delete(session_id)
                 raise upstream_failure.whisper_unavailable()
         except BaseException:
             await self._end(session_id)
@@ -396,11 +377,7 @@ class SessionProcessor:
             await self._process_session(parsed, session_dir)
         except Exception:  # pragma: no cover — defensive
             logger.exception("session %s background processing crashed", parsed.session_id)
-            async with self._lock:
-                current = self._status.get(parsed.session_id)
-                if current is not None:
-                    current.state = "failed"
-            await db.mark_session_failed(parsed.session_id)
+            await self.repository.mark_failed(parsed.session_id)
         finally:
             await self._end(parsed.session_id)
 
@@ -585,8 +562,7 @@ class SessionProcessor:
             await self._persist_status(
                 session_id, derive_session_state(segment_results), segment_results
             )
-            async with self._lock:
-                return self._status[session_id]
+            return await self._current_status(session_id)
 
         retried_ids = {art.segment.segment_id for art in artifacts}
         try:
@@ -621,9 +597,7 @@ class SessionProcessor:
             ]
         new_state = derive_session_state(updated_segments)
         await self._persist_status(session_id, new_state, updated_segments)
-
-        async with self._lock:
-            return self._status[session_id]
+        return await self._current_status(session_id)
 
     async def _resume_untranscribed_segments(
         self, session_id: str, parsed: Manifest, status_obj: SessionStatus
@@ -690,7 +664,7 @@ class SessionProcessor:
         start.
         """
         try:
-            corrected = await db.correct_legacy_done_sessions()
+            corrected = await self.repository.correct_legacy_done_sessions()
             if corrected:
                 logger.info(
                     "startup retry sweep: marked %d legacy done session(s) with pending segments partial",
@@ -700,7 +674,7 @@ class SessionProcessor:
             logger.warning("startup retry sweep: legacy done-row correction failed: %s", exc)
 
         try:
-            session_ids = await db.list_pending_analysis_session_ids()
+            session_ids = await self.repository.list_sweep_candidates()
         except Exception:  # noqa: BLE001 — best-effort, never blocks startup
             logger.exception("startup retry sweep: failed to list pending_analysis sessions")
             return
