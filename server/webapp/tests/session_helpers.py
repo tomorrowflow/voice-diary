@@ -4,9 +4,10 @@
 these helpers stub only what it talks to — `db`, `transcript_ingest`,
 `correction`, `narrative` — never its own private stages:
 
-* `fresh_processor` — a clean processor, installed as the process-wide one so
-  the routes use it too;
-* `FakeSessionIngests` — the `session_ingests` table;
+* `fresh_processor` — a clean processor over an in-memory session-ingest
+  repository (REF-122/#122), installed as the process-wide one so the routes
+  use it too;
+* `FakeSessionIngests` — rows for that repository's `session_ingests` table;
 * `SegmentPipeline` — phase 1 (Whisper, correction, entity persistence);
 * `NarrativeStage` — phase 2 (analysis, LightRAG) with in-memory
   `processed_documents`;
@@ -29,6 +30,7 @@ import session_processing
 import transcript_ingest
 from dictionary import DictionarySnapshot
 from models import Manifest
+from session_repository import InMemorySessionIngests
 
 BEARER = "test-token"
 
@@ -92,33 +94,106 @@ def segment_row(
     }
 
 
-def fresh_processor(monkeypatch, *, whisper_up=True) -> session_processing.SessionProcessor:
-    """A clean `SessionProcessor`, installed as the process-wide one (what the
-    routes and `main.py` use). `whisper_up` is a bool, or a callable returning
-    one to change it mid-test."""
+class RecordingIngests(InMemorySessionIngests):
+    """The in-memory session-ingest adapter, noting each row operation so a
+    test can assert what was persisted and in which order: `updates` lists
+    every transition as `(state, segments)`, `fetched` every row read, `listed`
+    every sweep listing. A test can make the store fail (`update_error`,
+    `list_error`, `correct_error`) or run code when a row is inserted
+    (`on_insert`)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.updates: list[tuple[str, list[dict]]] = []
+        self.created: list[tuple] = []
+        self.deleted: list[str] = []
+        self.failed: list[str] = []
+        self.fetched: list[str] = []
+        self.listed: list[list[str]] = []
+        self.update_error: BaseException | None = None
+        self.list_error: BaseException | None = None
+        self.correct_error: BaseException | None = None
+        self.on_insert: Callable[[str], Awaitable[None]] | None = None
+
+    @property
+    def cached_ids(self) -> set[str]:
+        return set(self._cache)
+
+    async def _insert(self, session_id, received_at, state, segments) -> None:
+        self.created.append((session_id, received_at, state, segments))
+        if self.on_insert is not None:
+            await self.on_insert(session_id)
+        await super()._insert(session_id, received_at, state, segments)
+
+    async def _update(self, session_id, state, segments) -> None:
+        if self.update_error is not None:
+            raise self.update_error
+        self.updates.append((state, segments))
+        await super()._update(session_id, state, segments)
+
+    async def _set_failed(self, session_id) -> None:
+        self.failed.append(session_id)
+        await super()._set_failed(session_id)
+
+    async def _fetch(self, session_id) -> dict | None:
+        self.fetched.append(session_id)
+        return await super()._fetch(session_id)
+
+    async def _delete(self, session_id) -> None:
+        self.deleted.append(session_id)
+        await super()._delete(session_id)
+
+    async def _list_sweep_candidates(self) -> list[str]:
+        if self.list_error is not None:
+            raise self.list_error
+        self.listed.append(await super()._list_sweep_candidates())
+        return self.listed[-1]
+
+    async def _correct_legacy_done(self) -> int:
+        if self.correct_error is not None:
+            raise self.correct_error
+        return await super()._correct_legacy_done()
+
+
+def fresh_processor(
+    monkeypatch, *, whisper_up=True, repository: RecordingIngests | None = None
+) -> session_processing.SessionProcessor:
+    """A clean `SessionProcessor` over an in-memory repository, installed as
+    the process-wide one (what the routes and `main.py` use). `whisper_up` is a
+    bool, or a callable returning one to change it mid-test. Passing the
+    `repository` of an earlier processor models a restart: the rows stay, the
+    status cache and the in-flight claims are gone."""
     monkeypatch.setenv("IOS_BEARER_TOKEN", BEARER)
 
     async def whisper_reachable() -> bool:
         return whisper_up() if callable(whisper_up) else whisper_up
 
-    processor = session_processing.SessionProcessor(whisper_reachable=whisper_reachable)
+    if repository is not None:
+        repository.restart()
+    processor = session_processing.SessionProcessor(
+        whisper_reachable=whisper_reachable,
+        repository=repository if repository is not None else RecordingIngests(),
+    )
     monkeypatch.setattr(session_processing, "_default", processor)
+    # No test reaches the database: a reset only clears the tables `db` owns.
+    monkeypatch.setattr(db, "reset_all_data", _no_database_reset)
     return processor
 
 
+async def _no_database_reset() -> None:
+    return None
+
+
 class FakeSessionIngests:
-    """In-memory stand-in for the `session_ingests` table. `row` is the row of
-    the session it was built for; `add` puts more sessions in. `updates` lists
-    every `update_session_status` as `(state, segments)`."""
+    """Rows for the `session_ingests` table, held by the in-memory adapter.
+    `row` is the row of the session it was built for; `add` puts more sessions
+    in; `install` makes the processor from `fresh_processor` use them. The
+    adapter's `updates`, `created`, `deleted` and `failed` are readable here."""
 
     def __init__(self, session_id: str, state: str, segments: list[dict]):
         self.session_id = session_id
-        self.rows: dict[str, dict] = {}
+        self.repository = RecordingIngests()
         self.add(session_id, state, segments)
-        self.updates: list[tuple[str, list[dict]]] = []
-        self.created: list[tuple] = []
-        self.deleted: list[str] = []
-        self.failed: list[str] = []
 
     @classmethod
     def empty(cls, session_id: str) -> "FakeSessionIngests":
@@ -127,68 +202,43 @@ class FakeSessionIngests:
         return ingests
 
     @property
+    def rows(self) -> dict[str, dict]:
+        return self.repository.rows
+
+    @property
+    def updates(self) -> list[tuple[str, list[dict]]]:
+        return self.repository.updates
+
+    @property
+    def created(self) -> list[tuple]:
+        return self.repository.created
+
+    @property
+    def deleted(self) -> list[str]:
+        return self.repository.deleted
+
+    @property
+    def failed(self) -> list[str]:
+        return self.repository.failed
+
+    @property
     def row(self) -> dict | None:
         return self.rows.get(self.session_id)
 
     def add(self, session_id: str, state: str, segments: list[dict]) -> None:
-        self.rows[session_id] = {
+        self.repository.rows[session_id] = {
             "session_id": session_id,
             "received_at": "2026-07-01T10:00:00Z",
             "state": state,
             "segments": segments,
         }
 
-    def install(self, monkeypatch) -> "FakeSessionIngests":
-        async def get_session_status(sid: str) -> dict | None:
-            return self.rows.get(sid)
-
-        async def create_session_status(session_id, received_at, state, segments) -> None:
-            self.created.append((session_id, received_at, state, segments))
-            self.rows[session_id] = {
-                "session_id": session_id, "received_at": received_at,
-                "state": state, "segments": segments,
-            }
-
-        async def update_session_status(session_id: str, state: str, segments: list[dict]) -> None:
-            self.rows[session_id] = {**self.rows[session_id], "state": state, "segments": segments}
-            self.updates.append((state, segments))
-
-        async def delete_session_status(session_id: str) -> None:
-            self.deleted.append(session_id)
-            self.rows.pop(session_id, None)
-
-        async def mark_session_failed(session_id: str) -> None:
-            self.failed.append(session_id)
-
-        async def list_pending_analysis_session_ids() -> list[str]:
-            return [
-                sid for sid, row in self.rows.items()
-                if row["state"] == "processing"
-                or (row["state"] != "done"
-                    and any(seg["status"] == "pending_analysis" for seg in row["segments"]))
-            ]
-
-        async def correct_legacy_done_sessions() -> int:
-            legacy = [
-                row for row in self.rows.values()
-                if row["state"] == "done"
-                and any(seg["status"] == "pending_analysis" for seg in row["segments"])
-            ]
-            for row in legacy:
-                row["state"] = "partial"
-            return len(legacy)
-
-        async def reset_all_data() -> None:
-            self.rows.clear()
-
-        monkeypatch.setattr(db, "reset_all_data", reset_all_data)
-        monkeypatch.setattr(db, "get_session_status", get_session_status)
-        monkeypatch.setattr(db, "create_session_status", create_session_status)
-        monkeypatch.setattr(db, "update_session_status", update_session_status)
-        monkeypatch.setattr(db, "delete_session_status", delete_session_status)
-        monkeypatch.setattr(db, "mark_session_failed", mark_session_failed)
-        monkeypatch.setattr(db, "list_pending_analysis_session_ids", list_pending_analysis_session_ids)
-        monkeypatch.setattr(db, "correct_legacy_done_sessions", correct_legacy_done_sessions)
+    def install(self) -> "FakeSessionIngests":
+        """Hand these rows to the processor `fresh_processor` installed, so
+        call it first."""
+        processor = session_processing._default
+        assert processor is not None and isinstance(processor.repository, RecordingIngests)
+        processor.repository = self.repository
         return self
 
 
@@ -231,7 +281,7 @@ def stage_pending_session(monkeypatch, tmp_path, session_id: str) -> FakeSession
     ingests = FakeSessionIngests(
         session_id, "partial",
         [segment_row("s01", "pending_analysis", 5, "analysis_pending: first failure")],
-    ).install(monkeypatch)
+    ).install()
 
     stub_transcripts(monkeypatch, [5])
     return ingests

@@ -199,7 +199,7 @@ def test_retry_under_the_local_route_produces_a_local_analysis(monkeypatch, tmp_
 def test_startup_sweep_recovers_once_blindfold_answers(monkeypatch, tmp_path):
     llm, processor, ingests, _ = _pending_after_failure(monkeypatch, tmp_path, "sess-sweep-ok")
     llm.fail("blindfold.test", None)
-    restarted = fresh_processor(monkeypatch)
+    restarted = fresh_processor(monkeypatch, repository=ingests.repository)
 
     asyncio.run(restarted.retry_stuck_sessions_on_startup())
 
@@ -210,7 +210,7 @@ def test_startup_sweep_recovers_once_blindfold_answers(monkeypatch, tmp_path):
 def test_startup_sweep_under_the_local_route_produces_a_local_analysis(monkeypatch, tmp_path):
     llm, _, ingests, _ = _pending_after_failure(monkeypatch, tmp_path, "sess-sweep-local")
     _route(monkeypatch)
-    restarted = fresh_processor(monkeypatch)
+    restarted = fresh_processor(monkeypatch, repository=ingests.repository)
 
     asyncio.run(restarted.retry_stuck_sessions_on_startup())
 
@@ -220,7 +220,7 @@ def test_startup_sweep_under_the_local_route_produces_a_local_analysis(monkeypat
 
 def test_startup_sweep_with_blindfold_still_down_leaves_it_pending(monkeypatch, tmp_path):
     llm, _, ingests, _ = _pending_after_failure(monkeypatch, tmp_path, "sess-sweep-down")
-    restarted = fresh_processor(monkeypatch)
+    restarted = fresh_processor(monkeypatch, repository=ingests.repository)
 
     asyncio.run(restarted.retry_stuck_sessions_on_startup())
 
