@@ -62,18 +62,9 @@ def test_status_falls_back_to_persisted_row_and_caches_it(monkeypatch):
     """A restart clears the in-memory cache; a previously-completed session's
     status must still come back from the db (SRV-A6)."""
     processor = fresh_processor(monkeypatch)
-    lookups: list[str] = []
-
-    async def fake_get_session_status(session_id: str) -> dict | None:
-        lookups.append(session_id)
-        return {
-            "session_id": "sess-1",
-            "received_at": "2026-07-01T10:00:00Z",
-            "state": "done",
-            "segments": [segment_row("s01", "processed", 42)],
-        }
-
-    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
+    ingests = FakeSessionIngests(
+        "sess-1", "done", [segment_row("s01", "processed", 42)]
+    ).install()
 
     async def scenario():
         return await processor.get_status("sess-1"), await processor.get_status("sess-1")
@@ -83,16 +74,11 @@ def test_status_falls_back_to_persisted_row_and_caches_it(monkeypatch):
     assert first.state == "done"
     assert first.segments[0].transcript_id == 42
     assert second is first
-    assert lookups == ["sess-1"]
+    assert ingests.repository.fetched == ["sess-1"]
 
 
 def test_status_is_none_when_neither_cache_nor_db_has_the_session(monkeypatch):
     processor = fresh_processor(monkeypatch)
-
-    async def fake_get_session_status(session_id: str) -> dict | None:
-        return None
-
-    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
 
     assert asyncio.run(processor.get_status("unknown")) is None
 
@@ -105,7 +91,7 @@ def test_accept_persists_the_processing_row_before_returning(monkeypatch, tmp_pa
     process-local cache — before the caller answers 200."""
     processor = fresh_processor(monkeypatch)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-accept")
-    ingests = FakeSessionIngests.empty("sess-accept").install(monkeypatch)
+    ingests = FakeSessionIngests.empty("sess-accept").install()
 
     accepted = asyncio.run(processor.accept(parsed, session_dir))
 
@@ -124,7 +110,7 @@ def test_accept_rolls_everything_back_when_whisper_is_unreachable(monkeypatch, t
     whisper_up = [False]
     processor = fresh_processor(monkeypatch, whisper_up=lambda: whisper_up[0])
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-rollback")
-    ingests = FakeSessionIngests.empty("sess-rollback").install(monkeypatch)
+    ingests = FakeSessionIngests.empty("sess-rollback").install()
 
     async def scenario():
         with pytest.raises(upstream_failure.UpstreamFailure) as exc_info:
@@ -149,10 +135,10 @@ def test_accept_claims_the_session_before_its_processing_row_exists(monkeypatch,
     created — otherwise the sweep could fail the segments of a live session."""
     processor = fresh_processor(monkeypatch)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-claim-first")
-    FakeSessionIngests.empty("sess-claim-first").install(monkeypatch)
+    ingests = FakeSessionIngests.empty("sess-claim-first").install()
     busy_when_row_created: list[bool] = []
 
-    async def create_session_status(session_id, received_at, state, segments) -> None:
+    async def on_insert(session_id) -> None:
         try:
             await processor.retry_analysis(session_id)
         except SessionBusy:
@@ -160,7 +146,7 @@ def test_accept_claims_the_session_before_its_processing_row_exists(monkeypatch,
         else:  # pragma: no cover
             busy_when_row_created.append(False)
 
-    monkeypatch.setattr(db, "create_session_status", create_session_status)
+    ingests.repository.on_insert = on_insert
 
     asyncio.run(processor.accept(parsed, session_dir))
 
@@ -182,7 +168,7 @@ def test_run_accepted_derives_the_final_state_from_the_segment_outcomes(
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch, failing={seg: RuntimeError("boom") for seg in failing})
     stage = NarrativeStage(monkeypatch)
 
@@ -227,7 +213,7 @@ def test_run_accepted_reports_partial_when_the_analysis_leaves_every_segment_pen
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch)
     stage = NarrativeStage(monkeypatch)
     stage.analysis_error = RuntimeError("ollama unreachable")
@@ -248,14 +234,10 @@ def test_run_accepted_marks_the_session_failed_when_processing_crashes(monkeypat
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch)
     NarrativeStage(monkeypatch)
-
-    async def update_session_status(session_id, state, segments) -> None:
-        raise RuntimeError("db down")
-
-    monkeypatch.setattr(db, "update_session_status", update_session_status)
+    ingests.repository.update_error = RuntimeError("db down")
 
     async def scenario():
         await processor.accept(parsed, session_dir)
@@ -273,14 +255,11 @@ def test_original_ingest_releases_its_claim_on_success_and_failure(monkeypatch, 
     processor = fresh_processor(monkeypatch)
     session_id = f"sess-release-{crashes}"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
-    FakeSessionIngests.empty(session_id).install(monkeypatch)
+    ingests = FakeSessionIngests.empty(session_id).install()
     SegmentPipeline(monkeypatch)
     NarrativeStage(monkeypatch)
     if crashes:
-        async def update_session_status(session_id, state, segments) -> None:
-            raise RuntimeError("db down")
-
-        monkeypatch.setattr(db, "update_session_status", update_session_status)
+        ingests.repository.update_error = RuntimeError("db down")
 
     async def scenario():
         await processor.accept(parsed, session_dir)
@@ -301,7 +280,7 @@ def test_phase_1_persists_each_segment_as_it_finishes(monkeypatch, tmp_path):
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(
         monkeypatch, transcript_ids={"s01": 11}, failing={"s02": RuntimeError("whisper exploded")},
     )
@@ -336,7 +315,7 @@ def test_phase_1_updates_the_status_cache_per_segment(monkeypatch, tmp_path):
     processor = fresh_processor(monkeypatch)
     session_id = "sess-phase1-cache"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
-    FakeSessionIngests.empty(session_id).install(monkeypatch)
+    FakeSessionIngests.empty(session_id).install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 21, "s02": 22})
     stage = NarrativeStage(monkeypatch)
     cache_at_phase_2: list[list[SegmentResult]] = []
@@ -380,7 +359,7 @@ def test_segments_go_through_the_shared_transcribe_and_persist_core(monkeypatch,
     parsed, session_dir = _single_segment_bundle(monkeypatch, tmp_path, "sess-seg", date="2026-07-04")
     FakeSessionIngests(
         "sess-seg", "processing", [segment_row("s01", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     pipeline = SegmentPipeline(monkeypatch, transcript_ids={"s01": 7})
     stage = NarrativeStage(monkeypatch)
 
@@ -408,7 +387,7 @@ def test_segments_use_the_shared_correction_module(monkeypatch, tmp_path):
     parsed, session_dir = _single_segment_bundle(monkeypatch, tmp_path, "sess-corr")
     FakeSessionIngests(
         "sess-corr", "processing", [segment_row("s01", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     text_corrections = [{"original_text": "welt", "corrected_text": "Welt"}]
     dismissals = ["Baumarkt"]
     persons = [{"canonical_name": "Anna"}]
@@ -462,7 +441,7 @@ def test_segment_entities_are_persisted_even_when_correction_leaves_the_text_unc
     parsed, session_dir = _single_segment_bundle(monkeypatch, tmp_path, "sess-entities")
     FakeSessionIngests(
         "sess-entities", "processing", [segment_row("s01", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
 
     async def correct(raw_text):
         entity = DetectedEntity(
@@ -492,7 +471,7 @@ def test_a_missing_audio_file_fails_only_its_segment(monkeypatch, tmp_path):
     (session_dir / "segments" / "s02.m4a").unlink()
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 11})
     NarrativeStage(monkeypatch)
 
@@ -514,7 +493,7 @@ def _run_with_real_narrative_stage(monkeypatch, tmp_path, session_id, *, ingest)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 1, "s02": 2})
     fake_document_processor_pipeline(monkeypatch, ingest=ingest)
     saved_ids: list[int] = []
@@ -573,11 +552,6 @@ def test_retry_raises_session_not_found_for_an_unknown_session(monkeypatch):
     """#52: neither cache nor persisted row knows the session."""
     processor = fresh_processor(monkeypatch)
 
-    async def fake_get_session_status(session_id: str) -> dict | None:
-        return None
-
-    monkeypatch.setattr(db, "get_session_status", fake_get_session_status)
-
     with pytest.raises(SessionNotFound):
         asyncio.run(processor.retry_analysis("unknown"))
 
@@ -588,7 +562,7 @@ def test_retry_raises_not_retryable_when_no_segment_is_pending_analysis(monkeypa
     processor = fresh_processor(monkeypatch)
     FakeSessionIngests(
         "sess-done", "done", [segment_row("s01", "processed", 1)]
-    ).install(monkeypatch)
+    ).install()
 
     with pytest.raises(SessionNotRetryable):
         asyncio.run(processor.retry_analysis("sess-done"))
@@ -599,7 +573,7 @@ def test_retry_raises_not_retryable_when_no_pending_segment_has_a_transcript_row
     stage_bundle(monkeypatch, tmp_path, "sess-no-transcript")
     FakeSessionIngests(
         "sess-no-transcript", "done", [segment_row("s01", "pending_analysis", 9, "analysis_pending: boom")]
-    ).install(monkeypatch)
+    ).install()
     stub_transcripts(monkeypatch, [])
 
     with pytest.raises(SessionNotRetryable):
@@ -613,7 +587,7 @@ def _stage_untranscribed_session(monkeypatch, tmp_path, session_id, segments):
     """A two-segment bundle on disk whose persisted `processing` row holds
     `segments`; returns the session directory and the fake table."""
     _, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
-    ingests = FakeSessionIngests(session_id, "processing", segments).install(monkeypatch)
+    ingests = FakeSessionIngests(session_id, "processing", segments).install()
     return session_dir, ingests
 
 
@@ -768,7 +742,7 @@ def test_retry_that_is_not_retryable_resumes_nothing(monkeypatch, tmp_path):
     stage_bundle(monkeypatch, tmp_path, session_id)
     ingests = FakeSessionIngests(
         session_id, "done", [segment_row("s01", "pending_analysis", 9, "analysis_pending: boom")]
-    ).install(monkeypatch)
+    ).install()
     pipeline = SegmentPipeline(monkeypatch)
     stub_transcripts(monkeypatch, [])
 
@@ -923,7 +897,7 @@ def _retry_with_saved_documents(monkeypatch, tmp_path, documents: dict[int, dict
     FakeSessionIngests(
         session_id, "done",
         [segment_row(f"s{tid:02d}", "pending_analysis", tid, "analysis_pending: boom") for tid in documents],
-    ).install(monkeypatch)
+    ).install()
     stub_transcripts(monkeypatch, documents)
     stage = NarrativeStage(monkeypatch)
     for tid, doc in documents.items():
@@ -1069,7 +1043,7 @@ def test_retry_is_busy_during_the_original_ingest_and_free_once_it_ends(monkeypa
     processor = fresh_processor(monkeypatch)
     session_id = "sess-retry-vs-ingest"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
-    FakeSessionIngests.empty(session_id).install(monkeypatch)
+    FakeSessionIngests.empty(session_id).install()
     SegmentPipeline(monkeypatch)
     stage = NarrativeStage(monkeypatch)
 
@@ -1107,7 +1081,7 @@ def _stage_stuck_sessions(monkeypatch, tmp_path, sessions: dict[str, int]) -> Fa
             ingests = FakeSessionIngests(session_id, "partial", segments)
         else:
             ingests.add(session_id, "partial", segments)
-    ingests.install(monkeypatch)
+    ingests.install()
     stub_transcripts(monkeypatch, sessions.values())
     return ingests
 
@@ -1159,18 +1133,10 @@ def test_sweep_leaves_done_sessions_alone(monkeypatch, tmp_path):
     ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-pending": 5})
     ingests.add("sess-done", "done", [segment_row("s01", "processed", 6)])
     stage = NarrativeStage(monkeypatch)
-    listed: list[list[str]] = []
-    list_candidates = db.list_pending_analysis_session_ids
-
-    async def recording_list() -> list[str]:
-        listed.append(await list_candidates())
-        return listed[-1]
-
-    monkeypatch.setattr(db, "list_pending_analysis_session_ids", recording_list)
 
     asyncio.run(processor.retry_stuck_sessions_on_startup())
 
-    assert listed == [["sess-pending"]]
+    assert ingests.repository.listed == [["sess-pending"]]
     assert len(stage.runs) == 1
     assert ingests.rows["sess-done"]["state"] == "done"
 
@@ -1179,11 +1145,7 @@ def test_sweep_still_runs_when_the_legacy_correction_fails(monkeypatch, tmp_path
     processor = fresh_processor(monkeypatch)
     ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-a": 5})
     NarrativeStage(monkeypatch)
-
-    async def correct_legacy_done_sessions() -> int:
-        raise RuntimeError("db unreachable")
-
-    monkeypatch.setattr(db, "correct_legacy_done_sessions", correct_legacy_done_sessions)
+    ingests.repository.correct_error = RuntimeError("db unreachable")
 
     with caplog.at_level(logging.INFO, logger=session_processing.logger.name):
         asyncio.run(processor.retry_stuck_sessions_on_startup())
@@ -1271,11 +1233,6 @@ def test_sweep_skips_a_session_with_a_retry_in_flight(monkeypatch, tmp_path, cap
     stage_pending_session(monkeypatch, tmp_path, session_id)
     stage = NarrativeStage(monkeypatch)
 
-    async def list_pending_analysis_session_ids():
-        return [session_id]
-
-    monkeypatch.setattr(db, "list_pending_analysis_session_ids", list_pending_analysis_session_ids)
-
     async def scenario():
         started, release = stage.latch()
         retry = asyncio.create_task(processor.retry_analysis(session_id))
@@ -1326,7 +1283,7 @@ def test_sweep_skips_a_processing_session_active_in_this_process(monkeypatch, tm
     processor = fresh_processor(monkeypatch)
     session_id = "sess-active-here"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
-    ingests = FakeSessionIngests.empty(session_id).install(monkeypatch)
+    ingests = FakeSessionIngests.empty(session_id).install()
     stub_transcripts(monkeypatch, [])
     stage = NarrativeStage(monkeypatch)
 
@@ -1356,20 +1313,21 @@ def test_sweep_recovers_a_session_after_a_crash_between_phase_1_and_phase_2(monk
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, manifest)
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    )
+    processor = fresh_processor(monkeypatch, repository=ingests.repository)
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 31, "s02": 32})
     dying_stage = NarrativeStage(monkeypatch)
     dying_stage.analysis_error = _ProcessDied()
 
     with pytest.raises(_ProcessDied):
-        asyncio.run(fresh_processor(monkeypatch).run_accepted(parsed, session_dir))
+        asyncio.run(processor.run_accepted(parsed, session_dir))
     assert ingests.row["state"] == "processing"
     assert ingests.row["segments"] == [
         segment_row("s01", "pending_analysis", 31), segment_row("s02", "pending_analysis", 32),
     ]
 
     # "Restart": a fresh processor (empty cache and claims), a healthy narrative stage.
-    restarted = fresh_processor(monkeypatch)
+    restarted = fresh_processor(monkeypatch, repository=ingests.repository)
     stage = NarrativeStage(monkeypatch)
     stub_transcripts(monkeypatch, [31, 32])
 
@@ -1390,7 +1348,7 @@ def test_sweep_resumes_the_untranscribed_segments_of_an_interrupted_session(monk
     stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis", 41), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     pipeline = SegmentPipeline(monkeypatch, transcript_ids={"s02": 42})
     stub_transcripts(monkeypatch, [41])
     stage = NarrativeStage(monkeypatch)
@@ -1410,7 +1368,7 @@ def test_sweep_reaches_done_for_a_session_nothing_of_which_was_transcribed(monke
     stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 11, "s02": 12})
     stage = NarrativeStage(monkeypatch)
 
@@ -1428,7 +1386,7 @@ def test_sweep_fails_the_segment_whose_audio_is_missing_and_finishes_the_rest(mo
     (session_dir / "segments" / "s02.m4a").unlink()
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis", 41), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch)
     stub_transcripts(monkeypatch, [41])
     stage = NarrativeStage(monkeypatch)
@@ -1452,7 +1410,7 @@ def test_sweep_marks_a_session_failed_when_none_of_its_audio_is_left(monkeypatch
         audio.unlink()
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch)
     stage = NarrativeStage(monkeypatch)
 
@@ -1476,7 +1434,7 @@ def test_sweep_logs_one_line_without_traceback_for_a_non_retryable_session(monke
         session_id, "partial",
         [segment_row("s01", "pending_analysis", 61, "analysis_pending: boom"),
          segment_row("s02", "pending_analysis", 62, "analysis_pending: boom")],
-    ).install(monkeypatch)
+    ).install()
     stub_transcripts(monkeypatch, [])
     stage = NarrativeStage(monkeypatch)
 
@@ -1497,7 +1455,7 @@ def test_sweep_logs_one_line_without_traceback_when_the_manifest_is_missing(monk
     session_id = "sess-no-manifest"
     FakeSessionIngests(
         session_id, "partial", [segment_row("s01", "pending_analysis", 51, "analysis_pending: boom")]
-    ).install(monkeypatch)
+    ).install()
     stub_transcripts(monkeypatch, [51])
     NarrativeStage(monkeypatch)
 
@@ -1513,10 +1471,6 @@ def test_sweep_logs_one_line_without_traceback_when_the_manifest_is_missing(monk
 
 def test_sweep_never_raises_when_listing_the_stuck_sessions_fails(monkeypatch):
     processor = fresh_processor(monkeypatch)
-
-    async def list_pending_analysis_session_ids():
-        raise RuntimeError("db unreachable")
-
-    monkeypatch.setattr(db, "list_pending_analysis_session_ids", list_pending_analysis_session_ids)
+    processor.repository.list_error = RuntimeError("db unreachable")
 
     asyncio.run(processor.retry_stuck_sessions_on_startup())
