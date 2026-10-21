@@ -1041,7 +1041,7 @@ function confirmClearDictionary() {
 
 function confirmResetAll() {
   modalConfirm('Reset All Data',
-    'This will permanently delete <strong>everything</strong>: all persons, terms, variations, transcripts, and review logs.<br><br>This cannot be undone.',
+    'This will permanently delete <strong>everything</strong>: all persons, terms, variations, transcripts, review logs, and iOS session records and bundles.<br><br>This cannot be undone.',
     { danger: true, confirmLabel: 'Reset Everything', confirmCls: 'btn btn-danger' }
   ).then(function(ok) {
     if (!ok) return;

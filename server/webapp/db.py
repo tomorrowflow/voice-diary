@@ -338,7 +338,9 @@ async def get_transcript(transcript_id: int) -> dict | None:
 
 def _parse_date_flexible(date_val) -> "date_type":
     """Parse a date from various formats: YYYY-MM-DD, YYYYMMDD, or extract
-    8-digit date pattern from arbitrary strings."""
+    8-digit date pattern from arbitrary strings.
+
+    Kept (REF-119): not unused, `create_transcript` calls it."""
     import re as _re
 
     if isinstance(date_val, date_type):
@@ -924,6 +926,9 @@ async def get_transcript_by_date(date_str: str) -> dict | None:
 async def reset_all_data():
     pool = await get_pool()
     await pool.execute("TRUNCATE persons, terms, transcripts, review_log CASCADE")
+    # MIG-115/#115: session rows point at transcripts that were just deleted;
+    # left behind they break the sweep and block a re-upload of the session id.
+    await pool.execute("DELETE FROM session_ingests")
     try:
         await pool.execute("DELETE FROM harvest_entries")
     except Exception:
@@ -1181,13 +1186,6 @@ async def list_ingest_uploads(limit: int = 100) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-async def delete_ingest_uploads(ids: list[int]):
-    pool = await get_pool()
-    await pool.execute(
-        "DELETE FROM ingest_uploads WHERE id = ANY($1::int[])", ids
-    )
-
-
 async def clear_ingest_history():
     pool = await get_pool()
     await pool.execute("DELETE FROM ingest_uploads")
@@ -1407,18 +1405,6 @@ async def mark_document_ingested(doc_id: int) -> dict | None:
         doc_id,
     )
     return dict(row) if row else None
-
-
-async def get_document_versions(transcript_id: int) -> list[dict]:
-    """Get all versions of processed documents for a transcript."""
-    pool = await get_pool()
-    rows = await pool.fetch(
-        "SELECT id, version, lightrag_ingested, lightrag_ingested_at, "
-        "created_at, updated_at "
-        "FROM processed_documents WHERE transcript_id = $1 ORDER BY version DESC",
-        transcript_id,
-    )
-    return [dict(r) for r in rows]
 
 
 async def get_latest_document_ids_by_transcript() -> dict[int, int]:

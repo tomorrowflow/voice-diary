@@ -41,13 +41,15 @@ import json
 import logging
 import re
 import shutil
-from dataclasses import dataclass, field
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import AsyncIterator, Awaitable, Callable
 
 import asr_client
 import correction
 import db
+import dictionary
 import narrative
 import transcript_ingest
 import upstream_failure
@@ -121,6 +123,35 @@ def session_dir_for(session_id: str) -> Path:
     return sessions_dir() / slug_session_id(session_id)
 
 
+async def _finish_despite_cancellation(work: asyncio.Future) -> None:
+    """Wait for `work` to finish even if the caller is cancelled meanwhile,
+    then re-raise the cancellation (or `work`'s own error). The deletion of
+    the sessions can't be stopped halfway — its thread keeps running — so the
+    upload gate must stay closed until it is done."""
+    cancelled = False
+    while not work.done():
+        try:
+            await asyncio.shield(work)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:
+            pass  # surfaced by work.result() below
+    work.result()
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+def _remove_all_bundles() -> None:
+    root = sessions_dir()
+    if not root.is_dir():
+        return
+    for entry in root.iterdir():
+        if entry.is_dir() and not entry.is_symlink():
+            shutil.rmtree(entry)
+        else:
+            entry.unlink()
+
+
 async def _asr_reachable() -> bool:
     return await asr_client.get_default_client().reachable()
 
@@ -173,6 +204,10 @@ class SessionProcessor:
         # transcript and ingest `diary:{date}` into LightRAG twice. Guarded by
         # `_lock`; single-process app, so an in-process set is enough.
         self._in_flight: set[str] = set()
+        # Upload gate (see `upload_gate` / `reset_all_data`).
+        self._gate = asyncio.Condition()
+        self._uploads_inside = 0
+        self._resetting = False
 
     # -- claims ------------------------------------------------------------
 
@@ -208,6 +243,60 @@ class SessionProcessor:
         async with self._lock:
             self._status.setdefault(session_id, status_obj)
         return status_obj
+
+    # -- upload gate / reset ----------------------------------------------
+
+    @asynccontextmanager
+    async def upload_gate(self) -> AsyncIterator[None]:
+        """Held by an upload from writing its bundle until `accept()` has
+        persisted the session. A reset waits for the uploads inside it and
+        holds new ones back until it is done."""
+        async with self._gate:
+            await self._gate.wait_for(lambda: not self._resetting)
+            self._uploads_inside += 1
+        try:
+            yield
+        finally:
+            self._uploads_inside -= 1
+            await self._wake_gate_waiters()
+
+    async def reset_all_data(self) -> None:
+        """The admin "Reset All Data" (MIG-115/#115): `db.reset_all_data`,
+        then forget every session in this process — empty the status cache and
+        delete every bundle under `data/sessions/` (the directory itself
+        stays). Runs with no upload inside the gate, so no upload can create a
+        row or bundle between the database reset and the bundle removal.
+
+        `_resetting` is cleared on every exit, including cancellation while
+        waiting for the uploads to drain; otherwise every later upload and
+        reset would wait forever."""
+        async with self._gate:
+            await self._gate.wait_for(lambda: not self._resetting)
+            self._resetting = True
+        try:
+            async with self._gate:
+                await self._gate.wait_for(lambda: self._uploads_inside == 0)
+            await _finish_despite_cancellation(asyncio.ensure_future(self._clear_everything()))
+        finally:
+            self._resetting = False
+            await self._wake_gate_waiters()
+
+    async def _clear_everything(self) -> None:
+        await db.reset_all_data()
+        async with self._lock:
+            self._status.clear()
+        await asyncio.to_thread(_remove_all_bundles)
+
+    async def _wake_gate_waiters(self) -> None:
+        """Wake the gate's waiters after its state changed. Shielded so a
+        cancellation arriving while the gate lock is contended can't skip the
+        wake-up; the state itself is already updated by the caller."""
+
+        async def notify() -> None:
+            async with self._gate:
+                self._gate.notify_all()
+
+        await asyncio.shield(notify())
 
     async def _persist_status(
         self, session_id: str, state: str, segments: list[SegmentResult]
@@ -767,21 +856,17 @@ async def _process_segment(
     # dict with the manifest's canonical attendee names so the detector
     # resolves them deterministically (Graph already gave us the truth — no
     # need to fuzzy-match again).
-    persons_dict = await db.load_person_dictionary()
-    terms_dict = await db.load_term_dictionary()
+    snapshot = await dictionary.load_dictionary_snapshot()
     if isinstance(segment, CalendarEventSegment):
         seed_persons = _attendees_to_canonical_names(segment.calendar_ref.attendees)
         if seed_persons:
-            persons_dict = _seed_persons_into_dict(persons_dict, seed_persons)
-    text_corrections = await db.load_text_corrections()
-    dismissals = await db.load_entity_dismissals()
+            snapshot = replace(
+                snapshot,
+                persons=_seed_persons_into_dict(snapshot.persons, seed_persons),
+            )
 
     result = await correction.correct_and_detect_entities(
-        raw_transcript,
-        persons=persons_dict,
-        terms=terms_dict,
-        text_corrections=text_corrections,
-        dismissals=dismissals,
+        raw_transcript, snapshot=snapshot
     )
     corrected_text = result.corrected_text
 

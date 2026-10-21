@@ -6,6 +6,10 @@ import os
 // "session bundle"). The coordinator decides the dialogue; the bundle owns
 // the disk layout, the segment and chunk ids and the manifest, so those
 // details live in one place.
+//
+// Everything the manifest will say, plus the pause marker, is journaled to
+// `journal.json` after every change, so `open` can restore a bundle after
+// an app kill exactly as it was (CONTEXT.md: "pickup").
 
 /// What `SessionBundle.finalize` hands to the uploader: the manifest and
 /// the audio files it references, keyed by the manifest `audio_file` path.
@@ -62,6 +66,34 @@ final class SessionBundle {
     /// Applies the app-wide protection class to a created file or directory.
     typealias Protector = @MainActor (URL) -> Void
 
+    /// Writes the encoded journal to its file. Injected so a failing disk
+    /// is testable.
+    typealias JournalWriter = @MainActor (Data, URL) throws -> Void
+
+    /// Why `open` refused a directory.
+    enum OpenError: Error {
+        /// No journal: a bundle from before the journal existed. It can
+        /// still be uploaded or deleted, but not picked up.
+        case noJournal
+    }
+
+    /// Where the walkthrough was when the user paused: enough for the
+    /// coordinator to re-enter the same step. Journaled with the bundle.
+    struct PauseMarker: Codable, Sendable, Equatable {
+        enum Phase: String, Codable { case briefing, opener, listening }
+        enum Kind: String, Codable { case event, general, voiceNote }
+        let phase: Phase
+        let kind: Kind?
+        let stepIndex: Int
+        let eventIndex: Int?
+        let sectionID: String?
+        let elapsedSeconds: Int
+        let activeSegmentID: String?
+        let pausedAt: Date
+    }
+
+    nonisolated static let journalFilename = "journal.json"
+
     /// Sample rate reported when nothing was recorded in this run, e.g. a
     /// session assembled purely from files left by an earlier run.
     static let defaultSampleRate = 44_100
@@ -75,10 +107,21 @@ final class SessionBundle {
     private(set) var currentSegmentID: String?
     /// Seed ids of the voice notes attached to this session.
     private(set) var surfacedNoteIDs: [String] = []
+    /// Where the user last paused, nil when not paused. Cleared when a
+    /// new recording starts: that recording is the newer position.
+    private(set) var pauseMarker: PauseMarker?
     var confirmedTodoCount: Int { confirmedTodos.count }
+
+    /// The most recently recorded walkthrough segment, the step pickup
+    /// continues at. Attached voice notes and empty blocks are not
+    /// recordings of a step, so they are skipped.
+    var latestRecordedSegment: Segment? {
+        segments.last { Self.isChunkable($0) }
+    }
 
     private let audio: any SessionBundleAudio
     private let protect: Protector
+    private let writeJournal: JournalWriter
     private var chunkCounters: [String: Int] = [:]
     private var sampleRates: [Double] = []
     private var aiPrompts: [AiPrompt] = []
@@ -89,12 +132,14 @@ final class SessionBundle {
         directory: URL,
         sessionID: String,
         audio: any SessionBundleAudio,
-        protect: @escaping Protector = { LocalStore.applyProtection(to: $0) }
+        protect: @escaping Protector = { LocalStore.applyProtection(to: $0) },
+        writeJournal: @escaping JournalWriter = { try SessionBundle.writeJournalData($0, to: $1) }
     ) {
         self.directory = directory
         self.sessionID = sessionID
         self.audio = audio
         self.protect = protect
+        self.writeJournal = writeJournal
     }
 
     /// Create the on-disk layout for a new session under `stagingRoot`.
@@ -105,14 +150,135 @@ final class SessionBundle {
         in stagingRoot: URL,
         sessionID: String,
         audio: any SessionBundleAudio,
-        protect: @escaping Protector = { LocalStore.applyProtection(to: $0) }
+        protect: @escaping Protector = { LocalStore.applyProtection(to: $0) },
+        writeJournal: @escaping JournalWriter = { try SessionBundle.writeJournalData($0, to: $1) }
     ) throws -> SessionBundle {
         let dir = stagingRoot.appending(path: sanitize(sessionID), directoryHint: .isDirectory)
         let segmentsDir = dir.appending(path: "segments", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: segmentsDir, withIntermediateDirectories: true)
         protect(dir)
         protect(segmentsDir)
-        return SessionBundle(directory: dir, sessionID: sessionID, audio: audio, protect: protect)
+        let bundle = SessionBundle(
+            directory: dir, sessionID: sessionID, audio: audio, protect: protect, writeJournal: writeJournal
+        )
+        bundle.persist()
+        return bundle
+    }
+
+    /// Restore the bundle in `directory` from its journal: segments with
+    /// their transcripts, prompts, todo verdicts, attached voice notes and
+    /// the pause marker, as of the last change before the app stopped.
+    /// Throws `OpenError.noJournal` for a bundle without one. A segment
+    /// whose audio file is gone is dropped, since it could not upload.
+    static func open(
+        _ directory: URL,
+        audio: any SessionBundleAudio,
+        protect: @escaping Protector = { LocalStore.applyProtection(to: $0) },
+        writeJournal: @escaping JournalWriter = { try SessionBundle.writeJournalData($0, to: $1) }
+    ) throws -> SessionBundle {
+        let url = directory.appending(path: journalFilename)
+        guard let data = try? Data(contentsOf: url) else { throw OpenError.noJournal }
+        let journal = try journalDecoder.decode(Journal.self, from: data)
+        let bundle = SessionBundle(
+            directory: directory, sessionID: journal.sessionID, audio: audio, protect: protect,
+            writeJournal: writeJournal
+        )
+        bundle.restore(journal)
+        return bundle
+    }
+
+    // MARK: - Journal
+
+    /// Everything that is not derivable from the files on disk.
+    private struct Journal: Codable {
+        var sessionID: String
+        var segments: [Segment]
+        var chunkCounters: [String: Int]
+        var sampleRates: [Double]
+        var aiPrompts: [AiPrompt]
+        var confirmedTodos: [Todo]
+        var rejectedTodos: [TodoRejected]
+        var surfacedNoteIDs: [String]
+        var pauseMarker: PauseMarker?
+    }
+
+    private static let journalEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    private static let journalDecoder: JSONDecoder = {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }()
+
+    /// Atomic replace with the app-wide protection class: the journal is
+    /// rewritten while the screen may be locked, and `.complete` would
+    /// make that fail.
+    static func writeJournalData(_ data: Data, to url: URL) throws {
+        try data.write(to: url, options: [.atomic, LocalStore.dataProtectionWriteOption])
+    }
+
+    private func restore(_ journal: Journal) {
+        let fm = FileManager.default
+        segments = journal.segments.filter { segment in
+            let present = fm.fileExists(atPath: directory.appending(path: segment.audioFile).path)
+            if !present {
+                Log.app.warning(
+                    "journal: dropping \(segment.segmentID, privacy: .public), its audio file is gone"
+                )
+            }
+            return present
+        }
+        chunkCounters = journal.chunkCounters
+        sampleRates = journal.sampleRates
+        aiPrompts = journal.aiPrompts
+        confirmedTodos = journal.confirmedTodos
+        rejectedTodos = journal.rejectedTodos
+        surfacedNoteIDs = journal.surfacedNoteIDs
+        pauseMarker = journal.pauseMarker
+        if segments.count != journal.segments.count { persist() }
+    }
+
+    /// Write the journal. Called after every change, so an app kill loses
+    /// nothing. A failed write is logged and never thrown: the walkthrough
+    /// must not stop for it, and the next change writes the full state again.
+    private func persist() {
+        let journal = Journal(
+            sessionID: sessionID,
+            segments: segments,
+            chunkCounters: chunkCounters,
+            sampleRates: sampleRates,
+            aiPrompts: aiPrompts,
+            confirmedTodos: confirmedTodos,
+            rejectedTodos: rejectedTodos,
+            surfacedNoteIDs: surfacedNoteIDs,
+            pauseMarker: pauseMarker
+        )
+        do {
+            let data = try Self.journalEncoder.encode(journal)
+            try writeJournal(data, directory.appending(path: Self.journalFilename))
+        } catch {
+            let message = "session journal write failed: \(String(describing: error))"
+            Log.app.warning("\(message, privacy: .public)")
+            Diag.log(message)
+        }
+    }
+
+    /// Remember where the walkthrough was paused.
+    func setPauseMarker(_ marker: PauseMarker) {
+        pauseMarker = marker
+        persist()
+    }
+
+    /// The walkthrough resumed or was uploaded: the marker no longer applies.
+    func clearPauseMarker() {
+        guard pauseMarker != nil else { return }
+        pauseMarker = nil
+        persist()
     }
 
     // MARK: - Ids and paths
@@ -149,6 +315,20 @@ final class SessionBundle {
         return (base, Int(ns.substring(with: chunkRange)) ?? 1)
     }
 
+    /// The recorded segments that are chunks of the same recording as
+    /// `id` (`s01e02`, `s01e02c2`, ...), in recording order.
+    func chunks(sharingRecordingWith id: String) -> [Segment] {
+        let baseID = Self.parseSegmentID(id).baseID
+        return segments.filter {
+            Self.isChunkable($0) && Self.parseSegmentID($0.segmentID).baseID == baseID
+        }
+    }
+
+    /// The segment with this actual id, nil when unknown.
+    func segment(withID id: String) -> Segment? {
+        segments.first { $0.segmentID == id }
+    }
+
     /// The on-disk file of a recorded segment, nil for an unknown id.
     func audioURL(forSegmentID id: String) -> URL? {
         segments.first { $0.segmentID == id }
@@ -181,6 +361,8 @@ final class SessionBundle {
         chunkCounters[baseID] = chunk
         segments.append(Self.makeSegment(kind, actualID: actualID, audioFile: path))
         currentSegmentID = actualID
+        pauseMarker = nil
+        persist()
     }
 
     private static func makeSegment(_ kind: Kind, actualID: String, audioFile: String) -> Segment {
@@ -232,15 +414,7 @@ final class SessionBundle {
             }
         }
         currentSegmentID = nil
-    }
-
-    /// Re-register a segment whose audio an earlier run left on disk
-    /// (pickup), so it uploads with the session and the next recording of
-    /// its base id continues at the following chunk number.
-    func adopt(_ segment: Segment) {
-        let (baseID, chunk) = Self.parseSegmentID(segment.segmentID)
-        chunkCounters[baseID] = max(chunkCounters[baseID, default: 0], chunk)
-        segments.append(segment)
+        persist()
     }
 
     // MARK: - Recording results
@@ -279,8 +453,9 @@ final class SessionBundle {
             segment.language = language
             segments[idx] = .generalSection(segment)
         case .voiceNote, .emptyBlock:
-            break
+            return
         }
+        persist()
     }
 
     func recordPrompt(role: String, segmentID: String?, text: String) {
@@ -290,14 +465,17 @@ final class SessionBundle {
             segment_id: segmentID,
             text: text
         ))
+        persist()
     }
 
     func recordTodoConfirmed(_ todo: Todo) {
         confirmedTodos.append(todo)
+        persist()
     }
 
     func recordTodoRejected(text: String, sourceSegmentID: String?) {
         rejectedTodos.append(TodoRejected(text: text, source_segment_id: sourceSegmentID))
+        persist()
     }
 
     // MARK: - Voice notes
@@ -332,11 +510,13 @@ final class SessionBundle {
             surfaced.append(note.seed_id)
         }
         surfacedNoteIDs = surfaced
+        persist()
     }
 
     /// The closing reflection was skipped: its notes must stay unsurfaced.
     func clearSurfacedNotes() {
         surfacedNoteIDs = []
+        persist()
     }
 
     // MARK: - Finalizing
@@ -349,6 +529,7 @@ final class SessionBundle {
     /// consolidation step.
     func finalize(date: String, responseLanguage: String) async -> UploadBundle {
         await mergeChunks()
+        persist()
         let manifest = Manifest(
             session_id: sessionID,
             date: date,

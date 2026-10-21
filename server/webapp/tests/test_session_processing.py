@@ -433,7 +433,7 @@ def test_segments_use_the_shared_correction_module(monkeypatch, tmp_path):
     assert len(pipeline.correct_calls) == 1
     assert pipeline.correct_calls[0] == {
         "raw_text": "hallo welt", "persons": persons, "terms": terms,
-        "text_corrections": text_corrections, "dismissals": dismissals,
+        "text_corrections": text_corrections, "dismissals": ["baumarkt"],
     }
     expected_entities = [
         {
@@ -1306,7 +1306,7 @@ def test_retries_of_different_sessions_run_in_parallel(monkeypatch, tmp_path):
         both_running = asyncio.Barrier(2)
 
         async def before_analysis(run):
-            await asyncio.wait_for(both_running.wait(), 5)
+            await asyncio.wait_for(both_running.wait(), 0.5)
 
         stage.before_analysis = before_analysis
         return await asyncio.gather(

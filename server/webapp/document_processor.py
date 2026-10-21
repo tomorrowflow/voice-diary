@@ -14,10 +14,12 @@ import logging
 import math
 import os
 import re
+from dataclasses import dataclass, field
 from datetime import datetime
 
 import httpx
 
+import analysis_route
 from lightrag_client import DEFAULT_BASE_URL as LIGHTRAG_DEFAULT_URL
 from lightrag_client import LightRAGClient, LightRAGError
 
@@ -29,8 +31,9 @@ logger = logging.getLogger(__name__)
 # shape, which Ollama serves natively. OLLAMA_BASE_URL is shared with the
 # other LLM callers (transcript_corrector, enrichment, ...), which still use
 # Ollama-native /api/chat, so it must stay an Ollama instance. The OpenAI
-# shape is what later lets this call alone target another compatible base
-# URL (e.g. Blindfold — see docs/adr/0001-blindfolded-cloud-egress-opt-in.md).
+# shape is what lets the main analysis call alone target another compatible
+# base URL: ANALYSIS_ROUTE=blindfold (see analysis_route.py and
+# docs/adr/0004-blindfold-route-scope-config-and-failure.md).
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://192.168.2.17:11434").rstrip("/")
 OLLAMA_ANALYSIS_MODEL = os.getenv(
     "OLLAMA_ANALYSIS_MODEL", os.getenv("OLLAMA_MODEL", "qwen2.5:14b")
@@ -69,22 +72,58 @@ def _extract_chat_content(result: dict) -> str:
     return ""
 
 
+class UnreadableLlmResponse(ValueError):
+    """The chat endpoint answered 2xx but its body is not JSON. Still a
+    `ValueError`, as the bare decode error was; on the Blindfold route
+    `upstream_failure` reports it as `blindfold_engine_error`."""
+
+
+@dataclass(frozen=True)
+class _LlmTarget:
+    """Where one chat call goes: destination, model, read timeout and, for
+    Blindfold with a key, the bearer header."""
+
+    base_url: str
+    model: str
+    timeout: float
+    headers: dict[str, str] = field(default_factory=dict, repr=False)
+
+
+def _local_target() -> _LlmTarget:
+    return _LlmTarget(OLLAMA_BASE_URL, OLLAMA_ANALYSIS_MODEL, OLLAMA_ANALYSIS_TIMEOUT)
+
+
+def _analysis_target() -> _LlmTarget:
+    """Target of the main analysis call: the active analysis route, read at
+    call time so a retry or sweep follows the route in force when it runs."""
+    route = analysis_route.current()
+    if not route.is_blindfold:
+        return _local_target()
+    headers = {"Authorization": f"Bearer {route.blindfold_api_key}"} if route.blindfold_api_key else {}
+    return _LlmTarget(
+        route.blindfold_base_url,
+        route.blindfold_model,
+        route.blindfold_timeout or OLLAMA_ANALYSIS_TIMEOUT,
+        headers,
+    )
+
+
 async def _call_llm(
     messages: list[dict],
     *,
-    timeout_seconds: float,
+    target: _LlmTarget,
     temperature: float = 0.1,
     json_mode: bool = False,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> str:
-    """POST to the OpenAI-compatible /v1/chat/completions endpoint and
-    return the assistant message content.
+    """POST to the OpenAI-compatible /v1/chat/completions endpoint of `target`
+    and return the assistant message content.
 
     `transport` is exposed only so tests can inject an `httpx.MockTransport`;
     production calls always leave it `None`.
     """
     payload: dict = {
-        "model": OLLAMA_ANALYSIS_MODEL,
+        "model": target.model,
         "stream": False,
         "temperature": temperature,
         "messages": messages,
@@ -92,11 +131,17 @@ async def _call_llm(
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
 
-    timeout = httpx.Timeout(connect=30.0, read=timeout_seconds, write=30.0, pool=30.0)
+    timeout = httpx.Timeout(connect=30.0, read=target.timeout, write=30.0, pool=30.0)
     async with httpx.AsyncClient(timeout=timeout, transport=transport) as client:
-        resp = await client.post(f"{OLLAMA_BASE_URL}/v1/chat/completions", json=payload)
+        resp = await client.post(
+            f"{target.base_url}/v1/chat/completions", json=payload, headers=target.headers
+        )
         resp.raise_for_status()
-        return _extract_chat_content(resp.json())
+        try:
+            body = resp.json()
+        except ValueError as exc:
+            raise UnreadableLlmResponse(f"response body is not JSON: {exc}") from exc
+        return _extract_chat_content(body)
 
 
 # --- LightRAG queries ---
@@ -172,7 +217,7 @@ async def summarize_context(
     try:
         content = await _call_llm(
             [{"role": "user", "content": prompt}],
-            timeout_seconds=OLLAMA_ANALYSIS_TIMEOUT,
+            target=_local_target(),  # never routed: it sees the raw LightRAG retrievals
             temperature=0.1,
             transport=transport,
         )
@@ -347,18 +392,19 @@ async def analyze_transcript(
         f"## TEXT ZUR ANALYSE:\n{enriched_ctx['normalized_text']}"
     )
 
+    target = _analysis_target()
     try:
-        # Analysis can take minutes — OLLAMA_ANALYSIS_TIMEOUT bounds the read.
+        # Analysis can take minutes — the route's analysis timeout bounds the read.
         content = await _call_llm(
             [{"role": "user", "content": prompt}],
-            timeout_seconds=OLLAMA_ANALYSIS_TIMEOUT,
+            target=target,
             temperature=0.1,
             json_mode=True,
             transport=transport,
         )
     except httpx.TimeoutException:
-        logger.error("Main analysis timed out after %ss (model: %s)", OLLAMA_ANALYSIS_TIMEOUT, OLLAMA_ANALYSIS_MODEL)
-        raise RuntimeError(f"LLM analysis timed out after {OLLAMA_ANALYSIS_TIMEOUT}s")
+        logger.error("Main analysis timed out after %ss (model: %s)", target.timeout, target.model)
+        raise RuntimeError(f"LLM analysis timed out after {target.timeout}s")
     except Exception as e:
         logger.error("Main analysis LLM call failed: %s (%s)", e, type(e).__name__)
         raise
@@ -561,8 +607,9 @@ def generate_narrative_document(enriched_ctx: dict, analysis: dict) -> str:
     return doc
 
 
-def build_document_metadata(enriched_ctx: dict) -> dict:
-    """Build metadata dict for the processed document."""
+def build_document_metadata(enriched_ctx: dict, *, route: str = analysis_route.LOCAL) -> dict:
+    """Build metadata dict for the processed document. `route` is the analysis
+    route that produced the analysis (BAR-04); it is stored as `analysis_route`."""
     date_str = enriched_ctx["date"]
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
@@ -583,6 +630,7 @@ def build_document_metadata(enriched_ctx: dict) -> dict:
         "type": "cto_journal",
         "language": "de",
         "author": enriched_ctx["diary_author"],
+        "analysis_route": route,
     }
 
 
