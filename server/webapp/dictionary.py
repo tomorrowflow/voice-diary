@@ -287,4 +287,3 @@ async def _store_review_vectors(transcript_id: int, review: dict, vectors: Any) 
         )
 
     logger.info("Stored vectors for transcript %s", transcript_id)
-

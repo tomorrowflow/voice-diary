@@ -346,4 +346,3 @@ def test_submit_route_delegates_and_keeps_response_shape(stub_db, monkeypatch):
     assert (transcript_id, review) == (7, body)
     assert kwargs["submit"] is True
     assert callable(kwargs["run_vector_task"])
-
