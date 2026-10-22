@@ -34,9 +34,7 @@ import db  # noqa: E402
 import dictionary  # noqa: E402
 import document_processor  # noqa: E402
 import llm_validator  # noqa: E402
-from msgraph_client import to_local_iso  # noqa: E402
-import harvest_patterns  # noqa: E402
-import harvest_llm  # noqa: E402
+import harvest  # noqa: E402
 import narrative  # noqa: E402
 import session_processing  # noqa: E402
 import transcript_ingest  # noqa: E402
@@ -714,9 +712,9 @@ async def admin_page(request: Request):
 
 # ─── Harvest ─────────────────────────────────────────────────────────
 
-# In-memory caches for Harvest data
+# In-memory cache of the Harvest project list. The pattern cache and the
+# suggestion flow live in harvest.py.
 _harvest_projects_cache: dict | None = None
-_harvest_pattern_db: dict | None = None
 
 
 def _harvest_headers() -> dict:
@@ -731,25 +729,14 @@ def _harvest_headers() -> dict:
 @legacy_router.get("/api/harvest/pattern-status")
 async def harvest_pattern_status():
     """Return status of stored Harvest entries and pattern DB."""
-    await db.ensure_harvest_table()
-    stats = await db.get_harvest_entry_stats()
-    return {
-        "entries": stats,
-        "pattern_db_loaded": _harvest_pattern_db is not None,
-        "pattern_keywords": len(_harvest_pattern_db["keyword_patterns"]) if _harvest_pattern_db else 0,
-        "has_token": bool(HARVEST_ACCESS_TOKEN),
-    }
+    return {**await harvest.status(), "has_token": bool(HARVEST_ACCESS_TOKEN)}
 
 
 @legacy_router.post("/api/harvest/load-patterns")
 async def harvest_load_patterns(days: int = 90):
     """Fetch Harvest time entries and store them for pattern analysis."""
-    global _harvest_pattern_db
-
     if not HARVEST_ACCESS_TOKEN:
         return JSONResponse({"error": "HARVEST_ACCESS_TOKEN not set"}, 500)
-
-    await db.ensure_harvest_table()
 
     from_date = (date_module.today() - timedelta(days=days)).isoformat()
 
@@ -765,29 +752,22 @@ async def harvest_load_patterns(days: int = 90):
             entries.extend(data.get("time_entries", []))
             url = data.get("links", {}).get("next")
 
-    # Clear old and store new
-    await db.clear_harvest_entries()
-    await db.save_harvest_entries(entries)
-
-    # Rebuild pattern DB
-    _harvest_pattern_db = harvest_patterns.build_pattern_db(entries)
+    # Replace the stored entries and rebuild the pattern DB
+    pattern_db = await harvest.refresh(entries)
 
     stats = await db.get_harvest_entry_stats()
     return {
         "status": "ok",
         "entries_fetched": len(entries),
         "entries": stats,
-        "pattern_keywords": len(_harvest_pattern_db.get("keyword_patterns", {})),
+        "pattern_keywords": len(pattern_db.get("keyword_patterns", {})),
     }
 
 
 @legacy_router.post("/api/harvest/clear-patterns")
 async def harvest_clear_patterns():
     """Clear stored Harvest entries and pattern DB."""
-    global _harvest_pattern_db
-    await db.ensure_harvest_table()
-    await db.clear_harvest_entries()
-    _harvest_pattern_db = None
+    await harvest.invalidate()
     return {"status": "ok"}
 
 
@@ -872,131 +852,7 @@ async def harvest_recent_entries(days: int = 30):
 @legacy_router.get("/api/harvest/suggest")
 async def harvest_suggest(date: str):
     """Generate Harvest booking suggestions for a given date."""
-    global _harvest_pattern_db
-
-    suggestions = []
-    errors = []
-
-    # 1. Fetch calendar events. Stubbed in S1 — Server S2 will wire this
-    # to MS Graph via the same _fetch_calendar_events helper.
-    calendar_events = []
-    for ev in await _fetch_calendar_events(date):
-        start = to_local_iso(ev.get("start"))
-        end = to_local_iso(ev.get("end"))
-        if not start or "T" not in start:
-            continue
-        if ev.get("showAs") in ("free", "tentative"):
-            continue
-        calendar_events.append({
-            "subject": ev.get("subject", ""),
-            "start": start,
-            "end": end,
-            "showAs": ev.get("showAs", ""),
-        })
-    calendar_events.sort(key=lambda e: e["start"])
-    calendar_data = {"events": calendar_events}
-
-    # 2. Build or reuse pattern DB from stored Harvest entries
-    if not _harvest_pattern_db:
-        try:
-            await db.ensure_harvest_table()
-            stored_entries = await db.get_harvest_entries()
-            if stored_entries:
-                _harvest_pattern_db = harvest_patterns.build_pattern_db(stored_entries)
-            else:
-                _harvest_pattern_db = harvest_patterns.build_pattern_db([])
-        except Exception as e:
-            errors.append(f"Harvest patterns: {e}")
-            _harvest_pattern_db = harvest_patterns.build_pattern_db([])
-
-    pattern_db = _harvest_pattern_db or harvest_patterns.build_pattern_db([])
-
-    # 3. Map calendar events to suggestions
-    for ev in calendar_data.get("events", []):
-        hours = harvest_patterns.calculate_event_hours(
-            ev["start"], ev["end"], pattern_db.get("speedy_meeting_rounding", True)
-        )
-        pattern = harvest_patterns.match_calendar_to_pattern(ev["subject"], pattern_db)
-
-        if pattern:
-            suggestions.append({
-                "project": {"id": pattern["project_id"], "name": pattern["project_name"]},
-                "task": {"id": pattern["task_id"], "name": pattern["task_name"]},
-                "hours": hours,
-                "notes": ev["subject"],
-                "source": "calendar+pattern",
-                "confidence": "high",
-                "start": ev["start"],
-                "end": ev["end"],
-            })
-        elif pattern_db.get("default_project"):
-            dp = pattern_db["default_project"]
-            suggestions.append({
-                "project": {"id": dp["project_id"], "name": dp["project_name"]},
-                "task": {"id": dp["task_id"], "name": dp["task_name"]},
-                "hours": hours,
-                "notes": ev["subject"],
-                "source": "calendar",
-                "confidence": "low",
-                "start": ev["start"],
-                "end": ev["end"],
-            })
-        else:
-            suggestions.append({
-                "project": None,
-                "task": None,
-                "hours": hours,
-                "notes": ev["subject"],
-                "source": "calendar",
-                "confidence": "low",
-                "start": ev["start"],
-                "end": ev["end"],
-            })
-
-    # 4. Get diary transcript for LLM processing
-    transcript = await db.get_transcript_by_date(date)
-    diary_activities = []
-    if transcript:
-        text = transcript.get("corrected_text") or transcript.get("raw_text", "")
-        if text:
-            diary_activities = await harvest_llm.extract_work_activities(text, date)
-
-    # 5. Create gap-fill "Selbstorganisation" entries from diary
-    if diary_activities and pattern_db.get("selbstorganisation"):
-        so = pattern_db["selbstorganisation"]
-        for activity in diary_activities:
-            suggestions.append({
-                "project": {"id": so["project_id"], "name": so["project_name"]},
-                "task": {"id": so["task_id"], "name": so["task_name"]},
-                "hours": activity["estimated_hours"],
-                "notes": activity["description"],
-                "source": "diary+llm",
-                "confidence": "medium",
-                "category": activity["category"],
-            })
-    elif diary_activities:
-        for activity in diary_activities:
-            suggestions.append({
-                "project": None,
-                "task": None,
-                "hours": activity["estimated_hours"],
-                "notes": activity["description"],
-                "source": "diary+llm",
-                "confidence": "medium",
-                "category": activity["category"],
-            })
-
-    # 6. Calculate totals
-    total_hours = sum(s["hours"] for s in suggestions)
-
-    return {
-        "date": date,
-        "suggestions": suggestions,
-        "total_hours": total_hours,
-        "transcript_id": transcript["id"] if transcript else None,
-        "pattern_db_loaded": bool(pattern_db.get("keyword_patterns")),
-        "errors": errors,
-    }
+    return await harvest.suggest(date, fetch_events=_fetch_calendar_events)
 
 
 # ─── Settings ─────────────────────────────────────────────────────────
