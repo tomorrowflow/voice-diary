@@ -15,7 +15,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # PRs cancel superseded runs. Every merge to main runs to the end, so a red main names the
+  # merge that broke it instead of only the last merge of a batch.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ruff:
@@ -110,3 +112,24 @@ jobs:
           -skipMacroValidation
           -derivedDataPath "$RUNNER_TEMP/vd-derived-data"
           CODE_SIGNING_ALLOWED=NO
+
+  # Red-main intake: one open `ci-red` issue while main is red, closed when main is green again.
+  # The factory's review routine drafts a fix card from the open issue.
+  red-main:
+    name: Red main intake
+    needs: [ruff, server-tests, ios-tests]
+    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open, update, or close the ci-red issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RESULTS: ${{ toJSON(needs) }}
+        run: python3 scripts/ci/red_main_issue.py
