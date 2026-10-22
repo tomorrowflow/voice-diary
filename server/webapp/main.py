@@ -31,6 +31,7 @@ import asr_client  # noqa: E402
 import bind_guard  # noqa: E402
 import correction  # noqa: E402
 import db  # noqa: E402
+import dictionary  # noqa: E402
 import document_processor  # noqa: E402
 import llm_validator  # noqa: E402
 from msgraph_client import to_local_iso  # noqa: E402
@@ -494,46 +495,9 @@ async def save_draft(transcript_id: int, request: Request):
         entities_json,
     )
 
-    # Create new dictionary entries so they're available for other transcripts
-    new_entries = 0
-    for ent in body.get("entities", []):
-        if ent.get("status") != "new-entity":
-            continue
-        canonical = ent.get("canonical", "")
-        if not canonical:
-            continue
-        etype = ent.get("entity_type", "")
-        source = ent.get("source", "")
-        if source == "person" or etype == "PERSON":
-            await db.create_person(canonical_name=canonical)
-        else:
-            category = etype.lower() if etype else "term"
-            await db.create_term(canonical_term=canonical, category=category)
-        new_entries += 1
+    learning = await dictionary.learn_from_review(transcript_id, body)
 
-    # Save new variations (corrections to existing dictionary entries)
-    for ent in body.get("entities", []):
-        did = ent.get("dictionary_id")
-        if not did:
-            continue
-        original = ent.get("original_text", "")
-        canonical = ent.get("canonical", "")
-        if not original or not canonical or original == canonical:
-            continue
-        source = ent.get("source", "")
-        if source == "person":
-            await db.save_person_variation(did, original, "asr_correction")
-        else:
-            await db.save_term_variation(did, original)
-
-    # Save inline text edits as text corrections
-    for edit in body.get("text_edits", []):
-        old_word = edit.get("oldWord", "").strip()
-        new_word = edit.get("newWord", "").strip()
-        if old_word and new_word and old_word != new_word:
-            await db.save_text_correction(old_word, new_word, "word")
-
-    return {"status": "saved", "new_dictionary_entries": new_entries}
+    return {"status": "saved", "new_dictionary_entries": learning.new_entries}
 
 
 # Strong references to in-flight review vector-store writes: the event loop
@@ -580,136 +544,14 @@ async def submit_review(transcript_id: int, request: Request):
         entities_json=json.dumps(entities) if entities else None,
     )
 
-    # 2. Save new variations (dictionary growth)
-    for var in body.get("new_variations", []):
-        if var.get("dictionary_id"):
-            if var["source"] == "person":
-                await db.save_person_variation(
-                    var["dictionary_id"], var["original"], "asr_correction"
-                )
-            else:
-                await db.save_term_variation(
-                    var["dictionary_id"], var["original"]
-                )
-
-    # 3. Save disambiguated first-name matches as variations
-    for dis in body.get("disambiguated", []):
-        if dis.get("chosen_id") and dis.get("original"):
-            await db.save_person_variation(
-                dis["chosen_id"], dis["original"], "nickname"
-            )
-
-    # 4. Create new dictionary entries for manually added entities
-    for new_ent in body.get("new_entities", []):
-        if new_ent.get("source") == "person":
-            await db.create_person(canonical_name=new_ent["text"])
-        else:
-            await db.create_term(
-                canonical_term=new_ent["text"],
-                category=new_ent.get("category", new_ent["type"].lower()),
-            )
-
-    # 5. Save inline text edits as text corrections
-    for edit in body.get("text_edits", []):
-        old_word = edit.get("oldWord", "").strip()
-        new_word = edit.get("newWord", "").strip()
-        if old_word and new_word and old_word != new_word:
-            await db.save_text_correction(old_word, new_word, "word")
-
-    # 5b. Save dismissed entities as entity_dismissal corrections
-    for dismissed in body.get("dismissed", []):
-        original = dismissed.get("original", "").strip()
-        if original:
-            await db.save_text_correction(original, original, "entity_dismissal")
-
-    # 6. Log all review actions
-    for ent in body.get("entities", []):
-        action = "corrected" if ent.get("is_correction") else "confirmed"
-        await db.log_review_action(
-            transcript_id,
-            ent.get("original", ent["text"]),
-            ent["text"],
-            ent["type"],
-            ent.get("match_type", "auto-matched"),
-            action,
-        )
-    for dismissed in body.get("dismissed", []):
-        await db.log_review_action(
-            transcript_id,
-            dismissed["original"],
-            dismissed["canonical"],
-            dismissed["type"],
-            "auto-matched",
-            "dismissed",
-        )
-
-    # 7. Store vectors for contextual learning (fire-and-forget)
-    if vector_store.VECTOR_SEARCH_ENABLED:
-        corrected_text = body["corrected_transcript"]
-        transcript_date = body.get("date", str(date_module.today()))
-
-        async def _store_vectors():
-            # Remove existing vectors for this transcript to prevent duplicates
-            await vector_store.delete_transcript_vectors(transcript_id)
-
-            # Store text edits as correction contexts
-            for edit in body.get("text_edits", []):
-                old_word = edit.get("oldWord", "").strip()
-                new_word = edit.get("newWord", "").strip()
-                if old_word and new_word and old_word != new_word:
-                    # Find position in corrected text
-                    match = re.search(re.escape(new_word), corrected_text)
-                    if match:
-                        await vector_store.store_correction_context(
-                            original_text=old_word,
-                            corrected_text=new_word,
-                            full_text=corrected_text,
-                            start=match.start(),
-                            end=match.end(),
-                            correction_type="text_edit",
-                            transcript_id=transcript_id,
-                            transcript_date=transcript_date,
-                        )
-
-            # Store entity corrections and confirmed entities
-            for ent in body.get("entities", []):
-                start = ent.get("start", 0)
-                end = ent.get("end", 0)
-                original = ent.get("original", ent.get("text", ""))
-                canonical = ent.get("text", "")
-
-                # Store entity correction context if original differs from canonical
-                if ent.get("is_correction") and original.lower() != canonical.lower():
-                    await vector_store.store_correction_context(
-                        original_text=original,
-                        corrected_text=canonical,
-                        full_text=corrected_text,
-                        start=start,
-                        end=end,
-                        correction_type="entity_correction",
-                        transcript_id=transcript_id,
-                        transcript_date=transcript_date,
-                    )
-
-                # Store confirmed/corrected entity as usage sample
-                await vector_store.store_entity_sample(
-                    entity_canonical=canonical,
-                    entity_type=ent.get("type", ""),
-                    entity_id=ent.get("dictionary_id") or ent.get("dictionaryId"),
-                    source=ent.get("source", ""),
-                    original_text=original,
-                    full_text=corrected_text,
-                    start=start,
-                    end=end,
-                    match_type=ent.get("match_type", ""),
-                    action="corrected" if ent.get("is_correction") else "confirmed",
-                    transcript_id=transcript_id,
-                    transcript_date=transcript_date,
-                )
-
-            logger.info("Stored vectors for transcript %s", transcript_id)
-
-        _retain_review_vector_task(_store_vectors(), transcript_id)
+    # 2. Grow the dictionary, log the review and store vectors for contextual
+    # learning. The vector write is fire-and-forget through the tracked task.
+    await dictionary.learn_from_review(
+        transcript_id,
+        body,
+        submit=True,
+        run_vector_task=lambda coro: _retain_review_vector_task(coro, transcript_id),
+    )
 
     return {"status": "submitted"}
 
