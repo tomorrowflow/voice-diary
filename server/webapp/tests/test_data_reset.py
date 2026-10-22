@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 import db
 import main
 import session_processing
+from session_repository import PostgresSessionIngests
 from tests.session_helpers import (
     FakeSessionIngests,
     NarrativeStage,
@@ -44,7 +45,7 @@ class _RecordingPool:
         self.executed.append(" ".join(query.split()))
 
 
-def test_reset_all_data_deletes_the_session_ingests_rows(monkeypatch):
+def test_clearing_the_postgres_repository_deletes_the_session_ingests_rows(monkeypatch):
     pool = _RecordingPool()
 
     async def fake_get_pool():
@@ -52,9 +53,9 @@ def test_reset_all_data_deletes_the_session_ingests_rows(monkeypatch):
 
     monkeypatch.setattr(db, "get_pool", fake_get_pool)
 
-    asyncio.run(db.reset_all_data())
+    asyncio.run(PostgresSessionIngests().clear())
 
-    assert "DELETE FROM session_ingests" in pool.executed
+    assert pool.executed == ["DELETE FROM session_ingests"]
 
 
 def test_reset_clears_session_rows_bundles_and_cache_so_the_session_id_can_be_reposted(
@@ -62,7 +63,7 @@ def test_reset_clears_session_rows_bundles_and_cache_so_the_session_id_can_be_re
 ):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     fresh_processor(monkeypatch)
-    ingests = FakeSessionIngests.empty("sess-reset").install(monkeypatch)
+    ingests = FakeSessionIngests.empty("sess-reset").install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 7})
     NarrativeStage(monkeypatch)
     client = TestClient(main.app)
@@ -97,23 +98,21 @@ def test_reset_clears_the_status_cache_even_when_the_row_is_already_gone(monkeyp
     """The cache is its own layer: a cached status must not outlive the reset."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     processor = fresh_processor(monkeypatch)
-    FakeSessionIngests("sess-cached", "done", [segment_row("s01", "processed", 3)]).install(
-        monkeypatch
-    )
+    FakeSessionIngests("sess-cached", "done", [segment_row("s01", "processed", 3)]).install()
     client = TestClient(main.app)
     assert client.get("/api/sessions/sess-cached/status", headers=auth()).status_code == 200
-    assert "sess-cached" in processor._status
+    assert "sess-cached" in processor.repository.cached_ids
 
     assert client.post("/api/data/reset", headers=auth()).status_code == 200
 
-    assert processor._status == {}
+    assert processor.repository.cached_ids == set()
     assert client.get("/api/sessions/sess-cached/status", headers=auth()).status_code == 404
 
 
 def test_reset_works_when_there_is_no_sessions_directory(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "missing"))
     fresh_processor(monkeypatch)
-    FakeSessionIngests.empty("sess-none").install(monkeypatch)
+    FakeSessionIngests.empty("sess-none").install()
 
     resp = TestClient(main.app).post("/api/data/reset", headers=auth())
 
