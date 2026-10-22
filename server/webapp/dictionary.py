@@ -71,6 +71,14 @@ def _original(item: dict, default: Any = "") -> Any:
     return default
 
 
+def _required_original(item: dict) -> Any:
+    """Like `_original`, but a payload with neither spelling is a `KeyError`."""
+    original = _original(item, None)
+    if original is None:
+        raise KeyError("original")
+    return original
+
+
 def _dictionary_id(item: dict) -> Any:
     """The matched dictionary row; payloads spell it `dictionary_id` or `dictionaryId`."""
     return item.get("dictionary_id") or item.get("dictionaryId")
@@ -172,7 +180,7 @@ async def _learn_from_submit(
     for var in review.get("new_variations", []):
         did = _dictionary_id(var)
         if did:
-            await _save_variation(repository, var["source"], did, _original(var))
+            await _save_variation(repository, var["source"], did, _required_original(var))
 
     # Disambiguated first-name matches are saved as nicknames.
     for dis in review.get("disambiguated", []):
@@ -209,12 +217,9 @@ async def _learn_from_submit(
             action,
         )
     for dismissed in review.get("dismissed", []):
-        original = _original(dismissed, None)
-        if original is None:
-            raise KeyError("original")
         await repository.log_review_action(
             transcript_id,
-            original,
+            _required_original(dismissed),
             dismissed["canonical"],
             dismissed["type"],
             "auto-matched",
@@ -222,17 +227,27 @@ async def _learn_from_submit(
         )
 
     if vectors.VECTOR_SEARCH_ENABLED:
-        store = _store_review_vectors(transcript_id, review, vectors)
+        # Read the payload here, not in the task: a missing transcript must
+        # fail the request, not a background write nobody awaits.
+        corrected_text = review["corrected_transcript"]
+        transcript_date = review.get("date", str(date_module.today()))
+        store = _store_review_vectors(
+            transcript_id, review, corrected_text, transcript_date, vectors
+        )
         if run_vector_task is None:
             await store
         else:
             run_vector_task(store)
 
 
-async def _store_review_vectors(transcript_id: int, review: dict, vectors: Any) -> None:
+async def _store_review_vectors(
+    transcript_id: int,
+    review: dict,
+    corrected_text: str,
+    transcript_date: str,
+    vectors: Any,
+) -> None:
     """Replace the transcript's vector samples with the reviewed ones."""
-    corrected_text = review["corrected_transcript"]
-    transcript_date = review.get("date", str(date_module.today()))
 
     # Remove existing vectors for this transcript to prevent duplicates
     await vectors.delete_transcript_vectors(transcript_id)
