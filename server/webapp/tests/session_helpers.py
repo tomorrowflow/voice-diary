@@ -1,10 +1,10 @@
-"""Shared pieces for the session-processing tests (ARCH-2).
+"""Shared pieces for the session-ingest tests (ARCH-2, REF-126).
 
-`session_processing.SessionProcessor` is driven through its public interface;
-these helpers stub only what it talks to — `db`, `transcript_ingest`,
-`correction`, `narrative` — never its own private stages:
+`session_ingest.SessionIngest` is driven through its public interface; these
+helpers stub only what it talks to — `db`, `transcript_ingest`, `correction`,
+`narrative` — never its own private stages:
 
-* `fresh_processor` — a clean processor over an in-memory session-ingest
+* `fresh_ingest` — a clean session ingest over an in-memory session-ingest
   repository (REF-122/#122), installed as the process-wide one so the routes
   use it too;
 * `FakeSessionIngests` — rows for that repository's `session_ingests` table;
@@ -26,7 +26,7 @@ import correction
 import db
 import dictionary
 import narrative
-import session_processing
+import session_ingest
 import transcript_ingest
 from dictionary import DictionarySnapshot
 from models import Manifest
@@ -155,14 +155,14 @@ class RecordingIngests(InMemorySessionIngests):
         return await super()._correct_legacy_done()
 
 
-def fresh_processor(
+def fresh_ingest(
     monkeypatch, *, whisper_up=True, repository: RecordingIngests | None = None
-) -> session_processing.SessionProcessor:
-    """A clean `SessionProcessor` over an in-memory repository, installed as
-    the process-wide one (what the routes and `main.py` use). `whisper_up` is a
+) -> session_ingest.SessionIngest:
+    """A clean `SessionIngest` over an in-memory repository, installed as the
+    process-wide one (what the routes and `main.py` use). `whisper_up` is a
     bool, or a callable returning one to change it mid-test. Passing the
-    `repository` of an earlier processor models a restart: the rows stay, the
-    status cache and the in-flight claims are gone."""
+    `repository` of an earlier session ingest models a restart: the rows stay,
+    the status cache and the in-flight claims are gone."""
     monkeypatch.setenv("IOS_BEARER_TOKEN", BEARER)
 
     async def whisper_reachable() -> bool:
@@ -170,14 +170,14 @@ def fresh_processor(
 
     if repository is not None:
         repository.restart()
-    processor = session_processing.SessionProcessor(
+    ingest = session_ingest.SessionIngest(
         whisper_reachable=whisper_reachable,
         repository=repository if repository is not None else RecordingIngests(),
     )
-    monkeypatch.setattr(session_processing, "_default", processor)
+    monkeypatch.setattr(session_ingest, "_default", ingest)
     # No test reaches the database: a reset only clears the tables `db` owns.
     monkeypatch.setattr(db, "reset_all_data", _no_database_reset)
-    return processor
+    return ingest
 
 
 async def _no_database_reset() -> None:
@@ -187,7 +187,7 @@ async def _no_database_reset() -> None:
 class FakeSessionIngests:
     """Rows for the `session_ingests` table, held by the in-memory adapter.
     `row` is the row of the session it was built for; `add` puts more sessions
-    in; `install` makes the processor from `fresh_processor` use them. The
+    in; `install` makes the session ingest from `fresh_ingest` use them. The
     adapter's `updates`, `created`, `deleted` and `failed` are readable here."""
 
     def __init__(self, session_id: str, state: str, segments: list[dict]):
@@ -234,11 +234,11 @@ class FakeSessionIngests:
         }
 
     def install(self) -> "FakeSessionIngests":
-        """Hand these rows to the processor `fresh_processor` installed, so
+        """Hand these rows to the session ingest `fresh_ingest` installed, so
         call it first."""
-        processor = session_processing._default
-        assert processor is not None and isinstance(processor.repository, RecordingIngests)
-        processor.repository = self.repository
+        ingest = session_ingest._default
+        assert ingest is not None and isinstance(ingest.repository, RecordingIngests)
+        ingest.repository = self.repository
         return self
 
 
@@ -263,7 +263,7 @@ def stage_bundle(monkeypatch, tmp_path, session_id: str, manifest: dict | None =
     `DATA_DIR`; returns the parsed manifest and the session directory."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     manifest = manifest if manifest is not None else manifest_dict(session_id)
-    session_dir = session_processing.session_dir_for(session_id)
+    session_dir = session_ingest.session_dir_for(session_id)
     session_dir.mkdir(parents=True)
     (session_dir / "manifest.json").write_text(json.dumps(manifest))
     parsed = Manifest.model_validate(manifest)

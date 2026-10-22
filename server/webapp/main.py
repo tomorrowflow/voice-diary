@@ -37,7 +37,7 @@ from msgraph_client import to_local_iso  # noqa: E402
 import harvest_patterns  # noqa: E402
 import harvest_llm  # noqa: E402
 import narrative  # noqa: E402
-import session_processing  # noqa: E402
+import session_ingest  # noqa: E402
 import transcript_ingest  # noqa: E402
 import vector_store  # noqa: E402
 
@@ -105,7 +105,7 @@ async def lifespan(app: FastAPI):
     # LLM/LightRAG retry never delays the app coming up; kept on app.state
     # so the task isn't garbage-collected mid-flight.
     app.state.startup_retry_sweep_task = asyncio.create_task(
-        session_processing.get_processor().retry_stuck_sessions_on_startup()
+        session_ingest.get_session_ingest().sweep()
     )
 
     yield
@@ -837,7 +837,7 @@ async def data_clear_dictionary():
 
 @legacy_router.post("/api/data/reset")
 async def data_reset():
-    await session_processing.get_processor().reset_all_data()
+    await session_ingest.get_session_ingest().reset_all_data()
     return {"status": "ok"}
 
 
@@ -1229,7 +1229,7 @@ async def _ingest_audio_to_transcript(
     """Pipeline: ffmpeg → Whisper → persist. Returns (transcript_id, review_url, text).
 
     Delegates the shared transcribe+persist core to `transcript_ingest`
-    (SRV-A7) — the same core `session_processing` drives per segment.
+    (SRV-A7) — the same core `session_ingest` drives per segment.
     """
     src_suffix = Path(filename).suffix.lower() or ".mp3"
     result = await transcript_ingest.transcribe_and_persist(

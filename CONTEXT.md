@@ -32,6 +32,10 @@ _Avoid_: resume (reserved for un-pausing within a running walkthrough), restore
 An external service the server calls to do its work: Whisper (transcription), Ollama (analysis, enrichment summaries), LightRAG (diary memory), Microsoft Graph (calendar, email), Voxtral (server-side speech), and Blindfold when the analysis route is set to it. Postgres and Qdrant are infrastructure, not upstreams. The phone never talks to an upstream directly.
 _Avoid_: backend (ambiguous with the server itself), dependency, provider
 
+**Session ingest**:
+What the server does with an uploaded session bundle from acceptance to settled status, owned by one module (`session_ingest`) that the HTTP routes and the startup lifespan only call. It accepts the bundle (the session is `processing`), processes it in the background (transcribe, correct, detect entities per segment, then one narrative analysis per session), retries a session's analysis on request, and sweeps the sessions a restart stranded. A session settles as `done`, `partial` or `failed`; it never processes twice at once, and an interrupted session resumes from its stored audio. Refusals are domain errors (unknown session, busy, not retryable, bundle manifest gone); only the routes turn them into HTTP statuses.
+_Avoid_: session processing, session lifecycle (as module names), processor
+
 **Pending analysis**:
 The state of an uploaded session whose transcripts are safely stored but whose session-level analysis or LightRAG ingest failed. No data is lost; it is retried by the server (startup sweep) or on request (`retry-analysis`).
 _Avoid_: stuck, failed (a failed segment has no transcript and needs a re-upload)

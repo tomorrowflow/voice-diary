@@ -24,7 +24,7 @@ from fastapi.testclient import TestClient
 
 import db
 import main
-import session_processing
+import session_ingest
 from session_repository import PostgresSessionIngests
 from tests.session_helpers import (
     FakeSessionIngests,
@@ -32,7 +32,7 @@ from tests.session_helpers import (
     SegmentPipeline,
     auth,
     bundle,
-    fresh_processor,
+    fresh_ingest,
     segment_row,
 )
 
@@ -62,7 +62,7 @@ def test_reset_clears_session_rows_bundles_and_cache_so_the_session_id_can_be_re
     monkeypatch, tmp_path
 ):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    fresh_processor(monkeypatch)
+    fresh_ingest(monkeypatch)
     ingests = FakeSessionIngests.empty("sess-reset").install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 7})
     NarrativeStage(monkeypatch)
@@ -72,16 +72,16 @@ def test_reset_clears_session_rows_bundles_and_cache_so_the_session_id_can_be_re
     assert first.status_code == 200
     assert client.get("/api/sessions/sess-reset/status", headers=auth()).status_code == 200
     assert ingests.rows
-    assert session_processing.session_dir_for("sess-reset").exists()
+    assert session_ingest.session_dir_for("sess-reset").exists()
     # A stray file next to the bundles goes too.
-    (session_processing.sessions_dir() / "stray.txt").write_text("x")
+    (session_ingest.sessions_dir() / "stray.txt").write_text("x")
 
     resp = client.post("/api/data/reset", headers=auth())
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok"}
     assert ingests.rows == {}
-    sessions_root = session_processing.sessions_dir()
+    sessions_root = session_ingest.sessions_dir()
     assert sessions_root.is_dir()
     assert list(sessions_root.iterdir()) == []
     status = client.get("/api/sessions/sess-reset/status", headers=auth())
@@ -97,7 +97,7 @@ def test_reset_clears_session_rows_bundles_and_cache_so_the_session_id_can_be_re
 def test_reset_clears_the_status_cache_even_when_the_row_is_already_gone(monkeypatch, tmp_path):
     """The cache is its own layer: a cached status must not outlive the reset."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     FakeSessionIngests("sess-cached", "done", [segment_row("s01", "processed", 3)]).install()
     client = TestClient(main.app)
     assert client.get("/api/sessions/sess-cached/status", headers=auth()).status_code == 200
@@ -111,7 +111,7 @@ def test_reset_clears_the_status_cache_even_when_the_row_is_already_gone(monkeyp
 
 def test_reset_works_when_there_is_no_sessions_directory(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path / "missing"))
-    fresh_processor(monkeypatch)
+    fresh_ingest(monkeypatch)
     FakeSessionIngests.empty("sess-none").install()
 
     resp = TestClient(main.app).post("/api/data/reset", headers=auth())
@@ -124,7 +124,7 @@ def test_reset_waits_for_an_upload_in_its_gate_and_holds_new_uploads_back(monkey
     run between the two (it would leave a session record after a successful
     reset), and an upload arriving during the reset must wait for it."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     events: list[str] = []
 
     async def reset_all_data() -> None:
@@ -165,7 +165,7 @@ def test_reset_waits_for_an_upload_in_its_gate_and_holds_new_uploads_back(monkey
 
 def test_a_failed_reset_releases_the_gate(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
 
     async def boom() -> None:
         raise RuntimeError("db down")
@@ -188,7 +188,7 @@ def test_a_reset_cancelled_while_waiting_for_an_upload_releases_the_gate(monkeyp
     upload is still inside the gate must not leave later uploads and resets
     waiting forever."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     resets: list[str] = []
 
     async def reset_all_data() -> None:
@@ -235,7 +235,7 @@ def test_a_reset_cancelled_during_bundle_removal_keeps_the_gate_closed_until_it_
     the gate opened as soon as the reset was cancelled, an upload accepted
     meanwhile would have its fresh bundle deleted by the removal."""
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     events: list[str] = []
     removal_started = threading.Event()
     let_removal_finish = threading.Event()
@@ -249,7 +249,7 @@ def test_a_reset_cancelled_during_bundle_removal_keeps_the_gate_closed_until_it_
         events.append("bundles removed")
 
     monkeypatch.setattr(db, "reset_all_data", reset_all_data)
-    monkeypatch.setattr(session_processing, "_remove_all_bundles", slow_remove_all_bundles)
+    monkeypatch.setattr(session_ingest, "_remove_all_bundles", slow_remove_all_bundles)
 
     async def scenario() -> None:
         reset = asyncio.create_task(processor.reset_all_data())
@@ -281,7 +281,7 @@ def test_a_reset_cancelled_during_bundle_removal_keeps_the_gate_closed_until_it_
 
 def test_reset_requires_the_bearer_token(monkeypatch, tmp_path):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    fresh_processor(monkeypatch)
+    fresh_ingest(monkeypatch)
 
     resp = TestClient(main.app).post("/api/data/reset")
 
