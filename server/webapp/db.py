@@ -926,9 +926,8 @@ async def get_transcript_by_date(date_str: str) -> dict | None:
 async def reset_all_data():
     pool = await get_pool()
     await pool.execute("TRUNCATE persons, terms, transcripts, review_log CASCADE")
-    # MIG-115/#115: session rows point at transcripts that were just deleted;
-    # left behind they break the sweep and block a re-upload of the session id.
-    await pool.execute("DELETE FROM session_ingests")
+    # `session_ingests` rows point at the transcripts just deleted; the caller
+    # clears them through the session-ingest repository (MIG-115/#115).
     try:
         await pool.execute("DELETE FROM harvest_entries")
     except Exception:
@@ -1199,124 +1198,6 @@ async def reset_ingest_upload_for_retry(upload_id: int):
         "completed_at = NULL WHERE id = $1",
         upload_id,
     )
-
-
-# --- Session ingest status (SRV-A6) ---
-#
-# Persisted mirror of session_processing's in-memory status map. That map
-# is a per-process cache for the polling-happy path; these rows are what
-# survives a restart and make pending_analysis segments retryable.
-
-
-async def create_session_status(
-    session_id: str, received_at: str, state: str, segments: list[dict]
-) -> None:
-    pool = await get_pool()
-    await pool.execute(
-        """
-        INSERT INTO session_ingests (session_id, received_at, state, segments)
-        VALUES ($1, $2, $3, $4::jsonb)
-        ON CONFLICT (session_id) DO UPDATE
-        SET received_at = $2, state = $3, segments = $4::jsonb, updated_at = NOW()
-    """,
-        session_id,
-        received_at,
-        state,
-        json.dumps(segments),
-    )
-
-
-async def update_session_status(session_id: str, state: str, segments: list[dict]) -> None:
-    pool = await get_pool()
-    await pool.execute(
-        """
-        UPDATE session_ingests
-        SET state = $2, segments = $3::jsonb, updated_at = NOW()
-        WHERE session_id = $1
-    """,
-        session_id,
-        state,
-        json.dumps(segments),
-    )
-
-
-async def mark_session_failed(session_id: str) -> None:
-    pool = await get_pool()
-    await pool.execute(
-        "UPDATE session_ingests SET state = 'failed', updated_at = NOW() WHERE session_id = $1",
-        session_id,
-    )
-
-
-async def get_session_status(session_id: str) -> dict | None:
-    pool = await get_pool()
-    row = await pool.fetchrow(
-        """
-        SELECT session_id, received_at, state, segments
-        FROM session_ingests
-        WHERE session_id = $1
-    """,
-        session_id,
-    )
-    if row is None:
-        return None
-    result = dict(row)
-    if isinstance(result["segments"], str):
-        result["segments"] = json.loads(result["segments"])
-    return result
-
-
-async def delete_session_status(session_id: str) -> None:
-    pool = await get_pool()
-    await pool.execute("DELETE FROM session_ingests WHERE session_id = $1", session_id)
-
-
-async def correct_legacy_done_sessions() -> int:
-    """Mark `done` rows that still have a `pending_analysis` segment `partial`.
-
-    BUG-114/#114: before the fix a session whose analysis failed was persisted
-    as `done`. `done` now means every segment is `processed`, and the sweep no
-    longer looks at `done` rows, so those legacy rows are corrected before it
-    lists its candidates. Idempotent: once corrected, no row matches. Returns
-    the number of rows corrected.
-    """
-    pool = await get_pool()
-    result = await pool.execute(
-        """
-        UPDATE session_ingests
-        SET state = 'partial', updated_at = NOW()
-        WHERE state = 'done' AND segments @> '[{"status": "pending_analysis"}]'::jsonb
-    """
-    )
-    return int(result.rsplit(" ", 1)[-1])
-
-
-async def list_pending_analysis_session_ids() -> list[str]:
-    """Session ids the startup retry sweep should look at.
-
-    Backs the sweep (#52): non-`done` sessions with at least one segment stuck
-    in `pending_analysis`, plus (BUG-53/#53) every session still `processing`
-    — the process that was running it died before finishing, so its
-    segments need recovering even if none is `pending_analysis` yet. The
-    caller skips sessions that are active in the current process. `done`
-    sessions (every segment `processed`, BUG-114/#114) are never candidates;
-    `correct_legacy_done_sessions` fixes the old rows that said `done` with a
-    pending segment. The filter runs in Python — this table is small (one row
-    per session).
-    """
-    pool = await get_pool()
-    rows = await pool.fetch("SELECT session_id, state, segments FROM session_ingests")
-    result = []
-    for row in rows:
-        state = row.get("state")
-        segments = row["segments"]
-        if isinstance(segments, str):
-            segments = json.loads(segments)
-        if state == "processing" or (
-            state != "done" and any(s.get("status") == "pending_analysis" for s in segments)
-        ):
-            result.append(row["session_id"])
-    return result
 
 
 # --- Processed documents ---

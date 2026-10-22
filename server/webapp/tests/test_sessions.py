@@ -66,7 +66,7 @@ def _async_client() -> httpx.AsyncClient:
 
 def _ingest_stubs(monkeypatch, tmp_path, session_id: str, **pipeline):
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
-    ingests = FakeSessionIngests.empty(session_id).install(monkeypatch)
+    ingests = FakeSessionIngests.empty(session_id).install()
     SegmentPipeline(monkeypatch, **pipeline)
     return ingests, NarrativeStage(monkeypatch)
 
@@ -78,7 +78,7 @@ def test_status_falls_back_to_persisted_row_when_not_in_memory_cache(monkeypatch
     """A restart clears the in-memory cache; the status endpoint must still
     return a previously-completed session's status from the db."""
     fresh_processor(monkeypatch)
-    FakeSessionIngests("sess-1", "done", [segment_row("s01", "processed", 42)]).install(monkeypatch)
+    FakeSessionIngests("sess-1", "done", [segment_row("s01", "processed", 42)]).install()
 
     resp = _client().get("/api/sessions/sess-1/status", headers=auth())
 
@@ -90,7 +90,7 @@ def test_status_falls_back_to_persisted_row_when_not_in_memory_cache(monkeypatch
 
 def test_status_404s_when_neither_cache_nor_db_has_the_session(monkeypatch):
     fresh_processor(monkeypatch)
-    FakeSessionIngests.empty("sess-1").install(monkeypatch)
+    FakeSessionIngests.empty("sess-1").install()
 
     resp = _client().get("/api/sessions/unknown/status", headers=auth())
 
@@ -110,7 +110,7 @@ def test_status_reads_a_row_written_before_the_failure_contract_with_null_code_a
                 "error": "analysis_pending: ollama unreachable",
             },
         ],
-    ).install(monkeypatch)
+    ).install()
 
     resp = _client().get("/api/sessions/sess-old/status", headers=auth())
 
@@ -125,7 +125,7 @@ def test_status_returns_code_and_upstream_from_a_persisted_row(monkeypatch):
     FakeSessionIngests(
         "sess-new", "failed",
         [segment_row("s01", "failed", error="whisper down", code="whisper_unavailable", upstream="whisper")],
-    ).install(monkeypatch)
+    ).install()
 
     resp = _client().get("/api/sessions/sess-new/status", headers=auth())
 
@@ -200,7 +200,7 @@ def test_status_reports_partial_for_processed_plus_pending_segments(monkeypatch,
     FakeSessionIngests(
         session_id, "partial",
         [segment_row("s01", "processed", 4), segment_row("s02", "pending_analysis", 5, "analysis_pending: first")],
-    ).install(monkeypatch)
+    ).install()
     stub_transcripts(monkeypatch, [5])
     NarrativeStage(monkeypatch).analysis_error = RuntimeError("ollama unreachable")
 
@@ -314,7 +314,7 @@ def test_retry_analysis_404s_for_unknown_session(monkeypatch):
     """#52: retrying a session the server has never heard of (neither cache
     nor persisted row) must 404, matching the status endpoint's behaviour."""
     fresh_processor(monkeypatch)
-    FakeSessionIngests.empty("unknown").install(monkeypatch)
+    FakeSessionIngests.empty("unknown").install()
 
     resp = _client().post("/api/sessions/unknown/retry-analysis", headers=auth())
 
@@ -326,7 +326,7 @@ def test_retry_analysis_409s_when_no_segment_is_pending_analysis(monkeypatch):
     """#52: a session with no `pending_analysis` segment (e.g. fully `done`,
     or still `processing`) is not in a retryable state."""
     fresh_processor(monkeypatch)
-    FakeSessionIngests("sess-done", "done", [segment_row("s01", "processed", 1)]).install(monkeypatch)
+    FakeSessionIngests("sess-done", "done", [segment_row("s01", "processed", 1)]).install()
 
     resp = _client().post("/api/sessions/sess-done/retry-analysis", headers=auth())
 
@@ -373,7 +373,7 @@ def test_retry_analysis_resumes_a_session_that_never_reached_transcription(monke
     ingests = FakeSessionIngests(
         "sess-resume-route", "processing",
         [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")],
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 11, "s02": 12})
     stage = NarrativeStage(monkeypatch)
 
@@ -396,7 +396,7 @@ def test_retry_analysis_returns_partial_with_200_when_some_audio_is_missing(monk
     FakeSessionIngests(
         "sess-resume-gone", "processing",
         [segment_row("s01", "pending_analysis", 5), segment_row("s02", "pending_analysis")],
-    ).install(monkeypatch)
+    ).install()
     stub_transcripts(monkeypatch, [5])
     NarrativeStage(monkeypatch)
 
@@ -418,7 +418,7 @@ def test_retry_analysis_returns_failed_with_200_when_no_audio_is_left(monkeypatc
     FakeSessionIngests(
         "sess-resume-none", "processing",
         [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")],
-    ).install(monkeypatch)
+    ).install()
     NarrativeStage(monkeypatch)
 
     resp = _client().post("/api/sessions/sess-resume-none/retry-analysis", headers=auth())
@@ -433,7 +433,7 @@ def test_retry_analysis_409s_when_the_pending_transcript_rows_are_gone(monkeypat
     stage_bundle(monkeypatch, tmp_path, "sess-rows-gone")
     FakeSessionIngests(
         "sess-rows-gone", "done", [segment_row("s01", "pending_analysis", 9, "analysis_pending: boom")]
-    ).install(monkeypatch)
+    ).install()
     stub_transcripts(monkeypatch, [])
 
     resp = _client().post("/api/sessions/sess-rows-gone/retry-analysis", headers=auth())
@@ -538,7 +538,7 @@ def test_startup_sweep_result_is_visible_through_the_status_route(monkeypatch, t
     client = _client()
     assert client.get("/api/sessions/sess-swept/status", headers=auth()).json()["segments"][0]["status"] == "pending_analysis"
     # "Restart": the in-memory cache is gone, only the persisted row remains.
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_processor(monkeypatch, repository=ingests.repository)
 
     asyncio.run(processor.retry_stuck_sessions_on_startup())
 

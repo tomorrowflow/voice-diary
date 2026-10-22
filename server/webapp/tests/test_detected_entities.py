@@ -94,7 +94,7 @@ def test_session_ingest_writes_detected_entities_not_a_reviewed_draft(monkeypatc
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-detected", manifest)
     FakeSessionIngests(
         "sess-detected", "processing", [segment_row("s01", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
 
     async def fake_correct(raw_text):
         entity = DetectedEntity(

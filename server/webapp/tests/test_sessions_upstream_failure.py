@@ -36,7 +36,7 @@ def _run_session(monkeypatch, tmp_path, session_id, *, failing=None, manifest=No
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, manifest)
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row(s["segment_id"], "pending_analysis") for s in manifest["segments"]],
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 5, "s02": 6}, failing=failing)
     stage = NarrativeStage(monkeypatch)
     return processor, parsed, session_dir, ingests, stage
@@ -107,7 +107,7 @@ def test_run_classifies_a_raw_httpx_timeout_from_the_analysis_path(monkeypatch, 
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis")]
-    ).install(monkeypatch)
+    ).install()
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 5})
     fake_document_processor_pipeline(monkeypatch)
 
