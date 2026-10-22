@@ -116,6 +116,26 @@ async def save_person_variation(
     )
 
 
+async def get_person_variation_id(person_id: int, variation: str) -> int | None:
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT id FROM person_variations WHERE person_id = $1 AND variation = $2",
+        person_id,
+        variation,
+    )
+    return row["id"] if row else None
+
+
+async def get_term_variation_id(term_id: int, variation: str) -> int | None:
+    pool = await get_pool()
+    row = await pool.fetchrow(
+        "SELECT id FROM term_variations WHERE term_id = $1 AND variation = $2",
+        term_id,
+        variation,
+    )
+    return row["id"] if row else None
+
+
 async def save_term_variation(term_id: int, variation: str):
     # Reject short common words that would cause false-positive matches
     if variation.lower() in _VARIATION_BLOCKLIST:
@@ -921,6 +941,33 @@ async def get_transcript_by_date(date_str: str) -> dict | None:
         d,
     )
     return dict(row) if row else None
+
+
+async def list_transcript_dates(
+    date_from: "date_type | None" = None, date_to: "date_type | None" = None
+) -> list["date_type"]:
+    """Distinct transcript dates, ascending; bounds are inclusive and optional."""
+    pool = await get_pool()
+    if date_from is not None and date_to is not None:
+        rows = await pool.fetch(
+            "SELECT DISTINCT date FROM transcripts WHERE date BETWEEN $1 AND $2 ORDER BY date",
+            date_from, date_to,
+        )
+    elif date_from is not None:
+        rows = await pool.fetch(
+            "SELECT DISTINCT date FROM transcripts WHERE date >= $1 ORDER BY date",
+            date_from,
+        )
+    elif date_to is not None:
+        rows = await pool.fetch(
+            "SELECT DISTINCT date FROM transcripts WHERE date <= $1 ORDER BY date",
+            date_to,
+        )
+    else:
+        rows = await pool.fetch(
+            "SELECT DISTINCT date FROM transcripts ORDER BY date"
+        )
+    return [r["date"] for r in rows]
 
 
 async def reset_all_data():
