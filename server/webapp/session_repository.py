@@ -2,7 +2,7 @@
 
 The one seam over everything the session lifecycle persists about a session's
 status: the `session_ingests` table and the process-local status cache in front
-of it (SRV-A6). `session_processing.SessionProcessor` talks only to a
+of it (SRV-A6). `session_ingest.SessionIngest` talks only to a
 `SessionIngestRepository`; no other module touches `session_ingests`.
 
 Two adapters share the cache and differ only in where rows live:

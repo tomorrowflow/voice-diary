@@ -1,21 +1,26 @@
-"""Session processing lifecycle (ARCH-2).
+"""Session ingest (ARCH-2, REF-126): the lifecycle of an uploaded session
+bundle, see "Session ingest" in CONTEXT.md.
 
-The one server seam behind the three ways a session gets processed:
+The one server seam behind the ways a session gets processed. Its interface
+is `SessionIngest`:
 
-* **original ingest** — `accept()` claims the session and persists its
-  `processing` row, then `run_accepted()` runs the two-phase pipeline in the
-  background;
-* **manual retry** — `retry_analysis()` re-runs the narrative stage for the
-  segments left `pending_analysis`;
-* **startup sweep** — `retry_stuck_sessions_on_startup()` retries every
-  stranded session once after a restart.
+* **accept** — `accept()` claims the session and persists its `processing`
+  row; `process()` then runs the two-phase pipeline in the background;
+* **retry** — `retry()` re-runs the narrative stage for the segments left
+  `pending_analysis`, resuming the ones that never got a transcript;
+* **sweep** — `sweep()` retries every stranded session once after a restart;
+* **status** — `status()` reads a session's status.
 
 `routers/sessions.py` only parses HTTP and maps this module's results and
-`SessionError`s to responses. Everything else lives here: the status
-transitions (persisted through a `SessionIngestRepository`, REF-122, which owns
-the status cache and the `session_ingests` table, SRV-A6), the per-session
+`SessionError`s to responses; `main.py`'s lifespan only calls `sweep()`. This
+module never raises `HTTPException`. Everything else lives here: the status
+transitions and which sessions and segments are eligible for a retry or the
+sweep (persisted through a `SessionIngestRepository`, REF-122, which owns the
+status cache and the `session_ingests` table, SRV-A6), the per-session
 in-flight claim that keeps two runs from saving two narratives for one session
-(BUG-54), the per-segment pipeline, and the narrative persistence.
+(BUG-54), interrupted-session resume (BUG-112), where a session bundle lives on
+disk and reading its manifest back, the per-segment pipeline, and the
+narrative persistence.
 
 Pipeline for one segment:
 
@@ -31,9 +36,9 @@ Pipeline for one segment:
 A failure on one segment does not fail the session; each segment's status is
 recorded individually.
 
-State lives on a `SessionProcessor`; the app uses the process-wide one from
-`get_processor()` (Postgres-backed), tests build their own over an in-memory
-repository.
+State lives on a `SessionIngest`; the app uses the process-wide one from
+`get_session_ingest()` (Postgres-backed), tests build their own over an
+in-memory repository.
 """
 
 from __future__ import annotations
@@ -126,6 +131,15 @@ def session_dir_for(session_id: str) -> Path:
     return sessions_dir() / slug_session_id(session_id)
 
 
+def load_manifest(session_id: str) -> Manifest:
+    """Read back the manifest stored with `session_id`'s bundle. Raises
+    `SessionManifestMissing` if the bundle is gone."""
+    manifest_path = session_dir_for(session_id) / "manifest.json"
+    if not manifest_path.exists():
+        raise SessionManifestMissing()
+    return Manifest.model_validate(json.loads(manifest_path.read_bytes()))
+
+
 async def _finish_despite_cancellation(work: asyncio.Future) -> None:
     """Wait for `work` to finish even if the caller is cancelled meanwhile,
     then re-raise the cancellation (or `work`'s own error). The deletion of
@@ -184,8 +198,8 @@ class _SegmentArtifact:
 # --- lifecycle ------------------------------------------------------------
 
 
-class SessionProcessor:
-    """Owns session status and runs the processing lifecycle.
+class SessionIngest:
+    """Owns session status and runs the ingest lifecycle.
 
     `whisper_reachable` is the pre-flight used by `accept()`; Whisper is the
     one upstream a session can't work around. `repository` holds the status
@@ -231,9 +245,10 @@ class SessionProcessor:
 
     # -- status ------------------------------------------------------------
 
-    async def get_status(self, session_id: str) -> SessionStatus | None:
-        """Cache-then-row lookup. A cache miss (e.g. after a restart) falls
-        back to the persisted row (SRV-A6) and repopulates the cache from it."""
+    async def status(self, session_id: str) -> SessionStatus | None:
+        """Cache-then-row lookup; `None` for an unknown session. A cache miss
+        (e.g. after a restart) falls back to the persisted row (SRV-A6) and
+        repopulates the cache from it."""
         return await self.repository.get(session_id)
 
     async def _current_status(self, session_id: str) -> SessionStatus:
@@ -333,7 +348,7 @@ class SessionProcessor:
         Claims the session before its `processing` row exists, not when the
         background run starts: the startup sweep treats an unclaimed
         `processing` row as orphaned by a dead process, and a retry arriving
-        before the run is scheduled must still see it busy. `run_accepted`
+        before the run is scheduled must still see it busy. `process`
         releases the claim.
 
         Raises `upstream_failure.whisper_unavailable()` — after removing
@@ -368,7 +383,7 @@ class SessionProcessor:
             raise
         return accepted
 
-    async def run_accepted(self, parsed: Manifest, session_dir: Path) -> None:
+    async def process(self, parsed: Manifest, session_dir: Path) -> None:
         """Process a session `accept()` returned, in the background.
         `_process_session` persists status itself (memory cache + db row) on
         success; this only handles the crash path. Releases the claim
@@ -463,7 +478,7 @@ class SessionProcessor:
 
     # -- manual retry ------------------------------------------------------
 
-    async def retry_analysis(self, session_id: str) -> SessionStatus:
+    async def retry(self, session_id: str) -> SessionStatus:
         """Retry a session stuck in `pending_analysis` (issue #52).
 
         Rebuilds the session-level narrative input from what's persisted (the
@@ -482,14 +497,14 @@ class SessionProcessor:
         whose resumed segments all fail is not an error: it is persisted and
         returned `failed`.
         """
-        status_obj = await self.get_status(session_id)
+        status_obj = await self.status(session_id)
         if status_obj is None:
             raise SessionNotFound()
 
         if not await self._try_begin(session_id):
             raise SessionBusy()
         try:
-            if not any(s.status == "pending_analysis" for s in status_obj.segments):
+            if not _has_pending_analysis(status_obj):
                 raise SessionNotRetryable()
 
             return await self._retry_session_analysis(session_id, status_obj)
@@ -510,10 +525,7 @@ class SessionProcessor:
         that saved narrative instead of re-running analysis
         (`_retry_via_saved_document`).
         """
-        manifest_path = session_dir_for(session_id) / "manifest.json"
-        if not manifest_path.exists():
-            raise SessionManifestMissing()
-        parsed = Manifest.model_validate(json.loads(manifest_path.read_bytes()))
+        parsed = load_manifest(session_id)
         segments_by_id = {seg.segment_id: seg for seg in parsed.segments}
 
         artifacts: list[_SegmentArtifact] = []
@@ -649,7 +661,7 @@ class SessionProcessor:
 
     # -- startup sweep -----------------------------------------------------
 
-    async def retry_stuck_sessions_on_startup(self) -> None:
+    async def sweep(self) -> None:
         """Best-effort startup sweep (issue #52).
 
         Retries every non-`done` session with a `pending_analysis` segment
@@ -684,7 +696,7 @@ class SessionProcessor:
                 logger.info("startup retry sweep: session %s busy, skipping", session_id)
                 continue
             try:
-                status_obj = await self.get_status(session_id)
+                status_obj = await self.status(session_id)
                 if status_obj is None:
                     continue
                 # We hold the in-flight claim, so no run in this process owns
@@ -716,15 +728,24 @@ class SessionProcessor:
                 )
 
 
-_default: SessionProcessor | None = None
+_default: SessionIngest | None = None
 
 
-def get_processor() -> SessionProcessor:
-    """The process-wide processor the routes and the startup sweep share."""
+def get_session_ingest() -> SessionIngest:
+    """The process-wide session ingest the routes and the startup sweep share."""
     global _default
     if _default is None:
-        _default = SessionProcessor()
+        _default = SessionIngest()
     return _default
+
+
+# --- eligibility ----------------------------------------------------------
+
+
+def _has_pending_analysis(status_obj: SessionStatus) -> bool:
+    """A retry has something to do only for a session with a segment left
+    `pending_analysis`."""
+    return any(s.status == "pending_analysis" for s in status_obj.segments)
 
 
 def _is_untranscribed(result: SegmentResult) -> bool:

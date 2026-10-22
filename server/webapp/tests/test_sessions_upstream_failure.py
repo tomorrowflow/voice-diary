@@ -19,7 +19,7 @@ from tests.session_helpers import (
     SegmentPipeline,
     auth,
     fake_document_processor_pipeline,
-    fresh_processor,
+    fresh_ingest,
     manifest_dict,
     segment_row,
     stage_bundle,
@@ -31,7 +31,7 @@ from tests.session_helpers import (
 def _run_session(monkeypatch, tmp_path, session_id, *, failing=None, manifest=None):
     """The original ingest's background run for `session_id`'s bundle, with
     phase 1 stubbed; returns `(ingests, narrative stage)`."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     manifest = manifest if manifest is not None else manifest_dict(session_id)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, manifest)
     ingests = FakeSessionIngests(
@@ -48,7 +48,7 @@ def _segments_after_analysis_failure(monkeypatch, tmp_path, session_id, exc):
     processor, parsed, session_dir, ingests, stage = _run_session(monkeypatch, tmp_path, session_id)
     stage.analysis_error = exc
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     return ingests.row["segments"][0]
 
@@ -63,7 +63,7 @@ def test_run_records_code_on_a_segment_whose_whisper_call_fails_mid_run(monkeypa
         manifest=two_segment_manifest(session_id),
     )
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     assert ingests.row["segments"][1] == segment_row(
         "s02", "failed", error="whisper read timed out", code="whisper_timeout", upstream="whisper",
@@ -103,7 +103,7 @@ def test_run_classifies_a_raw_httpx_timeout_from_the_analysis_path(monkeypatch, 
     import document_processor
 
     session_id = "sess-ufh-raw-timeout"
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis")]
@@ -120,7 +120,7 @@ def test_run_classifies_a_raw_httpx_timeout_from_the_analysis_path(monkeypatch, 
     monkeypatch.setattr(document_processor, "analyze_transcript", raw_timeout)
     monkeypatch.setattr(db, "save_processed_document", save_doc)
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     assert ingests.row["segments"][0] == segment_row(
         "s01", "pending_analysis", 5, "analysis_pending: read timed out",
@@ -140,7 +140,7 @@ def test_run_leaves_code_null_for_an_unclassifiable_error(monkeypatch, tmp_path)
 def test_retry_analysis_route_returns_code_and_upstream_on_the_still_pending_segment(monkeypatch, tmp_path):
     from ollama_client import OllamaTimeoutError
 
-    fresh_processor(monkeypatch)
+    fresh_ingest(monkeypatch)
     ingests = stage_pending_session(monkeypatch, tmp_path, "sess-ufh-retry")
     stage = NarrativeStage(monkeypatch)
     stage.analysis_error = OllamaTimeoutError("no answer in 600s")

@@ -181,7 +181,7 @@ unaffected by bearer-token rotation.
  "request_id":"7c2e...","session_id":"2026-04-24T19:30:00+02:00"}
 ```
 
-Every request gets a `request_id` (UUID4); session-processing log lines
+Every request gets a `request_id` (UUID4); session-ingest log lines
 also carry the iOS `session_id` so a single session can be filtered with
 `docker compose logs webapp | jq 'select(.session_id=="...")'`.
 
