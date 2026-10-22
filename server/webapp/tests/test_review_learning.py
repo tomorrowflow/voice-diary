@@ -284,6 +284,26 @@ def test_submit_without_vector_search_stores_no_vectors():
     assert vectors.calls == []
 
 
+def test_submit_without_corrected_transcript_fails_the_request_not_the_task():
+    handed: list = []
+    review = {"entities": []}
+
+    with pytest.raises(KeyError, match="corrected_transcript"):
+        _submit(review, vectors=FakeVectors(), run_vector_task=handed.append)
+
+    assert handed == []
+
+
+def test_submit_variation_or_dismissal_without_original_is_a_key_error():
+    variation = {"new_variations": [{"dictionary_id": 7, "source": "person"}]}
+    with pytest.raises(KeyError, match="original"):
+        _submit(variation)
+
+    dismissal = {"dismissed": [{"canonical": "X", "type": "PERSON"}]}
+    with pytest.raises(KeyError, match="original"):
+        _submit(dismissal)
+
+
 def test_draft_never_touches_vectors_or_the_review_log():
     vectors = FakeVectors()
     repo = FakeRepository()
