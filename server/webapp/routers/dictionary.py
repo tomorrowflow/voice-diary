@@ -69,13 +69,8 @@ async def admin_add_person_variation(person_id: int, request: Request):
         person_id, body["text"], body.get("type", "asr_correction")
     )
     # Return the newly created variation's ID
-    pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT id FROM person_variations WHERE person_id = $1 AND variation = $2",
-        person_id,
-        body["text"],
-    )
-    return {"status": "ok", "id": row["id"] if row else None}
+    variation_id = await db.get_person_variation_id(person_id, body["text"])
+    return {"status": "ok", "id": variation_id}
 
 
 @router.delete("/api/admin/persons/{person_id}/variations/{variation_id}")
@@ -122,13 +117,8 @@ async def admin_create_term(request: Request):
 async def admin_add_term_variation(term_id: int, request: Request):
     body = await request.json()
     await db.save_term_variation(term_id, body["text"])
-    pool = await db.get_pool()
-    row = await pool.fetchrow(
-        "SELECT id FROM term_variations WHERE term_id = $1 AND variation = $2",
-        term_id,
-        body["text"],
-    )
-    return {"status": "ok", "id": row["id"] if row else None}
+    variation_id = await db.get_term_variation_id(term_id, body["text"])
+    return {"status": "ok", "id": variation_id}
 
 
 @router.delete("/api/admin/terms/{term_id}/variations/{variation_id}")

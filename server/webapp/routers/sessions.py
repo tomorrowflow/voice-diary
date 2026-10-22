@@ -251,24 +251,5 @@ async def session_dates(
     lo = _parse("date_from", date_from)
     hi = _parse("date_to", date_to)
 
-    pool = await db.get_pool()
-    if lo is not None and hi is not None:
-        rows = await pool.fetch(
-            "SELECT DISTINCT date FROM transcripts WHERE date BETWEEN $1 AND $2 ORDER BY date",
-            lo, hi,
-        )
-    elif lo is not None:
-        rows = await pool.fetch(
-            "SELECT DISTINCT date FROM transcripts WHERE date >= $1 ORDER BY date",
-            lo,
-        )
-    elif hi is not None:
-        rows = await pool.fetch(
-            "SELECT DISTINCT date FROM transcripts WHERE date <= $1 ORDER BY date",
-            hi,
-        )
-    else:
-        rows = await pool.fetch(
-            "SELECT DISTINCT date FROM transcripts ORDER BY date"
-        )
-    return {"dates": [r["date"].isoformat() for r in rows]}
+    dates = await db.list_transcript_dates(lo, hi)
+    return {"dates": [d.isoformat() for d in dates]}
