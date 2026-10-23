@@ -14,9 +14,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  # PRs cancel superseded runs. Every merge to main runs to the end, so a red main names the
+  # PRs cancel superseded runs. Pushes group per commit: a shared group would let GitHub drop a
+  # waiting run when the next merge queues, so every merge to main runs and a red main names the
   # merge that broke it instead of only the last merge of a batch.
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
