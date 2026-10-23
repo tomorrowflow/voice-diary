@@ -5,7 +5,9 @@ Runs as the last CI job on pushes to main. A failed job opens the issue (or
 comments on the one already open) with the failing jobs, a log tail per job,
 and the commits since the last green run, so the factory's review routine can
 draft a fix card from it. A fully green run closes the open issue. A run with
-cancelled jobs changes nothing: it proved neither red nor green.
+cancelled jobs changes nothing: it proved neither red nor green. A run for a commit
+that is no longer main's head changes nothing either: main runs finish out of order, and the
+newer commit's run reports on main as it now is.
 
 Usage (env from the workflow): RESULTS='${{ toJSON(needs) }}' python3 scripts/ci/red_main_issue.py
 """
@@ -22,8 +24,10 @@ MAX_COMMITS = 20
 TIMESTAMP = re.compile(r"^\d{4}-\d{2}-\d{2}T[\d:.]+Z ")
 
 
-def decide(results, open_issue):
+def decide(results, open_issue, superseded=False):
     """'open', 'comment', 'close', or None for a run's `needs` results."""
+    if superseded:
+        return None
     outcomes = {job["result"] for job in results.values()}
     if "failure" in outcomes:
         return "comment" if open_issue else "open"
@@ -95,8 +99,12 @@ def main():
         "issue", "list", "--label", LABEL, "--state", "open", "--json", "number",
         "--jq", ".[0].number // empty",
     ).strip()
-    action = decide(results, open_issue)
-    print(f"needs: {results}; open {LABEL} issue: {open_issue or 'none'}; action: {action}", file=sys.stderr)
+    head = gh("api", f"repos/{repo}/commits/main", "--jq", ".sha").strip()
+    action = decide(results, open_issue, superseded=head != sha)
+    print(
+        f"needs: {results}; open {LABEL} issue: {open_issue or 'none'}; main head: {head[:7]}; action: {action}",
+        file=sys.stderr,
+    )
     if action in ("open", "comment"):
         body = report(sha, run_url, failed_jobs(results), failing_job_logs(repo, run_id), commits_since_green(repo, sha))
         if action == "open":
