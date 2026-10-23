@@ -25,6 +25,10 @@ class DecideTests(unittest.TestCase):
     def test_cancelled_run_keeps_the_issue_open(self):
         self.assertIsNone(red.decide(needs(ruff="success", ios_tests="cancelled"), "12"))
 
+    def test_superseded_run_changes_nothing(self):
+        self.assertIsNone(red.decide(needs(ruff="failure"), "", superseded=True))
+        self.assertIsNone(red.decide(needs(ruff="success"), "12", superseded=True))
+
     def test_failure_wins_over_cancelled(self):
         self.assertEqual(red.decide(needs(ruff="failure", ios_tests="cancelled"), ""), "open")
 
