@@ -13,8 +13,9 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import document_processor
 import analysis_route
+import document_processor
+import narrative_rendering
 
 NOW = real_datetime.datetime(2027, 1, 2, 3, 4, 5)
 
@@ -26,10 +27,11 @@ def frozen_clock(monkeypatch):
         def now(cls, tz=None):
             return NOW
 
-    monkeypatch.setattr(document_processor, "datetime", FrozenDatetime)
+    monkeypatch.setattr(narrative_rendering, "datetime", FrozenDatetime)
 
 
 def render(date="2026-05-10", analysis=None, **overrides):
+    """Render through `document_processor`, the entry points callers use."""
     enriched = {
         "date": date,
         "diary_author": "Auth",
@@ -352,3 +354,33 @@ def test_metadata_route_is_recorded_and_defaults_to_local():
     routed = document_processor.build_document_metadata(enriched, route="blindfold")
     assert default["analysis_route"] == analysis_route.LOCAL == "local"
     assert routed == {**default, "analysis_route": "blindfold"}
+
+
+def test_document_processor_reexports_the_rendering_entry_points():
+    assert (
+        document_processor.generate_narrative_document
+        is narrative_rendering.generate_narrative_document
+    )
+    assert (
+        document_processor.build_document_metadata
+        is narrative_rendering.build_document_metadata
+    )
+
+
+def test_rendering_module_is_usable_without_the_processing_pipeline():
+    """The new boundary renders on its own, with no HTTP/LightRAG client in
+    sight: a fresh interpreter importing it must not load them."""
+    import subprocess
+
+    code = (
+        "import sys; sys.path.insert(0, %r);"
+        "import narrative_rendering;"
+        "md = narrative_rendering.generate_narrative_document({"
+        "'date': '2026-05-10', 'diary_author': 'A', 'diary_author_role': 'R',"
+        "'diary_author_company': 'C', 'lightrag_context': {},"
+        "'normalized_text': 't'}, {});"
+        "assert md.startswith('# CTO Tagebuch - Kalenderwoche 19, 2026');"
+        "loaded = {'httpx', 'document_processor', 'lightrag_client'} & set(sys.modules);"
+        "assert not loaded, loaded"
+    ) % os.path.join(os.path.dirname(__file__), "..")
+    subprocess.run([sys.executable, "-c", code], check=True)
