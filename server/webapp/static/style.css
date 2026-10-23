@@ -2929,7 +2929,6 @@ footer {
 .row-actions-divider { height: 1px; background: var(--border-secondary); margin: 4px 0; }
 
 /* ============================================================
-<<<<<<< Updated upstream
    DESIGN PRIMITIVES
    ============================================================
    Vocabulary lifted directly from the Claude Design handoff
@@ -2950,31 +2949,11 @@ footer {
   padding: 16px;
 }
 .ds-card-inset {
-=======
-   VOICE DIARY DESIGN-SYSTEM COMPONENTS
-   ============================================================
-   Mirrors the canonical preview in `docs/claude design/tokens.css`.
-   Card shells, state pills, status dots, calendar event rows, voice
-   quality badges, and the editorial entity highlight chips. All values
-   resolve to design tokens via the alias layer above — never use raw
-   hex/rgba in feature templates.
-   ============================================================ */
-
-/* --- Cards (DESIGN.md spec) --------------------------------- */
-.card-ds {
-  background: var(--bg-container);
-  border: 1px solid var(--border-subdued);
-  border-radius: var(--radius-lg);
-  padding: 16px;
-}
-.card-ds-inset {
->>>>>>> Stashed changes
   background: var(--bg-container-inset);
   border-radius: var(--radius-lg);
   padding: 16px;
 }
 
-<<<<<<< Updated upstream
 /* --- button additions: ghost + full + lg + size variants ----------- */
 .btn-ghost {
   background: transparent;
@@ -3005,26 +2984,10 @@ footer {
 .dot-link    { background: var(--text-link, var(--color-blue)); }
 .dot-subdued { background: var(--text-subdued, var(--gray-400)); }
 @keyframes ds-dot-pulse {
-=======
-/* --- Status dots ------------------------------------------- */
-.dot {
-  width: 10px; height: 10px; border-radius: 50%;
-  flex: 0 0 10px; display: inline-block;
-}
-.dot-sm { width: 8px; height: 8px; flex-basis: 8px; }
-.dot-rec { background: var(--status-destructive); }
-.dot-warn { background: var(--status-warning); }
-.dot-success { background: var(--status-success); }
-.dot-link { background: var(--text-link); }
-.dot-subdued { background: var(--text-subdued); }
-.dot.pulse { animation: vd-pulse 1.4s ease-in-out infinite; }
-@keyframes vd-pulse {
->>>>>>> Stashed changes
   0%, 100% { opacity: 1; }
   50%      { opacity: 0.45; }
 }
 
-<<<<<<< Updated upstream
 /* --- design's status-badge palette (tinted bg + colored border) -----
    Existing .status-badge keeps its solid-tint pattern for legacy markup.
    New code can use .ds-badge to opt into the design's exact look. */
@@ -3163,114 +3126,4 @@ footer {
   text-transform: uppercase;
   color: var(--text-subdued, var(--text-tertiary));
   margin: 0 0 12px;
-=======
-/* --- State pills (recording / speaking / listening) -------- */
-.pill-recording,
-.pill-state {
-  display: inline-flex; align-items: center; gap: 6px;
-  font-size: 12px; font-weight: 500; letter-spacing: 0.01em;
-  padding: 4px 12px; border-radius: var(--radius-full);
-  font-family: var(--font-family);
-}
-.pill-recording {
-  background: var(--color-tint-destructive-10);
-  color: var(--status-destructive);
-}
-.pill-state {
-  background: var(--bg-container-inset);
-  color: var(--text-secondary);
-}
-.pill-state.speaking {
-  background: var(--color-tint-warning-10);
-  color: var(--status-warning);
-}
-
-/* --- Voice quality badges (Premium / Enhanced / Standard) -- */
-.qbadge {
-  font-size: 11px; font-weight: 500;
-  padding: 2px 8px; border-radius: var(--radius-full);
-  letter-spacing: 0.02em; display: inline-block;
-}
-.qbadge-premium  { background: var(--color-tint-link-10);    color: var(--text-link); }
-.qbadge-enhanced { background: var(--color-tint-success-10); color: var(--status-success); }
-.qbadge-standard { background: var(--bg-container-inset);    color: var(--text-subdued); }
-
-/* --- Calendar event row (RSVP-coloured) -------------------- */
-.event-row {
-  display: grid;
-  grid-template-columns: 56px 3px 1fr;
-  gap: 12px;
-  padding: 12px;
-  border-radius: var(--radius-md);
-  align-items: stretch;
-}
-.event-row .time {
-  text-align: right;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  color: var(--text-secondary);
-  padding-top: 2px;
-}
-.event-row .bar {
-  width: 3px; border-radius: 2px; align-self: stretch;
-}
-.event-row .body { display: flex; flex-direction: column; gap: 2px; }
-.event-row .row-title {
-  font-size: 15px; font-weight: 500; color: var(--text-primary);
-}
-.event-row .meta { font-size: 13px; color: var(--text-secondary); }
-.event-row.rsvp-link    { background: var(--color-tint-link-6);    border: 1px solid var(--color-tint-link-20); }
-.event-row.rsvp-link    .bar { background: var(--text-link); }
-.event-row.rsvp-success { background: var(--color-tint-success-6); border: 1px solid var(--color-tint-success-20); }
-.event-row.rsvp-success .bar { background: var(--status-success); }
-.event-row.rsvp-warn    { background: var(--color-tint-warning-6); border: 1px solid var(--color-tint-warning-20); }
-.event-row.rsvp-warn    .bar { background: var(--status-warning); }
-.event-row.rsvp-subdued { background: var(--bg-container-inset);   border: 1px solid var(--border-subdued); }
-.event-row.rsvp-subdued .bar { background: var(--text-subdued); }
-
-.allday-row {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 12px; border-radius: var(--radius-md);
-  background: var(--bg-container-inset);
-}
-.allday-row .icon { color: var(--text-subdued); }
-.allday-row .row-title { flex: 1; font-size: 15px; }
-
-/* --- Section header (small caps) --------------------------- */
-.sec-h {
-  font-size: 12px; font-weight: 500;
-  letter-spacing: 0.06em; text-transform: uppercase;
-  color: var(--text-subdued); margin: 0 0 8px;
-}
-.t-mono-cap {
-  font-family: var(--font-mono); font-size: 12px;
-  letter-spacing: 0.02em; color: var(--text-subdued);
-  font-weight: 500;
-}
-
-/* --- Editorial entity chips (transcript review) ------------ */
-.entity {
-  font-family: var(--font-mono); font-size: 13px;
-  padding: 2px 6px; border-radius: 4px;
-  background: var(--bg-container-inset);
-  border: 1px solid var(--text-link);
-  cursor: pointer;
-  white-space: nowrap;
-}
-.entity.confirmed {
-  background: var(--color-tint-success-10);
-  border-color: var(--color-tint-success-20);
-  color: var(--text-primary);
-}
-.entity.pending {
-  background: var(--color-tint-link-6);
-  border-color: var(--color-tint-link-20);
-}
-.entity.rejected {
-  background: transparent;
-  border: 1px dashed var(--border-subdued);
-  color: var(--text-subdued);
-  text-decoration: line-through;
->>>>>>> Stashed changes
 }

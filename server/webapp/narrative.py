@@ -1,7 +1,7 @@
 """
 Shared narrative stage for both server pipelines: the HTMX SSE review flow
 (`routers/review_stream.py::process_document_stream`) and the iOS session ingest
-(`session_processing._run_session_document_processor`). Both callers used
+(`session_ingest._run_session_document_processor`). Both callers used
 to hand-assemble the same sequence of `document_processor` step calls with
 their own (slightly different) error handling; this module is the one place
 that sequence and its failure policy live.

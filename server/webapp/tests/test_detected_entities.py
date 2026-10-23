@@ -23,7 +23,7 @@ from tests.session_helpers import (
     FakeSessionIngests,
     NarrativeStage,
     SegmentPipeline,
-    fresh_processor,
+    fresh_ingest,
     manifest_dict,
     segment_row,
     stage_bundle,
@@ -88,7 +88,7 @@ def test_session_ingest_writes_detected_entities_not_a_reviewed_draft(monkeypatc
     import correction as correction_module
     from entity_detector import DetectedEntity
 
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     manifest = manifest_dict("sess-detected")
     manifest["segments"][0]["audio_file"] = "s01.m4a"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-detected", manifest)
@@ -113,7 +113,7 @@ def test_session_ingest_writes_detected_entities_not_a_reviewed_draft(monkeypatc
 
     monkeypatch.setattr(db, "save_draft", fake_save_draft)
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     assert saved_drafts == []
     assert len(pipeline.saved_entities) == 1
@@ -173,7 +173,7 @@ def test_review_page_runs_full_processing_for_ios_ingested_transcript(monkeypatc
 def _retry_with_transcript(monkeypatch, tmp_path, session_id, transcript_row):
     """Entities handed to the narrative stage when a retry reloads
     `transcript_row` from Postgres."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     stage_pending_session(monkeypatch, tmp_path, session_id)
     stage = NarrativeStage(monkeypatch)
 
@@ -182,7 +182,7 @@ def _retry_with_transcript(monkeypatch, tmp_path, session_id, transcript_row):
 
     monkeypatch.setattr(db, "get_transcript", fake_get_transcript)
 
-    asyncio.run(processor.retry_analysis(session_id))
+    asyncio.run(processor.retry(session_id))
     return [run["entities"] for run in stage.runs]
 
 

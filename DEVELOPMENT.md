@@ -524,7 +524,7 @@ cd server && printf 'POSTGRES_PASSWORD=test\nTAILNET_IP=127.0.0.1\n' > .env && d
 ```
 
 To narrow the run, replace `webapp/tests/` with a file (`webapp/tests/test_sessions.py`) or a test
-id (`webapp/tests/test_session_processing.py::test_retry_marks_only_the_remainder_when_some_rows_were_already_marked`).
+id (`webapp/tests/test_session_ingest.py::test_retry_marks_only_the_remainder_when_some_rows_were_already_marked`).
 
 **iOS** — macOS with Xcode 16.2+ and XcodeGen only (`xcodebuild` does not run on Linux). The Xcode
 project is generated and gitignored, and `project.yml` includes `project-piper.yml` (gitignored,

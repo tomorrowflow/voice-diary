@@ -27,7 +27,7 @@ from tests.session_helpers import (
     FakeSessionIngests,
     NarrativeStage,
     SegmentPipeline,
-    fresh_processor,
+    fresh_ingest,
     manifest_dict,
     segment_row,
     stage_bundle,
@@ -132,7 +132,7 @@ def _stub_lightrag(monkeypatch) -> None:
 
 
 def _ingest_session(monkeypatch, tmp_path, session_id: str):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     manifest = manifest_dict(session_id)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, manifest)
     ingests = FakeSessionIngests(
@@ -141,7 +141,7 @@ def _ingest_session(monkeypatch, tmp_path, session_id: str):
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 5})
     stage = NarrativeStage(monkeypatch, real_narrative=True)
     _stub_lightrag(monkeypatch)
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
     return processor, ingests, stage
 
 
@@ -324,13 +324,13 @@ def test_blindfold_timeout_defaults_to_the_local_analysis_timeout(monkeypatch):
 
 def test_retry_uses_the_route_in_force_when_it_runs(monkeypatch, tmp_path):
     llm = LlmTransport(monkeypatch)
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = stage_pending_session(monkeypatch, tmp_path, "sess-retry")
     NarrativeStage(monkeypatch, real_narrative=True)
     _stub_lightrag(monkeypatch)
 
     _route(monkeypatch)
-    asyncio.run(processor.retry_analysis("sess-retry"))
+    asyncio.run(processor.retry("sess-retry"))
     assert [r.url.host for r in llm.analysis_requests()] == ["ollama.test"]
 
     # The operator switches the route and restarts; the next retry follows it.
@@ -338,7 +338,7 @@ def test_retry_uses_the_route_in_force_when_it_runs(monkeypatch, tmp_path):
     ingests.row["segments"] = [segment_row("s01", "pending_analysis", 5, "analysis_pending: x")]
     processor.repository.restart()
     _route(monkeypatch, ROUTED_ENV)
-    asyncio.run(processor.retry_analysis("sess-retry"))
+    asyncio.run(processor.retry("sess-retry"))
 
     assert [r.url.host for r in llm.analysis_requests()] == ["ollama.test", "blindfold.test"]
     assert llm.unexpected == []
@@ -347,13 +347,13 @@ def test_retry_uses_the_route_in_force_when_it_runs(monkeypatch, tmp_path):
 
 def test_startup_sweep_uses_the_route_in_force(monkeypatch, tmp_path):
     llm = LlmTransport(monkeypatch)
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = stage_pending_session(monkeypatch, tmp_path, "sess-sweep")
     NarrativeStage(monkeypatch, real_narrative=True)
     _stub_lightrag(monkeypatch)
     _route(monkeypatch, ROUTED_ENV)
 
-    asyncio.run(processor.retry_stuck_sessions_on_startup())
+    asyncio.run(processor.sweep())
 
     assert [r.url.host for r in llm.analysis_requests()] == ["blindfold.test"]
     assert [r.url.host for r in llm.summary_requests()] == ["ollama.test"]
@@ -452,14 +452,14 @@ def test_routed_narrative_records_the_blindfold_route(monkeypatch, tmp_path):
 )
 def test_retry_after_a_route_switch_records_the_route_it_ran_under(monkeypatch, tmp_path, before, after):
     llm = LlmTransport(monkeypatch, **({"blindfold_status": 503} if before else {"ollama_status": 503}))
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = stage_pending_session(monkeypatch, tmp_path, "sess-meta-switch")
     stage = NarrativeStage(monkeypatch, real_narrative=True)
     _stub_lightrag(monkeypatch)
 
     # The first run fails upstream, so the session is pending under `before`.
     _route(monkeypatch, before)
-    asyncio.run(processor.retry_analysis("sess-meta-switch"))
+    asyncio.run(processor.retry("sess-meta-switch"))
     assert ingests.row["segments"][0]["status"] == "pending_analysis"
     assert stage.documents == {}
 
@@ -467,7 +467,7 @@ def test_retry_after_a_route_switch_records_the_route_it_ran_under(monkeypatch, 
     llm._status.update({"ollama.test": 200, "blindfold.test": 200})
     _pend_again(ingests, processor)
     _route(monkeypatch, after)
-    asyncio.run(processor.retry_analysis("sess-meta-switch"))
+    asyncio.run(processor.retry("sess-meta-switch"))
 
     assert ingests.row["segments"][0]["status"] == "processed"
     assert _saved_route(stage) == ("blindfold" if after else "local")
@@ -475,7 +475,7 @@ def test_retry_after_a_route_switch_records_the_route_it_ran_under(monkeypatch, 
 
 def test_ingest_only_retry_keeps_the_recorded_route_and_makes_no_analysis_call(monkeypatch, tmp_path):
     llm = LlmTransport(monkeypatch)
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = stage_pending_session(monkeypatch, tmp_path, "sess-meta-ingest-only")
     stage = NarrativeStage(monkeypatch, real_narrative=True)
     _stub_lightrag(monkeypatch)
@@ -483,7 +483,7 @@ def test_ingest_only_retry_keeps_the_recorded_route_and_makes_no_analysis_call(m
     # Analysed through Blindfold; the LightRAG ingest then fails.
     _route(monkeypatch, ROUTED_ENV)
     stage.ingest_error = RuntimeError("lightrag down")
-    asyncio.run(processor.retry_analysis("sess-meta-ingest-only"))
+    asyncio.run(processor.retry("sess-meta-ingest-only"))
     assert ingests.row["segments"][0]["status"] == "pending_analysis"
     assert _saved_route(stage) == "blindfold"
     assert len(llm.analysis_requests()) == 1
@@ -492,7 +492,7 @@ def test_ingest_only_retry_keeps_the_recorded_route_and_makes_no_analysis_call(m
     stage.ingest_error = None
     _pend_again(ingests, processor)
     _route(monkeypatch)
-    asyncio.run(processor.retry_analysis("sess-meta-ingest-only"))
+    asyncio.run(processor.retry("sess-meta-ingest-only"))
 
     assert ingests.row["segments"][0]["status"] == "processed"
     assert len(llm.analysis_requests()) == 1
@@ -503,13 +503,13 @@ def test_ingest_only_retry_keeps_the_recorded_route_and_makes_no_analysis_call(m
 
 def test_ingest_only_retry_of_a_legacy_row_adds_no_route_and_reads_as_local(monkeypatch, tmp_path):
     llm = LlmTransport(monkeypatch)
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = stage_pending_session(monkeypatch, tmp_path, "sess-meta-legacy")
     stage = NarrativeStage(monkeypatch)
     stage.save_document(5, "# saved", {"date": "2026-07-01"}, ingested=False)
     _route(monkeypatch, ROUTED_ENV)
 
-    asyncio.run(processor.retry_analysis("sess-meta-legacy"))
+    asyncio.run(processor.retry("sess-meta-legacy"))
 
     assert ingests.row["segments"][0]["status"] == "processed"
     assert llm.requests == []

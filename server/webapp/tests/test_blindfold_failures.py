@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import upstream_failure
-from tests.session_helpers import fresh_processor, stub_transcripts
+from tests.session_helpers import fresh_ingest, stub_transcripts
 from tests.test_analysis_route import (  # noqa: F401  (autouse fixture)
     ROUTED_ENV,
     LlmTransport,
@@ -159,7 +159,7 @@ def _pending_after_failure(monkeypatch, tmp_path, session_id, error=CONNECT_ERRO
 def test_retry_still_failing_keeps_the_session_pending_with_the_code(monkeypatch, tmp_path):
     llm, processor, ingests, _ = _pending_after_failure(monkeypatch, tmp_path, "sess-retry-fail")
 
-    result = asyncio.run(processor.retry_analysis("sess-retry-fail"))
+    result = asyncio.run(processor.retry("sess-retry-fail"))
 
     assert result.state == "partial"
     (segment,) = result.segments
@@ -175,7 +175,7 @@ def test_retry_recovers_once_blindfold_answers(monkeypatch, tmp_path):
     llm, processor, ingests, stage = _pending_after_failure(monkeypatch, tmp_path, "sess-retry-ok")
     llm.fail("blindfold.test", None)
 
-    result = asyncio.run(processor.retry_analysis("sess-retry-ok"))
+    result = asyncio.run(processor.retry("sess-retry-ok"))
 
     assert result.state == "done"
     assert ingests.row["segments"][0]["status"] == "processed"
@@ -187,7 +187,7 @@ def test_retry_under_the_local_route_produces_a_local_analysis(monkeypatch, tmp_
     llm, processor, ingests, stage = _pending_after_failure(monkeypatch, tmp_path, "sess-retry-local")
     _route(monkeypatch)
 
-    result = asyncio.run(processor.retry_analysis("sess-retry-local"))
+    result = asyncio.run(processor.retry("sess-retry-local"))
 
     assert result.state == "done"
     assert [r.url.host for r in llm.analysis_requests()] == ["blindfold.test", "ollama.test"]
@@ -199,9 +199,9 @@ def test_retry_under_the_local_route_produces_a_local_analysis(monkeypatch, tmp_
 def test_startup_sweep_recovers_once_blindfold_answers(monkeypatch, tmp_path):
     llm, processor, ingests, _ = _pending_after_failure(monkeypatch, tmp_path, "sess-sweep-ok")
     llm.fail("blindfold.test", None)
-    restarted = fresh_processor(monkeypatch, repository=ingests.repository)
+    restarted = fresh_ingest(monkeypatch, repository=ingests.repository)
 
-    asyncio.run(restarted.retry_stuck_sessions_on_startup())
+    asyncio.run(restarted.sweep())
 
     assert ingests.row["segments"][0]["status"] == "processed"
     assert [r.url.host for r in llm.analysis_requests()] == ["blindfold.test"] * 2
@@ -210,9 +210,9 @@ def test_startup_sweep_recovers_once_blindfold_answers(monkeypatch, tmp_path):
 def test_startup_sweep_under_the_local_route_produces_a_local_analysis(monkeypatch, tmp_path):
     llm, _, ingests, _ = _pending_after_failure(monkeypatch, tmp_path, "sess-sweep-local")
     _route(monkeypatch)
-    restarted = fresh_processor(monkeypatch, repository=ingests.repository)
+    restarted = fresh_ingest(monkeypatch, repository=ingests.repository)
 
-    asyncio.run(restarted.retry_stuck_sessions_on_startup())
+    asyncio.run(restarted.sweep())
 
     assert ingests.row["segments"][0]["status"] == "processed"
     assert [r.url.host for r in llm.analysis_requests()] == ["blindfold.test", "ollama.test"]
@@ -220,9 +220,9 @@ def test_startup_sweep_under_the_local_route_produces_a_local_analysis(monkeypat
 
 def test_startup_sweep_with_blindfold_still_down_leaves_it_pending(monkeypatch, tmp_path):
     llm, _, ingests, _ = _pending_after_failure(monkeypatch, tmp_path, "sess-sweep-down")
-    restarted = fresh_processor(monkeypatch, repository=ingests.repository)
+    restarted = fresh_ingest(monkeypatch, repository=ingests.repository)
 
-    asyncio.run(restarted.retry_stuck_sessions_on_startup())
+    asyncio.run(restarted.sweep())
 
     (segment,) = ingests.row["segments"]
     assert (segment["status"], segment["code"], segment["upstream"]) == (
