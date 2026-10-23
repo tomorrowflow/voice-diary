@@ -7,8 +7,9 @@ token cache, the optional Voxtral sidecar and, only when
     { "status": "ok" | "degraded" | "down",
       "upstream": { "postgres": "ok" | "down" | "skipped", ... } }
 
-Probe timeouts are short (~2 s) so the iOS app's reachability check
-doesn't hang.
+The probing and the status rules live in `health_checks`; this module only
+validates and serves the response. Probe timeouts are short (~2 s) so the iOS
+app's reachability check doesn't hang.
 
 This route is intentionally **not** bearer-token gated: iOS pings it
 before onboarding (i.e. before the user has even pasted the bearer in).
@@ -17,36 +18,22 @@ The endpoint reveals only liveness signals — never tokens, never PII.
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import os
-from typing import Literal
-
-import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-import analysis_route
+from health_checks import (
+    PROBE_TIMEOUT,
+    HealthDependencies,
+    OverallStatus,
+    ProbeResult,
+    check_health,
+    default_dependencies,
+    overall_status,
+)
 
-logger = logging.getLogger(__name__)
-
+__all__ = ["PROBE_TIMEOUT", "HealthResponse", "overall_status", "router"]
 
 router = APIRouter()
-
-
-PROBE_TIMEOUT = 2.0  # seconds — keep this snappy
-
-ProbeResult = Literal["ok", "down", "skipped", "not_bootstrapped", "fixture"]
-OverallStatus = Literal["ok", "degraded", "down"]
-
-# Without either of these no audio path is possible, so the server is `down`.
-ESSENTIAL_UPSTREAMS = frozenset({"postgres", "whisper"})
-# Optional upstreams report their real probe result but never change the
-# overall status: Voxtral is only an opt-in TTS voice, and the app falls back
-# to Piper when it is unavailable.
-OPTIONAL_UPSTREAMS = frozenset({"voxtral"})
-# Probe results that say nothing about health (not configured / dev mode).
-IGNORED_RESULTS = frozenset({"skipped", "fixture"})
 
 
 class HealthResponse(BaseModel):
@@ -54,148 +41,9 @@ class HealthResponse(BaseModel):
     upstream: dict[str, ProbeResult] = Field(default_factory=dict)
 
 
-# --- individual probes ----------------------------------------------------
-
-
-async def _probe_postgres() -> ProbeResult:
-    try:
-        import db
-        pool = await db.get_pool()
-        async with pool.acquire() as conn:
-            await asyncio.wait_for(conn.execute("SELECT 1"), timeout=PROBE_TIMEOUT)
-        return "ok"
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("postgres probe failed: %s", exc)
-        return "down"
-
-
-async def _probe_http(name: str, url: str | None) -> ProbeResult:
-    if not url:
-        return "skipped"
-    try:
-        async with httpx.AsyncClient(timeout=PROBE_TIMEOUT) as client:
-            # Try a cheap GET on root or /health if available.
-            resp = await client.get(url)
-            return "ok" if resp.status_code < 500 else "down"
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("%s probe failed (%s): %s", name, url, exc)
-        return "down"
-
-
-async def _probe_qdrant() -> ProbeResult:
-    return await _probe_http("qdrant", os.getenv("QDRANT_URL"))
-
-
-async def _probe_whisper() -> ProbeResult:
-    base = os.getenv("WHISPER_URL")
-    if not base:
-        return "skipped"
-    return await _probe_http("whisper", base.rstrip("/") + "/")
-
-
-async def _probe_lightrag() -> ProbeResult:
-    base = os.getenv("LIGHTRAG_URL")
-    if not base:
-        return "skipped"
-    return await _probe_http("lightrag", base.rstrip("/") + "/health")
-
-
-async def _probe_ollama() -> ProbeResult:
-    base = os.getenv("OLLAMA_BASE_URL")
-    if not base:
-        return "skipped"
-    return await _probe_http("ollama", base.rstrip("/") + "/api/tags")
-
-
-async def _probe_blindfold() -> ProbeResult:
-    """Reachability check on the Blindfold base URL, only called when routed.
-
-    Any answer below 500 is `ok`, so the probe does not depend on Blindfold
-    serving `/v1/models`. It sends no API key: it checks the host is up, not
-    that the key is valid."""
-    route = analysis_route.current()
-    if not route.is_blindfold:
-        return "skipped"
-    return await _probe_http("blindfold", route.blindfold_base_url + "/v1/models")
-
-
-async def _probe_voxtral() -> ProbeResult:
-    """Reachability check for the vLLM Omni sidecar. Uses voxtral_client's
-    probe() helper with a tight timeout so a slow vLLM startup doesn't
-    block the iOS reachability poll."""
-    base = os.getenv("VOXTRAL_BASE_URL")
-    if not base:
-        return "skipped"
-    try:
-        from voxtral_client import VoxtralClient
-        client = VoxtralClient(base_url=base)
-        return "ok" if await client.probe(timeout_seconds=PROBE_TIMEOUT) else "down"
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("voxtral probe failed: %s", exc)
-        return "down"
-
-
-async def _probe_msgraph() -> ProbeResult:
-    """Token freshness check: cache loaded + at least one account.
-
-    In fixture mode the probe reports `fixture` so the iOS UI can show a
-    distinct dev-mode banner.
-    """
-    import fixtures
-    if fixtures.fixture_mode():
-        return "fixture"  # type: ignore[return-value]
-    if not (os.getenv("MSGRAPH_CLIENT_ID") and os.getenv("MSGRAPH_TENANT_ID")):
-        return "skipped"
-    try:
-        from msgraph_client import get_client
-        client = await get_client()
-        accounts = client._app.get_accounts()  # type: ignore[attr-defined]
-        return "ok" if accounts else "not_bootstrapped"
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("msgraph probe failed: %s", exc)
-        return "down"
-
-
-# --- overall status -------------------------------------------------------
-
-
-def overall_status(upstream: dict[str, ProbeResult]) -> OverallStatus:
-    """Fold the per-upstream probe results into one overall status.
-
-    - `down`     — an essential upstream (postgres, whisper) is `down`.
-    - `degraded` — any other non-optional upstream that is neither `skipped`
-                   nor `fixture` is not `ok` (incl. msgraph `not_bootstrapped`).
-    - `ok`       — otherwise. Optional upstreams (voxtral) are never counted.
-    """
-    if any(upstream.get(name) == "down" for name in ESSENTIAL_UPSTREAMS):
-        return "down"
-    counted = (
-        result
-        for name, result in upstream.items()
-        if name not in OPTIONAL_UPSTREAMS and result not in IGNORED_RESULTS
-    )
-    return "ok" if all(result == "ok" for result in counted) else "degraded"
-
-
-# --- route ----------------------------------------------------------------
-
-
 @router.get("/health", response_model=HealthResponse)
-async def health() -> HealthResponse:
-    names = ("postgres", "qdrant", "whisper", "lightrag", "ollama", "msgraph", "voxtral")
-    probes = await asyncio.gather(
-        _probe_postgres(),
-        _probe_qdrant(),
-        _probe_whisper(),
-        _probe_lightrag(),
-        _probe_ollama(),
-        _probe_msgraph(),
-        _probe_voxtral(),
-        return_exceptions=False,
-    )
-    upstream: dict[str, ProbeResult] = dict(zip(names, probes))
-    # Only when routed: with the default route the response has no key.
-    if analysis_route.current().is_blindfold:
-        upstream["blindfold"] = await _probe_blindfold()
-
-    return HealthResponse(status=overall_status(upstream), upstream=upstream)
+async def health(
+    deps: HealthDependencies = Depends(default_dependencies),
+) -> HealthResponse:
+    snapshot = await check_health(deps)
+    return HealthResponse(status=snapshot.status, upstream=snapshot.upstream)
