@@ -1,11 +1,11 @@
-"""Tests for `session_processing` (ARCH-2): the session processing lifecycle
-behind the HTTP routes, driven through `SessionProcessor`'s public interface —
-`accept` / `run_accepted` (original ingest), `retry_analysis` (manual retry),
-`retry_stuck_sessions_on_startup` (startup sweep), `get_status`.
+"""Tests for `session_ingest` (ARCH-2, REF-126): the session ingest lifecycle
+behind the HTTP routes, driven through `SessionIngest`'s public interface —
+`accept` / `process` (original ingest), `retry` (manual retry), `sweep`
+(startup sweep), `status`.
 
 Run inside the webapp container so deps + env match prod:
 
-    docker compose run --rm webapp pytest webapp/tests/test_session_processing.py
+    docker compose run --rm webapp pytest webapp/tests/test_session_ingest.py
 
 No live Postgres, Whisper, Ollama or LightRAG: `session_helpers` stubs `db`,
 `transcript_ingest`, `correction` and `narrative`. The routes' side of the same
@@ -26,11 +26,11 @@ import pytest
 
 import correction
 import db
-import session_processing
+import session_ingest
 import upstream_failure
 from entity_detector import DetectedEntity
 from models import SegmentResult
-from session_processing import (
+from session_ingest import (
     SessionBusy,
     SessionManifestMissing,
     SessionNotFound,
@@ -41,7 +41,7 @@ from tests.session_helpers import (
     NarrativeStage,
     SegmentPipeline,
     fake_document_processor_pipeline,
-    fresh_processor,
+    fresh_ingest,
     manifest_dict,
     segment_row,
     stage_bundle,
@@ -61,13 +61,13 @@ def _sweep_lines(caplog) -> list[logging.LogRecord]:
 def test_status_falls_back_to_persisted_row_and_caches_it(monkeypatch):
     """A restart clears the in-memory cache; a previously-completed session's
     status must still come back from the db (SRV-A6)."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = FakeSessionIngests(
         "sess-1", "done", [segment_row("s01", "processed", 42)]
     ).install()
 
     async def scenario():
-        return await processor.get_status("sess-1"), await processor.get_status("sess-1")
+        return await processor.status("sess-1"), await processor.status("sess-1")
 
     first, second = asyncio.run(scenario())
 
@@ -78,9 +78,9 @@ def test_status_falls_back_to_persisted_row_and_caches_it(monkeypatch):
 
 
 def test_status_is_none_when_neither_cache_nor_db_has_the_session(monkeypatch):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
 
-    assert asyncio.run(processor.get_status("unknown")) is None
+    assert asyncio.run(processor.status("unknown")) is None
 
 
 # --- original ingest: accept ----------------------------------------------
@@ -89,7 +89,7 @@ def test_status_is_none_when_neither_cache_nor_db_has_the_session(monkeypatch):
 def test_accept_persists_the_processing_row_before_returning(monkeypatch, tmp_path):
     """The accepted status must already be durable — not just in the
     process-local cache — before the caller answers 200."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-accept")
     ingests = FakeSessionIngests.empty("sess-accept").install()
 
@@ -108,14 +108,14 @@ def test_accept_rolls_everything_back_when_whisper_is_unreachable(monkeypatch, t
     permanently 'processing' ghost, the bundle must be removed, and the claim
     released so the upload can be retried."""
     whisper_up = [False]
-    processor = fresh_processor(monkeypatch, whisper_up=lambda: whisper_up[0])
+    processor = fresh_ingest(monkeypatch, whisper_up=lambda: whisper_up[0])
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-rollback")
     ingests = FakeSessionIngests.empty("sess-rollback").install()
 
     async def scenario():
         with pytest.raises(upstream_failure.UpstreamFailure) as exc_info:
             await processor.accept(parsed, session_dir)
-        rolled_back = (await processor.get_status("sess-rollback"), session_dir.exists())
+        rolled_back = (await processor.status("sess-rollback"), session_dir.exists())
         # Claim released: a second accept (Whisper back up) goes through.
         whisper_up[0] = True
         return exc_info.value, rolled_back, await processor.accept(parsed, session_dir)
@@ -133,14 +133,14 @@ def test_accept_claims_the_session_before_its_processing_row_exists(monkeypatch,
     """BUG-53/#53: the sweep treats an unclaimed `processing` row as an orphan,
     so a fresh upload must hold its in-flight claim from the moment the row is
     created — otherwise the sweep could fail the segments of a live session."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, "sess-claim-first")
     ingests = FakeSessionIngests.empty("sess-claim-first").install()
     busy_when_row_created: list[bool] = []
 
     async def on_insert(session_id) -> None:
         try:
-            await processor.retry_analysis(session_id)
+            await processor.retry(session_id)
         except SessionBusy:
             busy_when_row_created.append(True)
         else:  # pragma: no cover
@@ -153,17 +153,17 @@ def test_accept_claims_the_session_before_its_processing_row_exists(monkeypatch,
     assert busy_when_row_created == [True]
 
 
-# --- original ingest: run_accepted ----------------------------------------
+# --- original ingest: process ----------------------------------------
 
 
 @pytest.mark.parametrize(
     ("failing", "state"),
     [([], "done"), (["s01", "s02"], "failed"), (["s02"], "partial")],
 )
-def test_run_accepted_derives_the_final_state_from_the_segment_outcomes(
+def test_process_derives_the_final_state_from_the_segment_outcomes(
     monkeypatch, tmp_path, failing, state
 ):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = f"sess-state-{state}"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
@@ -173,8 +173,8 @@ def test_run_accepted_derives_the_final_state_from_the_segment_outcomes(
     stage = NarrativeStage(monkeypatch)
 
     async def scenario():
-        await processor.run_accepted(parsed, session_dir)
-        return await processor.get_status(session_id)
+        await processor.process(parsed, session_dir)
+        return await processor.status(session_id)
 
     cached = asyncio.run(scenario())
 
@@ -200,15 +200,15 @@ def test_derive_session_state_from_the_segment_statuses(statuses, state):
     """BUG-114/#114: `done` only when every segment is `processed`."""
     results = [SegmentResult(segment_id=f"s{i:02d}", status=status) for i, status in enumerate(statuses)]
 
-    assert session_processing.derive_session_state(results) == state
+    assert session_ingest.derive_session_state(results) == state
 
 
-def test_run_accepted_reports_partial_when_the_analysis_leaves_every_segment_pending(
+def test_process_reports_partial_when_the_analysis_leaves_every_segment_pending(
     monkeypatch, tmp_path
 ):
     """BUG-114/#114: every segment transcribed but the session-level analysis
     failed, so all of them are `pending_analysis` — not `done`."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-all-pending"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
@@ -219,8 +219,8 @@ def test_run_accepted_reports_partial_when_the_analysis_leaves_every_segment_pen
     stage.analysis_error = RuntimeError("ollama unreachable")
 
     async def scenario():
-        await processor.run_accepted(parsed, session_dir)
-        return await processor.get_status(session_id)
+        await processor.process(parsed, session_dir)
+        return await processor.status(session_id)
 
     cached = asyncio.run(scenario())
 
@@ -228,8 +228,8 @@ def test_run_accepted_reports_partial_when_the_analysis_leaves_every_segment_pen
     assert ingests.row["state"] == cached.state == "partial"
 
 
-def test_run_accepted_marks_the_session_failed_when_processing_crashes(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+def test_process_marks_the_session_failed_when_processing_crashes(monkeypatch, tmp_path):
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-crash"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
     ingests = FakeSessionIngests(
@@ -241,8 +241,8 @@ def test_run_accepted_marks_the_session_failed_when_processing_crashes(monkeypat
 
     async def scenario():
         await processor.accept(parsed, session_dir)
-        await processor.run_accepted(parsed, session_dir)
-        return await processor.get_status(session_id)
+        await processor.process(parsed, session_dir)
+        return await processor.status(session_id)
 
     cached = asyncio.run(scenario())
 
@@ -252,7 +252,7 @@ def test_run_accepted_marks_the_session_failed_when_processing_crashes(monkeypat
 
 @pytest.mark.parametrize("crashes", [False, True])
 def test_original_ingest_releases_its_claim_on_success_and_failure(monkeypatch, tmp_path, crashes):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = f"sess-release-{crashes}"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
     ingests = FakeSessionIngests.empty(session_id).install()
@@ -263,10 +263,10 @@ def test_original_ingest_releases_its_claim_on_success_and_failure(monkeypatch, 
 
     async def scenario():
         await processor.accept(parsed, session_dir)
-        await processor.run_accepted(parsed, session_dir)
+        await processor.process(parsed, session_dir)
         # Released: the session is not busy, just has nothing left to retry.
         with pytest.raises(SessionNotRetryable):
-            await processor.retry_analysis(session_id)
+            await processor.retry(session_id)
 
     asyncio.run(scenario())
 
@@ -275,7 +275,7 @@ def test_phase_1_persists_each_segment_as_it_finishes(monkeypatch, tmp_path):
     """BUG-53/#53: a transcribed segment's `pending_analysis` + transcript_id
     (or a failed segment's `failed` + error) must hit `session_ingests` as
     soon as phase 1 is done with it — not only at the end of the session."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-phase1-persist"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
@@ -292,7 +292,7 @@ def test_phase_1_persists_each_segment_as_it_finishes(monkeypatch, tmp_path):
 
     stage.before_analysis = at_phase_2
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     after_s01 = (
         "processing",
@@ -312,7 +312,7 @@ def test_phase_1_persists_each_segment_as_it_finishes(monkeypatch, tmp_path):
 
 
 def test_phase_1_updates_the_status_cache_per_segment(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-phase1-cache"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     FakeSessionIngests.empty(session_id).install()
@@ -321,14 +321,14 @@ def test_phase_1_updates_the_status_cache_per_segment(monkeypatch, tmp_path):
     cache_at_phase_2: list[list[SegmentResult]] = []
 
     async def at_phase_2(run):
-        status = await processor.get_status(session_id)
+        status = await processor.status(session_id)
         cache_at_phase_2.append(list(status.segments))
 
     stage.before_analysis = at_phase_2
 
     async def scenario():
         await processor.accept(parsed, session_dir)
-        await processor.run_accepted(parsed, session_dir)
+        await processor.process(parsed, session_dir)
 
     asyncio.run(scenario())
 
@@ -355,7 +355,7 @@ def test_segments_go_through_the_shared_transcribe_and_persist_core(monkeypatch,
     `transcript_ingest.transcribe_and_persist` (the same core `main.py`'s
     `/api/ingest/upload` uses) instead of driving `asr_client` and
     `db.create_transcript` inline."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     parsed, session_dir = _single_segment_bundle(monkeypatch, tmp_path, "sess-seg", date="2026-07-04")
     FakeSessionIngests(
         "sess-seg", "processing", [segment_row("s01", "pending_analysis")]
@@ -363,7 +363,7 @@ def test_segments_go_through_the_shared_transcribe_and_persist_core(monkeypatch,
     pipeline = SegmentPipeline(monkeypatch, transcript_ids={"s01": 7})
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     assert len(pipeline.transcribe_calls) == 1
     call = pipeline.transcribe_calls[0]
@@ -383,7 +383,7 @@ def test_segments_use_the_shared_correction_module(monkeypatch, tmp_path):
     `correction.correct_and_detect_entities` — the same chain the HTMX review
     flow runs — and the entities it detects reach both the persisted
     transcript and the narrative stage."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     parsed, session_dir = _single_segment_bundle(monkeypatch, tmp_path, "sess-corr")
     FakeSessionIngests(
         "sess-corr", "processing", [segment_row("s01", "pending_analysis")]
@@ -407,7 +407,7 @@ def test_segments_use_the_shared_correction_module(monkeypatch, tmp_path):
     )
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     assert len(pipeline.correct_calls) == 1
     assert pipeline.correct_calls[0] == {
@@ -437,7 +437,7 @@ def test_segment_entities_are_persisted_even_when_correction_leaves_the_text_unc
     """#52: entities used to be saved only when correction changed the text, so
     a retry rebuilding the narrative from Postgres always saw none. They must
     always be persisted so a later retry can reload what was detected."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     parsed, session_dir = _single_segment_bundle(monkeypatch, tmp_path, "sess-entities")
     FakeSessionIngests(
         "sess-entities", "processing", [segment_row("s01", "pending_analysis")]
@@ -455,7 +455,7 @@ def test_segment_entities_are_persisted_even_when_correction_leaves_the_text_unc
     pipeline = SegmentPipeline(monkeypatch, transcript_ids={"s01": 11}, correct=correct)
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     assert len(pipeline.saved_entities) == 1
     transcript_id, text, entities_json = pipeline.saved_entities[0]
@@ -465,7 +465,7 @@ def test_segment_entities_are_persisted_even_when_correction_leaves_the_text_unc
 
 
 def test_a_missing_audio_file_fails_only_its_segment(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-no-audio"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     (session_dir / "segments" / "s02.m4a").unlink()
@@ -475,7 +475,7 @@ def test_a_missing_audio_file_fails_only_its_segment(monkeypatch, tmp_path):
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 11})
     NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
 
     assert ingests.row["state"] == "partial"
     assert ingests.row["segments"][0] == segment_row("s01", "processed", 11)
@@ -489,7 +489,7 @@ def test_a_missing_audio_file_fails_only_its_segment(monkeypatch, tmp_path):
 def _run_with_real_narrative_stage(monkeypatch, tmp_path, session_id, *, ingest):
     """Two transcribed segments through the real `narrative` stage (only its
     `document_processor` steps stubbed); returns `(saved_ids, marked_ids)`."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
@@ -511,7 +511,7 @@ def _run_with_real_narrative_stage(monkeypatch, tmp_path, session_id, *, ingest)
     monkeypatch.setattr(db, "save_processed_document", fake_save_processed_document)
     monkeypatch.setattr(db, "mark_document_ingested", fake_mark_document_ingested)
 
-    asyncio.run(processor.run_accepted(parsed, session_dir))
+    asyncio.run(processor.process(parsed, session_dir))
     return saved_ids, marked_ids
 
 
@@ -550,26 +550,26 @@ def test_saved_documents_stay_unmarked_when_the_ingest_fails(monkeypatch, tmp_pa
 
 def test_retry_raises_session_not_found_for_an_unknown_session(monkeypatch):
     """#52: neither cache nor persisted row knows the session."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
 
     with pytest.raises(SessionNotFound):
-        asyncio.run(processor.retry_analysis("unknown"))
+        asyncio.run(processor.retry("unknown"))
 
 
 def test_retry_raises_not_retryable_when_no_segment_is_pending_analysis(monkeypatch):
     """#52: a session with no `pending_analysis` segment (e.g. fully `done`,
     or still `processing`) is not in a retryable state."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     FakeSessionIngests(
         "sess-done", "done", [segment_row("s01", "processed", 1)]
     ).install()
 
     with pytest.raises(SessionNotRetryable):
-        asyncio.run(processor.retry_analysis("sess-done"))
+        asyncio.run(processor.retry("sess-done"))
 
 
 def test_retry_raises_not_retryable_when_no_pending_segment_has_a_transcript_row(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     stage_bundle(monkeypatch, tmp_path, "sess-no-transcript")
     FakeSessionIngests(
         "sess-no-transcript", "done", [segment_row("s01", "pending_analysis", 9, "analysis_pending: boom")]
@@ -577,7 +577,7 @@ def test_retry_raises_not_retryable_when_no_pending_segment_has_a_transcript_row
     stub_transcripts(monkeypatch, [])
 
     with pytest.raises(SessionNotRetryable):
-        asyncio.run(processor.retry_analysis("sess-no-transcript"))
+        asyncio.run(processor.retry("sess-no-transcript"))
 
 
 # --- resuming sessions that never reached transcription (BUG-112) ---------
@@ -592,7 +592,7 @@ def _stage_untranscribed_session(monkeypatch, tmp_path, session_id, segments):
 
 
 def test_retry_resumes_untranscribed_segments_from_the_stored_audio(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume"
     _, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -601,7 +601,7 @@ def test_retry_resumes_untranscribed_segments_from_the_stored_audio(monkeypatch,
     pipeline = SegmentPipeline(monkeypatch, transcript_ids={"s01": 11, "s02": 12})
     stage = NarrativeStage(monkeypatch)
 
-    result = asyncio.run(processor.retry_analysis(session_id))
+    result = asyncio.run(processor.retry(session_id))
 
     assert [c["filename"] for c in pipeline.transcribe_calls] == [
         f"{session_id}::s01.m4a", f"{session_id}::s02.m4a",
@@ -616,7 +616,7 @@ def test_retry_resumes_untranscribed_segments_from_the_stored_audio(monkeypatch,
 
 
 def test_retry_persists_each_resumed_transcript_id_before_the_narrative_runs(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume-progress"
     _, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -631,13 +631,13 @@ def test_retry_persists_each_resumed_transcript_id_before_the_narrative_runs(mon
 
     stage.before_analysis = before_analysis
 
-    asyncio.run(processor.retry_analysis(session_id))
+    asyncio.run(processor.retry(session_id))
 
     assert seen == [[segment_row("s01", "pending_analysis", 11), segment_row("s02", "pending_analysis", 12)]]
 
 
 def test_retry_fails_a_segment_whose_audio_is_missing_and_derives_the_session_state(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume-no-audio"
     session_dir, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -647,7 +647,7 @@ def test_retry_fails_a_segment_whose_audio_is_missing_and_derives_the_session_st
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 11})
     stage = NarrativeStage(monkeypatch)
 
-    result = asyncio.run(processor.retry_analysis(session_id))
+    result = asyncio.run(processor.retry(session_id))
 
     assert result.state == "partial"
     assert ingests.row["state"] == "partial"
@@ -659,7 +659,7 @@ def test_retry_fails_a_segment_whose_audio_is_missing_and_derives_the_session_st
 
 
 def test_retry_of_a_session_with_no_audio_left_ends_failed_without_raising(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume-all-gone"
     session_dir, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -670,7 +670,7 @@ def test_retry_of_a_session_with_no_audio_left_ends_failed_without_raising(monke
     pipeline = SegmentPipeline(monkeypatch)
     stage = NarrativeStage(monkeypatch)
 
-    result = asyncio.run(processor.retry_analysis(session_id))
+    result = asyncio.run(processor.retry(session_id))
 
     assert result.state == "failed"
     assert [s.status for s in result.segments] == ["failed", "failed"]
@@ -681,7 +681,7 @@ def test_retry_of_a_session_with_no_audio_left_ends_failed_without_raising(monke
 
 
 def test_retry_resumes_only_the_untranscribed_segments_of_a_mixed_session(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume-mixed"
     _, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -691,7 +691,7 @@ def test_retry_resumes_only_the_untranscribed_segments_of_a_mixed_session(monkey
     stub_transcripts(monkeypatch, [41])
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_analysis(session_id))
+    asyncio.run(processor.retry(session_id))
 
     assert [c["filename"] for c in pipeline.transcribe_calls] == [f"{session_id}::s02.m4a"]
     assert len(stage.runs) == 1
@@ -701,7 +701,7 @@ def test_retry_resumes_only_the_untranscribed_segments_of_a_mixed_session(monkey
 
 
 def test_retry_narrates_a_resumed_segment_before_a_rebuilt_one_in_manifest_order(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume-first"
     _, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -711,7 +711,7 @@ def test_retry_narrates_a_resumed_segment_before_a_rebuilt_one_in_manifest_order
     stub_transcripts(monkeypatch, [42])
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_analysis(session_id))
+    asyncio.run(processor.retry(session_id))
 
     assert stage.runs[0]["text"].index("hallo welt") < stage.runs[0]["text"].index("text-42")
     assert [doc["id"] for doc in stage.documents.values()] == [141, 142]
@@ -719,7 +719,7 @@ def test_retry_narrates_a_resumed_segment_before_a_rebuilt_one_in_manifest_order
 
 
 def test_retry_resumes_an_untranscribed_segment_even_when_another_ones_transcript_row_is_gone(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume-row-gone"
     _, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -729,7 +729,7 @@ def test_retry_resumes_an_untranscribed_segment_even_when_another_ones_transcrip
     stub_transcripts(monkeypatch, [])
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_analysis(session_id))
+    asyncio.run(processor.retry(session_id))
 
     assert [c["filename"] for c in pipeline.transcribe_calls] == [f"{session_id}::s02.m4a"]
     assert len(stage.runs) == 1
@@ -737,7 +737,7 @@ def test_retry_resumes_an_untranscribed_segment_even_when_another_ones_transcrip
 
 
 def test_retry_that_is_not_retryable_resumes_nothing(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-nothing-to-resume"
     stage_bundle(monkeypatch, tmp_path, session_id)
     ingests = FakeSessionIngests(
@@ -747,14 +747,14 @@ def test_retry_that_is_not_retryable_resumes_nothing(monkeypatch, tmp_path):
     stub_transcripts(monkeypatch, [])
 
     with pytest.raises(SessionNotRetryable):
-        asyncio.run(processor.retry_analysis(session_id))
+        asyncio.run(processor.retry(session_id))
 
     assert pipeline.transcribe_calls == []
     assert ingests.updates == []
 
 
 def test_retry_fails_a_resumed_segment_when_transcription_fails_and_continues_with_the_rest(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume-whisper-fails"
     _, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -763,7 +763,7 @@ def test_retry_fails_a_resumed_segment_when_transcription_fails_and_continues_wi
     SegmentPipeline(monkeypatch, transcript_ids={"s02": 12}, failing={"s01": RuntimeError("whisper boom")})
     NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_analysis(session_id))
+    asyncio.run(processor.retry(session_id))
 
     assert ingests.row["state"] == "partial"
     assert ingests.row["segments"][0]["status"] == "failed"
@@ -772,7 +772,7 @@ def test_retry_fails_a_resumed_segment_when_transcription_fails_and_continues_wi
 
 
 def test_retry_fails_an_untranscribed_segment_missing_from_the_manifest(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-resume-unknown-segment"
     _, ingests = _stage_untranscribed_session(
         monkeypatch, tmp_path, session_id,
@@ -781,7 +781,7 @@ def test_retry_fails_an_untranscribed_segment_missing_from_the_manifest(monkeypa
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 11})
     NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_analysis(session_id))
+    asyncio.run(processor.retry(session_id))
 
     assert ingests.row["state"] == "partial"
     assert ingests.row["segments"][1]["status"] == "failed"
@@ -792,14 +792,14 @@ def test_retry_ingest_only_failure_reingests_without_rerunning_analysis(monkeypa
     """#52 acceptance: when analysis already succeeded and saved a document
     (only the LightRAG ingest failed), retry must re-ingest that saved
     narrative and mark it ingested — not re-run the LLM analysis."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-retry-ingest-only"
     ingests = stage_pending_session(monkeypatch, tmp_path, session_id)
     stage = NarrativeStage(monkeypatch)
     metadata = {"date": "2026-07-01", "author": "Lukas Brandt"}
     stage.save_document(5, "# already analyzed narrative", metadata)
 
-    result = asyncio.run(processor.retry_analysis(session_id))
+    result = asyncio.run(processor.retry(session_id))
 
     assert result.state == "done"
     assert result.segments[0].status == "processed"
@@ -814,14 +814,14 @@ def test_retry_rebuilds_the_narrative_from_persisted_transcripts_and_marks_done(
     so retry must reload the manifest from disk, reload each pending segment's
     transcript + entities from Postgres, re-run the full narrative stage, and
     flip the segment (and session) to done."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-retry-full"
     ingests = stage_pending_session(monkeypatch, tmp_path, session_id)
     entities = [{"type": "PERSON", "text": "Anna"}]
     stub_transcripts(monkeypatch, [5], entities_json=json.dumps(entities))
     stage = NarrativeStage(monkeypatch)
 
-    result = asyncio.run(processor.retry_analysis(session_id))
+    result = asyncio.run(processor.retry(session_id))
 
     assert result.state == "done"
     assert [s.model_dump() for s in result.segments] == [segment_row("s01", "processed", 5)]
@@ -838,15 +838,15 @@ def test_retry_leaves_the_segment_pending_when_analysis_fails_again(monkeypatch,
     """BUG-56/#56: the narrative stage failing again on retry must not raise —
     the segments stay `pending_analysis` with an `analysis_pending: …` error
     (same shape as the original ingest) and the status is persisted."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-retry-analysis-fails"
     ingests = stage_pending_session(monkeypatch, tmp_path, session_id)
     stage = NarrativeStage(monkeypatch)
     stage.analysis_error = RuntimeError("ollama unreachable")
 
     async def scenario():
-        result = await processor.retry_analysis(session_id)
-        return result, await processor.get_status(session_id)
+        result = await processor.retry(session_id)
+        return result, await processor.status(session_id)
 
     result, cached = asyncio.run(scenario())
 
@@ -861,14 +861,14 @@ def test_retry_leaves_the_segment_pending_when_the_reingest_fails_again(monkeypa
     """BUG-56/#56: same for the ingest-only shortcut — a saved document whose
     LightRAG re-ingest fails again stays unmarked and the segment stays
     `pending_analysis` with the new error."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-retry-ingest-fails"
     ingests = stage_pending_session(monkeypatch, tmp_path, session_id)
     stage = NarrativeStage(monkeypatch)
     stage.save_document(5, "# already analyzed narrative", {"date": "2026-07-01"})
     stage.ingest_error = RuntimeError("lightrag unreachable")
 
-    result = asyncio.run(processor.retry_analysis(session_id))
+    result = asyncio.run(processor.retry(session_id))
 
     expected = [segment_row("s01", "pending_analysis", 5, "analysis_pending: lightrag unreachable")]
     assert [s.model_dump() for s in result.segments] == expected
@@ -886,7 +886,7 @@ def _retry_with_saved_documents(monkeypatch, tmp_path, documents: dict[int, dict
     for none yet), retried once; returns the narrative stage for inspection.
     A re-analysis shows up as `stage.runs`; a re-ingest of the saved narrative
     as `stage.ingested`."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-retry-shortcut"
     manifest = manifest_dict(session_id)
     manifest["segments"] = [
@@ -904,7 +904,7 @@ def _retry_with_saved_documents(monkeypatch, tmp_path, documents: dict[int, dict
         if doc is not None:
             stage.save_document(tid, doc["markdown"], doc.get("metadata", {"date": "2026-07-01"}), ingested=doc["ingested"])
 
-    asyncio.run(processor.retry_analysis(session_id))
+    asyncio.run(processor.retry(session_id))
     return stage
 
 
@@ -986,26 +986,26 @@ def test_retry_reanalyzes_when_every_document_is_marked_or_one_is_missing(monkey
 def test_retry_releases_its_claim_after_success_and_after_failure(monkeypatch, tmp_path):
     """Both a narrative failure (pending segments) and an exception escaping
     the retry (missing manifest) must release the claim."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-retry-release"
     stage_pending_session(monkeypatch, tmp_path, session_id)
     stage = NarrativeStage(monkeypatch)
-    manifest_path = session_processing.session_dir_for(session_id) / "manifest.json"
+    manifest_path = session_ingest.session_dir_for(session_id) / "manifest.json"
 
     async def scenario():
         stage.analysis_error = RuntimeError("ollama unreachable")
         # The cached status object is updated in place, so snapshot each result.
-        first = (await processor.retry_analysis(session_id)).model_copy(deep=True)
-        second = (await processor.retry_analysis(session_id)).model_copy(deep=True)
+        first = (await processor.retry(session_id)).model_copy(deep=True)
+        second = (await processor.retry(session_id)).model_copy(deep=True)
         manifest_text = manifest_path.read_text()
         manifest_path.unlink()
         with pytest.raises(SessionManifestMissing):
-            await processor.retry_analysis(session_id)
+            await processor.retry(session_id)
         manifest_path.write_text(manifest_text)
         stage.analysis_error = None
-        third = (await processor.retry_analysis(session_id)).model_copy(deep=True)
+        third = (await processor.retry(session_id)).model_copy(deep=True)
         with pytest.raises(SessionNotRetryable):
-            await processor.retry_analysis(session_id)
+            await processor.retry(session_id)
         return first, second, third
 
     first, second, third = asyncio.run(scenario())
@@ -1017,18 +1017,18 @@ def test_retry_releases_its_claim_after_success_and_after_failure(monkeypatch, t
 def test_concurrent_retries_run_the_narrative_once_and_the_other_is_busy(monkeypatch, tmp_path):
     """A double tap: while the first retry is in flight, the second is refused
     as busy, and the narrative stage ran exactly once."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-retry-double-tap"
     stage_pending_session(monkeypatch, tmp_path, session_id)
     stage = NarrativeStage(monkeypatch)
 
     async def scenario():
         started, release = stage.latch()
-        first = asyncio.create_task(processor.retry_analysis(session_id))
+        first = asyncio.create_task(processor.retry(session_id))
         try:
             await asyncio.wait_for(started.wait(), 5)
             with pytest.raises(SessionBusy):
-                await asyncio.wait_for(processor.retry_analysis(session_id), 2)
+                await asyncio.wait_for(processor.retry(session_id), 2)
         finally:
             release.set()
         return await first
@@ -1040,7 +1040,7 @@ def test_concurrent_retries_run_the_narrative_once_and_the_other_is_busy(monkeyp
 
 
 def test_retry_is_busy_during_the_original_ingest_and_free_once_it_ends(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-retry-vs-ingest"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
     FakeSessionIngests.empty(session_id).install()
@@ -1050,17 +1050,17 @@ def test_retry_is_busy_during_the_original_ingest_and_free_once_it_ends(monkeypa
     async def scenario():
         started, release = stage.latch()
         await processor.accept(parsed, session_dir)
-        run = asyncio.create_task(processor.run_accepted(parsed, session_dir))
+        run = asyncio.create_task(processor.process(parsed, session_dir))
         try:
             await asyncio.wait_for(started.wait(), 5)
             with pytest.raises(SessionBusy):
-                await processor.retry_analysis(session_id)
+                await processor.retry(session_id)
         finally:
             release.set()
         await run
         # Released: the session is just not retryable any more, no longer busy.
         with pytest.raises(SessionNotRetryable):
-            await processor.retry_analysis(session_id)
+            await processor.retry(session_id)
 
     asyncio.run(scenario())
 
@@ -1087,11 +1087,11 @@ def _stage_stuck_sessions(monkeypatch, tmp_path, sessions: dict[str, int]) -> Fa
 
 
 def test_sweep_retries_every_stuck_session(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-a": 5, "sess-b": 6})
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_stuck_sessions_on_startup())
+    asyncio.run(processor.sweep())
 
     assert [run["text"].endswith(f"text-{tid}") for run, tid in zip(stage.runs, (5, 6))] == [True, True]
     assert {sid: row["segments"][0]["status"] for sid, row in ingests.rows.items()} == {
@@ -1103,18 +1103,18 @@ def test_sweep_picks_up_a_legacy_done_row_with_pending_segments_once(monkeypatch
     """BUG-114/#114: rows written before the fix say `done` while a segment is
     still `pending_analysis`. The sweep corrects them to `partial` and retries
     them; once they settle as `done`, later sweeps leave them alone."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-legacy": 5})
     ingests.rows["sess-legacy"]["state"] = "done"
     stage = NarrativeStage(monkeypatch)
     stage.analysis_error = RuntimeError("ollama unreachable")
 
     async def scenario():
-        await processor.retry_stuck_sessions_on_startup()
+        await processor.sweep()
         after_failed_retry = ingests.rows["sess-legacy"]["state"]
         stage.analysis_error = None
-        await processor.retry_stuck_sessions_on_startup()
-        await processor.retry_stuck_sessions_on_startup()
+        await processor.sweep()
+        await processor.sweep()
         return after_failed_retry
 
     after_failed_retry = asyncio.run(scenario())
@@ -1129,12 +1129,12 @@ def test_sweep_picks_up_a_legacy_done_row_with_pending_segments_once(monkeypatch
 def test_sweep_leaves_done_sessions_alone(monkeypatch, tmp_path):
     """BUG-114/#114: steady state — a `done` session (all processed) is not a
     sweep candidate."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-pending": 5})
     ingests.add("sess-done", "done", [segment_row("s01", "processed", 6)])
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_stuck_sessions_on_startup())
+    asyncio.run(processor.sweep())
 
     assert ingests.repository.listed == [["sess-pending"]]
     assert len(stage.runs) == 1
@@ -1142,13 +1142,13 @@ def test_sweep_leaves_done_sessions_alone(monkeypatch, tmp_path):
 
 
 def test_sweep_still_runs_when_the_legacy_correction_fails(monkeypatch, tmp_path, caplog):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-a": 5})
     NarrativeStage(monkeypatch)
     ingests.repository.correct_error = RuntimeError("db unreachable")
 
-    with caplog.at_level(logging.INFO, logger=session_processing.logger.name):
-        asyncio.run(processor.retry_stuck_sessions_on_startup())
+    with caplog.at_level(logging.INFO, logger=session_ingest.logger.name):
+        asyncio.run(processor.sweep())
 
     assert ingests.rows["sess-a"]["segments"][0]["status"] == "processed"
     assert any("db unreachable" in r.getMessage() for r in _sweep_lines(caplog))
@@ -1158,13 +1158,13 @@ def test_sweep_logs_one_line_per_session_whose_retry_fails_again(monkeypatch, tm
     """BUG-56/#56: a narrative failure doesn't raise out of the retry, so the
     sweep must notice the still-pending segments itself and log exactly one
     line per such session (and none for sessions that recovered)."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-recovers": 5, "sess-fails": 6})
     stage = NarrativeStage(monkeypatch)
     stage.analysis_error = lambda run: RuntimeError("ollama unreachable") if "text-6" in run["text"] else None
 
-    with caplog.at_level(logging.INFO, logger=session_processing.logger.name):
-        asyncio.run(processor.retry_stuck_sessions_on_startup())
+    with caplog.at_level(logging.INFO, logger=session_ingest.logger.name):
+        asyncio.run(processor.sweep())
 
     lines = _sweep_lines(caplog)
     assert len(lines) == 1
@@ -1179,7 +1179,7 @@ def test_sweep_keeps_going_when_one_sessions_retry_blows_up(monkeypatch, tmp_pat
     """#52: the sweep must be bounded/sequential/best-effort — one session's
     retry blowing up must not stop the rest from being tried, and the failure
     is logged, not re-raised."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-a": 5, "sess-b": 6, "sess-c": 7})
     stage = NarrativeStage(monkeypatch)
     healthy_get_transcript = db.get_transcript
@@ -1191,8 +1191,8 @@ def test_sweep_keeps_going_when_one_sessions_retry_blows_up(monkeypatch, tmp_pat
 
     monkeypatch.setattr(db, "get_transcript", get_transcript)
 
-    with caplog.at_level(logging.INFO, logger=session_processing.logger.name):
-        asyncio.run(processor.retry_stuck_sessions_on_startup())
+    with caplog.at_level(logging.INFO, logger=session_ingest.logger.name):
+        asyncio.run(processor.sweep())
 
     assert [run["text"].rsplit("text-", 1)[1] for run in stage.runs] == ["5", "7"]
     lines = _sweep_lines(caplog)
@@ -1201,7 +1201,7 @@ def test_sweep_keeps_going_when_one_sessions_retry_blows_up(monkeypatch, tmp_pat
 
 
 def test_sweep_releases_its_claims_after_success_and_failure(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     ingests = _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-ok": 5, "sess-boom": 6})
     NarrativeStage(monkeypatch)
     healthy_get_transcript = db.get_transcript
@@ -1215,10 +1215,10 @@ def test_sweep_releases_its_claims_after_success_and_failure(monkeypatch, tmp_pa
     monkeypatch.setattr(db, "get_transcript", get_transcript)
 
     async def scenario():
-        await processor.retry_stuck_sessions_on_startup()
+        await processor.sweep()
         # A second sweep reaches the failed session again only if it stayed unclaimed.
         broken[0] = False
-        await processor.retry_stuck_sessions_on_startup()
+        await processor.sweep()
 
     asyncio.run(scenario())
 
@@ -1228,22 +1228,22 @@ def test_sweep_releases_its_claims_after_success_and_failure(monkeypatch, tmp_pa
 def test_sweep_skips_a_session_with_a_retry_in_flight(monkeypatch, tmp_path, caplog):
     """The sweep must not start a second narrative run for a session that is
     already busy (here: a manual retry holding the claim)."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-sweep-busy"
     stage_pending_session(monkeypatch, tmp_path, session_id)
     stage = NarrativeStage(monkeypatch)
 
     async def scenario():
         started, release = stage.latch()
-        retry = asyncio.create_task(processor.retry_analysis(session_id))
+        retry = asyncio.create_task(processor.retry(session_id))
         try:
             await asyncio.wait_for(started.wait(), 5)
-            await asyncio.wait_for(processor.retry_stuck_sessions_on_startup(), 2)
+            await asyncio.wait_for(processor.sweep(), 2)
         finally:
             release.set()
         return await retry
 
-    with caplog.at_level(logging.INFO, logger=session_processing.logger.name):
+    with caplog.at_level(logging.INFO, logger=session_ingest.logger.name):
         result = asyncio.run(scenario())
 
     assert result.segments[0].status == "processed"
@@ -1255,7 +1255,7 @@ def test_retries_of_different_sessions_run_in_parallel(monkeypatch, tmp_path):
     """The claim is per session: a retry for another session is not serialized
     behind it. Both analyses must be inside the narrative stage at once, or the
     barrier times out."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     _stage_stuck_sessions(monkeypatch, tmp_path, {"sess-par-a": 5, "sess-par-b": 6})
     stage = NarrativeStage(monkeypatch)
 
@@ -1267,7 +1267,7 @@ def test_retries_of_different_sessions_run_in_parallel(monkeypatch, tmp_path):
 
         stage.before_analysis = before_analysis
         return await asyncio.gather(
-            processor.retry_analysis("sess-par-a"), processor.retry_analysis("sess-par-b")
+            processor.retry("sess-par-a"), processor.retry("sess-par-b")
         )
 
     results = asyncio.run(scenario())
@@ -1280,7 +1280,7 @@ def test_sweep_skips_a_processing_session_active_in_this_process(monkeypatch, tm
     """BUG-53/#53: a `processing` row with null transcript IDs is normal while
     this process is still working on it — the sweep must neither fail its
     segments nor start a second run, nor release a claim it never took."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-active-here"
     parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests.empty(session_id).install()
@@ -1289,9 +1289,9 @@ def test_sweep_skips_a_processing_session_active_in_this_process(monkeypatch, tm
 
     async def scenario():
         await processor.accept(parsed, session_dir)
-        await processor.retry_stuck_sessions_on_startup()
+        await processor.sweep()
         with pytest.raises(SessionBusy):
-            await processor.retry_analysis(session_id)
+            await processor.retry(session_id)
 
     asyncio.run(scenario())
 
@@ -1314,24 +1314,24 @@ def test_sweep_recovers_a_session_after_a_crash_between_phase_1_and_phase_2(monk
     ingests = FakeSessionIngests(
         session_id, "processing", [segment_row("s01", "pending_analysis"), segment_row("s02", "pending_analysis")]
     )
-    processor = fresh_processor(monkeypatch, repository=ingests.repository)
+    processor = fresh_ingest(monkeypatch, repository=ingests.repository)
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 31, "s02": 32})
     dying_stage = NarrativeStage(monkeypatch)
     dying_stage.analysis_error = _ProcessDied()
 
     with pytest.raises(_ProcessDied):
-        asyncio.run(processor.run_accepted(parsed, session_dir))
+        asyncio.run(processor.process(parsed, session_dir))
     assert ingests.row["state"] == "processing"
     assert ingests.row["segments"] == [
         segment_row("s01", "pending_analysis", 31), segment_row("s02", "pending_analysis", 32),
     ]
 
     # "Restart": a fresh processor (empty cache and claims), a healthy narrative stage.
-    restarted = fresh_processor(monkeypatch, repository=ingests.repository)
+    restarted = fresh_ingest(monkeypatch, repository=ingests.repository)
     stage = NarrativeStage(monkeypatch)
     stub_transcripts(monkeypatch, [31, 32])
 
-    asyncio.run(restarted.retry_stuck_sessions_on_startup())
+    asyncio.run(restarted.sweep())
 
     assert len(stage.runs) == 1
     assert [doc["id"] for doc in stage.documents.values()] == [131, 132]
@@ -1343,7 +1343,7 @@ def test_sweep_resumes_the_untranscribed_segments_of_an_interrupted_session(monk
     """BUG-112: crash mid phase 1 — s01 was transcribed (id persisted), s02
     never got one. The sweep transcribes s02 from the stored audio and
     finishes the narrative for both."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-crash-phase-1"
     stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
@@ -1353,7 +1353,7 @@ def test_sweep_resumes_the_untranscribed_segments_of_an_interrupted_session(monk
     stub_transcripts(monkeypatch, [41])
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_stuck_sessions_on_startup())
+    asyncio.run(processor.sweep())
 
     assert [c["filename"] for c in pipeline.transcribe_calls] == [f"{session_id}::s02.m4a"]
     assert [doc["id"] for doc in stage.documents.values()] == [141, 142]
@@ -1363,7 +1363,7 @@ def test_sweep_resumes_the_untranscribed_segments_of_an_interrupted_session(monk
 
 
 def test_sweep_reaches_done_for_a_session_nothing_of_which_was_transcribed(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-nothing-transcribed"
     stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     ingests = FakeSessionIngests(
@@ -1372,7 +1372,7 @@ def test_sweep_reaches_done_for_a_session_nothing_of_which_was_transcribed(monke
     SegmentPipeline(monkeypatch, transcript_ids={"s01": 11, "s02": 12})
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_stuck_sessions_on_startup())
+    asyncio.run(processor.sweep())
 
     assert len(stage.runs) == 1
     assert ingests.row["state"] == "done"
@@ -1380,7 +1380,7 @@ def test_sweep_reaches_done_for_a_session_nothing_of_which_was_transcribed(monke
 
 
 def test_sweep_fails_the_segment_whose_audio_is_missing_and_finishes_the_rest(monkeypatch, tmp_path):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-crash-no-audio"
     _, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     (session_dir / "segments" / "s02.m4a").unlink()
@@ -1391,7 +1391,7 @@ def test_sweep_fails_the_segment_whose_audio_is_missing_and_finishes_the_rest(mo
     stub_transcripts(monkeypatch, [41])
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_stuck_sessions_on_startup())
+    asyncio.run(processor.sweep())
 
     assert len(stage.runs) == 1
     assert ingests.row["state"] == "partial"
@@ -1403,7 +1403,7 @@ def test_sweep_fails_the_segment_whose_audio_is_missing_and_finishes_the_rest(mo
 def test_sweep_marks_a_session_failed_when_none_of_its_audio_is_left(monkeypatch, tmp_path):
     """No audio and no transcript for any segment: the sweep settles the
     session `failed` with an explicit error per segment; nothing to narrate."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-nothing-left"
     _, session_dir = stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     for audio in (session_dir / "segments").iterdir():
@@ -1414,7 +1414,7 @@ def test_sweep_marks_a_session_failed_when_none_of_its_audio_is_left(monkeypatch
     SegmentPipeline(monkeypatch)
     stage = NarrativeStage(monkeypatch)
 
-    asyncio.run(processor.retry_stuck_sessions_on_startup())
+    asyncio.run(processor.sweep())
 
     assert stage.runs == []
     assert ingests.row["state"] == "failed"
@@ -1427,7 +1427,7 @@ def test_sweep_logs_one_line_without_traceback_for_a_non_retryable_session(monke
     that are gone can't be retried. The sweep says so in one warning line —
     no traceback. Staged as `partial`, the state BUG-114 gives such a session;
     a legacy `done` row would add BUG-114's separate marking line."""
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     session_id = "sess-transcripts-gone"
     stage_bundle(monkeypatch, tmp_path, session_id, two_segment_manifest(session_id))
     FakeSessionIngests(
@@ -1438,8 +1438,8 @@ def test_sweep_logs_one_line_without_traceback_for_a_non_retryable_session(monke
     stub_transcripts(monkeypatch, [])
     stage = NarrativeStage(monkeypatch)
 
-    with caplog.at_level(logging.INFO, logger=session_processing.logger.name):
-        asyncio.run(processor.retry_stuck_sessions_on_startup())
+    with caplog.at_level(logging.INFO, logger=session_ingest.logger.name):
+        asyncio.run(processor.sweep())
 
     assert stage.runs == []
     lines = _sweep_lines(caplog)
@@ -1450,7 +1450,7 @@ def test_sweep_logs_one_line_without_traceback_for_a_non_retryable_session(monke
 
 
 def test_sweep_logs_one_line_without_traceback_when_the_manifest_is_missing(monkeypatch, tmp_path, caplog):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     monkeypatch.setenv("DATA_DIR", str(tmp_path))
     session_id = "sess-no-manifest"
     FakeSessionIngests(
@@ -1459,8 +1459,8 @@ def test_sweep_logs_one_line_without_traceback_when_the_manifest_is_missing(monk
     stub_transcripts(monkeypatch, [51])
     NarrativeStage(monkeypatch)
 
-    with caplog.at_level(logging.INFO, logger=session_processing.logger.name):
-        asyncio.run(processor.retry_stuck_sessions_on_startup())
+    with caplog.at_level(logging.INFO, logger=session_ingest.logger.name):
+        asyncio.run(processor.sweep())
 
     lines = _sweep_lines(caplog)
     assert len(lines) == 1
@@ -1470,7 +1470,56 @@ def test_sweep_logs_one_line_without_traceback_when_the_manifest_is_missing(monk
 
 
 def test_sweep_never_raises_when_listing_the_stuck_sessions_fails(monkeypatch):
-    processor = fresh_processor(monkeypatch)
+    processor = fresh_ingest(monkeypatch)
     processor.repository.list_error = RuntimeError("db unreachable")
 
-    asyncio.run(processor.retry_stuck_sessions_on_startup())
+    asyncio.run(processor.sweep())
+
+
+# --- the whole lifecycle through the module's interface ---------------------
+
+
+def test_a_session_goes_from_accept_through_partial_to_done_via_retry(monkeypatch, tmp_path):
+    """REF-126: fresh ingest, analysis failure → `partial`, retry → `done`,
+    all through `accept` / `process` / `retry` / `status` over the in-memory
+    repository and the fake ASR and narrative stages."""
+    ingest = fresh_ingest(monkeypatch)
+    session_id = "sess-lifecycle"
+    parsed, session_dir = stage_bundle(monkeypatch, tmp_path, session_id)
+    pipeline = SegmentPipeline(monkeypatch, transcript_ids={"s01": 7})
+    stub_transcripts(monkeypatch, [7])
+    stage = NarrativeStage(monkeypatch)
+    stage.analysis_error = RuntimeError("ollama unreachable")
+
+    async def scenario():
+        assert await ingest.status(session_id) is None
+        accepted = await ingest.accept(parsed, session_dir)
+        assert accepted.state == "processing"
+        with pytest.raises(SessionBusy):
+            await ingest.retry(session_id)  # the accepted run still holds the claim
+        await ingest.process(parsed, session_dir)
+        # The cached status is updated in place by later transitions: copy it.
+        partial = (await ingest.status(session_id)).model_copy(deep=True)
+
+        stage.analysis_error = None
+        retried = await ingest.retry(session_id)
+        return partial, retried, await ingest.status(session_id)
+
+    partial, retried, final = asyncio.run(scenario())
+
+    assert partial.state == "partial"
+    assert partial.segments[0].status == "pending_analysis"
+    assert partial.segments[0].error.startswith("analysis_pending:")
+    assert retried.state == final.state == "done"
+    assert final.segments == [SegmentResult(segment_id="s01", status="processed", transcript_id=7)]
+    assert len(pipeline.transcribe_calls) == 1  # the retry did not transcribe again
+    assert len(stage.runs) == 2
+
+
+def test_the_session_ingest_module_keeps_http_out_of_the_domain():
+    """REF-126: refusals are `SessionError`s; only `routers/sessions.py` maps
+    them to HTTP statuses."""
+    assert "HTTPException" not in vars(session_ingest)
+    assert "fastapi" not in {
+        getattr(value, "__module__", "").split(".")[0] for value in vars(session_ingest).values()
+    }

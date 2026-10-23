@@ -2,16 +2,16 @@
 
 `POST /api/sessions` accepts the multipart bundle described in SPEC §10.2,
 persists it under `data/sessions/{session_id}/` and hands it to
-`session_processing` (ARCH-2), which runs the per-segment pipeline in a
+`session_ingest` (ARCH-2, REF-126), which runs the per-segment pipeline in a
 `BackgroundTasks` task; progress is poll-able via
 `GET /api/sessions/{id}/status`. `POST /api/sessions/{id}/retry-analysis` is
 the manual retry entry. Both, and the startup sweep `main.py` runs, go through
-`session_processing.get_processor()`.
+`session_ingest.get_session_ingest()`.
 
 This module is HTTP only: multipart parsing, bundle storage, and mapping the
-lifecycle's results and `SessionError`s to responses. Failures on a single
-segment do not fail the whole session; the status records each segment
-individually.
+session ingest's results and `SessionError`s to responses (the only place a
+domain error becomes a 404/409). Failures on a single segment do not fail the
+whole session; the status records each segment individually.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from fastapi import (
 from starlette.datastructures import UploadFile
 
 import db
-import session_processing
+import session_ingest
 from models import Manifest, SessionAccepted, SessionStatus
 from routers.auth import require_bearer
 
@@ -44,16 +44,16 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(require_bearer)])
 
-# How the lifecycle's refusals surface over HTTP; the detail is the error code.
-_ERROR_STATUS: dict[type[session_processing.SessionError], int] = {
-    session_processing.SessionNotFound: status.HTTP_404_NOT_FOUND,
-    session_processing.SessionManifestMissing: status.HTTP_404_NOT_FOUND,
-    session_processing.SessionBusy: status.HTTP_409_CONFLICT,
-    session_processing.SessionNotRetryable: status.HTTP_409_CONFLICT,
+# How the session ingest's refusals surface over HTTP; the detail is the error code.
+_ERROR_STATUS: dict[type[session_ingest.SessionError], int] = {
+    session_ingest.SessionNotFound: status.HTTP_404_NOT_FOUND,
+    session_ingest.SessionManifestMissing: status.HTTP_404_NOT_FOUND,
+    session_ingest.SessionBusy: status.HTTP_409_CONFLICT,
+    session_ingest.SessionNotRetryable: status.HTTP_409_CONFLICT,
 }
 
 
-def _http_error(exc: session_processing.SessionError) -> HTTPException:
+def _http_error(exc: session_ingest.SessionError) -> HTTPException:
     return HTTPException(status_code=_ERROR_STATUS[type(exc)], detail=exc.code)
 
 
@@ -109,19 +109,19 @@ async def post_session(
         ) from exc
 
     session_id = parsed.session_id
-    session_dir = session_processing.session_dir_for(session_id)
-    processor = session_processing.get_processor()
+    session_dir = session_ingest.session_dir_for(session_id)
+    ingest = session_ingest.get_session_ingest()
     # Storing the bundle and persisting its row happen under the upload gate,
     # so a data reset (MIG-115/#115) never runs between the two and leaves a
     # session behind.
-    async with processor.upload_gate():
-        accepted = await _store_bundle_and_accept(processor, form, raw_manifest, parsed, session_dir)
+    async with ingest.upload_gate():
+        accepted = await _store_bundle_and_accept(ingest, form, raw_manifest, parsed, session_dir)
 
     # Always process asynchronously. iOS polls /api/sessions/{id}/status
     # if it wants per-segment results; the upload itself returns immediately
     # so URLSession's idle timeout doesn't fire on long Ollama/LightRAG
     # passes (SPEC §10.5).
-    background_tasks.add_task(processor.run_accepted, parsed, session_dir)
+    background_tasks.add_task(ingest.process, parsed, session_dir)
 
     return SessionAccepted(
         session_id=session_id,
@@ -132,13 +132,13 @@ async def post_session(
 
 
 async def _store_bundle_and_accept(
-    processor: session_processing.SessionProcessor,
+    ingest: session_ingest.SessionIngest,
     form,
     raw_manifest: bytes,
     parsed: Manifest,
     session_dir: Path,
 ) -> SessionStatus:
-    """Write the bundle under `session_dir` and have `processor` persist and
+    """Write the bundle under `session_dir` and have `ingest` persist and
     claim the session; 409 if the bundle already exists, 400 if parts are
     missing (the partial bundle is removed)."""
     session_id = parsed.session_id
@@ -193,12 +193,12 @@ async def _store_bundle_and_accept(
             detail=f"missing_parts: {sorted(missing)}; received: {received_field_names}",
         )
 
-    return await processor.accept(parsed, session_dir)
+    return await ingest.accept(parsed, session_dir)
 
 
 @router.get("/api/sessions/{session_id}/status", response_model=SessionStatus)
 async def session_status(session_id: str) -> SessionStatus:
-    status_obj = await session_processing.get_processor().get_status(session_id)
+    status_obj = await session_ingest.get_session_ingest().status(session_id)
     if status_obj is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -217,8 +217,8 @@ async def retry_analysis(session_id: str) -> SessionStatus:
     already in flight.
     """
     try:
-        return await session_processing.get_processor().retry_analysis(session_id)
-    except session_processing.SessionError as exc:
+        return await session_ingest.get_session_ingest().retry(session_id)
+    except session_ingest.SessionError as exc:
         raise _http_error(exc) from exc
 
 

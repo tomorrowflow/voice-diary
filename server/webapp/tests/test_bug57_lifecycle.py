@@ -19,7 +19,7 @@ import fluency_checker
 import main
 import narrative
 import routers.review_stream as review_stream
-import session_processing
+import session_ingest
 import vector_store
 from dictionary import DictionarySnapshot
 
@@ -185,9 +185,7 @@ def test_lifespan_cancels_and_awaits_sweep_before_closing_pool(monkeypatch):
     monkeypatch.setattr(db, "close_pool", fake_close_pool)
     monkeypatch.setattr(vector_store, "VECTOR_SEARCH_ENABLED", False)
     monkeypatch.setattr(vector_store, "close", fake_vs_close)
-    monkeypatch.setattr(
-        session_processing.get_processor(), "retry_stuck_sessions_on_startup", fake_sweep
-    )
+    monkeypatch.setattr(session_ingest.get_session_ingest(), "sweep", fake_sweep)
 
     async def run():
         state["started"] = asyncio.Event()
