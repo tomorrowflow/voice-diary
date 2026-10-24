@@ -92,6 +92,16 @@ struct WalkthroughSeamTests {
     }
 }
 
+@Suite("EngineSessionBundleAudio over a fake engine")
+struct BundleAudioSeamTests {
+    @Test("the bundle reads its sample rate from whatever engine it was given")
+    func sampleRateComesFromTheSeam() async {
+        let audio = EngineSessionBundleAudio(engine: FakeAudioEngine())
+
+        #expect(await audio.sampleRate() == 44_100)
+    }
+}
+
 @Suite("SessionUploader over a transport")
 struct UploaderTransportTests {
     private let sessionID = "2026-04-27T19:30:00+02:00"
