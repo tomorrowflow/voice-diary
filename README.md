@@ -3,7 +3,7 @@
 Personal voice-diary system for a German-speaking CTO. Two components, one repo:
 
 - **`ios/`** — iOS app (iPhone 17 Pro, iOS 26) for drive-by thought capture and structured evening conversational walkthroughs of the day's calendar.
-- **`server/`** — FastAPI backend (seeded from the prior `diary-processor` codebase on 2026-04-24). Owns the full pipeline: audio conversion, Whisper ASR, 4-pass entity normalization, Ollama analysis, narrative generation, LightRAG ingest — plus new iOS-specific routes for session ingest, Microsoft Graph proxy (calendar + email), and enrichment retrieval.
+- **`server/`** — FastAPI backend (seeded from the prior `diary-processor` codebase on 2026-04-24). Owns the full pipeline: audio conversion, Whisper ASR, 4-pass entity normalization, Ollama analysis (optionally routed to Blindfold, see [`docs/analysis-egress.md`](docs/analysis-egress.md)), narrative generation, LightRAG ingest — plus new iOS-specific routes for session ingest, Microsoft Graph proxy (calendar + email), and enrichment retrieval.
 
 ## Quick map
 
@@ -35,7 +35,7 @@ voice-diary/
 External services the server talks to:
 
 - **LightRAG** — knowledge graph + hybrid retrieval. Queried for enrichment and for yesterday's open todos.
-- **Ollama** — local LLM for ASR correction, transcript analysis, narrative generation, and enrichment summarisation.
+- **Ollama** — local LLM for ASR correction, transcript analysis, narrative generation, and enrichment summarisation. By default no diary content goes to any cloud AI service. An operator opt-in (`ANALYSIS_ROUTE=blindfold`, off by default) sends the once-per-session analysis prompt through a Blindfold pseudonymizing proxy to a cloud model; it protects entity names, not journal content. See [`docs/analysis-egress.md`](docs/analysis-egress.md) for the settings and limits.
 - **Microsoft Graph** — Exchange calendar + email. OAuth tokens held server-side; iOS never sees them.
 
 Everything else (Postgres, Qdrant, Whisper, ffmpeg) ships in the server's Docker Compose stack.
