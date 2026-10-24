@@ -29,6 +29,9 @@ public enum UpstreamImpact {
         language: OpenerLanguage? = nil
     ) -> [UpstreamImpactLine] {
         FailureCatalog.Upstream.allCases.compactMap { known in
+            // Blindfold's health only gates the auto-retry; an outage is
+            // explained where it fails, not in the Services card.
+            guard known != .blindfold else { return nil }
             guard let result = upstream[known.rawValue], !healthyResults.contains(result) else { return nil }
             let code = result == "not_bootstrapped" && known == .msgraph
                 ? "msgraph_not_bootstrapped"
@@ -65,6 +68,7 @@ public enum UpstreamImpact {
         case .lightrag: return "LightRAG"
         case .msgraph: return "Microsoft Graph"
         case .voxtral: return "Voxtral"
+        case .blindfold: return "Private analysis"
         }
     }
 }

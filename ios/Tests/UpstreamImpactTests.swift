@@ -56,6 +56,12 @@ struct UpstreamImpactTests {
         #expect(lines.map(\.impact) == ["Analysis is delayed; your texts are saved."])
     }
 
+    @Test("a Blindfold health entry adds no line: Services card and start notice are unchanged")
+    func blindfoldHealthIsSilent() {
+        #expect(UpstreamImpact.lines(health: health(["blindfold": "down"]), language: .en).isEmpty)
+        #expect(UpstreamImpact.startNotice(health: health(["blindfold": "down"]), includeVoxtral: true) == nil)
+    }
+
     @Test("Graph not bootstrapped says it has to be fixed on the server")
     func notBootstrapped() {
         let lines = UpstreamImpact.lines(health: health(["msgraph": "not_bootstrapped"]), language: .de)
