@@ -22,7 +22,7 @@ public enum RetryAnalysisPolicy {
     static let lookback: TimeInterval = 14 * 24 * 60 * 60
 
     /// Present in `/health` only when the analysis route is Blindfold.
-    static let routedUpstream = "blindfold"
+    static let routedUpstream = FailureCatalog.Upstream.blindfold.rawValue
 
     /// Both analysis upstreams answer `ok`, and so does Blindfold when
     /// it is reported at all.
