@@ -40,6 +40,10 @@ Loaded on every review. Distilled from `CLAUDE.md` and `SPEC.md`, which stay aut
 - Bearer-token `Depends` is per-router, not global.
 - Extract new external seams in the style of `voxtral_client.py` / `msgraph_client.py`: injectable
   transport, typed errors, constructor config.
+- Check preconditions and raise before any side effect. A request that will fail must fail before
+  it writes files or rows, queues work, or calls Whisper, leaving no partial state. Example: BUG-112
+  (`6b01d15`) moved `SessionNotRetryable` ahead of the resume/Whisper work (then
+  `session_processing`, now `SessionIngest.retry` in `session_ingest.py`).
 
 ## Tests
 
@@ -47,6 +51,12 @@ Commands live only in `DEVELOPMENT.md` §7.4; run them, don't copy them here. Se
 per router, mock MSAL, LightRAG, Ollama, Whisper; every new public function or route gets a test.
 iOS: unit-test pure logic (opener selection, manifest encoding, state machine, wake-word matcher);
 `xcodebuild` runs on a Mac host only, so review iOS statically.
+
+- No real-time waits over 1 s; wait on an event with a short cap. Synchronize on an
+  `asyncio.Event` (or equivalent) and give any wait a timeout of at most 1 s, rather than sleeping
+  until something has probably finished. Example: BUG-116 (`1638467`) gates the background vector
+  write on an `asyncio.Event` in `test_review_vector_tasks.py`; it illustrates the event
+  synchronization, not the cap.
 
 ## Commits and docs
 
