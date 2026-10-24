@@ -81,7 +81,25 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     /// next start and cancelled by `cancel()`.
     private var upstreamPreflightTask: Task<Void, Never>?
 
-    private let engine = AudioEngine()
+    /// On-device transcription reached from `begin`, `beginPickup` and each
+    /// finalised segment. Production defaults go to `ParakeetManager`; tests
+    /// replace them so no model is downloaded or loaded.
+    struct Transcriber: Sendable {
+        var warmUp: @Sendable () async -> Void = Transcriber.parakeetWarmUp
+        var transcribe: @Sendable (URL) async throws -> ParakeetManager.Transcript = Transcriber.parakeetTranscribe
+
+        nonisolated static func parakeetWarmUp() async {
+            await ParakeetManager.shared.warmUp()
+        }
+
+        nonisolated static func parakeetTranscribe(_ url: URL) async throws -> ParakeetManager.Transcript {
+            try await ParakeetManager.shared.transcribe(audioURL: url)
+        }
+    }
+
+    private let engine: any AudioCapturing
+    private let transport: any SessionTransport
+    private let transcriber: Transcriber
     // Resolve the TTS engine fresh on every utterance via `speak(_:language:)`.
     // The previous code cached `VoiceRegistry.engine(for: "de")` here, which
     // meant a voice picked in Settings (Apple ↔ Piper, or Thorsten ↔ Cori)
@@ -279,7 +297,20 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     private var noteSummaryCache: [String: String] = [:]
     private var noteSummaryTasks: [String: Task<String, Never>] = [:]
 
-    private init() {
+    private convenience init() {
+        self.init(engine: AudioEngine(), transport: ServerClient.shared)
+    }
+
+    /// Seam for tests: a fake capture engine, server transport and
+    /// transcriber.
+    init(
+        engine: any AudioCapturing,
+        transport: any SessionTransport,
+        transcriber: Transcriber = Transcriber()
+    ) {
+        self.engine = engine
+        self.transport = transport
+        self.transcriber = transcriber
         todoFlow.host = self
         observeStateForIsland()
         // Adopt any orphan activity left over from a previous launch
@@ -335,7 +366,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         droppedNoteIDs = []
         await clearPrefetchedOpeners()
         syncLiveActivity()
-        Task { await ParakeetManager.shared.warmUp() }
+        Task { [transcriber] in await transcriber.warmUp() }
         // Pre-arm the AVAudioSession in the foreground. Without this, the
         // first event's `engine.start()` happens *after* the AI's opener
         // — and if the user has locked the phone during the opener, the
@@ -491,7 +522,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         defer { isPreviewing = false }
         do {
             let dateString = Self.dateFormatter.string(from: target)
-            let raw = try await ServerClient.shared.todayCalendar(date: dateString)
+            let raw = try await transport.todayCalendar(date: dateString)
             let parsed = try JSONDecoder().decode(TodayCalendarResponse.self, from: raw)
             previewEventsRaw = parsed.events
             previewEvents = parsed.events.filtered(by: WalkthroughSettingsStore.current)
@@ -515,7 +546,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         let hi = cal.date(byAdding: .day, value: 60, to: anchor) ?? anchor
         let f = Self.dateFormatter
         do {
-            let dates = try await ServerClient.shared.recordedDates(
+            let dates = try await transport.recordedDates(
                 from: f.string(from: lo),
                 to: f.string(from: hi),
             )
@@ -622,7 +653,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         droppedNoteIDs = []
         await clearPrefetchedOpeners()
         syncLiveActivity()
-        Task { await ParakeetManager.shared.warmUp() }
+        Task { [transcriber] in await transcriber.warmUp() }
         do { try await engine.prepareSession() }
         catch { Log.audio.warning("audio session preflight: \(String(describing: error), privacy: .public)") }
         guard calendarGate.isCurrent(attempt) else { return }
@@ -2099,7 +2130,8 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     /// Start recording a segment of `kind` into the session bundle, which
     /// allocates its id and path (`c<N>` after a pause) and records it only
     /// when the engine started.
-    private func startCapture(_ kind: SessionBundle.Kind) async throws {
+    /// Internal, not private, so tests can drive it with a fake engine.
+    func startCapture(_ kind: SessionBundle.Kind) async throws {
         guard let bundle else { throw NSError(domain: "Walkthrough", code: 1) }
         let detector = lullDetector
         let engine = engine
@@ -2165,7 +2197,8 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         bundle?.dropCurrent(fallbackSegmentID: baseID)
     }
 
-    private func stopSegmentCapture(resetElapsed: Bool = true) async {
+    /// Internal, not private, so tests can drive it with a fake engine.
+    func stopSegmentCapture(resetElapsed: Bool = true) async {
         timer?.invalidate(); timer = nil
         // Pause flow passes `resetElapsed: false` so the visible timer
         // freezes at the moment the user tapped Pause instead of
@@ -2241,7 +2274,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     private func finalise(segmentID: String, url: URL) async {
         let transcript: ParakeetManager.Transcript
         do {
-            transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
+            transcript = try await transcriber.transcribe(url)
         } catch {
             Log.audio.warning(
                 "segment \(segmentID, privacy: .public) finalise: transcribe failed — \(String(describing: error), privacy: .public)"
@@ -3090,7 +3123,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     /// than storing them: only the caller that is still current may.
     private func fetchCalendar(date: Date) async throws -> [ServerCalendarEvent] {
         let dateString = Self.dateFormatter.string(from: date)
-        let raw = try await ServerClient.shared.todayCalendar(date: dateString)
+        let raw = try await transport.todayCalendar(date: dateString)
         let response = try JSONDecoder().decode(TodayCalendarResponse.self, from: raw)
         return response.events.filtered(by: WalkthroughSettingsStore.current)
     }
@@ -3843,7 +3876,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
 
     private func preflightUpstreams(token: UUID) async {
         do {
-            let data = try await ServerClient.shared.health()
+            let data = try await transport.health()
             let payload = try JSONDecoder().decode(UpstreamPreflightPayload.self, from: data)
             // The banner is app UI, so it follows the app language, not the
             // language the walkthrough speaks.

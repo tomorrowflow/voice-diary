@@ -55,7 +55,29 @@ public final class CaptureCoordinator {
     /// `CaptureView`; cleared by `start()` or `dismissInterruptionNotice()`.
     public private(set) var recordingWasInterrupted: Bool = false
 
-    private let engine = AudioEngine()
+    /// Side effects of a capture that reach outside the coordinator: where
+    /// notes are stored, on-device transcription, the start cue and the
+    /// completion notification. Production defaults; tests replace them so
+    /// no model load, notification prompt or tone is involved.
+    @MainActor
+    struct Effects {
+        var notesDirectory: () throws -> URL = { try LocalStore.voiceNotesDir() }
+        var transcribe: (URL) async throws -> ParakeetManager.Transcript = Effects.parakeetTranscribe
+        var playStartCue: @MainActor () -> Void = { WakePing.shared.playCaptureStart() }
+        var announceCompletion: @MainActor (TimeInterval, String?) async -> Void = {
+            await CaptureNotifications.shared.fireCaptureComplete(
+                duration: $0,
+                transcriptPreview: $1
+            )
+        }
+
+        nonisolated static func parakeetTranscribe(_ url: URL) async throws -> ParakeetManager.Transcript {
+            try await ParakeetManager.shared.transcribe(audioURL: url)
+        }
+    }
+
+    private let engine: any AudioCapturing
+    private let effects: Effects
     private var timer: Timer?
 
     /// Directory that holds every chunk's m4a + the final metadata.json
@@ -85,7 +107,13 @@ public final class CaptureCoordinator {
     /// every event that belongs to one session. Reset to `nil` on stop.
     private var sessionID: UUID?
 
-    public init() {
+    public convenience init() {
+        self.init(engine: AudioEngine())
+    }
+
+    init(engine: any AudioCapturing, effects: Effects = Effects()) {
+        self.engine = engine
+        self.effects = effects
         // Hydrate from any leftover state in shared defaults (e.g. if a
         // crash left isRecording=true).
         if let defaults = UserDefaults(suiteName: AppGroup.identifier),
@@ -128,7 +156,7 @@ public final class CaptureCoordinator {
         self.sessionID = sid
         Diag.log(session: sid, "capture.start mem=\(MemoryReport.formatted())")
         do {
-            let dir = try LocalStore.voiceNotesDir()
+            let dir = try effects.notesDirectory()
                 .appending(path: ISO8601DateFormatter().string(from: Date()),
                            directoryHint: .isDirectory)
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -160,7 +188,7 @@ public final class CaptureCoordinator {
             // even hands-off / screen-off (Action Button, lock screen). All
             // capture triggers funnel through this single start(), so one
             // call covers every entry point.
-            WakePing.shared.playCaptureStart()
+            effects.playStartCue()
         } catch {
             lastError = CaptureErrorMessage.message(for: error, context: .start)
             persistRecordingState(active: false, startedAt: nil)
@@ -204,7 +232,7 @@ public final class CaptureCoordinator {
             if fileSize > 0 {
                 var transcript: ParakeetManager.Transcript?
                 do {
-                    transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
+                    transcript = try await effects.transcribe(url)
                 } catch {
                     Log.audio.warning(
                         "drive-by chunk transcribe skipped: \(String(describing: error), privacy: .public)"
@@ -296,7 +324,7 @@ public final class CaptureCoordinator {
                 await latchInterruption()
                 var transcript: ParakeetManager.Transcript?
                 do {
-                    transcript = try await ParakeetManager.shared.transcribe(audioURL: url)
+                    transcript = try await effects.transcribe(url)
                 } catch {
                     Log.audio.warning(
                         "Parakeet transcript skipped: \(String(describing: error), privacy: .public)"
@@ -378,9 +406,9 @@ public final class CaptureCoordinator {
             Diag.log(session: sessionID, "capture.finalized seed=\(note.seed_id) dur=\(Int(duration))s")
             self.sessionID = nil
             await endLiveActivity()
-            await CaptureNotifications.shared.fireCaptureComplete(
-                duration: duration,
-                transcriptPreview: note.transcript.isEmpty ? nil : note.transcript
+            await effects.announceCompletion(
+                duration,
+                note.transcript.isEmpty ? nil : note.transcript
             )
         } catch {
             lastError = CaptureErrorMessage.message(for: error, context: .finish)
