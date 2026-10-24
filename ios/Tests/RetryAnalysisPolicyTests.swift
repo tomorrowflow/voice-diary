@@ -44,6 +44,31 @@ struct RetryAnalysisPolicyTests {
         #expect(!RetryAnalysisPolicy.shouldRetry(segments: pending, upstream: [:]))
     }
 
+    // Blindfold gate: only a `blindfold` entry in /health matters; a default
+    // route or an old server has none and keeps today's decision.
+    @Test("a Blindfold entry that is ok retries as before; no entry is unchanged")
+    func blindfoldOkOrAbsent() {
+        let pending = [segment("pending_analysis", error: pendingError)]
+        #expect(RetryAnalysisPolicy.shouldRetry(
+            segments: pending, upstream: healthy.merging(["blindfold": "ok"]) { $1 }))
+        #expect(RetryAnalysisPolicy.shouldRetry(segments: pending, upstream: healthy))
+    }
+
+    @Test("does not trigger while Blindfold is not ok, even with Ollama and LightRAG ok",
+          arguments: ["down", "skipped", "fixture", "starting", ""])
+    func blindfoldNotOk(state: String) {
+        let pending = [segment("pending_analysis", error: pendingError)]
+        #expect(!RetryAnalysisPolicy.shouldRetry(
+            segments: pending, upstream: healthy.merging(["blindfold": state]) { $1 }))
+    }
+
+    @Test("Blindfold ok does not rescue an unhealthy Ollama or LightRAG")
+    func blindfoldOkDoesNotOverride() {
+        let pending = [segment("pending_analysis", error: pendingError)]
+        let up = healthy.merging(["blindfold": "ok", "ollama": "down"]) { $1 }
+        #expect(!RetryAnalysisPolicy.shouldRetry(segments: pending, upstream: up))
+    }
+
     @Test("never retries failed-only sessions")
     func failedOnly() {
         let failed = [segment("failed", error: "whisper read timed out"),
@@ -214,6 +239,22 @@ struct AnalysisRetrierTests {
         await r.runOnForeground()
         #expect(await calls.statusChecks == 0)
         #expect(await calls.retried.isEmpty)
+    }
+
+    @Test("a down Blindfold makes no per-session request; ok proceeds")
+    func blindfoldDownSkipsEverything() async {
+        let down = Calls()
+        let waiting = retrier(
+            calls: down, health: { healthy.merging(["blindfold": "down"]) { $1 } }, ids: ["a"], pending: ["a"])
+        await waiting.runOnForeground()
+        #expect(await down.statusChecks == 0)
+        #expect(await down.retried.isEmpty)
+
+        let up = Calls()
+        let proceeding = retrier(
+            calls: up, health: { healthy.merging(["blindfold": "ok"]) { $1 } }, ids: ["a"], pending: ["a"])
+        await proceeding.runOnForeground()
+        #expect(await up.retried == ["a"])
     }
 
     @Test("an unreachable /health makes no per-session request")

@@ -22,7 +22,7 @@ public struct FailureCopy: Equatable, Sendable {
 /// lookup returns nil and callers keep their status-based behaviour.
 public enum FailureCatalog {
     enum Upstream: String, CaseIterable {
-        case whisper, ollama, lightrag, msgraph, voxtral
+        case whisper, ollama, lightrag, msgraph, voxtral, blindfold
     }
 
     enum Condition {
@@ -58,7 +58,8 @@ public enum FailureCatalog {
 
     /// Spoken line for a failed enrichment question, ending in
     /// "Anreicherung übersprungen" / "Enrichment skipped". Only the
-    /// upstreams enrichment calls (Ollama, LightRAG, Graph) have one;
+    /// upstreams enrichment calls (Ollama, LightRAG, Graph) have one
+    /// (Blindfold only carries the main analysis, never enrichment);
     /// nil for everything else so the caller keeps its generic split.
     public static func spokenEnrichmentLine(for failure: UpstreamFailure, language: OpenerLanguage? = nil) -> String? {
         guard let (upstream, condition) = resolve(failure) else { return nil }
@@ -71,7 +72,7 @@ public enum FailureCatalog {
             return text("Calendar and mail aren’t set up on the server. Enrichment skipped.", language)
         case (.msgraph, _):
             return text("Calendar and mail aren’t reachable right now. Enrichment skipped.", language)
-        case (.whisper, _), (.voxtral, _):
+        case (.whisper, _), (.voxtral, _), (.blindfold, _):
             return nil
         }
     }
@@ -122,6 +123,9 @@ public enum FailureCatalog {
         case (.voxtral, .unavailable): return "Server voice isn’t available"
         case (.voxtral, .timeout): return "Server voice is taking too long"
         case (.voxtral, _): return "Server voice failed"
+        case (.blindfold, .unavailable): return "Private analysis isn’t available"
+        case (.blindfold, .timeout): return "Private analysis is taking too long"
+        case (.blindfold, _): return "Private analysis failed"
         }
     }
 
@@ -145,7 +149,7 @@ public enum FailureCatalog {
         case (.msgraph, .notBootstrapped):
             return "Calendar isn’t set up on the server. This has to be fixed on the server."
         case (.whisper, _): return "Recordings stay on your phone and upload later."
-        case (.ollama, _), (.lightrag, _): return "Analysis is delayed; your texts are saved."
+        case (.ollama, _), (.lightrag, _), (.blindfold, _): return "Analysis is delayed; your texts are saved."
         case (.msgraph, _): return "Calendar and mail aren’t reachable right now."
         case (.voxtral, _): return "Server voices fall back to Piper."
         }
