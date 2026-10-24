@@ -2210,6 +2210,42 @@
         }
       }
     },
+    "Private analysis failed" : {
+      "comment" : "Upstream failure title for Blindfold, also the generic one (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geschützte Auswertung fehlgeschlagen"
+          }
+        }
+      }
+    },
+    "Private analysis is taking too long" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geschützte Auswertung dauert zu lange"
+          }
+        }
+      }
+    },
+    "Private analysis isn’t available" : {
+      "comment" : "Upstream failure title (FailureCatalog).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Geschützte Auswertung nicht verfügbar"
+          }
+        }
+      }
+    },
     "Processed" : {
       "localizations" : {
         "de" : {
@@ -3636,7 +3672,7 @@
       }
     },
     "Analysis is delayed; your texts are saved." : {
-      "comment" : "Upstream failure impact for Ollama and LightRAG (FailureCatalog).",
+      "comment" : "Upstream failure impact for Ollama, LightRAG and Blindfold (FailureCatalog).",
       "extractionState" : "manual",
       "localizations" : {
         "de" : {
