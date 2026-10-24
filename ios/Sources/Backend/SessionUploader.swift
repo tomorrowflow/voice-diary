@@ -150,10 +150,19 @@ public actor SessionUploader {
     private let diag: @Sendable (String, String) -> Void
 
     public init() {
+        self.init(transport: ServerClient.shared)
+    }
+
+    /// Sends sessions through `transport`. The queue lives in Application
+    /// Support unless a test points `queueFile` elsewhere.
+    init(
+        transport: any SessionTransport,
+        queueFile: @escaping @Sendable () throws -> URL = { try LocalStore.uploadQueueFile() }
+    ) {
         self.init(
-            queueFile: { try LocalStore.uploadQueueFile() },
+            queueFile: queueFile,
             upload: { manifest, files in
-                try await ServerClient.shared.uploadSession(manifest: manifest, audioFiles: files)
+                try await transport.uploadSession(manifest: manifest, audioFiles: files)
             }
         )
     }

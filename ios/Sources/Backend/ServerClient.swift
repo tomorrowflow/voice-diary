@@ -110,6 +110,8 @@ public actor ServerClient {
 
     // --- /today/calendar -----------------------------------------------
 
+    public static let defaultRSVPFilter = "accepted,organizer"
+
     /// Fetches the calendar events for `date`. `rsvpFilter` is a comma-
     /// separated list of `accepted` / `tentative` / `declined` /
     /// `not_responded` / `organizer` / `none`. Default narrows to
@@ -119,7 +121,7 @@ public actor ServerClient {
     /// don't attend.
     public func todayCalendar(
         date: String,
-        rsvpFilter: String = "accepted,organizer"
+        rsvpFilter: String = ServerClient.defaultRSVPFilter
     ) async throws -> Data {
         let (url, token) = try endpoint("/today/calendar")
         guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
