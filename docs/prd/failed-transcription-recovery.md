@@ -163,7 +163,7 @@ No new SwiftUI view-test suite: the Verlauf row, pill, button and copy layout ar
 4. **Operator-run:** record a voice note and start a walkthrough while an attempt runs; both work. Before merge of the Verlauf ticket.
 5. **Operator-run:** restart the live server during an attempt: no automatic re-transcription follows; the segment is `pending_analysis` if its transcript was saved, otherwise `failed` with `recovery_interrupted`. At merge of the reconciliation ticket.
 6. **Operator-run:** against the live LightRAG, re-post `diary:{date}` for a date that already has a document and record whether it replaces, rejects or duplicates it. Before merge of the first server ticket.
-7. A new app against an older server shows no recovery action and no empty text, and an older app against the new server shows `transcribing` as "Unknown" with no action. Checked with the automated decode tests and, on a device, at merge.
+7. A new app against an older server shows no recovery action and no empty text, and an older app against the new server shows `transcribing` as "Unknown" with no action. Covered by the automated decode and policy tests; no device check is needed.
 
 ## Out of Scope
 
