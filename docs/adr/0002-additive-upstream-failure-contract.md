@@ -1,6 +1,8 @@
 # Upstream failures use an additive, machine-readable error contract
 
-**Status:** accepted (2026-10-14)
+**Status:** accepted (2026-10-14). Amended 2026-10-24: the sentence below saying `failed`
+segments "need a re-upload" is superseded by ADR 0005; they are recovered on request from
+retained server audio. The rest stands.
 
 The server calls five upstreams (Whisper, Ollama, LightRAG, Microsoft Graph, Voxtral).
 Today each router reports their failures differently: free-form strings such as
