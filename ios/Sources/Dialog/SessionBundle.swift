@@ -29,9 +29,9 @@ protocol SessionBundleAudio: Sendable {
 }
 
 /// The production adapter: `AudioMerger` for merging, the walkthrough's
-/// `AudioEngine` for the sample rate.
+/// capture engine (`AudioEngine` in production) for the sample rate.
 struct EngineSessionBundleAudio: SessionBundleAudio {
-    let engine: AudioEngine
+    let engine: any AudioCapturing
 
     func merge(chunks: [URL], into output: URL) async throws {
         try await AudioMerger.merge(segments: chunks, titles: nil, outputURL: output)
