@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PROTO-1 · Wiederherstellung fehlgeschlagener Transkriptionen</title>
+<style>
+  :root {
+    --ink: #171717; --muted: #737373; --line: #E7E7E7; --bg: #F7F7F7; --card: #FFFFFF;
+    --accent: #1570EF; --accent-soft: #E8F1FE;
+    --ok: #10A861; --warn: #DC6803; --bad: #EC2222;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 -apple-system, "Geist", "Helvetica Neue", Arial, sans-serif; }
+  main { max-width: 1180px; margin: 0 auto; padding: 28px 20px 64px; }
+  h1 { font-size: 24px; margin: 0 0 8px; }
+  h2 { font-size: 17px; margin: 32px 0 10px; }
+  h3 { font-size: 14px; margin: 0 0 8px; }
+  p { margin: 0 0 10px; }
+  .intro { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; }
+  .intro .q { font-size: 17px; font-weight: 600; }
+  .intro .meta { color: var(--muted); font-size: 13px; }
+  .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin: 20px 0 0; }
+  .tab, button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--card);
+                 border-radius: 8px; padding: 7px 12px; color: var(--ink); }
+  .tab.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+  @media (max-width: 760px) { .controls { grid-template-columns: 1fr; } }
+  .box { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+  .walks { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .walk-desc { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+  .steps { display: flex; flex-direction: column; gap: 6px; }
+  .step { text-align: left; display: flex; gap: 8px; align-items: baseline; }
+  .step .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .step.next { border-color: var(--accent); background: var(--accent-soft); }
+  .step.done { color: var(--muted); }
+  .step .only { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
+  .panels { display: grid; gap: 16px; margin-top: 20px; }
+  .panels.two { grid-template-columns: 1fr 1fr; }
+  @media (max-width: 900px) { .panels.two { grid-template-columns: 1fr; } }
+  .panel { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .panel > h3 { font-size: 15px; }
+  .panel .sub { color: var(--muted); font-size: 13px; margin-bottom: 12px; }
+  .inner { display: grid; grid-template-columns: minmax(260px, 320px) 1fr; gap: 16px; }
+  .panels.two .inner { grid-template-columns: 1fr; }
+  @media (max-width: 640px) { .inner { grid-template-columns: 1fr; } }
+  .phone { background: var(--bg); border: 1px solid var(--line); border-radius: 18px; padding: 12px; }
+  .phone .top { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .phone h4 { margin: 0 0 8px; font-size: 16px; }
+  .seg { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+  .seg .row { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+  .seg .t { font-weight: 600; font-size: 14px; }
+  .seg .meta { color: var(--muted); font-size: 12px; }
+  .seg .txt { font-size: 13px; margin-top: 6px; }
+  .seg .expl { font-size: 13px; margin-top: 6px; color: var(--ink); }
+  .pill { font-size: 11px; border-radius: 999px; padding: 1px 8px; border: 1px solid currentColor; white-space: nowrap; }
+  .pill.processed { color: var(--ok); } .pill.failed { color: var(--bad); } .pill.transcribing { color: var(--accent); }
+  .rec { width: 100%; margin-top: 4px; }
+  .rec-note { font-size: 12px; color: var(--muted); margin-top: 4px; text-align: center; }
+  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-size: 13px; }
+  dt { color: var(--muted); } dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .whisper-ok { color: var(--ok); font-weight: 600; } .whisper-down { color: var(--bad); font-weight: 600; }
+  .changed { margin: 12px 0; padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); font-size: 13px; }
+  .changed.rejected { background: #FDECEC; }
+  .changed.idle { background: var(--bg); color: var(--muted); }
+  .changed b { display: block; margin-bottom: 2px; }
+  .inv { margin: 12px 0 0; padding: 0; list-style: none; font-size: 13px; }
+  .inv li::before { content: "✓ "; color: var(--ok); font-weight: 700; }
+  .inv li.bad::before { content: "✗ "; color: var(--bad); }
+  .log { margin: 10px 0 0; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+  .log li { padding: 1px 0; } .log li:first-child { color: var(--ink); }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; background: var(--card); }
+  th, td { border: 1px solid var(--line); padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: var(--bg); }
+</style>
+</head>
+<body>
+<main>
+
+<h1>PROTO-1 · Fehlgeschlagene Transkription: automatisch oder per Tipp wiederherstellen?</h1>
+
+<div class="intro">
+  <p class="q">Frage: Soll ein Segment, dessen Transkription nach dem Upload fehlgeschlagen ist, automatisch wiederhergestellt werden, sobald Whisper wieder gesund ist, oder erst, wenn die Nutzerin in Verlauf ausdrücklich „Erneut transkribieren“ tippt?</p>
+  <p class="meta">Logik-Prototyp, Wegwerfcode. Gleiche Sitzung in beiden Varianten: Teil 1 ist transkribiert, Teil 2 ist <code>failed</code> (Whisper starb nach dem Preflight), das Handy hat seinen Upload-Eintrag nach dem 2xx entfernt, das Audio liegt weiter in <code>server/data/sessions/{id}/</code>. Ein „Erneut transkribieren“ gibt es heute weder als Route noch als Schaltfläche: alles Gezeigte ist <b>simuliertes künftiges Verhalten</b>, keine Endpunkt-Verträge, keine Retry-Zeitpläne. Die bestehende Regel aus UFH-07 (<code>failed</code>-Segmente werden nie automatisch <i>analysiert</i>) bleibt unberührt; hier geht es um eine getrennte, künftige Fähigkeit. Daten sind synthetisch.</p>
+  <p class="meta"><b>Annahme zu „automatisch“:</b> höchstens ein Versuch pro Wechsel in den Vordergrund (wie UFH-07), nur bei gesundem Whisper. Ein Whisper-Neustart allein löst nichts aus.</p>
+</div>
+
+<div class="tabs" id="variants"></div>
+
+<div class="controls">
+  <div class="box">
+    <h3>Freies Spiel</h3>
+    <div class="btns" id="free"></div>
+  </div>
+  <div class="box">
+    <h3>Durchläufe</h3>
+    <div class="walks" id="walks"></div>
+    <div class="walk-desc" id="walkDesc"></div>
+    <div class="steps" id="steps"></div>
+  </div>
+</div>
+
+<div class="panels" id="panels"></div>
+
+<h2>Abwägung</h2>
+<table>
+  <tr><th></th><th>A · Automatisch (beim Öffnen, wenn Whisper gesund)</th><th>B · Ausdrücklich („Erneut transkribieren“)</th></tr>
+  <tr><td>Aufwand für die Nutzerin</td><td>Keiner; Lücke schließt sich von selbst.</td><td>Ein Tipp pro fehlgeschlagenem Segment; sie muss die Lücke bemerken.</td></tr>
+  <tr><td>Überraschung</td><td>Ein altes Tagebuch-Segment bekommt nachträglich Text, ohne dass man es veranlasst hat.</td><td>Nichts ändert sich ohne Absicht.</td></tr>
+  <tr><td>Dauerhaft kaputtes Audio</td><td>Jeder Vordergrund versucht erneut, ohne Ende (Zähler steigt). Eine Obergrenze wäre ein neuer Zeitplan, den diese Entscheidung nicht erfindet.</td><td>Endet von selbst: Versuche gibt es nur auf Tipp.</td></tr>
+  <tr><td>Laufender Versuch</td><td>Weitere Öffnungen werden übersprungen; die Nutzerin kann nicht eingreifen.</td><td>Schaltfläche zeigt „läuft“; Doppeltipp wirkungslos.</td></tr>
+  <tr><td>Ersparte Daten / Erfolgsfälle</td><td>Beide gleich: kein Duplikat, nichts verworfen, Aufnahme jederzeit möglich.</td><td>Gleich.</td></tr>
+  <tr><td>Sichtbarkeit</td><td>Es braucht einen Hinweis „wird erneut versucht“, sonst wirkt der Status zufällig.</td><td>Der Zustand ist die Bedienung: <code>failed</code> + Schaltfläche.</td></tr>
+</table>
+
+</main>
+
+<!-- Pure logic module: no DOM access, liftable. -->
+<script>
+const Recovery = (() => {
+  const TEXT_1 = "Heute früh Standup, danach Review der Vorschläge für den Umzug des Teams.";
+  const TEXT_2 = "Nachmittags Zahnarzt verschoben, abends noch eine Runde laufen gewesen.";
+
+  function initial(policy) {
+    return {
+      policy,                       // 'auto' | 'manual'
+      whisper: 'down',              // 'ok' | 'down' (last known health)
+      foregrounds: 0,
+      inflight: null,               // segment id with a running recovery attempt
+      queuedCaptures: 0,
+      segments: [
+        { id: 1, title: 'Teil 1 · 18:00–18:30', status: 'processed', transcript: TEXT_1, audio: 'server', attempts: 0 },
+        { id: 2, title: 'Teil 2 · 18:30–19:00', status: 'failed', transcript: null, audio: 'server', attempts: 0,
+          code: 'whisper_engine_error' },
+      ],
+      log: [],
+      last: { kind: 'idle', title: 'Ausgangslage', lines: ['Whisper ist ausgefallen; Teil 2 ist fehlgeschlagen, das Audio liegt auf dem Server.'] },
+    };
+  }
+
+  const clone = s => JSON.parse(JSON.stringify(s));
+  const seg = (s, id) => s.segments.find(x => x.id === id);
+  const failedSegs = s => s.segments.filter(x => x.status === 'failed' && x.audio === 'server');
+
+  function begin(s, id, why) {
+    const g = seg(s, id);
+    g.status = 'transcribing'; g.attempts += 1; s.inflight = id;
+    return `${g.title}: Versuch ${g.attempts} gestartet (${why}).`;
+  }
+
+  function done(s, kind, title, lines) {
+    s.last = { kind, title, lines };
+    s.log.unshift(title + (lines[0] ? ' – ' + lines[0] : ''));
+    s.log = s.log.slice(0, 8);
+    return s;
+  }
+
+  function reduce(prev, a) {
+    const s = clone(prev);
+    switch (a.type) {
+      case 'RESET': return initial(prev.policy);
+
+      case 'WHISPER_UP':
+        s.whisper = 'ok';
+        return done(s, 'ok', 'Whisper ist wieder gesund',
+          [s.policy === 'auto'
+            ? 'Automatisch: wartet auf das nächste Öffnen der App, kein sofortiger Versuch.'
+            : 'Die Schaltfläche „Erneut transkribieren“ ist jetzt freigegeben.']);
+
+      case 'WHISPER_DOWN': {
+        const lines = ['Whisper nicht erreichbar.'];
+        s.whisper = 'down';
+        if (s.inflight) {
+          const g = seg(s, s.inflight); g.status = 'failed'; g.code = 'whisper_engine_error';
+          lines.push(`${g.title}: laufender Versuch scheitert, bleibt fehlgeschlagen, Audio bleibt auf dem Server.`);
+          s.inflight = null;
+        }
+        return done(s, 'ok', 'Whisper fällt aus', lines);
+      }
+
+      case 'FOREGROUND': {
+        s.foregrounds += 1;
+        const t = `App öffnet sich (${s.foregrounds}.)`;
+        if (s.policy === 'manual')
+          return done(s, 'idle', t, ['Nichts passiert automatisch; Verlauf zeigt weiter die Schaltfläche.']);
+        if (s.inflight)
+          return done(s, 'idle', t, [`Versuch für ${seg(s, s.inflight).title} läuft bereits, übersprungen.`]);
+        const todo = failedSegs(s);
+        if (!todo.length) return done(s, 'idle', t, ['Kein fehlgeschlagenes Segment, nichts zu tun.']);
+        if (s.whisper !== 'ok') return done(s, 'idle', t, ['Whisper nicht gesund, kein Versuch.']);
+        return done(s, 'ok', t, [begin(s, todo[0].id, 'automatisch, einmal pro Öffnen')]);
+      }
+
+      case 'TAP_RETRY': {
+        const g = seg(s, a.segment);
+        const t = `Tipp auf „Erneut transkribieren“ (${g ? g.title : '?'})`;
+        if (s.policy === 'auto')
+          return done(s, 'rejected', t, ['Abgelehnt: Variante A hat keine Schaltfläche.']);
+        if (!g || g.status === 'processed')
+          return done(s, 'rejected', t, ['Abgelehnt: Segment ist bereits transkribiert, nichts geändert, kein Duplikat.']);
+        if (s.inflight)
+          return done(s, 'rejected', t, ['Abgelehnt: Versuch läuft bereits, Doppeltipp ohne Wirkung.']);
+        if (s.whisper !== 'ok')
+          return done(s, 'rejected', t, ['Abgelehnt: Whisper nicht erreichbar, Segment bleibt unverändert fehlgeschlagen.']);
+        return done(s, 'ok', t, [begin(s, g.id, 'ausdrücklich')]);
+      }
+
+      case 'RETRY_OK': {
+        const t = 'Transkription läuft durch';
+        if (!s.inflight) return done(s, 'rejected', t, ['Abgelehnt: kein Versuch in Arbeit.']);
+        const g = seg(s, s.inflight);
+        g.status = 'processed'; g.transcript = TEXT_2; delete g.code; s.inflight = null;
+        return done(s, 'ok', t, [`${g.title}: Transkript ergänzt. Teil 1 unverändert, keine Duplikate.`]);
+      }
+
+      case 'RETRY_FAIL': {
+        const t = 'Whisper stirbt mitten im Versuch';
+        if (!s.inflight) return done(s, 'rejected', t, ['Abgelehnt: kein Versuch in Arbeit.']);
+        const g = seg(s, s.inflight);
+        g.status = 'failed'; g.code = 'whisper_engine_error'; s.inflight = null; s.whisper = 'down';
+        return done(s, 'bad', t, [`${g.title}: bleibt fehlgeschlagen (Versuche: ${g.attempts}), Audio weiter auf dem Server.`]);
+      }
+
+      case 'NEW_RECORDING':
+        s.queuedCaptures += 1;
+        return done(s, 'ok', 'Neue Aufnahme', ['Aufnahme startet sofort und geht in die normale Upload-Warteschlange; Wiederherstellung blockiert sie nicht.']);
+    }
+    return s;
+  }
+
+  function invariants(s) {
+    const ids = s.segments.map(x => x.id);
+    return [
+      { ok: new Set(ids).size === ids.length && s.segments.length === 2, text: `Keine Duplikate: ${s.segments.length} Segmente` },
+      { ok: s.segments[0].status === 'processed' && s.segments[0].transcript === TEXT_1, text: 'Teil 1 unverändert transkribiert' },
+      { ok: s.segments.every(x => x.audio === 'server'), text: 'Audio aller Segmente auf dem Server erhalten' },
+      { ok: true, text: 'Aufnahme jederzeit möglich (nie gesperrt)' },
+    ];
+  }
+
+  return { initial, reduce, invariants };
+})();
+</script>
+
+<!-- Page: walkthroughs and rendering. -->
+<script>
+const A = { type: 'FOREGROUND' };
+const WALKS = [
+  { id: 'recover', title: '1 · Ausfall, dann Erholung',
+    desc: 'Der einfache Weg. Beobachte: In A genügt das Öffnen; in B braucht es den Tipp. In beiden bleibt Teil 1 unangetastet.',
+    steps: [
+      { label: 'App öffnen, Whisper ist noch aus', action: A },
+      { label: 'Whisper kommt zurück', action: { type: 'WHISPER_UP' } },
+      { label: 'App öffnen (A startet jetzt)', action: A },
+      { label: 'Tippen: „Erneut transkribieren“', action: { type: 'TAP_RETRY', segment: 2 }, only: 'B' },
+      { label: 'Transkription läuft durch', action: { type: 'RETRY_OK' } },
+    ] },
+  { id: 'repeat', title: '2 · Mehrfach öffnen, Versuch läuft',
+    desc: 'Beobachte: Wiederholtes Öffnen und Doppeltipp starten nie einen zweiten Versuch; nach Erfolg tut weiteres Öffnen nichts.',
+    steps: [
+      { label: 'Whisper kommt zurück', action: { type: 'WHISPER_UP' } },
+      { label: 'App öffnen (A startet)', action: A },
+      { label: 'Tippen: „Erneut transkribieren“', action: { type: 'TAP_RETRY', segment: 2 }, only: 'B' },
+      { label: 'App öffnen, während der Versuch läuft', action: A },
+      { label: 'Nochmal tippen (Doppeltipp)', action: { type: 'TAP_RETRY', segment: 2 }, only: 'B' },
+      { label: 'Transkription läuft durch', action: { type: 'RETRY_OK' } },
+      { label: 'App öffnen, nichts mehr offen', action: A },
+    ] },
+  { id: 'again', title: '3 · Zweiter Ausfall',
+    desc: 'Beobachte: Der Versuch scheitert, Teil 2 bleibt gerettet (Audio da). A versucht bei jedem gesunden Öffnen erneut, B nur auf Tipp. Zwischendurch bleibt Aufnahme möglich.',
+    steps: [
+      { label: 'Whisper kommt zurück', action: { type: 'WHISPER_UP' } },
+      { label: 'App öffnen (A startet)', action: A },
+      { label: 'Tippen: „Erneut transkribieren“', action: { type: 'TAP_RETRY', segment: 2 }, only: 'B' },
+      { label: 'Whisper stirbt mitten im Versuch', action: { type: 'RETRY_FAIL' } },
+      { label: 'Neue Aufnahme starten', action: { type: 'NEW_RECORDING' } },
+      { label: 'App öffnen, Whisper aus', action: A },
+      { label: 'Whisper kommt zurück', action: { type: 'WHISPER_UP' } },
+      { label: 'App öffnen (A: Versuch 2)', action: A },
+      { label: 'Tippen (B: Versuch 2)', action: { type: 'TAP_RETRY', segment: 2 }, only: 'B' },
+      { label: 'Transkription läuft durch', action: { type: 'RETRY_OK' } },
+    ] },
+  { id: 'illegal', title: '4 · Unzulässiges',
+    desc: 'Beobachte: Alles hier wird abgelehnt oder übersprungen und ändert nichts; es entsteht kein Duplikat von Teil 1.',
+    steps: [
+      { label: 'Retry auf bereits transkribiertes Teil 1', action: { type: 'TAP_RETRY', segment: 1 } },
+      { label: 'Retry bei ausgefallenem Whisper (Teil 2)', action: { type: 'TAP_RETRY', segment: 2 } },
+      { label: '„Läuft durch“ ohne laufenden Versuch', action: { type: 'RETRY_OK' } },
+      { label: 'App öffnen, Whisper aus', action: A },
+    ] },
+];
+
+const FREE = [
+  ['Whisper kommt zurück', { type: 'WHISPER_UP' }],
+  ['Whisper fällt aus', { type: 'WHISPER_DOWN' }],
+  ['App öffnen', { type: 'FOREGROUND' }],
+  ['Tippen: Erneut transkribieren (Teil 2)', { type: 'TAP_RETRY', segment: 2 }],
+  ['Tippen auf transkribiertes Teil 1', { type: 'TAP_RETRY', segment: 1 }],
+  ['Versuch läuft durch', { type: 'RETRY_OK' }],
+  ['Whisper stirbt im Versuch', { type: 'RETRY_FAIL' }],
+  ['Neue Aufnahme', { type: 'NEW_RECORDING' }],
+  ['Zurücksetzen', { type: 'RESET' }],
+];
+
+const params = new URLSearchParams(location.search);
+const ui = { variant: ['A', 'B', 'C'].includes(params.get('variant')) ? params.get('variant') : 'A',
+             walk: null, step: 0 };
+let st = { auto: Recovery.initial('auto'), manual: Recovery.initial('manual') };
+
+const $ = id => document.getElementById(id);
+const esc = t => String(t).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+function dispatch(action) {
+  st = { auto: Recovery.reduce(st.auto, action), manual: Recovery.reduce(st.manual, action) };
+}
+function applies(step) {
+  return !step.only || ui.variant === 'C' || (ui.variant === step.only);
+}
+function startWalk(id) {
+  dispatch({ type: 'RESET' });
+  ui.walk = id; ui.step = 0;
+  skipInapplicable();
+}
+function skipInapplicable() {
+  const w = WALKS.find(x => x.id === ui.walk);
+  while (w && ui.step < w.steps.length && !applies(w.steps[ui.step])) ui.step++;
+}
+function runStep(i) {
+  const w = WALKS.find(x => x.id === ui.walk);
+  dispatch(w.steps[i].action);
+  if (i >= ui.step) { ui.step = i + 1; skipInapplicable(); }
+}
+function playAll(upto) {
+  const w = WALKS.find(x => x.id === ui.walk);
+  const end = upto === undefined ? w.steps.length : Math.min(upto, w.steps.length);
+  while (ui.step < end) runStep(ui.step);
+}
+
+function phone(s) {
+  const failedOk = s.whisper === 'ok';
+  const segs = s.segments.map(g => {
+    const pill = { processed: 'Verarbeitet', failed: 'Fehlgeschlagen', transcribing: 'Wird transkribiert…' }[g.status];
+    let body = '';
+    if (g.status === 'processed') body = `<div class="txt">${esc(g.transcript)}</div>`;
+    if (g.status === 'transcribing') body = `<div class="expl">Die Aufnahme wird erneut transkribiert.</div>`;
+    if (g.status === 'failed') {
+      body = `<div class="expl">Transkription fehlgeschlagen. Die Aufnahme ist auf dem Server gesichert.</div>`;
+      if (s.policy === 'auto') {
+        body += `<div class="meta">${failedOk
+          ? 'Wird beim nächsten Öffnen automatisch erneut versucht.'
+          : 'Wartet, bis Whisper wieder läuft; dann wird automatisch erneut versucht.'}</div>`;
+      } else {
+        body += `<button class="primary rec" style="margin-top:8px" ${failedOk ? '' : 'disabled'} data-retry="${g.id}">Erneut transkribieren</button>`
+              + (failedOk ? '' : `<div class="rec-note">Whisper ist gerade nicht erreichbar.</div>`);
+      }
+    }
+    const att = g.attempts ? ` · ${g.attempts} Versuch${g.attempts > 1 ? 'e' : ''}` : '';
+    return `<div class="seg"><div class="row"><span class="t">${esc(g.title)}</span><span class="pill ${g.status}">${pill}</span></div>
+      <div class="meta">Audio auf dem Server${att}</div>${body}</div>`;
+  }).join('');
+  return `<div class="phone"><div class="top"><span>Verlauf</span><span>Whisper: ${s.whisper === 'ok' ? 'ok' : 'aus'}</span></div>
+    <h4>Heute · Abendrunde</h4>${segs}
+    <button class="rec" data-rec="1">● Neue Aufnahme${s.queuedCaptures ? ` (${s.queuedCaptures} in Warteschlange)` : ''}</button></div>`;
+}
+
+function details(s) {
+  const failed = s.segments.find(x => x.id === 2);
+  const lines = s.last.lines.map(l => `<div>${esc(l)}</div>`).join('');
+  const cls = s.last.kind === 'rejected' ? ' rejected' : s.last.kind === 'idle' ? ' idle' : '';
+  return `<div class="changed${cls}"><b>${esc(s.last.title)}</b>${lines}</div>
+    <dl>
+      <dt>Whisper</dt><dd class="whisper-${s.whisper}">${s.whisper === 'ok' ? 'gesund' : 'ausgefallen'}</dd>
+      <dt>App geöffnet</dt><dd>${s.foregrounds}×</dd>
+      <dt>Teil 2</dt><dd>${{ processed: 'transkribiert', failed: 'fehlgeschlagen', transcribing: 'Versuch läuft' }[failed.status]}</dd>
+      <dt>Versuche Teil 2</dt><dd>${failed.attempts}</dd>
+      <dt>Versuch läuft</dt><dd>${s.inflight ? 'ja' : 'nein'}</dd>
+      <dt>Neue Aufnahmen</dt><dd>${s.queuedCaptures} gestartet</dd>
+    </dl>
+    <ul class="inv">${Recovery.invariants(s).map(i => `<li class="${i.ok ? '' : 'bad'}">${esc(i.text)}</li>`).join('')}</ul>
+    <ul class="log">${s.log.map(l => `<li>${esc(l)}</li>`).join('')}</ul>`;
+}
+
+function panel(s, title, sub) {
+  return `<div class="panel"><h3>${title}</h3><div class="sub">${sub}</div>
+    <div class="inner">${phone(s)}<div>${details(s)}</div></div></div>`;
+}
+
+function render() {
+  $('variants').innerHTML = [['A', 'A · Automatisch'], ['B', 'B · Ausdrücklich'], ['C', 'Nebeneinander']]
+    .map(([k, l]) => `<button class="tab ${ui.variant === k ? 'on' : ''}" data-variant="${k}">${l}</button>`).join('');
+  $('free').innerHTML = FREE.map(([l], i) => `<button data-free="${i}">${l}</button>`).join('');
+  $('walks').innerHTML = WALKS.map(w => `<button class="tab ${ui.walk === w.id ? 'on' : ''}" data-walk="${w.id}">${w.title}</button>`).join('');
+  const w = WALKS.find(x => x.id === ui.walk);
+  $('walkDesc').textContent = w ? w.desc : 'Wähle einen Durchlauf; er setzt beide Varianten auf dieselbe Ausgangslage zurück.';
+  $('steps').innerHTML = w ? w.steps.map((p, i) => {
+    const ok = applies(p);
+    const cls = i < ui.step || !ok ? 'done' : i === ui.step ? 'next' : '';
+    return `<button class="step ${cls}" ${ok ? '' : 'disabled'} data-step="${i}"><span class="n">${i + 1}.</span><span>${p.label}</span>${p.only ? `<span class="only">nur ${p.only}</span>` : ''}</button>`;
+  }).join('') + `<button data-play="1">Bis zum Ende abspielen</button>` : '';
+
+  const pa = panel(st.auto, 'A · Automatisch', 'Beim Öffnen der App, wenn Whisper gesund ist; höchstens ein Versuch pro Öffnen. Keine Schaltfläche.');
+  const pb = panel(st.manual, 'B · Ausdrücklich', 'Nur auf Tipp auf „Erneut transkribieren“ am fehlgeschlagenen Segment.');
+  $('panels').className = 'panels' + (ui.variant === 'C' ? ' two' : '');
+  $('panels').innerHTML = ui.variant === 'A' ? pa : ui.variant === 'B' ? pb : pa + pb;
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('button'); if (!t) return;
+  const d = t.dataset;
+  if (d.variant) { ui.variant = d.variant; skipInapplicable(); }
+  else if (d.free) dispatch(FREE[+d.free][1]);
+  else if (d.walk) startWalk(d.walk);
+  else if (d.step) runStep(+d.step);
+  else if (d.play) playAll();
+  else if (d.retry) dispatch({ type: 'TAP_RETRY', segment: +d.retry });
+  else if (d.rec) dispatch({ type: 'NEW_RECORDING' });
+  render();
+});
+
+if (params.get('walk') && WALKS.some(w => w.id === params.get('walk'))) {
+  startWalk(params.get('walk'));
+  if (params.get('upto')) playAll(+params.get('upto'));
+  else if (params.get('play') !== '0') playAll();
+}
+render();
+</script>
+</body>
+</html>
