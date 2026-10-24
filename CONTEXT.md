@@ -33,12 +33,32 @@ An external service the server calls to do its work: Whisper (transcription), Ol
 _Avoid_: backend (ambiguous with the server itself), dependency, provider
 
 **Session ingest**:
-What the server does with an uploaded session bundle from acceptance to settled status, owned by one module (`session_ingest`) that the HTTP routes and the startup lifespan only call. It accepts the bundle (the session is `processing`), processes it in the background (transcribe, correct, detect entities per segment, then one narrative analysis per session), retries a session's analysis on request, and sweeps the sessions a restart stranded. A session settles as `done`, `partial` or `failed`; it never processes twice at once, and an interrupted session resumes from its stored audio. Refusals are domain errors (unknown session, busy, not retryable, bundle manifest gone); only the routes turn them into HTTP statuses.
+What the server does with an uploaded session bundle from acceptance to settled status, owned by one module (`session_ingest`) that the HTTP routes and the startup lifespan only call. It accepts the bundle (the session is `processing`), processes it in the background (transcribe, correct, detect entities per segment, then one narrative analysis per session, which ADR 0006 widens to the whole **day narrative**), retries a session's analysis on request, recovers a failed segment on request, and sweeps the sessions a restart stranded. A session settles as `done`, `partial` or `failed`; it never processes twice at once, and an interrupted session resumes from its stored audio, except that a failed segment is never transcribed again without a request. Refusals are domain errors (unknown session, busy, not retryable, bundle manifest gone); only the routes turn them into HTTP statuses.
 _Avoid_: session processing, session lifecycle (as module names), processor
 
 **Pending analysis**:
 The state of an uploaded session whose transcripts are safely stored but whose session-level analysis or LightRAG ingest failed. No data is lost; it is retried by the server (startup sweep) or on request (`retry-analysis`).
-_Avoid_: stuck, failed (a failed segment has no transcript and needs a re-upload)
+_Avoid_: stuck, failed (a failed segment has no transcript; it is recovered from retained audio on request, ADR 0005, not by re-upload)
+
+**Failed segment**:
+A segment whose transcription failed and that has no usable linked transcript. Distinct from **pending analysis**, where the transcript is safe. It is recovered only by an explicit user request. While a recovery attempt runs it is `transcribing`, not `failed`.
+_Avoid_: pending analysis, stuck segment
+
+**Transcription recovery**:
+One explicitly requested attempt, one per tap, to transcribe a failed segment again from its retained audio. Never started by the app or the server on their own (foreground, health recovery, restart, scheduler). It leaves every transcript that already exists untouched.
+_Avoid_: retry-transcription as a product term (that is only the route), re-upload, auto-retry
+
+**Retained audio**:
+The audio of a segment as stored on the server under its session bundle. Transcription recovery needs it; the copy on the phone is not used, and a phone-side re-upload is not a recovery path.
+_Avoid_: backup, local audio
+
+**Day narrative**:
+The combined narrative for one calendar date, built from every transcribed segment of every session recorded for that date and ingested as the date's single `diary:{date}` document. It is not a synonym for a session's narrative; any session's ingest, analysis retry or recovery rebuilds the whole day (ADR 0006).
+_Avoid_: session narrative, diary entry (ambiguous with the LightRAG document)
+
+**Unknown outcome**:
+The state of a recovery request whose result the app never saw (timeout, connection loss, app killed). The app reads the server status to find out and never silently resubmits.
+_Avoid_: failed (the attempt may have succeeded)
 
 **Failure code**:
 The stable snake_case identifier the server puts in an error response (`code`) when an upstream fails, together with `upstream` and `retryable`. The app keys its explanation copy and retry behaviour on it, never on the human-readable message.
@@ -57,7 +77,7 @@ _Avoid_: word list, lexicon, vocabulary
 ### Analysis routing
 
 **Narrative analysis**:
-The once-per-session LLM call that turns the combined session transcript, with a short summary of recent diary history, into the structured relationships, decisions, todos and insights behind the day's narrative.
+The LLM call that turns the combined transcript of a **day narrative**, with a short summary of recent diary history, into the structured relationships, decisions, todos and insights behind the day's narrative. It ran once per session over that session's segments only; ADR 0006 widens its input to the whole day.
 _Avoid_: document processing (the whole pipeline), session analysis
 
 **Analysis route**:
