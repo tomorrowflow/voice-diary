@@ -5,6 +5,10 @@ ffmpeg → Whisper ASR → transcript correction → 4-pass entity normalisation
 Ollama analysis → narrative generation → LightRAG ingest. Plus iOS-facing
 routes for session ingest, MS Graph (calendar + email) proxy, and enrichment.
 
+Analysis runs on local Ollama by default. An opt-in `ANALYSIS_ROUTE=blindfold` sends
+the main analysis prompt to a cloud model through a Blindfold proxy; read the
+[limits](../docs/analysis-egress.md) before enabling it.
+
 Seeded from `diary-processor/webapp/` on 2026-04-24. Server milestones S1–S4
 removed n8n, added MSAL, added the iOS routes, added structured logging
 and a backup script. The HTMX review/admin/Harvest UIs are unchanged.
@@ -22,6 +26,12 @@ and a backup script. The HTMX review/admin/Harvest UIs are unchanged.
   since it talks OpenAI-shape `/v1/chat/completions` (no per-request `num_ctx`),
   configure that context length on the Ollama side — see the `OLLAMA_ANALYSIS_*`
   comment block in `.env.example`.
+- Optional, off by default: a Blindfold proxy and a cloud model account, only
+  if you set `ANALYSIS_ROUTE=blindfold`. The default needs neither and sends
+  no diary content to any cloud AI service. The route is a restart-time setting with no fallback to
+  Ollama, and it must not be enabled before the first-enable checks pass;
+  settings, limits and the gate are in
+  [`docs/analysis-egress.md`](../docs/analysis-egress.md).
 - A LightRAG instance reachable from the host.
 - An Entra (Azure AD) tenant the user already signs into.
 
@@ -144,6 +154,8 @@ The overall `status` follows fixed rules (SPEC §10.7):
 
 `voxtral` is optional: `upstream.voxtral` shows its real state (`ok`, `down` or `skipped`), but it never changes `status`. The `msgraph` probe checks the MSAL token cache, not live Graph.
 
+`blindfold` appears only when `ANALYSIS_ROUTE=blindfold` (see [`docs/analysis-egress.md`](../docs/analysis-egress.md)). It is `ok` or `down`; `down` makes `status` `degraded`, never `down`. With the default route the key is absent.
+
 Every other route — the iOS routers *and* the HTMX review/admin/data UI
 (`/`, `/review/*`, `/admin`, `/settings`, `/ingest`, `/harvest`, `/api/*`) —
 requires the same bearer. A browser does not send it on its own, so opening
@@ -232,7 +244,9 @@ was restored intact.
 | `/lightrag/query` → 503 `ollama_unavailable` / `ollama_timeout` | the speech summariser could not reach Ollama or ran out of time | check `OLLAMA_BASE_URL` and `OLLAMA_ENRICHMENT_TIMEOUT` |
 | `/api/sessions` → 503 `whisper_unavailable` | Whisper sidecar stopped | `docker compose ps whisper` and restart |
 | Segments come back with `status: "pending_analysis"` | Ollama or LightRAG was down during ingest | bundle persisted on disk; re-process via `/process/<transcript_id>` once upstream returns |
-| `/health` returns `"status":"degraded"` | a non-optional upstream (Qdrant, LightRAG, Ollama, Graph) is not `ok` | check `upstream` map for the offending service |
+| Segments `pending_analysis` with `code: "blindfold_*"` | `ANALYSIS_ROUTE=blindfold` and the Blindfold proxy was down, slow or errored; nothing was sent to Ollama | fix or restart Blindfold, then `retry-analysis`; or set `ANALYSIS_ROUTE=local`, restart and retry (no automatic fallback) |
+| Server refuses to start with a `BLINDFOLD_*` or `ANALYSIS_ROUTE` message | unknown route value, or `blindfold` without `BLINDFOLD_BASE_URL` / `BLINDFOLD_ANALYSIS_MODEL` | fix `.env` per [`docs/analysis-egress.md`](../docs/analysis-egress.md) |
+| `/health` returns `"status":"degraded"` | a non-optional upstream (Qdrant, LightRAG, Ollama, Graph, or Blindfold when routed) is not `ok` | check `upstream` map for the offending service |
 | `/health` returns `"status":"down"` | Postgres or Whisper is down | `docker compose ps` and restart the service |
 | HTMX review UI returns `401 missing_bearer_token` | browser isn't sending the bearer | add the `Authorization` header for the tailnet host (see First-time setup, step 7) |
 | HTMX review UI's calendar widget shows nothing | tenant returned no events for that date, or MSAL bootstrap stale | confirm `/today/calendar` works directly |
@@ -249,6 +263,7 @@ Contract and statuses: SPEC §10.6.1; every upstream-facing route uses it (SPEC 
 |---|---|---|---|---|
 | `whisper_unavailable` / `whisper_timeout` / `whisper_engine_error` | whisper | 503 / 503 / 502 | yes | whisper container up and healthy; model loaded |
 | `ollama_unavailable` / `ollama_timeout` / `ollama_engine_error` | ollama | 503 / 503 / 502 | yes | Ollama reachable at `OLLAMA_BASE_URL`; model pulled; long analyses may need a higher timeout |
+| `blindfold_unavailable` / `blindfold_timeout` / `blindfold_engine_error` | blindfold | 503 / 503 / 502 | yes | only with `ANALYSIS_ROUTE=blindfold`, main analysis call only; Blindfold reachable at `BLINDFOLD_BASE_URL`; a 401/403 is an engine error, check `BLINDFOLD_API_KEY`; never answered by Ollama |
 | `lightrag_unavailable` / `lightrag_timeout` / `lightrag_engine_error` | lightrag | 503 / 503 / 502 | yes | LightRAG reachable at its base URL; API key |
 | `msgraph_not_bootstrapped` | msgraph | 503 | no | run `scripts/msgraph_bootstrap.py` |
 | `msgraph_rate_limited` / `msgraph_unavailable` / `msgraph_engine_error` | msgraph | 429 / 503 / 502 | yes | Graph throttling (`Retry-After` sent when Graph gave one), network or outage; wait |

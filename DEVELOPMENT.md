@@ -50,6 +50,7 @@ Both components are developed in the same git repository. They are deployed inde
 - Python 3.12 locally for development if running outside Docker.
 - External LightRAG instance reachable from the host.
 - External Ollama instance reachable from the host with a German-capable model pulled (e.g. `qwen2.5:14b`).
+- Optional, off by default: a Blindfold proxy and a cloud model account, needed only for `ANALYSIS_ROUTE=blindfold`. Development and the default deployment make no request to either. Read [`docs/analysis-egress.md`](docs/analysis-egress.md) (settings, limits, first-enable gate) before enabling it; the automated suite does not establish that pseudonymization works.
 - Microsoft 365 / Exchange admin consent for a Graph app registration granting `Calendars.Read` and `Mail.Read` delegated scopes.
 - A client ID + tenant ID for that Graph app registration.
 
@@ -93,7 +94,7 @@ server/
     ├── requirements.txt             # needs: msal, ffmpeg-python (or call ffmpeg via subprocess)
     ├── main.py                      # ~2200 lines, ~60 routes; needs n8n removal + iOS routers
     ├── db.py                        # asyncpg queries
-    ├── document_processor.py        # narrative gen + LightRAG ingest (already local Python)
+    ├── document_processor.py        # narrative gen + LightRAG ingest (in-process Python; analysis on local Ollama unless ANALYSIS_ROUTE=blindfold)
     ├── entity_detector.py           # 4-pass entity normalization
     ├── transcript_corrector.py      # Ollama ASR correction
     ├── fluency_checker.py           # Ollama fluency correction
@@ -224,6 +225,8 @@ cp .env.example .env
 #   POSTGRES_PASSWORD=<generate with `openssl rand -hex 32`, no default>
 #   OLLAMA_BASE_URL=http://<ollama-host>:11434
 #   OLLAMA_MODEL=qwen2.5:14b
+#   ANALYSIS_ROUTE=local            (default; the opt-in `blindfold` route and
+#                                    its settings are in docs/analysis-egress.md)
 #   LIGHTRAG_URL=http://<lightrag-host>:9621
 #   LIGHTRAG_API_KEY=...
 #   QDRANT_URL=http://qdrant:6333
@@ -591,7 +594,7 @@ for `main`.
 ### 8.1 Secrets
 
 - iOS: bearer token in Keychain, never UserDefaults, never logged.
-- Server: `.env` in `.gitignore`. Contains `BEARER_TOKEN`, `MSGRAPH_CLIENT_ID`, `MSGRAPH_TENANT_ID`, `DIARY_PROCESSOR_URL`, `LIGHTRAG_URL`, `OLLAMA_URL`, `LIGHTRAG_API_KEY` (if applicable).
+- Server: `.env` in `.gitignore`. Contains `BEARER_TOKEN`, `MSGRAPH_CLIENT_ID`, `MSGRAPH_TENANT_ID`, `DIARY_PROCESSOR_URL`, `LIGHTRAG_URL`, `OLLAMA_URL`, `LIGHTRAG_API_KEY` (if applicable), and `BLINDFOLD_API_KEY` when the opt-in analysis route is used ([`docs/analysis-egress.md`](docs/analysis-egress.md)); the server never logs it.
 - MSAL refresh token: in `server/data/msal_cache.bin`, file permissions 0600, backed up as part of routine server backups.
 
 ### 8.2 Upgrades
@@ -607,7 +610,7 @@ for `main`.
 
 ### 8.4 Observability
 
-- Server: structured JSON logs to stdout, captured by Docker. Rotate with `docker-compose` log driver settings.
+- Server: structured JSON logs to stdout, captured by Docker. When the analysis route is `blindfold`, start-up logs one WARNING naming the route, base URL and model (never the key); each saved narrative records `analysis_route` in its metadata. Rotate with `docker-compose` log driver settings.
 - iOS: local diagnostics log viewable in Settings → About → Diagnostics. Nothing leaves the device.
 
 ---
