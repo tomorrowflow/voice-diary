@@ -44,7 +44,7 @@ public enum FailureCatalog {
         )
     }
 
-    /// Copy for a `failed` session segment from its `code` / `upstream`
+    /// Copy for a `failed` or `pending_analysis` session segment from its `code` / `upstream`
     /// (SPEC §10.5). Nil without a `code`, so a segment the server could not
     /// attribute keeps today's plain "Failed" pill, even if `upstream` is set.
     public static func copy(
@@ -54,6 +54,20 @@ public enum FailureCatalog {
     ) -> FailureCopy? {
         guard let code, !code.isEmpty else { return nil }
         return copy(for: UpstreamFailure(code: code, upstream: upstream), language: language)
+    }
+
+    /// Title Verlauf shows under a segment's details. A `failed` segment and a
+    /// `pending_analysis` one (the server keeps `code` / `upstream` on both
+    /// while an upstream is down) get the copy of their `(code, upstream)`;
+    /// every other status, and a segment without a `code`, gets none.
+    public static func segmentExplanation(
+        status: String?,
+        code: String?,
+        upstream: String?,
+        language: OpenerLanguage? = nil
+    ) -> String? {
+        guard status == "failed" || status == "pending_analysis" else { return nil }
+        return copy(forSegmentCode: code, upstream: upstream, language: language)?.title
     }
 
     /// Spoken line for a failed enrichment question, ending in
