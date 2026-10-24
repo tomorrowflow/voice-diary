@@ -19,15 +19,13 @@ private final class EffectsProbe {
         var effects = CaptureCoordinator.Effects()
         effects.notesDirectory = { dir }
         effects.transcribe = { [self] url in
-            note(transcribed: url.lastPathComponent)
+            transcribed.append(url.lastPathComponent)
             return ParakeetManager.Transcript(text: "hello", language: "en", confidence: 1)
         }
         effects.playStartCue = { [self] in cues += 1 }
         effects.announceCompletion = { [self] _, _ in announcements += 1 }
         return effects
     }
-
-    private func note(transcribed name: String) { transcribed.append(name) }
 }
 
 @MainActor
