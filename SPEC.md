@@ -15,6 +15,8 @@ Voice Diary is a **monorepo** containing two tightly coupled components:
 - **`ios/`** — a context-aware iOS app for daily spoken reflection. Replaces ad-hoc voice-memo recording with a structured, conversational evening walkthrough of the user's day, plus low-friction drive-by capture during the day.
 - **`server/`** — a FastAPI service seeded from the existing `diary-processor` codebase. It owns the full pipeline: audio upload, FFMPEG conversion, Whisper ASR (via a sibling Docker container), 4-pass entity normalization, Ollama-based analysis, narrative generation, LightRAG ingest, and the existing HTMX review/admin UI. For the iOS app it additionally proxies Microsoft Graph (calendar + email) with server-side MSAL tokens and proxies LightRAG queries for enrichment.
 
+**Local by default, with one opt-in exception.** No diary content goes to a cloud AI service unless `ANALYSIS_ROUTE=blindfold` is set (default `local`, restart-time, env-only). With it, only the main narrative analysis prompt, which still contains the transcript, the context summary and the author's name, role and company, goes through a Blindfold pseudonymizing proxy to a cloud model. Blindfold protects entity names, not journal content, dates or relationships, and there is no fallback to Ollama. The limits, settings and first-enable gate are in [`docs/analysis-egress.md`](docs/analysis-egress.md); the specification is [`docs/prd/blindfold-analysis-routing.md`](docs/prd/blindfold-analysis-routing.md) (ADR 0001, ADR 0004).
+
 The iOS app is the **capture layer**. It does not re-implement ASR, entity normalization, or knowledge-graph ingestion. The `server/` component is the **full backend** — one FastAPI app, one Docker Compose stack, no external workflow engine.
 
 ### 1.1 Repo layout
@@ -51,7 +53,7 @@ voice-diary/
 
 - Two capture modes: short drive-by thoughts + structured evening walkthrough, both feeding one pipeline.
 - Calendar-chronological walkthrough conversation in German or English (user's choice per session, mixed OK).
-- On-device generation of voice, text, and audio where possible. Server only for retrieval/enrichment.
+- On-device generation of voice, text, and audio where possible. Server only for retrieval/enrichment. The server's narrative analysis is local by default; the opt-in Blindfold route (§1) is the only path that sends analysis content off the operator's machines.
 - Pre-structured ingest to the server: per-event segmentation, attendee references, pre-extracted todos, stripped AI prompts.
 - Offline-tolerant: drive-by capture works without Tailscale; session upload queues and retries.
 - Personal-tool ergonomics: no account system, no cloud auth on the phone, no telemetry.
@@ -122,7 +124,8 @@ Two tiers: **iOS app** (this repo, `ios/`) and **the server** (this repo, `serve
 │  │    GET  /yesterday/open-todos      briefing context            │  │
 │  │    GET  /health                    upstream-aware probe        │  │
 │  │                                                                │  │
-│  │  In-process pipeline (all Python, all local):                  │  │
+│  │  In-process pipeline (all Python; local unless the opt-in      │  │
+│  │  Blindfold analysis route is on, see §1):                      │  │
 │  │    Phase 1 (per segment, in order):                            │  │
 │  │      ffmpeg (system) → whisper service → transcript_corrector  │  │
 │  │      → entity_detector.py (4-pass)                             │  │
@@ -161,7 +164,7 @@ The server holds OAuth refresh tokens for the user's Exchange account, the full 
 
 - Existing routes (`/api/transcripts`, `/review/*`, `/admin/*`, `/harvest/*`) are preserved as-is — they remain useful for processing voice memos and managing the entity dictionary.
 - New routes (`/api/sessions`, `/today/calendar`, `/email/search`, `/lightrag/query`, `/yesterday/open-todos`, `/health`) are added as FastAPI routers.
-- n8n is removed: audio ingest moves into the webapp (ffmpeg in-container + a Whisper Docker service), calendar fetch moves to direct MS Graph calls, and the vestigial `_forward_to_n8n()` in the submit flow is deleted (`document_processor.py` already does the analysis locally).
+- n8n is removed: audio ingest moves into the webapp (ffmpeg in-container + a Whisper Docker service), calendar fetch moves to direct MS Graph calls, and the vestigial `_forward_to_n8n()` in the submit flow is deleted (`document_processor.py` already does the analysis itself, on local Ollama unless the opt-in Blindfold route is set, see §1).
 - No data migration. Voice Diary starts with fresh Postgres and Qdrant volumes.
 
 ### 3.4 Server responsibilities
@@ -172,7 +175,7 @@ The server in `server/` is one FastAPI app with three clusters of responsibility
 - Audio ingest (from the web UI and from `process-diaries.sh`-style batch scripts).
 - 4-pass entity normalization (persons, terms, variations dictionary).
 - Transcript correction via Ollama.
-- Document processing: LightRAG context retrieval → Ollama analysis → narrative markdown with temporal anchors → LightRAG ingest.
+- Document processing: LightRAG context retrieval → Ollama context summary → analysis (local Ollama by default; opt-in Blindfold route, [`docs/analysis-egress.md`](docs/analysis-egress.md)) → narrative markdown with temporal anchors → LightRAG ingest.
 - HTMX review UI for human-in-the-loop entity correction.
 - Admin UI for persons/terms/variations management.
 - Harvest time-tracking integration (calendar → pattern matching → time entries).
@@ -193,7 +196,7 @@ The server in `server/` is one FastAPI app with three clusters of responsibility
 ### 3.5 Deployment posture
 
 - Single `docker-compose.yml` under `server/` brings up: webapp + postgres + qdrant + whisper.
-- LightRAG and Ollama are external services on the same host or reachable by URL; their endpoints come from `.env`.
+- LightRAG and Ollama are external services on the same host or reachable by URL; their endpoints come from `.env`. A Blindfold proxy is a third, optional one, used only when `ANALYSIS_ROUTE=blindfold`; the default needs none and sends nothing to it.
 - Exposed port is 8000 (matches what any existing external integrations already point at). Bound to the Tailscale interface only.
 - Bearer token in `server/.env` authenticates every route except `/health` — the iOS-facing routers and the legacy review/admin/data routes alike. `/health` stays open so the iOS app can probe reachability before onboarding.
 - MSAL refresh tokens persist under `server/data/msal_cache.bin`. Bootstrapped once via `server/scripts/msgraph_bootstrap.py` (device-code flow), then auto-renewed.
@@ -608,7 +611,9 @@ Total ~220 MB voice models in bundle. If bundle size is a concern later, voices 
 
 ## 10. Ingest contract
 
-The iOS app talks only to the server (`server/webapp/` — the merged FastAPI app). All routes below live in the same app. The server runs a two-phase pipeline in-process: per segment it does ffmpeg → whisper → transcript_corrector → entity_detector and persists the transcript; then once per session it concatenates all segments (with per-segment headers preserving meeting title, time range, and attendees), runs the shared narrative stage (`narrative.build_day_narrative`: LightRAG context query + Ollama analysis + narrative generation, the same stage the HTMX review UI's SSE endpoint uses) a single time, then the explicit skeleton-sync-then-ingest step (`narrative.sync_and_ingest`), ingesting one combined document into LightRAG under id `diary:{date}`. The combined narrative is saved as a `processed_documents` row against every segment's transcript so segment-keyed read paths keep working.
+The iOS app talks only to the server (`server/webapp/` — the merged FastAPI app). All routes below live in the same app. The server runs a two-phase pipeline in-process: per segment it does ffmpeg → whisper → transcript_corrector → entity_detector and persists the transcript; then once per session it concatenates all segments (with per-segment headers preserving meeting title, time range, and attendees), runs the shared narrative stage (`narrative.build_day_narrative`: LightRAG context query + Ollama context summary + analysis + narrative generation, the same stage the HTMX review UI's SSE endpoint uses) a single time, then the explicit skeleton-sync-then-ingest step (`narrative.sync_and_ingest`), ingesting one combined document into LightRAG under id `diary:{date}`. The combined narrative is saved as a `processed_documents` row against every segment's transcript so segment-keyed read paths keep working.
+
+**Where the analysis runs.** By default the analysis call goes to local Ollama and no diary content goes to a cloud AI service. With `ANALYSIS_ROUTE=blindfold` (env-only, read at start-up, no fallback) the main analysis call alone goes to the configured Blindfold proxy; the context summary and every other LLM call stay on Ollama. What still egresses, the settings and the gate on the first enable (Blindfold #69, #76, #79) are in [`docs/analysis-egress.md`](docs/analysis-egress.md). Related: [`docs/prd/blindfold-analysis-routing.md`](docs/prd/blindfold-analysis-routing.md), ADR 0001 and ADR 0004. Each saved narrative records the route that produced it as `analysis_route` (`local` or `blindfold`) in its metadata; rows without the key are `local`.
 
 ### 10.1 Endpoint
 
@@ -1249,7 +1254,7 @@ Graph OAuth setup is a one-time step the user runs on the server (`server/script
 
 ### 15.3 Telemetry
 
-None. Errors log locally to a rolling file viewable in Mehr → Diagnostics (§12.1). No data leaves the phone except to the user's own `server` over Tailscale.
+None. Errors log locally to a rolling file viewable in Mehr → Diagnostics (§12.1). No data leaves the phone except to the user's own `server` over Tailscale. The server itself sends no diary content to a cloud AI service by default; the opt-in Blindfold analysis route is the one exception, and it sends diary content, not telemetry (§1, [`docs/analysis-egress.md`](docs/analysis-egress.md)).
 
 ---
 
