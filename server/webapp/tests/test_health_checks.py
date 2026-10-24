@@ -1,128 +1,33 @@
 """Health checking through its injectable boundary (REF-128).
 
 `check_health` is driven with explicit fakes for Postgres, HTTP, Voxtral, the
-MSAL cache, fixture mode, the environment and the analysis route. Nothing here
-patches a `_probe_*` helper or replaces `httpx`.
+MSAL cache, fixture mode, the environment and the analysis route. The probes
+are never patched. The `default_dependencies` tests at the end fake the
+upstreams one level lower (`ProductionUpstreams`) to cover the real wiring.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import os
 
 import httpx
 import pytest
 
 import analysis_route
+import db
 import health_checks
 from health_checks import HealthDependencies, check_health
-
-BLINDFOLD = "http://blindfold.test:8080/proxy"
-
-ENV = {
-    "QDRANT_URL": "http://qdrant.test:6333",
-    "WHISPER_URL": "http://whisper.test:9000/",
-    "LIGHTRAG_URL": "http://lightrag.test:9621",
-    "OLLAMA_BASE_URL": "http://ollama.test:11434/",
-    "MSGRAPH_CLIENT_ID": "client",
-    "MSGRAPH_TENANT_ID": "tenant",
-    "VOXTRAL_BASE_URL": "http://voxtral.test:8000",
-}
-
-URLS = {
-    "qdrant": "http://qdrant.test:6333",
-    "whisper": "http://whisper.test:9000/",
-    "lightrag": "http://lightrag.test:9621/health",
-    "ollama": "http://ollama.test:11434/api/tags",
-}
-
-OK_UPSTREAM = {
-    "postgres": "ok",
-    "qdrant": "ok",
-    "whisper": "ok",
-    "lightrag": "ok",
-    "ollama": "ok",
-    "msgraph": "ok",
-    "voxtral": "ok",
-}
-
-
-def local_route() -> analysis_route.AnalysisRoute:
-    return analysis_route.from_env({})
-
-
-def blindfold_route(key: str | None = None) -> analysis_route.AnalysisRoute:
-    env = {
-        "ANALYSIS_ROUTE": "blindfold",
-        "BLINDFOLD_BASE_URL": BLINDFOLD,
-        "BLINDFOLD_ANALYSIS_MODEL": "frontier-1",
-    }
-    if key:
-        env["BLINDFOLD_API_KEY"] = key
-    return analysis_route.from_env(env)
-
-
-class World:
-    """Fake upstreams. `http` maps a URL to the status it answers with or the
-    exception it raises; an unlisted URL answers 200. Every call is recorded."""
-
-    def __init__(
-        self,
-        *,
-        env: Mapping[str, str] = ENV,
-        route: analysis_route.AnalysisRoute | None = None,
-        http: Mapping[str, int | Exception] | None = None,
-        postgres: Exception | None = None,
-        voxtral: bool | Exception = True,
-        msgraph_account: bool | Exception = True,
-        fixture: bool = False,
-    ) -> None:
-        self.env = dict(env)
-        self.route = route or local_route()
-        self.http = dict(http or {})
-        self.postgres = postgres
-        self.voxtral = voxtral
-        self.msgraph_account = msgraph_account
-        self.fixture = fixture
-        self.http_calls: list[str] = []
-        self.voxtral_calls: list[str] = []
-        self.postgres_pings = 0
-        self.msgraph_checks = 0
-
-    async def _postgres_ping(self) -> None:
-        self.postgres_pings += 1
-        if self.postgres:
-            raise self.postgres
-
-    async def _http_status(self, url: str) -> int:
-        self.http_calls.append(url)
-        answer = self.http.get(url, 200)
-        if isinstance(answer, Exception):
-            raise answer
-        return answer
-
-    async def _voxtral_reachable(self, base_url: str) -> bool:
-        self.voxtral_calls.append(base_url)
-        if isinstance(self.voxtral, Exception):
-            raise self.voxtral
-        return self.voxtral
-
-    async def _msgraph_has_account(self) -> bool:
-        self.msgraph_checks += 1
-        if isinstance(self.msgraph_account, Exception):
-            raise self.msgraph_account
-        return self.msgraph_account
-
-    def deps(self) -> HealthDependencies:
-        return HealthDependencies(
-            postgres_ping=self._postgres_ping,
-            http_status=self._http_status,
-            voxtral_reachable=self._voxtral_reachable,
-            msgraph_has_account=self._msgraph_has_account,
-            fixture_mode=lambda: self.fixture,
-            route=lambda: self.route,
-            env=self.env,
-        )
+from tests.health_helpers import (
+    BLINDFOLD,
+    ENV,
+    OK_UPSTREAM,
+    URLS,
+    ProductionUpstreams,
+    World,
+    blindfold_route,
+    local_route,
+)
 
 
 async def snapshot(world: World):
@@ -408,6 +313,105 @@ async def test_real_http_adapter_reports_transport_errors_as_down() -> None:
     world = World(env={"QDRANT_URL": URLS["qdrant"]})
     result = await check_health(_real_http_deps(world, httpx.MockTransport(handle)))
     assert result.upstream["qdrant"] == "down"
+
+
+# --- default_dependencies ---------------------------------------------------
+
+
+def test_default_dependencies_read_the_live_environment_and_route(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deps = health_checks.default_dependencies()
+    assert deps.env is os.environ
+    assert deps.route is analysis_route.current
+
+    ProductionUpstreams(monkeypatch, route=blindfold_route())
+    assert deps.route().is_blindfold
+    assert deps.env.get("QDRANT_URL") == ENV["QDRANT_URL"]
+
+
+def test_default_dependencies_fixture_mode_follows_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    deps = health_checks.default_dependencies()
+    ProductionUpstreams(monkeypatch)
+    assert deps.fixture_mode() is False
+    monkeypatch.setenv("MSGRAPH_FIXTURE_MODE", "1")
+    assert deps.fixture_mode() is True
+
+
+async def test_default_postgres_ping_runs_select_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    upstreams = ProductionUpstreams(monkeypatch)
+    await health_checks.default_dependencies().postgres_ping()
+    assert upstreams.queries == ["SELECT 1"]
+
+
+async def test_default_postgres_ping_raises_when_the_query_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ProductionUpstreams(monkeypatch, postgres=ConnectionError("no pool"))
+    with pytest.raises(ConnectionError):
+        await health_checks.default_dependencies().postgres_ping()
+
+
+async def test_default_postgres_ping_is_bounded_by_the_probe_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ProductionUpstreams(monkeypatch)
+    monkeypatch.setattr(health_checks, "PROBE_TIMEOUT", 0.01)
+
+    class Hang:
+        async def execute(self, query: str) -> None:
+            await asyncio.sleep(5)
+
+    class Acquire:
+        async def __aenter__(self) -> Hang:
+            return Hang()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class Pool:
+        def acquire(self) -> Acquire:
+            return Acquire()
+
+    async def get_pool() -> Pool:
+        return Pool()
+
+    monkeypatch.setattr(db, "get_pool", get_pool)
+    with pytest.raises(asyncio.TimeoutError):
+        await health_checks.default_dependencies().postgres_ping()
+
+
+async def test_default_http_status_gets_the_url_under_the_probe_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    upstreams = ProductionUpstreams(monkeypatch, http={URLS["qdrant"]: 404})
+    status = await health_checks.default_dependencies().http_status(URLS["qdrant"])
+    assert status == 404
+    assert upstreams.urls == [URLS["qdrant"]]
+    assert upstreams.timeouts == [health_checks.PROBE_TIMEOUT]
+
+
+@pytest.mark.parametrize(("status", "expected"), [(200, True), (404, True), (503, False)])
+async def test_default_voxtral_probe_uses_the_sidecar_models_endpoint(
+    monkeypatch: pytest.MonkeyPatch, status: int, expected: bool
+) -> None:
+    base = "http://voxtral.test:8000"
+    upstreams = ProductionUpstreams(monkeypatch, http={f"{base}/v1/models": status})
+    reachable = await health_checks.default_dependencies().voxtral_reachable(base)
+    assert reachable is expected
+    assert upstreams.urls == [f"{base}/v1/models"]
+    assert upstreams.timeouts == [health_checks.PROBE_TIMEOUT]
+
+
+@pytest.mark.parametrize("has_account", [True, False])
+async def test_default_msgraph_check_reads_the_msal_accounts(
+    monkeypatch: pytest.MonkeyPatch, has_account: bool
+) -> None:
+    ProductionUpstreams(monkeypatch, msgraph_account=has_account)
+    deps = health_checks.default_dependencies()
+    assert await deps.msgraph_has_account() is has_account
 
 
 # --- the status matrix ----------------------------------------------------------

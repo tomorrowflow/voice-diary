@@ -231,12 +231,11 @@ def overall_status(upstream: dict[str, ProbeResult]) -> OverallStatus:
 # --- snapshot -------------------------------------------------------------
 
 
-async def check_health(deps: HealthDependencies | None = None) -> HealthSnapshot:
+async def check_health(deps: HealthDependencies) -> HealthSnapshot:
     """Probe every upstream and report the overall status.
 
     The seven standing probes run concurrently; the `blindfold` entry exists
     only when routed, and is probed after them."""
-    deps = deps or default_dependencies()
     names = ("postgres", "qdrant", "whisper", "lightrag", "ollama", "msgraph", "voxtral")
     probes = await asyncio.gather(
         _probe_postgres(deps),
