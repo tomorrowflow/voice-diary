@@ -20,7 +20,14 @@ import health_checks
 import main
 from health_checks import HealthDependencies
 from routers import health
-from tests.test_health_checks import BLINDFOLD, ENV, URLS, World, blindfold_route
+from tests.health_helpers import (
+    BLINDFOLD,
+    ENV,
+    URLS,
+    ProductionUpstreams,
+    World,
+    blindfold_route,
+)
 
 OK = {
     "postgres": "ok",
@@ -224,4 +231,124 @@ def test_ollama_entry_is_unchanged_when_routed(
     body = serve(world.deps()).get("/health").json()
     assert body["upstream"]["ollama"] == "down"
     assert body["upstream"]["blindfold"] == "ok"
+    assert body["status"] == "degraded"
+
+
+# --- production wiring: the real `default_dependencies()` ------------------
+#
+# No dependency override here. The process environment, the analysis route,
+# `httpx`, the Postgres pool and the MSAL client are faked beneath the seam, so
+# a change to the wiring in `default_dependencies()` fails these tests.
+
+EXPECTED_HTTP = sorted([*URLS.values(), "http://voxtral.test:8000/v1/models"])
+
+
+@pytest.fixture
+def wired() -> TestClient:
+    # No `with`: the app's lifespan (Postgres etc.) is never started.
+    assert health_checks.default_dependencies not in main.app.dependency_overrides
+    return TestClient(main.app)
+
+
+def test_wired_default_local_route(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upstreams = ProductionUpstreams(monkeypatch)
+    body = wired.get("/health").json()
+    assert body == {"status": "ok", "upstream": OK}
+    assert "blindfold" not in body["upstream"]
+    assert sorted(upstreams.urls) == EXPECTED_HTTP
+    assert upstreams.queries == ["SELECT 1"]
+    assert set(upstreams.timeouts) == {health_checks.PROBE_TIMEOUT}
+    assert all("authorization" not in r.headers for r in upstreams.requests)
+
+
+def test_wired_routed_blindfold_is_probed_without_the_key(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upstreams = ProductionUpstreams(monkeypatch, route=blindfold_route(key="sk-secret-key"))
+    body = wired.get("/health").json()
+    assert body == {"status": "ok", "upstream": {**OK, "blindfold": "ok"}}
+    assert upstreams.urls[-1] == f"{BLINDFOLD}/v1/models"
+    assert sorted(upstreams.urls[:-1]) == EXPECTED_HTTP
+    assert all("authorization" not in r.headers for r in upstreams.requests)
+    assert not any("sk-secret-key" in url for url in upstreams.urls)
+    assert set(upstreams.timeouts) == {health_checks.PROBE_TIMEOUT}
+
+
+@pytest.mark.parametrize("status", [404, 499])
+def test_wired_routed_below_500_is_ok(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    ProductionUpstreams(
+        monkeypatch, route=blindfold_route(), http={f"{BLINDFOLD}/v1/models": status}
+    )
+    body = wired.get("/health").json()
+    assert body["upstream"]["blindfold"] == "ok"
+    assert body["status"] == "ok"
+
+
+@pytest.mark.parametrize("answer", [503, httpx.ConnectError("refused"), httpx.ReadTimeout("slow")])
+def test_wired_routed_blindfold_failure_is_degraded(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch, answer: int | Exception
+) -> None:
+    ProductionUpstreams(
+        monkeypatch, route=blindfold_route(), http={f"{BLINDFOLD}/v1/models": answer}
+    )
+    body = wired.get("/health").json()
+    assert body["upstream"]["blindfold"] == "down"
+    assert body["status"] == "degraded"
+
+
+def test_wired_postgres_down_is_down(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ProductionUpstreams(monkeypatch, postgres=ConnectionError("no pool"))
+    body = wired.get("/health").json()
+    assert body["upstream"]["postgres"] == "down"
+    assert body["status"] == "down"
+
+
+def test_wired_whisper_down_is_down(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ProductionUpstreams(monkeypatch, http={URLS["whisper"]: 503})
+    body = wired.get("/health").json()
+    assert body["upstream"]["whisper"] == "down"
+    assert body["status"] == "down"
+
+
+def test_wired_voxtral_down_stays_ok(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ProductionUpstreams(monkeypatch, http={"http://voxtral.test:8000/v1/models": 503})
+    body = wired.get("/health").json()
+    assert body["upstream"]["voxtral"] == "down"
+    assert body["status"] == "ok"
+
+
+def test_wired_environment_decides_skipped_and_fixture(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    upstreams = ProductionUpstreams(monkeypatch, env={}, fixture=True)
+    body = wired.get("/health").json()
+    assert body["upstream"] == {
+        "postgres": "ok",
+        "qdrant": "skipped",
+        "whisper": "skipped",
+        "lightrag": "skipped",
+        "ollama": "skipped",
+        "msgraph": "fixture",
+        "voxtral": "skipped",
+    }
+    assert body["status"] == "ok"
+    assert upstreams.requests == []
+
+
+def test_wired_graph_not_bootstrapped_is_degraded(
+    wired: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ProductionUpstreams(monkeypatch, msgraph_account=False)
+    body = wired.get("/health").json()
+    assert body["upstream"]["msgraph"] == "not_bootstrapped"
     assert body["status"] == "degraded"
