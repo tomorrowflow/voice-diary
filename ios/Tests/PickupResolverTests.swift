@@ -81,6 +81,9 @@ struct PickupResolverStateMappingTests {
             .idle,
             .noteReview(stepIndex: 0, noteIndex: 0),
             .confirmingTodos(index: 0),
+            .calendarUnavailable(ConnectionDiagnosis(
+                kind: .unreachable, title: "Offline", hint: "", detail: nil, systemImage: "wifi.slash"
+            )),
             .ingesting,
             .done,
             .failed("boom"),
@@ -317,6 +320,20 @@ struct PickupResolverResolutionTests {
     func nothingRecorded() {
         let journal = PickupResolver.Journal(latestChunks: [])
         #expect(resolve(journal, plan: [.calendar(events: [event("A")])]) == nil)
+    }
+
+    @Test("a segment only matches a plan step of its own kind")
+    func segmentKindMustMatchStepKind() {
+        let eventRecording = eventSegment("s01e02", event: "A")
+        let sectionRecording = sectionSegment("s02", section: "sec-1")
+        let reflection = reflectionSegment("s03")
+        let eventsOnly: [WalkthroughCoordinator.PlanStep] = [.calendar(events: [event("A")])]
+        let sectionsOnly: [WalkthroughCoordinator.PlanStep] = [.general(section("sec-1"))]
+        let noteStepOnly: [WalkthroughCoordinator.PlanStep] = [.voiceNote(notes: [])]
+        #expect(resolve(.init(latestSegment: eventRecording, latestChunks: []), plan: sectionsOnly) == nil)
+        #expect(resolve(.init(latestSegment: sectionRecording, latestChunks: []), plan: eventsOnly) == nil)
+        #expect(resolve(.init(latestSegment: reflection, latestChunks: []), plan: eventsOnly) == nil)
+        #expect(resolve(.init(latestSegment: eventRecording, latestChunks: []), plan: noteStepOnly) == nil)
     }
 
     @Test("the latest recorded step is nil when it no longer exists in the plan")
