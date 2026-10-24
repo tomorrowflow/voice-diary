@@ -18,6 +18,10 @@ ad hoc signed so the Keychain keeps the server URL.
   and tiny placeholder audio files, the same fixture kind as UFH-08.
 - No real Blindfold or server produced this: it proves how the app words the failure code, not the
   server's classification (BAR-02).
+- Surface limit: Verlauf shows the explanation only for a `failed` segment, as it does for Ollama. A
+  real Blindfold outage leaves segments `pending_analysis` (BAR-02), which Verlauf does not explain
+  today; that holds for Ollama too and is unchanged here. The catalog entries are what any surface
+  that reads a `(code, upstream)` pair, such as `ConnectionDiagnosis`, picks up.
 
 German copy ("Geschützte Auswertung dauert zu lange") is covered by `FailureCatalogTests`; it was
 not captured here.
