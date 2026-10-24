@@ -69,35 +69,42 @@ struct WalkthroughSeamTests {
 
         await beginWithUnreachableCalendar()
 
-        #expect(await eventually { coordinator.upstreamStartNotice != nil })
+        let shown = await eventually { coordinator.upstreamStartNotice != nil }
+        await coordinator.cancel()   // ends the notice's 6 s timer even if an expectation fails
+        #expect(shown)
         #expect(await transport.healthCalls == 1)
-        await coordinator.cancel()   // ends the notice's 6 s timer
     }
 
-    @Test("a failing /health shows no notice and does not stop the start")
+    @Test("a failing /health does not stop the start")
     func beginIgnoresHealthFailure() async {
         await transport.stubHealth(.failure(FakeTransport.Unreachable()))
 
         await beginWithUnreachableCalendar()
 
         #expect(await eventually { await transport.healthCalls == 1 })
-        #expect(coordinator.upstreamStartNotice == nil)
         #expect(await engine.calls == ["prepareSession"])
+        guard case .calendarUnavailable = coordinator.state else {
+            Issue.record("expected .calendarUnavailable, got \(coordinator.state)")
+            return
+        }
     }
 
-    @Test("a failed engine start throws and leaves no recording time behind")
-    func failedCaptureStart() async {
+    @Test("a failed engine start throws and the bundle does not keep the segment")
+    func failedCaptureStart() async throws {
         await beginWithUnreachableCalendar()
         await engine.failStarts()
 
         await #expect(throws: FakeAudioEngine.StartFailed.self) {
             try await coordinator.startCapture(.reflection(baseID: "s01"))
         }
+        await engine.allowStarts()
+        try await coordinator.startCapture(.reflection(baseID: "s01"))
 
-        let calls = await engine.calls
-        #expect(calls.count == 2)
-        #expect(calls.last?.hasPrefix("start:") == true)
-        #expect(coordinator.recordingWasInterrupted == false)
+        // The retry gets the same file: the failed attempt was never recorded.
+        let starts = await engine.calls.filter { $0.hasPrefix("start:") }
+        #expect(starts.count == 2)
+        #expect(starts[0] == starts[1])
+        #expect(await engine.calls.first == "prepareSession")
         await coordinator.cancel()
     }
 

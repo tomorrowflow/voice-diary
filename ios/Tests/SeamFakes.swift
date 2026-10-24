@@ -17,6 +17,7 @@ actor FakeAudioEngine: AudioCapturing {
     private var wakeSink: (@Sendable (AVAudioPCMBuffer) -> Void)?
 
     func failStarts(with error: any Error = StartFailed()) { startError = error }
+    func allowStarts() { startError = nil }
     func failStops(with error: any Error) { stopError = error }
     /// What a call / Siri / alarm interruption does to the engine's flag.
     func interrupt() { interrupted = true }
