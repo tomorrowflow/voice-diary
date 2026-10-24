@@ -549,62 +549,9 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     // MARK: - Pause marker persistence
 
     private func writePauseMarker(activeSegmentID: String?) {
-        let marker: PauseMarker? = {
-            switch state {
-            case .briefing:
-                return PauseMarker(
-                    phase: .briefing, kind: nil,
-                    stepIndex: 0, eventIndex: nil, sectionID: nil,
-                    elapsedSeconds: elapsedSeconds,
-                    activeSegmentID: nil, pausedAt: Date()
-                )
-            case .eventOpener(let s, let e):
-                return PauseMarker(
-                    phase: .opener, kind: .event,
-                    stepIndex: s, eventIndex: e, sectionID: nil,
-                    elapsedSeconds: elapsedSeconds,
-                    activeSegmentID: nil, pausedAt: Date()
-                )
-            case .eventListening(let s, let e):
-                return PauseMarker(
-                    phase: .listening, kind: .event,
-                    stepIndex: s, eventIndex: e, sectionID: nil,
-                    elapsedSeconds: elapsedSeconds,
-                    activeSegmentID: activeSegmentID, pausedAt: Date()
-                )
-            case .generalOpener(let s, let id):
-                return PauseMarker(
-                    phase: .opener, kind: .general,
-                    stepIndex: s, eventIndex: nil, sectionID: id,
-                    elapsedSeconds: elapsedSeconds,
-                    activeSegmentID: nil, pausedAt: Date()
-                )
-            case .generalListening(let s, let id):
-                return PauseMarker(
-                    phase: .listening, kind: .general,
-                    stepIndex: s, eventIndex: nil, sectionID: id,
-                    elapsedSeconds: elapsedSeconds,
-                    activeSegmentID: activeSegmentID, pausedAt: Date()
-                )
-            case .voiceNoteOpener(let s):
-                return PauseMarker(
-                    phase: .opener, kind: .voiceNote,
-                    stepIndex: s, eventIndex: nil, sectionID: nil,
-                    elapsedSeconds: elapsedSeconds,
-                    activeSegmentID: nil, pausedAt: Date()
-                )
-            case .voiceNoteListening(let s):
-                return PauseMarker(
-                    phase: .listening, kind: .voiceNote,
-                    stepIndex: s, eventIndex: nil, sectionID: nil,
-                    elapsedSeconds: elapsedSeconds,
-                    activeSegmentID: activeSegmentID, pausedAt: Date()
-                )
-            default:
-                return nil
-            }
-        }()
-        guard let marker else { return }
+        guard let marker = PickupResolver.marker(
+            for: state, elapsedSeconds: elapsedSeconds, activeSegmentID: activeSegmentID, now: Date()
+        ) else { return }
         bundle?.setPauseMarker(marker)
     }
 
@@ -612,79 +559,25 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         bundle?.clearPauseMarker()
     }
 
-    /// Where pickup re-enters. The pause marker when the user paused;
-    /// otherwise the step of the latest recorded segment, as after an app
-    /// kill or a cancel. The step is found in the current plan by what
-    /// the segment says it recorded (its calendar event or section), never
-    /// by its id, so a calendar that changed since the kill cannot move
-    /// the user onto another event. Nil when that step no longer exists.
+    /// Where pickup re-enters in the current plan: the bundle's journal
+    /// read into `PickupResolver`, plus the audio durations only this
+    /// coordinator can measure. Nil when the step no longer exists.
     private func pickupMarker() -> PauseMarker? {
         guard let bundle else { return nil }
-        if let saved = bundle.pauseMarker {
-            // Only a listening pause names a recorded segment to relocate.
-            guard saved.phase == .listening,
-                  let id = saved.activeSegmentID,
-                  let segment = bundle.segment(withID: id) else { return saved }
-            guard let spot = planPosition(of: segment) else { return nil }
-            return PauseMarker(
-                phase: .listening,
-                kind: spot.kind,
-                stepIndex: spot.stepIndex,
-                eventIndex: spot.eventIndex,
-                sectionID: spot.sectionID,
-                elapsedSeconds: saved.elapsedSeconds,
-                activeSegmentID: id,
-                pausedAt: saved.pausedAt
-            )
-        }
-        guard let latest = bundle.latestRecordedSegment,
-              let spot = planPosition(of: latest) else { return nil }
-        // Sum the recorded duration of every chunk of this step, so the
-        // timer resumes at the total time spent in this meeting/section
-        // instead of snapping to 00:00. `AVAudioPlayer(contentsOf:)` reads
-        // the m4a duration atom without decoding samples.
-        var elapsed: Double = 0
-        for chunk in bundle.chunks(sharingRecordingWith: latest.segmentID) {
-            guard let url = bundle.audioURL(forSegmentID: chunk.segmentID),
-                  let player = try? AVAudioPlayer(contentsOf: url)
-            else { continue }
-            elapsed += player.duration
-        }
-        return PauseMarker(
-            phase: .listening,
-            kind: spot.kind,
-            stepIndex: spot.stepIndex,
-            eventIndex: spot.eventIndex,
-            sectionID: spot.sectionID,
-            elapsedSeconds: Int(elapsed.rounded()),
-            activeSegmentID: latest.segmentID,
-            pausedAt: Date()
+        let saved = bundle.pauseMarker
+        let latest = bundle.latestRecordedSegment
+        let journal = PickupResolver.Journal(
+            savedMarker: saved,
+            savedSegment: saved?.activeSegmentID.flatMap { bundle.segment(withID: $0) },
+            latestSegment: latest,
+            latestChunks: latest.map { bundle.chunks(sharingRecordingWith: $0.segmentID) } ?? []
         )
-    }
-
-    /// The plan step a recorded segment belongs to in the current plan.
-    private func planPosition(of segment: Segment) -> (
-        kind: PauseMarker.Kind, stepIndex: Int, eventIndex: Int?, sectionID: String?
-    )? {
-        for (stepIndex, step) in plan.enumerated() {
-            switch (step, segment) {
-            case (.calendar(let events), .calendarEvent(let recorded)):
-                if let eventIndex = events.firstIndex(where: {
-                    $0.graph_event_id == recorded.calendar_ref.graph_event_id
-                }) {
-                    return (.event, stepIndex, eventIndex, nil)
-                }
-            case (.general(let section), .generalSection(let recorded)):
-                if section.id == recorded.section_id {
-                    return (.general, stepIndex, nil, section.id)
-                }
-            case (.voiceNote, .freeReflection):
-                return (.voiceNote, stepIndex, nil, nil)
-            default:
-                continue
-            }
-        }
-        return nil
+        return PickupResolver.resolve(journal, in: plan, chunkSeconds: { chunk in
+            // `AVAudioPlayer(contentsOf:)` reads the m4a duration atom
+            // without decoding samples.
+            bundle.audioURL(forSegmentID: chunk.segmentID)
+                .flatMap { try? AVAudioPlayer(contentsOf: $0) }?.duration
+        }, now: Date())
     }
 
     /// Continue an unfinished session for `date`. Reuses the existing
