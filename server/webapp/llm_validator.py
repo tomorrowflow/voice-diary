@@ -13,6 +13,7 @@ import time
 from dataclasses import asdict
 
 from entity_detector import DetectedEntity
+from entity_validation import EntityValidation
 from ollama_client import (
     OllamaClient,
     OllamaEngineError,
@@ -164,66 +165,6 @@ def _parse_verdicts(response_text: str) -> list | None:
     return None
 
 
-def _apply_verdict(
-    ent: DetectedEntity,
-    verdict: dict,
-    new_entities: list[DetectedEntity],
-) -> str:
-    """Apply a single LLM verdict to an entity. Returns a log description."""
-    decision = verdict.get("verdict", "uncertain")
-    reason = verdict.get("reason", "")
-    suggested_canonical = verdict.get("suggested_canonical")
-    suggested_type = verdict.get("suggested_type")
-
-    ent.llm_validated = True
-    ent.llm_reason = reason
-
-    if decision == "correct":
-        old_status = ent.status
-        ent.confidence = "high"
-        if ent.status == "suggested":
-            ent.status = "auto-matched"
-        # For ambiguous with a suggested canonical matching a candidate
-        if old_status == "ambiguous" and suggested_canonical and ent.candidates:
-            for cand in ent.candidates:
-                if cand["canonical"].lower() == suggested_canonical.lower():
-                    ent.canonical = cand["canonical"]
-                    ent.dictionary_id = cand["id"]
-                    ent.status = "auto-matched"
-                    ent.match_type = "llm"
-                    return (
-                        f'CONFIRMED "{ent.original_text}" -> '
-                        f'disambiguated to "{cand["canonical"]}" ({reason})'
-                    )
-        return f'CONFIRMED "{ent.original_text}" -> "{ent.canonical}" ({reason})'
-
-    elif decision == "wrong":
-        ent.status = "dismissed"
-        log = f'REJECTED "{ent.original_text}" (was "{ent.canonical}") ({reason})'
-        if suggested_canonical:
-            new_ent = DetectedEntity(
-                start=ent.start,
-                end=ent.end,
-                original_text=ent.original_text,
-                canonical=suggested_canonical,
-                entity_type=suggested_type or ent.entity_type,
-                match_type="llm",
-                confidence="medium",
-                status="suggested",
-                dictionary_id=None,
-                source=ent.source,
-                llm_validated=True,
-                llm_reason=reason,
-                llm_suggested=True,
-            )
-            new_entities.append(new_ent)
-            log += f' -> suggested "{suggested_canonical}" instead'
-        return log
-
-    else:
-        return f'UNCERTAIN "{ent.original_text}" -> "{ent.canonical}" ({reason})'
-
-
 def _sse_log(
     message: str,
     level: str = "info",
@@ -334,58 +275,25 @@ async def validate_entities_stream(
 
     yield _sse_log(f"Received {len(verdicts)} verdicts, applying...")
 
-    # Build index lookup: LLM index (1-based) -> (original_idx, entity)
-    validate_by_llm_idx = {
-        i + 1: (orig_idx, ent) for i, (orig_idx, ent) in enumerate(to_validate)
-    }
-
-    # Apply verdicts
-    new_entities: list[DetectedEntity] = []
-    counts = {"correct": 0, "wrong": 0, "uncertain": 0}
-    skipped = 0
+    validation = EntityValidation(entities, to_validate)
     for verdict in verdicts:
-        # Skip non-dict items (LLM sometimes returns strings in the array)
-        if not isinstance(verdict, dict):
-            skipped += 1
-            continue
-        llm_idx = verdict.get("index")
-        if llm_idx not in validate_by_llm_idx:
-            skipped += 1
-            continue
-        try:
-            orig_idx, ent = validate_by_llm_idx[llm_idx]
-            log_line = _apply_verdict(ent, verdict, new_entities)
-
-            decision = verdict.get("verdict", "uncertain")
-            counts[decision] = counts.get(decision, 0) + 1
-
+        outcome = validation.apply(verdict)
+        if outcome.kind == "applied":
+            decision = outcome.decision
             level = "ok" if decision == "correct" else ("warn" if decision == "wrong" else "info")
-            yield _sse_log(log_line, level, entity_start=ent.start, entity_end=ent.end)
-        except Exception as e:
-            skipped += 1
-            yield _sse_log(f"Error processing verdict #{llm_idx}: {e}", "error")
+            ent = outcome.entity
+            yield _sse_log(outcome.description, level, entity_start=ent.start, entity_end=ent.end)
+        elif outcome.kind == "failed":
+            yield _sse_log(f"Error processing verdict #{outcome.llm_index}: {outcome.error}", "error")
 
-    if skipped:
-        yield _sse_log(f"Skipped {skipped} unparseable verdict(s)", "warn")
+    if validation.skipped:
+        yield _sse_log(f"Skipped {validation.skipped} unparseable verdict(s)", "warn")
 
-    # Insert new LLM-suggested entities
-    if new_entities:
-        entities.extend(new_entities)
-        entities.sort(key=lambda d: (d.start, -(d.end - d.start)))
-        deduped = []
-        last_end = -1
-        for d in entities:
-            if d.start >= last_end:
-                deduped.append(d)
-                last_end = d.end
-            elif d.status != "dismissed":
-                if deduped and deduped[-1].status == "dismissed":
-                    deduped[-1] = d
-                    last_end = d.end
-        entities = deduped
+    entities = validation.resolve()
 
-    validated = counts["correct"] + counts["wrong"] + counts["uncertain"]
-    unvalidated = len(to_validate) - validated
+    counts = validation.counts
+    new_entities = validation.new_entities
+    unvalidated = validation.unvalidated
     yield _sse_log(
         f"Done: {counts['correct']} confirmed, {counts['wrong']} rejected, "
         f"{counts['uncertain']} uncertain"
