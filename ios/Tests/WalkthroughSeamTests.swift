@@ -27,10 +27,113 @@ private func calendarJSON(date: String, subjects: [String]) throws -> Data {
 struct WalkthroughSeamTests {
     private let engine = FakeAudioEngine()
     private let transport = FakeTransport()
+    private let transcriptions = CallLog()
     private let coordinator: WalkthroughCoordinator
 
     init() {
-        coordinator = WalkthroughCoordinator(engine: engine, transport: transport)
+        var transcriber = WalkthroughCoordinator.Transcriber()
+        let log = transcriptions
+        transcriber.warmUp = { await log.add("warmUp") }
+        transcriber.transcribe = { url in
+            await log.add("transcribe:\(url.lastPathComponent)")
+            throw FakeTransport.Unreachable()
+        }
+        coordinator = WalkthroughCoordinator(
+            engine: engine, transport: transport, transcriber: transcriber
+        )
+    }
+
+    /// Starts a walkthrough whose calendar fetch fails, which parks it on
+    /// `.calendarUnavailable` after the session bundle exists and before any
+    /// TTS, LLM or upload runs.
+    private func beginWithUnreachableCalendar() async {
+        await transport.stubCalendar(.failure(FakeTransport.Unreachable()))
+        await coordinator.begin()
+    }
+
+    @Test("begin arms the audio session once, before the calendar fallback is shown")
+    func beginPreparesTheSession() async {
+        await beginWithUnreachableCalendar()
+
+        #expect(await engine.calls == ["prepareSession"])
+        guard case .calendarUnavailable = coordinator.state else {
+            Issue.record("expected .calendarUnavailable, got \(coordinator.state)")
+            return
+        }
+        #expect(await eventually { await transcriptions.items == ["warmUp"] })
+    }
+
+    @Test("begin probes /health through the transport and shows the upstream notice")
+    func beginShowsUpstreamNotice() async {
+        await transport.stubHealth(.success(Data(#"{"upstream":{"whisper":"down"}}"#.utf8)))
+
+        await beginWithUnreachableCalendar()
+
+        #expect(await eventually { coordinator.upstreamStartNotice != nil })
+        #expect(await transport.healthCalls == 1)
+        await coordinator.cancel()   // ends the notice's 6 s timer
+    }
+
+    @Test("a failing /health shows no notice and does not stop the start")
+    func beginIgnoresHealthFailure() async {
+        await transport.stubHealth(.failure(FakeTransport.Unreachable()))
+
+        await beginWithUnreachableCalendar()
+
+        #expect(await eventually { await transport.healthCalls == 1 })
+        #expect(coordinator.upstreamStartNotice == nil)
+        #expect(await engine.calls == ["prepareSession"])
+    }
+
+    @Test("a failed engine start throws and leaves no recording time behind")
+    func failedCaptureStart() async {
+        await beginWithUnreachableCalendar()
+        await engine.failStarts()
+
+        await #expect(throws: FakeAudioEngine.StartFailed.self) {
+            try await coordinator.startCapture(.reflection(baseID: "s01"))
+        }
+
+        let calls = await engine.calls
+        #expect(calls.count == 2)
+        #expect(calls.last?.hasPrefix("start:") == true)
+        #expect(coordinator.recordingWasInterrupted == false)
+        await coordinator.cancel()
+    }
+
+    @Test("an interruption seen at segment stop stays latched when the next segment starts")
+    func interruptionLatchesAcrossSegments() async throws {
+        await beginWithUnreachableCalendar()
+        try await coordinator.startCapture(.reflection(baseID: "s01"))
+        await engine.interrupt()
+
+        await coordinator.stopSegmentCapture()
+        #expect(coordinator.recordingWasInterrupted)
+
+        // The fake clears its own flag on start, like AudioEngine does.
+        try await coordinator.startCapture(.reflection(baseID: "s01"))
+        #expect(!(await engine.wasInterrupted))
+        #expect(coordinator.recordingWasInterrupted)
+
+        await coordinator.stopSegmentCapture()
+        #expect(coordinator.recordingWasInterrupted)
+        coordinator.dismissInterruptionNotice()
+        #expect(!coordinator.recordingWasInterrupted)
+
+        // The finaliser went through the stub, not the Parakeet model.
+        #expect(await eventually { await transcriptions.items.filter { $0.hasPrefix("transcribe:") }.count == 2 })
+        await coordinator.cancel()
+    }
+
+    @Test("a segment that ends without an interruption does not set the flag")
+    func noInterruptionNoFlag() async throws {
+        await beginWithUnreachableCalendar()
+        try await coordinator.startCapture(.reflection(baseID: "s01"))
+
+        await coordinator.stopSegmentCapture()
+
+        #expect(!coordinator.recordingWasInterrupted)
+        await coordinator.cancel()
     }
 
     @Test("cancel finalises the open segment, then shuts the engine down")

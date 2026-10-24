@@ -54,6 +54,28 @@ actor FakeAudioEngine: AudioCapturing {
     var lastSampleRate: Double { 44_100 }
 }
 
+/// An ordered log that `@Sendable` stubs can append to.
+actor CallLog {
+    private(set) var items: [String] = []
+
+    func add(_ item: String) { items.append(item) }
+}
+
+/// Polls `condition` every few milliseconds until it holds or `cap` passes.
+/// For work a coordinator starts in an unawaited `Task`.
+@MainActor
+func eventually(
+    within cap: Duration = .seconds(1),
+    _ condition: @MainActor () async -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock.now + cap
+    while ContinuousClock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return await condition()
+}
+
 /// A server transport answering from canned results and recording requests.
 actor FakeTransport: SessionTransport {
     struct Unreachable: Error {}
