@@ -81,7 +81,8 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     /// next start and cancelled by `cancel()`.
     private var upstreamPreflightTask: Task<Void, Never>?
 
-    private let engine = AudioEngine()
+    private let engine: any AudioCapturing
+    private let transport: any SessionTransport
     // Resolve the TTS engine fresh on every utterance via `speak(_:language:)`.
     // The previous code cached `VoiceRegistry.engine(for: "de")` here, which
     // meant a voice picked in Settings (Apple ↔ Piper, or Thorsten ↔ Cori)
@@ -279,7 +280,14 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     private var noteSummaryCache: [String: String] = [:]
     private var noteSummaryTasks: [String: Task<String, Never>] = [:]
 
-    private init() {
+    private convenience init() {
+        self.init(engine: AudioEngine(), transport: ServerClient.shared)
+    }
+
+    /// Seam for tests: a fake capture engine and server transport.
+    init(engine: any AudioCapturing, transport: any SessionTransport) {
+        self.engine = engine
+        self.transport = transport
         todoFlow.host = self
         observeStateForIsland()
         // Adopt any orphan activity left over from a previous launch
@@ -491,7 +499,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         defer { isPreviewing = false }
         do {
             let dateString = Self.dateFormatter.string(from: target)
-            let raw = try await ServerClient.shared.todayCalendar(date: dateString)
+            let raw = try await transport.todayCalendar(date: dateString)
             let parsed = try JSONDecoder().decode(TodayCalendarResponse.self, from: raw)
             previewEventsRaw = parsed.events
             previewEvents = parsed.events.filtered(by: WalkthroughSettingsStore.current)
@@ -515,7 +523,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         let hi = cal.date(byAdding: .day, value: 60, to: anchor) ?? anchor
         let f = Self.dateFormatter
         do {
-            let dates = try await ServerClient.shared.recordedDates(
+            let dates = try await transport.recordedDates(
                 from: f.string(from: lo),
                 to: f.string(from: hi),
             )
@@ -3197,7 +3205,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
     /// than storing them: only the caller that is still current may.
     private func fetchCalendar(date: Date) async throws -> [ServerCalendarEvent] {
         let dateString = Self.dateFormatter.string(from: date)
-        let raw = try await ServerClient.shared.todayCalendar(date: dateString)
+        let raw = try await transport.todayCalendar(date: dateString)
         let response = try JSONDecoder().decode(TodayCalendarResponse.self, from: raw)
         return response.events.filtered(by: WalkthroughSettingsStore.current)
     }
@@ -3950,7 +3958,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
 
     private func preflightUpstreams(token: UUID) async {
         do {
-            let data = try await ServerClient.shared.health()
+            let data = try await transport.health()
             let payload = try JSONDecoder().decode(UpstreamPreflightPayload.self, from: data)
             // The banner is app UI, so it follows the app language, not the
             // language the walkthrough speaks.
