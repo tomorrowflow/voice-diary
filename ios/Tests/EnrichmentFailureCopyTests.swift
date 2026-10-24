@@ -81,6 +81,16 @@ struct EnrichmentFailureCopyTests {
                 == "Ich konnte die Frage gerade nicht beantworten.")
     }
 
+    @Test("Blindfold codes keep the generic message: enrichment never calls Blindfold")
+    func blindfoldIsGeneric() {
+        for code in ["blindfold_unavailable", "blindfold_timeout", "blindfold_engine_error", "blindfold_new"] {
+            let error = coded(503, code, "blindfold")
+            #expect(EnrichmentService.failureMessage(for: error, language: .en) == genericEN)
+            #expect(EnrichmentService.failureMessage(for: error, language: .de)
+                    == "Ich konnte die Frage gerade nicht beantworten.")
+        }
+    }
+
     @Test("connectivity failures stay on the unreachable message even with the catalog present")
     func connectivityUnchanged() {
         #expect(EnrichmentService.failureMessage(for: URLError(.cannotConnectToHost), language: .de)

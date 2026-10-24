@@ -22,6 +22,8 @@ struct FailureCatalogTests {
         ("msgraph_unavailable", "msgraph"), ("msgraph_engine_error", "msgraph"),
         ("voxtral_unavailable", "voxtral"), ("voxtral_timeout", "voxtral"),
         ("voxtral_engine_error", "voxtral"), ("unknown_voice", "voxtral"),
+        ("blindfold_unavailable", "blindfold"), ("blindfold_timeout", "blindfold"),
+        ("blindfold_engine_error", "blindfold"),
     ]
 
     @Test("every documented code has non-empty, distinct DE and EN copy")
@@ -92,6 +94,12 @@ struct FailureCatalogTests {
         ("voxtral_timeout", "voxtral", "Server voice is taking too long", "Server-Stimme antwortet zu langsam"),
         ("voxtral_engine_error", "voxtral", "Server voice failed", "Server-Stimme fehlgeschlagen"),
         ("unknown_voice", "voxtral", "Server voice not found", "Server-Stimme nicht gefunden"),
+        ("blindfold_unavailable", "blindfold", "Private analysis isn’t available",
+         "Geschützte Auswertung nicht verfügbar"),
+        ("blindfold_timeout", "blindfold", "Private analysis is taking too long",
+         "Geschützte Auswertung dauert zu lange"),
+        ("blindfold_engine_error", "blindfold", "Private analysis failed",
+         "Geschützte Auswertung fehlgeschlagen"),
     ]
 
     @Test("every title matches the documented DE and EN copy")
@@ -109,6 +117,13 @@ struct FailureCatalogTests {
         ("ollama_timeout", "ollama", "This is usually temporary. Try again in a moment.",
          "Das ist meist vorübergehend. Versuche es gleich noch einmal."),
         ("lightrag_engine_error", "lightrag",
+         "The service answered with an error. Try again in a moment; if it keeps happening, check the server logs.",
+         "Der Dienst hat mit einem Fehler geantwortet. Versuche es gleich noch einmal; wenn es bleibt, schau in die Server-Logs."),
+        ("blindfold_unavailable", "blindfold", "This is usually temporary. Try again in a moment.",
+         "Das ist meist vorübergehend. Versuche es gleich noch einmal."),
+        ("blindfold_timeout", "blindfold", "This is usually temporary. Try again in a moment.",
+         "Das ist meist vorübergehend. Versuche es gleich noch einmal."),
+        ("blindfold_engine_error", "blindfold",
          "The service answered with an error. Try again in a moment; if it keeps happening, check the server logs.",
          "Der Dienst hat mit einem Fehler geantwortet. Versuche es gleich noch einmal; wenn es bleibt, schau in die Server-Logs."),
         ("msgraph_rate_limited", "msgraph", "Microsoft is asking for a short pause. Try again in a moment.",
@@ -138,6 +153,56 @@ struct FailureCatalogTests {
         #expect(try impact("msgraph_not_bootstrapped", "msgraph")
                 == "Calendar isn’t set up on the server. This has to be fixed on the server.")
         #expect(try impact("voxtral_timeout", "voxtral") == "Server voices fall back to Piper.")
+    }
+
+    @Test("every Blindfold code has the Ollama impact line in both languages",
+          arguments: ["blindfold_unavailable", "blindfold_timeout", "blindfold_engine_error", "blindfold_something_new"])
+    func blindfoldImpact(code: String) throws {
+        let en = try #require(FailureCatalog.copy(for: failure(code, "blindfold"), language: .en))
+        let de = try #require(FailureCatalog.copy(for: failure(code, "blindfold"), language: .de))
+        #expect(en.impact == "Analysis is delayed; your texts are saved.")
+        #expect(de.impact == "Auswertung verzögert sich, deine Texte sind gespeichert.")
+        #expect(en.summary == "\(en.hint) \(en.impact)")
+    }
+
+    @Test("an unknown Blindfold code gets the generic private-analysis failed copy")
+    func unknownBlindfoldCode() throws {
+        let en = try #require(FailureCatalog.copy(for: failure("blindfold_something_new", "blindfold"), language: .en))
+        let de = try #require(FailureCatalog.copy(for: failure("blindfold_something_new", "blindfold"), language: .de))
+        #expect(en.title == "Private analysis failed")
+        #expect(de.title == "Geschützte Auswertung fehlgeschlagen")
+        // The upstream alone is enough, without any code.
+        #expect(FailureCatalog.copy(for: UpstreamFailure(upstream: "blindfold"), language: .en)?.title
+                == "Private analysis failed")
+    }
+
+    @Test("a Blindfold code never reads as Ollama's Analysis copy")
+    func blindfoldIsNotOllama() throws {
+        let blindfold = try #require(FailureCatalog.copy(for: failure("blindfold_timeout", "blindfold"), language: .en))
+        let ollama = try #require(FailureCatalog.copy(for: failure("ollama_timeout", "ollama"), language: .en))
+        #expect(blindfold.title != ollama.title)
+    }
+
+    @Test("a failed Verlauf segment with a Blindfold code gets its copy")
+    func blindfoldSegment() throws {
+        let copy = try #require(FailureCatalog.copy(
+            forSegmentCode: "blindfold_unavailable", upstream: "blindfold", language: .de))
+        #expect(copy.title == "Geschützte Auswertung nicht verfügbar")
+    }
+
+    @Test("ConnectionDiagnosis explains a Blindfold failure in either language")
+    func blindfoldDiagnosis() {
+        let error = ServerClientError.http(
+            status: 503, detail: "blindfold_unavailable: connection refused",
+            failure: failure("blindfold_unavailable", "blindfold")
+        )
+        let en = ConnectionDiagnosis.classify(error, language: .en)
+        #expect(en.kind == .upstreamFailure)
+        #expect(en.title == "Private analysis isn’t available")
+        #expect(en.hint.contains("Analysis is delayed; your texts are saved."))
+        let de = ConnectionDiagnosis.classify(error, language: .de)
+        #expect(de.title == "Geschützte Auswertung nicht verfügbar")
+        #expect(de.hint.contains("Auswertung verzögert sich, deine Texte sind gespeichert."))
     }
 
     @Test("not-bootstrapped Graph has its own spoken line in both languages")
