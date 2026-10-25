@@ -469,14 +469,21 @@ struct VerlaufDetailView: View {
     // MARK: - Per-row deletion
 
     private func deleteSegment(_ d: SegmentDescriptor) {
-        switch SessionMutations().deleteSegment(d, in: item, player: player) {
+        let mutations = SessionMutations()
+        // Stop before the file goes away: everything when the row is the
+        // whole note, otherwise only a player that has this row loaded.
+        if mutations.removesWholeEntry(d, in: item) || player.activeURL == d.audioURL {
+            player.stop()
+        }
+        switch mutations.deleteSegment(d, in: item) {
         case .rowRemoved: deletedSegmentIDs.insert(d.id)
         case .entryRemoved: dismiss()
         }
     }
 
     private func deleteNote(_ e: SurfacedNoteEntry) {
-        SessionMutations().deleteSurfacedNote(e, player: player)
+        if player.activeURL == e.audioURL { player.stop() }
+        SessionMutations().deleteSurfacedNote(e)
         deletedNoteIDs.insert(e.note.seed_id)
     }
 
