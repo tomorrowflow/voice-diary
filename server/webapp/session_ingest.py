@@ -813,13 +813,29 @@ class SessionIngest:
         _check_recoverable(session_id, stored, segment_id)
         if not await self._whisper_reachable():
             raise upstream_failure.whisper_unavailable()
+        # From the claim on, accepting is its own task: a caller that is
+        # cancelled meanwhile (a client leaving) cannot interrupt it between
+        # persisting `transcribing` and starting the attempt, which would
+        # strand the segment. It then either completes, or fails and rolls
+        # back; either way the claim is released or handed to the attempt.
+        accepting = asyncio.ensure_future(self._accept_recovery(session_id, segment_id))
+        self._track_recovery(accepting)
+        accepted = await asyncio.shield(accepting)
+        return _with_recoverable(session_id, accepted)
+
+    async def _accept_recovery(self, session_id: str, segment_id: str) -> SessionStatus:
+        """Claim the session, repeat the state checks under the claim, persist
+        the segment `transcribing` and start the attempt, which then owns the
+        claim. Without an attempt started the claim is released."""
         if not await self._try_begin(session_id):
             raise SessionBusy()
+        previous: tuple[str, list[SegmentResult]] | None = None
         try:
             stored = await self.repository.get(session_id)
             if stored is None:
                 raise SessionNotFound()
             _check_recoverable(session_id, stored, segment_id)
+            previous = (stored.state, list(stored.segments))
             segments = [
                 SegmentResult(segment_id=segment_id, status="transcribing")
                 if r.segment_id == segment_id
@@ -829,16 +845,34 @@ class SessionIngest:
             await self._persist_status(session_id, derive_session_state(segments), segments)
             # A copy: the attempt starts changing the cached status at once.
             accepted = (await self._current_status(session_id)).model_copy(deep=True)
-            attempt = asyncio.create_task(self._run_recovery(session_id, segment_id))
         except BaseException:
+            if previous is not None:
+                # The write-through may have reached the cache or the row
+                # before failing: put the stored status back, so no segment is
+                # left `transcribing` without an attempt.
+                try:
+                    await self._persist_status(session_id, *previous)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "session %s: could not restore the status after a refused recovery",
+                        session_id,
+                    )
             await self._end(session_id)
             raise
-        self._recoveries.add(attempt)
-        attempt.add_done_callback(self._recoveries.discard)
-        return _with_recoverable(session_id, accepted)
+        self._track_recovery(asyncio.create_task(self._run_recovery(session_id, segment_id)))
+        return accepted
+
+    def _track_recovery(self, task: asyncio.Task) -> None:
+        self._recoveries.add(task)
+        task.add_done_callback(self._forget_recovery)
+
+    def _forget_recovery(self, task: asyncio.Task) -> None:
+        self._recoveries.discard(task)
+        if not task.cancelled():
+            task.exception()  # retrieved: an abandoned acceptance's error was already reported to its caller, if any
 
     async def settled(self) -> None:
-        """Wait until no recovery attempt is running."""
+        """Wait until no recovery is being accepted or attempted."""
         while self._recoveries:
             await asyncio.gather(*self._recoveries, return_exceptions=True)
 
@@ -874,12 +908,19 @@ class SessionIngest:
             await self._settle_segment(session_id, _failed_result(segment_id, exc))
             return
 
-        results = await self._settle_segment(
-            session_id,
-            SegmentResult(
-                segment_id=segment_id, status="pending_analysis", transcript_id=artifact.transcript_id
-            ),
-        )
+        try:
+            results = await self._settle_segment(
+                session_id,
+                SegmentResult(
+                    segment_id=segment_id, status="pending_analysis",
+                    transcript_id=artifact.transcript_id,
+                ),
+            )
+        except BaseException:
+            # The transcript is saved but the segment cannot be linked to it:
+            # drop the row rather than leave one nothing refers to.
+            await self._discard_transcript(session_id, segment_id, artifact.transcript_id)
+            raise
         if results is None:
             return
         try:
@@ -901,6 +942,21 @@ class SessionIngest:
                 segment_id=segment_id, status="processed", transcript_id=artifact.transcript_id
             )
         await self._settle_segment(session_id, final)
+
+    async def _discard_transcript(
+        self, session_id: str, segment_id: str, transcript_id: int
+    ) -> None:
+        """Best effort, and shielded so a cancellation cannot cut it short. A
+        row that stays (the database is down) is logged by id and replaced in
+        place by the next recovery attempt, never duplicated."""
+        try:
+            await asyncio.shield(db.delete_transcripts([transcript_id]))
+        except Exception:  # noqa: BLE001
+            logger.error(
+                "session %s segment %s: transcript %s could not be deleted after a failed "
+                "recovery; the next attempt replaces it",
+                session_id, segment_id, transcript_id,
+            )
 
     async def _settle_segment(
         self, session_id: str, result: SegmentResult

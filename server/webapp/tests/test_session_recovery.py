@@ -24,6 +24,7 @@ import pytest
 
 import asr_client
 import correction
+import db
 import session_ingest
 import upstream_failure
 from fastapi import FastAPI
@@ -645,6 +646,141 @@ def test_the_attempt_continues_when_the_requesting_task_is_cancelled(monkeypatch
 
     assert world.result(final, "s01").status == "processed"
     assert len(pipeline.transcribe_calls) == 1
+
+
+def test_cancelling_the_request_while_it_is_accepted_never_strands_the_segment(
+    monkeypatch, tmp_path,
+):
+    """The client leaves while `transcribing` is being persisted: the accepted
+    attempt still starts and finishes, and the claim is released."""
+    world = World(monkeypatch, tmp_path, [_failed("s01"), _failed("s02")], state="failed")
+    repository = world.ingests.repository
+    original_update = repository._update
+    entered, gate = asyncio.Event(), asyncio.Event()
+    updates = []
+
+    async def held_update(session_id, state, segments):
+        updates.append(state)
+        if len(updates) == 1:  # the `transcribing` write
+            entered.set()
+            await gate.wait()
+        await original_update(session_id, state, segments)
+
+    monkeypatch.setattr(repository, "_update", held_update)
+
+    async def run():
+        request = asyncio.create_task(world.ingest.recover(SESSION, "s01"))
+        await asyncio.wait_for(entered.wait(), 1)
+        request.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        gate.set()
+        await world.ingest.settled()
+        # The claim is free again: the other segment can be recovered.
+        await world.ingest.recover(SESSION, "s02")
+        await world.ingest.settled()
+        return await world.status()
+
+    final = asyncio.run(run())
+
+    assert [s.status for s in final.segments] == ["processed", "processed"]
+    assert final.state == "done"
+    assert len(world.pipeline.transcribe_calls) == 2
+
+
+def test_a_failed_acceptance_restores_the_segment_and_releases_the_claim(monkeypatch, tmp_path):
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
+    repository = world.ingests.repository
+    original_update = repository._update
+    calls = []
+
+    async def broken_first_update(session_id, state, segments):
+        calls.append(state)
+        if len(calls) == 1:
+            raise OSError("database is down")
+        await original_update(session_id, state, segments)
+
+    monkeypatch.setattr(repository, "_update", broken_first_update)
+
+    async def run():
+        with pytest.raises(OSError):
+            await world.ingest.recover(SESSION, "s01")
+        failed = await world.status()
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return failed, await world.status()
+
+    failed, recovered = asyncio.run(run())
+
+    assert world.result(failed, "s01").status == "failed"
+    assert world.result(failed, "s01").error == OLD_ERROR
+    assert failed.state == "failed"
+    assert recovered.state == "done"
+    assert len(world.pipeline.transcribe_calls) == 1
+
+
+def test_a_transcript_that_cannot_be_linked_to_its_segment_is_deleted(monkeypatch, tmp_path):
+    """The transcript was saved but persisting `pending_analysis` fails: the
+    segment ends `failed` and the row nothing refers to is deleted."""
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
+    repository = world.ingests.repository
+    original_update = repository._update
+    calls = []
+
+    async def failing_second_update(session_id, state, segments):
+        calls.append(state)
+        if len(calls) == 2:  # the `pending_analysis` write
+            raise OSError("database is down")
+        await original_update(session_id, state, segments)
+
+    monkeypatch.setattr(repository, "_update", failing_second_update)
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return await world.status()
+
+    status = asyncio.run(run())
+
+    assert world.result(status, "s01").status == "failed"
+    assert world.result(status, "s01").error == "database is down"
+    assert world.pipeline.transcript_rows == {}
+    assert world.narrative.runs == []
+
+
+def test_a_row_that_cannot_be_deleted_is_replaced_by_the_next_attempt(monkeypatch, tmp_path):
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
+    repository = world.ingests.repository
+    original_update = repository._update
+    calls = []
+
+    async def failing_second_update(session_id, state, segments):
+        calls.append(state)
+        if len(calls) == 2:
+            raise OSError("database is down")
+        await original_update(session_id, state, segments)
+
+    async def delete_fails(ids):
+        raise OSError("database is down")
+
+    monkeypatch.setattr(repository, "_update", failing_second_update)
+    monkeypatch.setattr(db, "delete_transcripts", delete_fails)
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        failed = await world.status()
+        rows_left = dict(world.pipeline.transcript_rows)
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return failed, rows_left, await world.status()
+
+    failed, rows_left, recovered = asyncio.run(run())
+
+    assert world.result(failed, "s01").status == "failed"
+    assert list(rows_left.values()) == [10]
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}  # replaced, not duplicated
+    assert world.result(recovered, "s01").transcript_id == 10
+    assert recovered.state == "done"
 
 
 def test_the_claim_is_released_when_the_attempt_ends(monkeypatch, tmp_path):

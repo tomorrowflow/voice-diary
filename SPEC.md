@@ -928,12 +928,16 @@ body). One request is one attempt; nothing starts one on its own.
 - *The attempt.* It runs on in the background whether or not the client stays connected, and holds
   only its own session, plus the date during the narrative stage, so an upload or another date's
   work is never held up. It runs the per-segment pipeline (Whisper, correction, entity detection,
-  persistence) for that one segment and changes no other segment's result. A transcript row an
-  earlier attempt left (transcripts are unique per file name and date) is reused, and a failure after
-  Whisper deletes the row it wrote, so no orphan or duplicate row remains and the next attempt starts
-  clean. The segment is `pending_analysis` with its `transcript_id` only once the transcript and its
-  entities are saved; the day narrative (above) then runs over the whole date and the segment becomes
-  `processed`.
+  persistence) for that one segment and changes no other segment's result. Nothing is written until
+  Whisper and the correction chain have succeeded; the transcript, its corrected text and its entities
+  are then saved by one statement, so a failed attempt leaves no transcript row, and a row an earlier
+  attempt left (transcripts are unique per file name and date) is replaced in place rather than
+  duplicated. If the segment then cannot be linked to the saved transcript (its status cannot be
+  persisted), the row is deleted again, best effort; one that cannot be deleted is replaced by the
+  next attempt. The segment is `pending_analysis` with its `transcript_id` only once the transcript
+  and its entities are saved; the day narrative (above) then runs over the whole date and the segment
+  becomes `processed`. Accepting the request is not interrupted by the client leaving: either the
+  segment is `transcribing` with an attempt running, or the stored status is unchanged.
 - *Outcomes.* Transcription fails (Whisper, conversion, an empty transcript, storage): the segment is
   `failed` again with the new `error`, `code` and `upstream` replacing the old ones, and the audio is
   untouched, so the next request can succeed. The narrative or the LightRAG ingest fails: the segment

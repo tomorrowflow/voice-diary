@@ -1,5 +1,6 @@
 """Segment ingest (ARCH-3): the operation `SessionIngest` runs for each segment
-of a session, in the original ingest and when it resumes a stored bundle.
+of a session, in the original ingest, when it resumes a stored bundle and, as
+`recover`, in a transcription recovery (FTR-02).
 
 `SegmentIngest.ingest` reads the segment's audio, transcribes and persists it
 (`transcript_ingest`, shared with `/api/ingest/upload`), loads the dictionary
@@ -9,15 +10,21 @@ non-interactive correction chain shared with the HTMX review flow
 `SegmentArtifact` the day narrative is built from, and raises on any failure:
 what a failed segment means for the session is `SessionIngest`'s call.
 
+`SegmentIngest.recover` runs the same chain for one failed segment, but writes
+nothing until the end: Whisper and the correction chain run first, and the
+transcript row, its corrected text and its entities are then saved by one
+statement. A failed attempt therefore leaves no row behind, a row an earlier
+attempt left (transcripts are unique per file name and date) is replaced in
+place, and a segment is never linked to a transcript without its entities.
+
 Each collaborator is a constructor argument; one left unset resolves the
-shared module's function when `ingest` runs. Two instances never share
-dependencies.
+shared module's function when `ingest` or `recover` runs. Two instances never
+share dependencies.
 """
 
 from __future__ import annotations
 
 import json
-import logging
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -29,7 +36,7 @@ import dictionary
 import transcript_ingest
 from models import CalendarEventSegment, Manifest, Segment
 
-logger = logging.getLogger(__name__)
+_AUTHOR = "Lukas Brandt"
 
 
 @dataclass
@@ -52,12 +59,25 @@ class SegmentOperation(Protocol):
     ) -> Awaitable[SegmentArtifact]: ...
 
 
+@dataclass
+class _Source:
+    """What a segment's audio is transcribed as."""
+
+    audio_bytes: bytes
+    suffix: str
+    filename: str
+    date: str
+    language: str
+
+
 class SegmentIngest:
     """The per-segment operation, over its own collaborators: `transcribe`
     (Whisper + persisted transcript), `load_snapshot` (dictionary), `correct`
-    (correction + entity detection), `save_entities` and, for a recovery,
-    `delete_transcripts`. A collaborator left unset is the shared module's
-    function, looked up on each `ingest`."""
+    (correction + entity detection) and `save_entities` for `ingest`;
+    `transcribe_text` (Whisper only), `load_snapshot`, `correct` and
+    `save_recovered` (transcript and entities in one write) for `recover`. A
+    collaborator left unset is the shared module's function, looked up on
+    each call."""
 
     def __init__(
         self,
@@ -66,13 +86,15 @@ class SegmentIngest:
         load_snapshot: Callable[[], Awaitable[dictionary.DictionarySnapshot]] | None = None,
         correct: Callable[..., Awaitable[correction.CorrectionResult]] | None = None,
         save_entities: Callable[[int, str, str], Awaitable[object]] | None = None,
-        delete_transcripts: Callable[[list[int]], Awaitable[object]] | None = None,
+        transcribe_text: Callable[..., Awaitable[str]] | None = None,
+        save_recovered: Callable[..., Awaitable[int]] | None = None,
     ) -> None:
         self._transcribe = transcribe
         self._load_snapshot = load_snapshot
         self._correct = correct
         self._save_entities = save_entities
-        self._delete_transcripts = delete_transcripts
+        self._transcribe_text = transcribe_text
+        self._save_recovered = save_recovered
 
     async def ingest(
         self, *, manifest: Manifest, segment: Segment, session_dir: Path
@@ -83,89 +105,25 @@ class SegmentIngest:
         entities. Document analysis + LightRAG ingest happen once per run in
         `SessionIngest`'s narrative stage.
         """
-        return await self._run(manifest, segment, session_dir, recovering=False)
-
-    async def recover(
-        self, *, manifest: Manifest, segment: Segment, session_dir: Path
-    ) -> SegmentArtifact:
-        """The same pipeline for a transcription recovery (ADR 0005): it
-        reuses the transcript row an earlier attempt left behind (transcripts
-        are unique per file name and date) and, when a step after Whisper
-        fails, deletes the row it just wrote, so a failed attempt leaves no
-        orphan and the next one starts clean."""
-        return await self._run(manifest, segment, session_dir, recovering=True)
-
-    async def _run(
-        self, manifest: Manifest, segment: Segment, session_dir: Path, *, recovering: bool
-    ) -> SegmentArtifact:
         transcribe = self._transcribe or transcript_ingest.transcribe_and_persist
-        load_snapshot = self._load_snapshot or dictionary.load_dictionary_snapshot
-        correct = self._correct or correction.correct_and_detect_entities
         save_entities = self._save_entities or db.save_detected_entities
 
-        audio_path = session_dir / segment.audio_file
-        if not audio_path.exists():
-            raise FileNotFoundError(f"segment audio missing on disk: {segment.audio_file}")
-        audio_bytes = audio_path.read_bytes()
-        language = (segment.language or "de").split("-")[0]
+        source = _read_source(manifest, segment, session_dir)
 
         # 1-2. ffmpeg → Whisper → persisted transcript row, via the core shared
         # with main.py's /api/ingest/upload (SRV-A7).
-        suffix = Path(segment.audio_file).suffix
-        # Only a recovery passes `replace_existing`, so the original ingest and
-        # the resume of a stored bundle call the collaborator as they always did.
-        persistence = {"replace_existing": True} if recovering else {}
         transcribed = await transcribe(
-            audio_bytes,
-            src_suffix=suffix or ".m4a",
-            filename=f"{manifest.session_id}::{segment.segment_id}{suffix}",
-            date=manifest.date.isoformat(),
-            author="Lukas Brandt",
-            language=language,
-            **persistence,
+            source.audio_bytes,
+            src_suffix=source.suffix or ".m4a",
+            filename=source.filename,
+            date=source.date,
+            author=_AUTHOR,
+            language=source.language,
         )
-        try:
-            return await self._after_transcription(
-                segment, transcribed, load_snapshot, correct, save_entities
-            )
-        except Exception:
-            if recovering:
-                await self._discard_transcript(transcribed.transcript_id)
-            raise
-
-    async def _after_transcription(
-        self, segment: Segment, transcribed, load_snapshot, correct, save_entities
-    ) -> SegmentArtifact:
         transcript_id = transcribed.transcript_id
         raw_transcript = transcribed.raw_text
 
-        # 3-4. Dictionary corrections → vector few-shot LLM correction (falls
-        # back to the pre-LLM text on failure) → entity detection → dismissal
-        # filtering — the same non-interactive chain the HTMX review flow runs
-        # (#51). For calendar_event segments we additionally seed the persons
-        # dict with the manifest's canonical attendee names so the detector
-        # resolves them deterministically (Graph already gave us the truth — no
-        # need to fuzzy-match again).
-        snapshot = await load_snapshot()
-        if isinstance(segment, CalendarEventSegment):
-            seed_persons = attendees_to_canonical_names(segment.calendar_ref.attendees)
-            if seed_persons:
-                snapshot = replace(
-                    snapshot,
-                    persons=_seed_persons_into_dict(snapshot.persons, seed_persons),
-                )
-
-        result = await correct(raw_transcript, snapshot=snapshot)
-        corrected_text = result.corrected_text
-
-        # Convert dataclass instances to dicts in the shape document_processor
-        # expects (the HTMX review flow stores `text` for the canonical name).
-        entities: list[dict] = []
-        for d in result.entities:
-            item = d.to_dict()
-            item["text"] = d.canonical or d.original_text
-            item["type"] = d.entity_type
-            entities.append(item)
+        corrected_text, entities = await self._correct_and_detect(segment, raw_transcript)
 
         # Always persist, even when correction left the text unchanged —
         # otherwise the detected entities are lost and a retry-analysis (#52)
@@ -183,16 +141,91 @@ class SegmentIngest:
             entities=entities,
         )
 
+    async def recover(
+        self, *, manifest: Manifest, segment: Segment, session_dir: Path
+    ) -> SegmentArtifact:
+        """The pipeline of a transcription recovery (ADR 0005): Whisper, then
+        the correction chain, then one write of the transcript and its
+        entities, replacing a row an earlier attempt left. Nothing is written
+        before that last step, so any failure leaves nothing behind."""
+        transcribe_text = self._transcribe_text or transcript_ingest.transcribe_text
+        save_recovered = self._save_recovered or db.save_recovered_transcript
 
-    async def _discard_transcript(self, transcript_id: int) -> None:
-        """Best effort: a row that cannot be deleted is reused by the next
-        recovery attempt, so a failure here is logged, not raised over the
-        error that made the attempt fail."""
-        delete = self._delete_transcripts or db.delete_transcripts
-        try:
-            await delete([transcript_id])
-        except Exception:  # noqa: BLE001
-            logger.warning("could not delete transcript %s after a failed recovery", transcript_id)
+        source = _read_source(manifest, segment, session_dir)
+
+        raw_transcript = await transcribe_text(
+            source.audio_bytes,
+            src_suffix=source.suffix or ".m4a",
+            filename=source.filename,
+            language=source.language,
+        )
+        corrected_text, entities = await self._correct_and_detect(segment, raw_transcript)
+        transcript_id = await save_recovered(
+            filename=source.filename,
+            date=source.date,
+            author=_AUTHOR,
+            raw_text=raw_transcript,
+            corrected_text=corrected_text,
+            detected_entities_json=json.dumps(entities),
+        )
+
+        return SegmentArtifact(
+            segment=segment,
+            transcript_id=transcript_id,
+            raw_text=raw_transcript,
+            corrected_text=corrected_text,
+            entities=entities,
+        )
+
+    async def _correct_and_detect(
+        self, segment: Segment, raw_transcript: str
+    ) -> tuple[str, list[dict]]:
+        """Dictionary corrections → vector few-shot LLM correction (falls back
+        to the pre-LLM text on failure) → entity detection → dismissal
+        filtering — the same non-interactive chain the HTMX review flow runs
+        (#51). For calendar_event segments we additionally seed the persons
+        dict with the manifest's canonical attendee names so the detector
+        resolves them deterministically (Graph already gave us the truth — no
+        need to fuzzy-match again).
+
+        Returns the corrected text and the entities as dicts in the shape
+        document_processor expects (the HTMX review flow stores `text` for the
+        canonical name)."""
+        load_snapshot = self._load_snapshot or dictionary.load_dictionary_snapshot
+        correct = self._correct or correction.correct_and_detect_entities
+
+        snapshot = await load_snapshot()
+        if isinstance(segment, CalendarEventSegment):
+            seed_persons = attendees_to_canonical_names(segment.calendar_ref.attendees)
+            if seed_persons:
+                snapshot = replace(
+                    snapshot,
+                    persons=_seed_persons_into_dict(snapshot.persons, seed_persons),
+                )
+
+        result = await correct(raw_transcript, snapshot=snapshot)
+
+        entities: list[dict] = []
+        for d in result.entities:
+            item = d.to_dict()
+            item["text"] = d.canonical or d.original_text
+            item["type"] = d.entity_type
+            entities.append(item)
+        return result.corrected_text, entities
+
+
+def _read_source(manifest: Manifest, segment: Segment, session_dir: Path) -> _Source:
+    audio_path = session_dir / segment.audio_file
+    if not audio_path.exists():
+        raise FileNotFoundError(f"segment audio missing on disk: {segment.audio_file}")
+    suffix = Path(segment.audio_file).suffix
+    return _Source(
+        audio_bytes=audio_path.read_bytes(),
+        suffix=suffix,
+        filename=f"{manifest.session_id}::{segment.segment_id}{suffix}",
+        date=manifest.date.isoformat(),
+        language=(segment.language or "de").split("-")[0],
+    )
 
 
 def attendees_to_canonical_names(attendees: list[str]) -> list[str]:
