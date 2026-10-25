@@ -1072,10 +1072,14 @@ def test_retry_is_busy_during_the_original_ingest_and_free_once_it_ends(monkeypa
 
 def _stage_stuck_sessions(monkeypatch, tmp_path, sessions: dict[str, int]) -> FakeSessionIngests:
     """One persisted `pending_analysis` session per `session_id -> transcript
-    id`, each with its bundle on disk."""
+    id`, each with its bundle on disk and a date of its own, so the sessions
+    stay independent of one another (same-date sessions share a day narrative,
+    see "day narrative" below)."""
     ingests = None
-    for session_id, transcript_id in sessions.items():
-        stage_bundle(monkeypatch, tmp_path, session_id)
+    for day, (session_id, transcript_id) in enumerate(sessions.items(), start=1):
+        manifest = manifest_dict(session_id)
+        manifest["date"] = f"2026-07-{day:02d}"
+        stage_bundle(monkeypatch, tmp_path, session_id, manifest)
         segments = [segment_row("s01", "pending_analysis", transcript_id, "analysis_pending: boom")]
         if ingests is None:
             ingests = FakeSessionIngests(session_id, "partial", segments)

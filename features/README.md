@@ -13,6 +13,7 @@ against the isolated Compose stack and what proves it worked.
 | [calendar-today](calendar-today.md) | `GET /today/calendar` | bearer | none (read); fixture events | `calendar-today` |
 | [sessions-dates](sessions-dates.md) | `GET /api/sessions/dates` | bearer | Postgres read; 400 on bad date | `sessions-dates` |
 | [sessions-upstream-failure](sessions-upstream-failure.md) | `POST /api/sessions` (Whisper preflight), `GET /api/sessions/{id}/status` | bearer | no `session_ingests` row after the 503; status rows read back with `code`/`upstream` | `session-upload-whisper-down`, `session-status` |
+| [documents-ingest](documents-ingest.md) | `POST /api/documents/{id}/ingest` (manual ingest, refusals only) | bearer | none (401, then 404 for an unknown document) | `document-ingest-refusals` |
 | [admin-static-entities](admin-static-entities.md) | `POST/GET/DELETE /api/admin/static-entities` | bearer | Postgres row + request log line | `admin-static-entities` |
 
 ## Not mapped yet
