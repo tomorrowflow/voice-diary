@@ -129,9 +129,9 @@ Two tiers: **iOS app** (this repo, `ios/`) and **the server** (this repo, `serve
 │  │    Phase 1 (per segment, in order):                            │  │
 │  │      ffmpeg (system) → whisper service → transcript_corrector  │  │
 │  │      → entity_detector.py (4-pass)                             │  │
-│  │    Phase 2 (once per session, after all segments):             │  │
+│  │    Phase 2 (day narrative, after the session's segments):      │  │
 │  │      document_processor.py (LightRAG context + Ollama analysis │  │
-│  │      + narrative) → single LightRAG ingest under `diary:{date}`│  │
+│  │      + narrative) over the whole date → LightRAG `diary:{date}`│  │
 │  │      Skeleton sync, bone generator, Qdrant store as before.    │  │
 │  └──┬──────────┬────────────┬──────────────┬──────────────┬───────┘  │
 │     │          │            │              │              │          │
@@ -611,7 +611,7 @@ Total ~220 MB voice models in bundle. If bundle size is a concern later, voices 
 
 ## 10. Ingest contract
 
-The iOS app talks only to the server (`server/webapp/` — the merged FastAPI app). All routes below live in the same app. The server runs a two-phase pipeline in-process: per segment it does ffmpeg → whisper → transcript_corrector → entity_detector and persists the transcript; then once per session it concatenates all segments (with per-segment headers preserving meeting title, time range, and attendees), runs the shared narrative stage (`narrative.build_day_narrative`: LightRAG context query + Ollama context summary + analysis + narrative generation, the same stage the HTMX review UI's SSE endpoint uses) a single time, then the explicit skeleton-sync-then-ingest step (`narrative.sync_and_ingest`), ingesting one combined document into LightRAG under id `diary:{date}`. The combined narrative is saved as a `processed_documents` row against every segment's transcript so segment-keyed read paths keep working.
+The iOS app talks only to the server (`server/webapp/` — the merged FastAPI app). All routes below live in the same app. The server runs a two-phase pipeline in-process: per segment it does ffmpeg → whisper → transcript_corrector → entity_detector and persists the transcript; then it builds the **day narrative** (ADR 0006): it concatenates every transcribed segment of every session recorded for that date, in session start order and then manifest order (with per-segment headers preserving meeting title, time range, and attendees, and each session's own todos), runs the shared narrative stage (`narrative.build_day_narrative`: LightRAG context query + Ollama context summary + analysis + narrative generation, the same stage the HTMX review UI's SSE endpoint uses) a single time, then the explicit skeleton-sync-then-ingest step (`narrative.sync_and_ingest`), ingesting one combined document into LightRAG under id `diary:{date}`. A second session on a date therefore yields a narrative of both sessions, not a replacement of the first. The narrative is saved as a `processed_documents` row against every transcript it covers, before it is ingested, so segment-keyed read paths keep working and a failed ingest stays retryable (§10.6.1). The stage assembles its input from what is stored (transcripts in Postgres, the manifest on disk) only after it has taken the date, and runs one writer per date at a time; recording, uploading and transcription are never held up by it.
 
 **Where the analysis runs.** By default the analysis call goes to local Ollama and no diary content goes to a cloud AI service. With `ANALYSIS_ROUTE=blindfold` (env-only, read at start-up, no fallback) the main analysis call alone goes to the configured Blindfold proxy; the context summary and every other LLM call stay on Ollama. What still egresses, the settings and the gate on the first enable (Blindfold #69, #76, #79) are in [`docs/analysis-egress.md`](docs/analysis-egress.md). Related: [`docs/prd/blindfold-analysis-routing.md`](docs/prd/blindfold-analysis-routing.md), ADR 0001 and ADR 0004. Each saved narrative records the route that produced it as `analysis_route` (`local` or `blindfold`) in its metadata; rows without the key are `local`.
 
@@ -736,7 +736,7 @@ Manifest-level fields tied to the drive-by section:
 }
 ```
 
-Processing (per-segment Whisper re-transcription + entity normalization, then a single session-level Ollama analysis + LightRAG ingest) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres. This holds when the analysis is routed to Blindfold (`ANALYSIS_ROUTE=blindfold`) too: its outage, timeout or error leaves the segments `pending_analysis` with a `blindfold_*` code (§10.6.1), and the server never retries that analysis on Ollama or any other provider. A retry or the startup sweep sends it to whichever route is then configured.
+Processing (per-segment Whisper re-transcription + entity normalization, then a single day-level Ollama analysis + LightRAG ingest covering every session of the date, §10.6.1) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres. This holds when the analysis is routed to Blindfold (`ANALYSIS_ROUTE=blindfold`) too: its outage, timeout or error leaves the segments `pending_analysis` with a `blindfold_*` code (§10.6.1), and the server never retries that analysis on Ollama or any other provider. A retry or the startup sweep sends it to whichever route is then configured.
 
 Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-analysis` response, §10.6.1) have this shape:
 
@@ -793,16 +793,20 @@ A session-level analysis or LightRAG ingest failure never loses data — the raw
 transcripts (and their detected entities) are already in Postgres — but by itself it also never
 recovers. Two mechanisms retry it:
 
-- **`POST /api/sessions/{session_id}/retry-analysis`** (bearer-token) — rebuilds the session's
-  narrative input from what's persisted: the manifest on disk (segment order, headers, todos) plus
-  each `pending_analysis` segment's transcript row (corrected text where present, else raw;
+- **`POST /api/sessions/{session_id}/retry-analysis`** (bearer-token) — rebuilds the **day
+  narrative** input (below) from what's persisted: the manifest on disk (segment order, headers,
+  todos) plus each transcribed segment's transcript row (corrected text where present, else raw;
   entities from `detected_entities_json`, falling back to `entities_json` for rows ingested before
   the column existed; a segment without a transcript is first resumed from its stored audio, see
   "Resuming a session that never reached transcription" below), then re-runs the shared narrative stage
-  (`narrative.build_day_narrative` + `narrative.sync_and_ingest`). If a `processed_documents` row
-  already exists for every pending segment and isn't marked ingested (an ingest-only failure —
-  analysis succeeded, only LightRAG failed), it re-ingests that saved narrative instead of
-  re-running analysis. Returns the updated `SessionStatus`. If the retry fails again (analysis or
+  (`narrative.build_day_narrative` + `narrative.sync_and_ingest`). The input is never just the
+  `pending_analysis` subset: the session's `processed` segments and every other session of the same
+  date are in it too. Only the session's own `pending_analysis` segments change status (to
+  `processed`); another session's `pending_analysis` segments stay pending until its own retry.
+  If a `processed_documents` row already exists for every transcript of the day and isn't marked
+  ingested (an ingest-only failure — analysis succeeded, only LightRAG failed), it re-ingests that
+  saved narrative instead of re-running analysis; a transcript with no saved document yet is new
+  content and means a fresh analysis. Returns the updated `SessionStatus`. If the retry fails again (analysis or
   ingest), the segments stay `pending_analysis` with the new `analysis_pending: …` error, that
   status is persisted, and it is returned with `200` — not a `5xx`. `404` if the session is
   unknown, `409` if none of its segments are actually `pending_analysis`. `409` with detail
@@ -842,6 +846,43 @@ There is no retry button: the Verlauf "Processing" pill reflects progress.
 All three paths share one in-process, per-session in-flight guard (single-process app), released
 when the run ends whether it succeeded or failed. Without it, overlapping runs would each save
 another `processed_documents` version per transcript and ingest `diary:{date}` into LightRAG twice.
+
+**The day narrative (ADR 0006).** Every writer of a date's diary document — the original ingest,
+`retry-analysis`, the startup sweep and the review UI's manual ingest (`POST
+/api/documents/{id}/ingest`) — works on the date, not on one session:
+
+- *Input.* The narrative covers every transcribed segment (a segment that has a transcript and did
+  not fail) of every session whose manifest `date` is the writer's date. Sessions are in start order
+  (the `session_id` is the start timestamp; an id that is not a timestamp sorts after the others, by
+  upload time), segments in manifest order; each segment keeps its own header, and each session
+  contributes its own todos, so two sessions that both call a segment `s01` do not mix them up. Text
+  and entities come from the stored transcripts, as in the retry above. A session whose
+  `manifest.json` is missing or unreadable cannot supply headers and todos: it is skipped, with one
+  warning line per run (`day narrative <date>: skipping session <id>, manifest unreadable: …`), and
+  the run goes on. A manifest that is missing for the triggering session itself still ends its retry
+  as `session_manifest_missing`.
+- *One writer per date.* The narrative stage — gathering the input, analysis, saving and publishing
+  — runs for one writer per date at a time, in arrival order, and gathers its input only after it
+  holds the date, so a late writer sees everything an earlier one stored and cannot publish a stale
+  view over it. Writers for other dates do not wait, and neither do uploads or the transcription of
+  other segments: only the narrative stage is serialised. The review UI's manual ingest takes the
+  same hold on the date of the document it sends.
+- *Status.* Unchanged and per session: a successful run marks the triggering session's segments
+  `processed`; other sessions' segments keep their status, and a failed run leaves the triggering
+  session's segments `pending_analysis` with the `analysis_pending: …` error.
+- *Publication.* The new narrative is saved (one `processed_documents` row per transcript it
+  covers) before it is sent to LightRAG. If the LightRAG ingest fails, the saved narrative stays
+  unpublished and the segments stay `pending_analysis`; the next retry or sweep re-ingests the saved
+  narrative without running the analysis again (the "ingest-only failure" shortcut above, keyed by
+  the date: it applies when every transcript of the day has a saved document, they are the same
+  narrative and not all are marked ingested).
+- *Re-posting `diary:{date}`.* Publication re-inserts the document under the same id `diary:{date}`
+  and relies on LightRAG replacing the existing document; it does not delete first. This is the
+  operator's decision (2026-10-24). **Live check pending (operator-run):** post `diary:{date}` twice
+  for a date that already has a document against the live LightRAG and record here whether the
+  second insert replaces the first, is ignored, or duplicates it. If it is not a replace, publication
+  changes to delete-then-insert, leaving the saved narrative unpublished and retryable if the step in
+  between fails.
 
 **Resuming a session that never reached transcription.** A `pending_analysis` segment with no
 `transcript_id` (the process died, or the session was cut off, before its transcript was persisted)
@@ -1161,7 +1202,9 @@ it is still uploaded or deleted like any other.
 
 ```
 server/data/
-├── sessions/               # iOS session bundles (raw m4a, manifest, segments)
+├── sessions/               # iOS session bundles (raw m4a, manifest, segments); the
+│                           #   manifests of every session of a date are read back to
+│                           #   build that day's narrative (§10.6.1)
 ├── msal_cache.bin          # MSAL refresh-token cache (bootstrap once)
 └── voxtral-models/         # HuggingFace cache for Voxtral-4B-TTS-2603
                             #   (~8 GB; mounted as docker volume `voxtral_models`)

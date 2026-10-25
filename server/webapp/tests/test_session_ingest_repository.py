@@ -180,6 +180,22 @@ def test_clear_forgets_every_session(run):
     assert run(scenario) == (None, None)
 
 
+def test_list_sessions_returns_every_persisted_session_with_its_current_segments(run):
+    """The day narrative reads every session of a date (FTR-01); a session that
+    moved on after `create` is listed as it is now, cached or not."""
+
+    async def scenario(repo):
+        assert await repo.list_sessions() == []
+        await repo.create(_status("sess-1", "processing", PENDING))
+        await repo.create(_status("sess-2", "done", PROCESSED))
+        await repo.update("sess-1", "done", [SegmentResult(**PROCESSED)])
+        repo.restart()
+        listed = await repo.list_sessions()
+        return sorted((s.session_id, s.state, s.segments[0].status) for s in listed)
+
+    assert run(scenario) == [("sess-1", "done", "processed"), ("sess-2", "done", "processed")]
+
+
 # --- contract: startup sweep ----------------------------------------------
 
 
@@ -282,6 +298,23 @@ def test_postgres_sweep_reads_segments_stored_as_json_text(monkeypatch):
     repo = _use_pool(monkeypatch, pool)
 
     assert asyncio.run(repo.list_sweep_candidates()) == ["sess-partial", "sess-list"]
+
+
+def test_postgres_lists_sessions_whose_segments_are_stored_as_json_text(monkeypatch):
+    received = "2026-07-01T10:00:00Z"
+    pool = _FakePool(
+        [
+            {"session_id": "sess-text", "received_at": received, "state": "partial", "segments": json.dumps([PENDING])},
+            {"session_id": "sess-list", "received_at": received, "state": "done", "segments": [PROCESSED]},
+        ]
+    )
+    repo = _use_pool(monkeypatch, pool)
+
+    listed = asyncio.run(repo.list_sessions())
+
+    assert [(s.session_id, s.segments[0].status) for s in listed] == [
+        ("sess-text", "pending_analysis"), ("sess-list", "processed"),
+    ]
 
 
 def test_postgres_legacy_correction_is_one_idempotent_update(monkeypatch):

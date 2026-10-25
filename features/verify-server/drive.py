@@ -5,6 +5,7 @@ verify stack's network and talks to the real webapp at $BASE_URL.
     python /drive.py health | calendar-today | sessions-dates
     python /drive.py session-upload-whisper-down <session_id>
     python /drive.py session-status <session_id> legacy|coded
+    python /drive.py document-ingest-refusals
     python /drive.py static-entity-create <name>
     python /drive.py static-entity-list <name>
     python /drive.py static-entity-delete <id>
@@ -183,6 +184,18 @@ def session_status(session_id, expect):
                   for s in segments))
 
 
+def document_ingest_refusals():
+    """The manual ingest's refusals, which never reach LightRAG: the bearer
+    gate, then the lookup of an unknown document."""
+    path = "/api/documents/999999/ingest"
+    status, body = call("POST", path, auth=False)
+    check("POST without bearer -> 401 missing_bearer_token",
+          status == 401 and body.get("detail") == "missing_bearer_token")
+    status, body = call("POST", path, auth=True)
+    check("unknown document -> 404 Document not found",
+          status == 404 and body == {"status": "error", "message": "Document not found"})
+
+
 def static_entity_create(name):
     payload = {"name": name, "entity_type": "Category", "description": "KA-8 verify-server probe"}
     status, body = call("POST", "/api/admin/static-entities", auth=False, body=payload)
@@ -210,6 +223,7 @@ COMMANDS = {
     "sessions-dates": (sessions_dates, 0),
     "session-upload-whisper-down": (session_upload_whisper_down, 1),
     "session-status": (session_status, 2),
+    "document-ingest-refusals": (document_ingest_refusals, 0),
     "static-entity-create": (static_entity_create, 1),
     "static-entity-list": (static_entity_list, 1),
     "static-entity-delete": (static_entity_delete, 1),

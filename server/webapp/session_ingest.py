@@ -9,7 +9,10 @@ is `SessionIngest`:
 * **retry** — `retry()` re-runs the narrative stage for the segments left
   `pending_analysis`, resuming the ones that never got a transcript;
 * **sweep** — `sweep()` retries every stranded session once after a restart;
-* **status** — `status()` reads a session's status.
+* **status** — `status()` reads a session's status;
+* **date coordination** — `narrative_date()` is the one-writer-at-a-time hold
+  on a date's diary document, taken by every narrative writer here and by the
+  review UI's manual ingest.
 
 `routers/sessions.py` only parses HTTP and maps this module's results and
 `SessionError`s to responses; `main.py`'s lifespan only calls `sweep()`. This
@@ -30,11 +33,15 @@ Pipeline for one segment:
                    with the HTMX review flow — #51)
                 →  entity_detector (4-pass with calendar_ref shortcut) +
                    dismissal filtering
-                →  narrative (LightRAG context + analysis + ingest), once per
-                   session
+                →  day narrative (LightRAG context + analysis + ingest), once
+                   per run, over every transcribed segment of every session
+                   of the date (ADR 0006)
 
 A failure on one segment does not fail the session; each segment's status is
-recorded individually.
+recorded individually. The narrative stage is the one step shared between
+sessions: it runs one writer at a time per date and gathers its input only
+once it holds the date, so a late writer never publishes a stale view. A run
+changes the status of its own session's segments only.
 
 State lives on a `SessionIngest`; the app uses the process-wide one from
 `get_session_ingest()` (Postgres-backed), tests build their own over an
@@ -50,6 +57,7 @@ import re
 import shutil
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
@@ -195,6 +203,15 @@ class _SegmentArtifact:
     entities: list[dict] = field(default_factory=list)
 
 
+@dataclass
+class _DaySession:
+    """One session's contribution to a day narrative: its manifest (for the
+    todos) and its transcribed segments in manifest order."""
+
+    manifest: Manifest
+    artifacts: list[_SegmentArtifact]
+
+
 # --- lifecycle ------------------------------------------------------------
 
 
@@ -224,6 +241,11 @@ class SessionIngest:
         # transcript and ingest `diary:{date}` into LightRAG twice. Guarded by
         # `_lock`; single-process app, so an in-process set is enough.
         self._in_flight: set[str] = set()
+        # One lock per date for the narrative stage (`narrative_date`). Only
+        # that stage takes it: transcription, uploads and other dates are not
+        # held up. A date's lock is created on first use and kept (one small
+        # object per recorded date).
+        self._date_locks: dict[str, asyncio.Lock] = {}
         # Upload gate (see `upload_gate` / `reset_all_data`).
         self._gate = asyncio.Condition()
         self._uploads_inside = 0
@@ -242,6 +264,18 @@ class SessionIngest:
     async def _end(self, session_id: str) -> None:
         async with self._lock:
             self._in_flight.discard(session_id)
+
+    @asynccontextmanager
+    async def narrative_date(self, date: str) -> AsyncIterator[None]:
+        """Hold `date` (an ISO date, the `diary:{date}` document's date) for a
+        narrative write: gather the input, analyse, save, publish. Writers for
+        one date run one at a time, in arrival order; writers for other dates
+        do not wait. Whoever holds it must gather its input after taking it,
+        from what is stored then. The review UI's manual ingest of a document
+        takes it too."""
+        lock = self._date_locks.setdefault(date, asyncio.Lock())
+        async with lock:
+            yield
 
     # -- status ------------------------------------------------------------
 
@@ -339,6 +373,80 @@ class SessionIngest:
                 "session %s: could not persist phase 1 progress: %s", parsed.session_id, exc,
             )
 
+    # -- day narrative -----------------------------------------------------
+
+    async def _narrate_day(
+        self,
+        manifest: Manifest,
+        results: list[SegmentResult],
+        known: dict[str, _SegmentArtifact],
+        *,
+        republish: bool,
+    ) -> None:
+        """The narrative stage every writer shares (ADR 0006): take the date,
+        gather the day's input, publish. Raises when analysis or the LightRAG
+        ingest fails; the caller then leaves its segments `pending_analysis`.
+
+        `results` are the triggering session's segment results as the caller
+        holds them (its latest, not necessarily persisted yet); `known` are
+        the artifacts it just built, so they are not read back. `republish`
+        lets a saved day narrative be re-ingested instead of re-analysed (a
+        retry or the sweep); the original ingest has fresh transcripts with no
+        saved document, so it never could.
+        """
+        async with self.narrative_date(manifest.date.isoformat()):
+            day = await self._gather_day(manifest, results, known)
+            artifacts = [art for session in day for art in session.artifacts]
+            if not (republish and await _publish_saved_day(artifacts)):
+                await _analyse_and_publish_day(manifest.date.isoformat(), day)
+
+    async def _gather_day(
+        self,
+        manifest: Manifest,
+        results: list[SegmentResult],
+        known: dict[str, _SegmentArtifact],
+    ) -> list[_DaySession]:
+        """Every session whose manifest date is `manifest`'s, in session start
+        order, each with its transcribed segments in manifest order. Called
+        only while the date is held. A session whose manifest is missing or
+        unreadable can't supply headers and todos: it is skipped with one log
+        line."""
+        trigger_id = manifest.session_id
+        candidates: list[tuple[tuple, Manifest, list[SegmentResult], dict | None]] = []
+        trigger_received = ""
+        others: list[SessionStatus] = []
+        for status in await self.repository.list_sessions():
+            if status.session_id == trigger_id:
+                trigger_received = status.received_at
+            else:
+                others.append(status)
+        candidates.append(
+            (_session_start_key(trigger_id, trigger_received), manifest, results, known)
+        )
+        for status in others:
+            try:
+                other = load_manifest(status.session_id)
+            except Exception as exc:  # noqa: BLE001 — one bad bundle must not fail the run
+                logger.warning(
+                    "day narrative %s: skipping session %s, manifest unreadable: %s",
+                    manifest.date, status.session_id, exc,
+                )
+                continue
+            if other.date != manifest.date:
+                continue
+            candidates.append(
+                (_session_start_key(status.session_id, status.received_at),
+                 other, status.segments, None)
+            )
+
+        candidates.sort(key=lambda candidate: candidate[0])
+        day: list[_DaySession] = []
+        for _, session_manifest, session_results, session_known in candidates:
+            artifacts = await _stored_artifacts(session_manifest, session_results, session_known)
+            if artifacts:
+                day.append(_DaySession(manifest=session_manifest, artifacts=artifacts))
+        return day
+
     # -- original ingest ---------------------------------------------------
 
     async def accept(self, parsed: Manifest, session_dir: Path) -> SessionStatus:
@@ -402,14 +510,12 @@ class SessionIngest:
         Phase 1: per-segment Whisper + correction + entity detection. Each
         segment's transcript and entities are persisted independently.
 
-        Phase 2: a single session-level pass — one LightRAG context query, one
-        Ollama analysis, one narrative, one LightRAG ingest under
-        `diary:{date}`. This replaces the previous per-segment ingest (which
-        accidentally collapsed to one document per day anyway, since every
-        segment shared the `diary:{date}` ID and the last writer won).
+        Phase 2: a single day-level pass (`_narrate_day`) — one LightRAG
+        context query, one Ollama analysis, one narrative, one LightRAG ingest
+        under `diary:{date}`, over every transcribed segment of every session
+        of the date. Only this session's segments become `processed`.
         """
         bind_session_id(parsed.session_id)
-        todos_by_segment = _todos_grouped_by_segment(parsed)
         results_by_id: dict[str, SegmentResult] = {}
         artifacts: list[_SegmentArtifact] = []
 
@@ -439,13 +545,15 @@ class SessionIngest:
                 )
             await self._persist_phase_1_progress(parsed, results_by_id)
 
-        # Phase 2 — session-level analysis + LightRAG ingest (only if anything transcribed)
+        # Phase 2 — day-level analysis + LightRAG ingest (only if anything
+        # transcribed). The input is the whole day, this session included.
         if artifacts:
             try:
-                await _run_session_document_processor(
-                    manifest=parsed,
-                    artifacts=artifacts,
-                    todos_by_segment=todos_by_segment,
+                await self._narrate_day(
+                    parsed,
+                    list(results_by_id.values()),
+                    {art.segment.segment_id: art for art in artifacts},
+                    republish=False,
                 )
                 for art in artifacts:
                     results_by_id[art.segment.segment_id] = SegmentResult(
@@ -481,11 +589,13 @@ class SessionIngest:
     async def retry(self, session_id: str) -> SessionStatus:
         """Retry a session stuck in `pending_analysis` (issue #52).
 
-        Rebuilds the session-level narrative input from what's persisted (the
-        manifest on disk plus each segment's transcript row) and re-runs the
+        Rebuilds the day narrative input from what's persisted (every
+        session's manifest on disk plus each transcribed segment's transcript
+        row, not just this session's `pending_analysis` ones) and re-runs the
         shared narrative stage. Segments that never got a transcript are
         resumed from the stored audio (`_resume_untranscribed_segments`,
-        BUG-112) and join that input. A narrative failure doesn't raise: it
+        BUG-112) and join that input. Only this session's `pending_analysis`
+        segments change status. A narrative failure doesn't raise: it
         comes back as segments still `pending_analysis` with an
         `analysis_pending: …` error.
 
@@ -514,61 +624,38 @@ class SessionIngest:
     async def _retry_session_analysis(
         self, session_id: str, status_obj: SessionStatus
     ) -> SessionStatus:
-        """Rebuild the session-level narrative input from what's persisted and
-        re-run the narrative stage for every `pending_analysis` segment.
+        """Rebuild the day narrative input from what's persisted and re-run
+        the narrative stage, completing this session's `pending_analysis`
+        segments.
 
         The manifest (segment order, headers, todos) comes back from the
         on-disk `manifest.json` written at ingest. Each segment's transcript
         (corrected text where present, entities) comes back from its
-        `transcripts` row. If analysis already completed and saved a document
-        for every pending segment but the LightRAG ingest failed, we re-ingest
-        that saved narrative instead of re-running analysis
-        (`_retry_via_saved_document`).
+        `transcripts` row. The narrative covers the whole day, so the
+        session's `processed` segments and the other sessions of its date are
+        in the input too (`_narrate_day`); only the `pending_analysis`
+        segments of `session_id` change status. If analysis already completed
+        and saved a document for every transcript of the day but the LightRAG
+        ingest failed, we re-ingest that saved narrative instead of
+        re-running analysis (`_publish_saved_day`).
         """
         parsed = load_manifest(session_id)
-        segments_by_id = {seg.segment_id: seg for seg in parsed.segments}
 
-        artifacts: list[_SegmentArtifact] = []
-        for seg_result in status_obj.segments:
-            if seg_result.status != "pending_analysis" or seg_result.transcript_id is None:
-                continue
-            segment = segments_by_id.get(seg_result.segment_id)
-            if segment is None:
-                continue
-            transcript = await db.get_transcript(seg_result.transcript_id)
-            if transcript is None:
-                continue
-            artifacts.append(
-                _SegmentArtifact(
-                    segment=segment,
-                    transcript_id=seg_result.transcript_id,
-                    raw_text=transcript.get("raw_text") or "",
-                    corrected_text=(
-                        transcript.get("corrected_text") or transcript.get("raw_text") or ""
-                    ),
-                    # Pre-BUG-55 rows have the pipeline's entities in `entities_json`.
-                    entities=_parse_entities_json(
-                        transcript.get("detected_entities_json")
-                        or transcript.get("entities_json")
-                    ),
-                )
-            )
+        pending = await _stored_artifacts(
+            parsed, [r for r in status_obj.segments if r.status == "pending_analysis"]
+        )
 
         # Decide retryability before any side effect: with no transcript row to
         # narrate and nothing untranscribed to resume, there is no work.
-        if not artifacts and not any(_is_untranscribed(r) for r in status_obj.segments):
+        if not pending and not any(_is_untranscribed(r) for r in status_obj.segments):
             raise SessionNotRetryable()
 
         segment_results, resumed = await self._resume_untranscribed_segments(
             session_id, parsed, status_obj
         )
-        artifacts.extend(resumed)
-        # Narrative order is manifest order, whether a segment was resumed or
-        # rebuilt from its transcript row.
-        order = {seg.segment_id: i for i, seg in enumerate(parsed.segments)}
-        artifacts.sort(key=lambda art: order[art.segment.segment_id])
+        retried = pending + resumed
 
-        if not artifacts:
+        if not retried:
             # Every segment that was resumed failed: nothing to narrate, but
             # the outcome is settled, not an error.
             await self._persist_status(
@@ -576,13 +663,14 @@ class SessionIngest:
             )
             return await self._current_status(session_id)
 
-        retried_ids = {art.segment.segment_id for art in artifacts}
+        retried_ids = {art.segment.segment_id for art in retried}
         try:
-            if not await _retry_via_saved_document(artifacts):
-                todos_by_segment = _todos_grouped_by_segment(parsed)
-                await _run_session_document_processor(
-                    manifest=parsed, artifacts=artifacts, todos_by_segment=todos_by_segment,
-                )
+            await self._narrate_day(
+                parsed,
+                segment_results,
+                {art.segment.segment_id: art for art in retried},
+                republish=True,
+            )
         except Exception as exc:  # noqa: BLE001
             # Same handling as `_process_session`: the transcripts are safe in
             # Postgres, so keep the segments `pending_analysis` (retryable
@@ -753,17 +841,72 @@ def _is_untranscribed(result: SegmentResult) -> bool:
     return result.status == "pending_analysis" and result.transcript_id is None
 
 
-# --- saved-document retry -------------------------------------------------
+# --- day assembly ---------------------------------------------------------
 
 
-async def _retry_via_saved_document(artifacts: list[_SegmentArtifact]) -> bool:
-    """Ingest-only retry shortcut.
+def _session_start_key(session_id: str, received_at: str) -> tuple:
+    """Sort key for session start order. A `session_id` is the session start
+    timestamp (SPEC §10.6); one that isn't (older or hand-made ids) sorts after
+    the others, by upload time then id."""
+    try:
+        started = datetime.fromisoformat(session_id)
+    except ValueError:
+        return (1, received_at, session_id)
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    return (0, started.astimezone(timezone.utc), session_id)
+
+
+async def _stored_artifacts(
+    manifest: Manifest,
+    results: list[SegmentResult],
+    known: dict[str, _SegmentArtifact] | None = None,
+) -> list[_SegmentArtifact]:
+    """The transcribed segments among `results`, in manifest order: every
+    segment that has a transcript and did not fail, read from its
+    `transcripts` row unless `known` already holds its artifact. A segment
+    whose row is gone, or that the manifest no longer lists, is left out."""
+    by_id = {r.segment_id: r for r in results}
+    artifacts: list[_SegmentArtifact] = []
+    for segment in manifest.segments:
+        result = by_id.get(segment.segment_id)
+        if result is None or result.status == "failed" or result.transcript_id is None:
+            continue
+        artifact = (known or {}).get(segment.segment_id)
+        if artifact is None:
+            transcript = await db.get_transcript(result.transcript_id)
+            if transcript is None:
+                continue
+            artifact = _SegmentArtifact(
+                segment=segment,
+                transcript_id=result.transcript_id,
+                raw_text=transcript.get("raw_text") or "",
+                corrected_text=(
+                    transcript.get("corrected_text") or transcript.get("raw_text") or ""
+                ),
+                # Pre-BUG-55 rows have the pipeline's entities in `entities_json`.
+                entities=_parse_entities_json(
+                    transcript.get("detected_entities_json") or transcript.get("entities_json")
+                ),
+            )
+        artifacts.append(artifact)
+    return artifacts
+
+
+# --- saved-document republish ---------------------------------------------
+
+
+async def _publish_saved_day(artifacts: list[_SegmentArtifact]) -> bool:
+    """Ingest-only shortcut, keyed by the date: `artifacts` are the whole
+    day's transcribed segments.
 
     If analysis already completed and saved a `processed_documents` row for
-    every artifact, the latest rows are all the same whole-session narrative
-    (`_run_session_document_processor` saves one combined document against
-    every segment), and the LightRAG ingest itself failed (rows unmarked),
-    re-ingest that saved narrative rather than re-running analysis.
+    every artifact, the latest rows are all the same day narrative
+    (`_analyse_and_publish_day` saves one combined document against every
+    transcript of the day), and the LightRAG ingest itself failed (rows
+    unmarked), re-ingest that saved narrative rather than re-running analysis.
+    A transcript with no saved document yet is new content the saved narrative
+    doesn't cover, so that falls through to a fresh analysis.
 
     Returns `False` (no-op, caller re-analyzes) if any artifact has no saved
     document yet, every document is already marked ingested, or the latest
@@ -822,7 +965,7 @@ async def _process_segment(
 
     Returns an artifact with the persisted transcript ID and detected
     entities. Document analysis + LightRAG ingest happen once per session
-    in `_run_session_document_processor`.
+    in `_analyse_and_publish_day`.
     """
     audio_path = session_dir / segment.audio_file
     if not audio_path.exists():
@@ -945,6 +1088,21 @@ def _todos_grouped_by_segment(manifest: Manifest) -> dict[str, list[Todo]]:
     return grouped
 
 
+def _session_todos(session: _DaySession) -> list[Todo]:
+    """One session's todos for the day narrative: those of its transcribed
+    segments, plus its implicit-confirmed todos that have no source segment
+    (the day's narrative captures them too)."""
+    todos: list[Todo] = []
+    seen_ids = {art.segment.segment_id for art in session.artifacts}
+    for segment_id, segment_todos in _todos_grouped_by_segment(session.manifest).items():
+        if segment_id in seen_ids:
+            todos.extend(segment_todos)
+    for todo in session.manifest.todos_implicit_confirmed:
+        if not todo.source_segment_id:
+            todos.append(todo)
+    return todos
+
+
 def _format_todo_block(todos: list[Todo]) -> str:
     """Render todos as a German prose block appended to the narrative."""
     if not todos:
@@ -956,32 +1114,29 @@ def _format_todo_block(todos: list[Todo]) -> str:
     return "\n".join(lines)
 
 
-async def _run_session_document_processor(
-    *,
-    manifest: Manifest,
-    artifacts: list[_SegmentArtifact],
-    todos_by_segment: dict[str, list[Todo]],
-) -> None:
-    """Run the shared narrative stage once per session, then the
-    session-specific parts around it.
+async def _analyse_and_publish_day(date_str: str, day: list[_DaySession]) -> None:
+    """Run the shared narrative stage once for the whole day, then the
+    day-specific parts around it. Called while the date is held.
 
-    Concatenates all transcribed segments (with per-segment headers so the
-    analysis LLM can still reason about meeting boundaries), unions the
-    detected entities, and delegates context → summary → analysis →
-    narrative markdown → metadata to `narrative.build_day_narrative` (the
-    same stage `main.py`'s SSE review flow uses — SRV-A1/#50). The todo
-    block and the multi-transcript save stay session-specific, since the
-    SSE path has neither.
+    Concatenates every transcribed segment of the day (session start order,
+    then manifest order, with per-segment headers so the analysis LLM can
+    still reason about meeting boundaries), unions the detected entities, and
+    delegates context → summary → analysis → narrative markdown → metadata to
+    `narrative.build_day_narrative` (the same stage `main.py`'s SSE review
+    flow uses — SRV-A1/#50). The todo block and the multi-transcript save stay
+    day-specific, since the SSE path has neither.
 
-    The combined narrative is saved as a `processed_documents` row against
-    every segment's transcript_id so any segment-level read path keeps
-    working. Each of those rows is marked `lightrag_ingested` once the
-    LightRAG ingest succeeds — mirroring `main.py`'s manual
-    `/api/documents/{id}/ingest` route — so `/process/{id}` doesn't show an
-    already-ingested day as pending and the re-ingest button doesn't re-post
-    it.
+    The day narrative is saved as a `processed_documents` row against every
+    transcript it covers before it is published, so a failed LightRAG ingest
+    leaves it saved and unpublished (`_publish_saved_day` re-ingests it
+    later) and any transcript-id-keyed read path keeps working. Each of those
+    rows is marked `lightrag_ingested` once the LightRAG ingest succeeds —
+    mirroring `main.py`'s manual `/api/documents/{id}/ingest` route — so
+    `/process/{id}` doesn't show an already-ingested day as pending and the
+    re-ingest button doesn't re-post it. The ingest re-posts the fixed id
+    `diary:{date}`, which LightRAG replaces (SPEC §10.6.1).
     """
-    date_str = manifest.date.isoformat()
+    artifacts = [art for session in day for art in session.artifacts]
     combined_text = _build_combined_transcript(artifacts)
     merged_entities = _merge_entities([art.entities for art in artifacts])
 
@@ -996,7 +1151,7 @@ async def _run_session_document_processor(
     result = await narrative.build_day_narrative(combined_text, merged_entities, date_str)
 
     markdown = result.markdown
-    todo_block = _format_session_todo_block(manifest, artifacts, todos_by_segment)
+    todo_block = _format_todo_block([todo for session in day for todo in _session_todos(session)])
     if todo_block:
         markdown = f"{markdown.rstrip()}\n{todo_block}\n"
 
@@ -1103,22 +1258,3 @@ def _merge_entities(per_segment: list[list[dict]]) -> list[dict]:
             seen.add(key)
             merged.append(ent)
     return merged
-
-
-def _format_session_todo_block(
-    manifest: Manifest,
-    artifacts: list[_SegmentArtifact],
-    todos_by_segment: dict[str, list[Todo]],
-) -> str:
-    """Aggregate every segment's todos plus any unattached implicit todos."""
-    todos: list[Todo] = []
-    seen_ids = {art.segment.segment_id for art in artifacts}
-    for segment_id, segment_todos in todos_by_segment.items():
-        if segment_id in seen_ids:
-            todos.extend(segment_todos)
-    # Implicit-confirmed todos without a source segment are not in
-    # `todos_by_segment`; include them so the day's narrative captures them.
-    for todo in manifest.todos_implicit_confirmed:
-        if not todo.source_segment_id:
-            todos.append(todo)
-    return _format_todo_block(todos)

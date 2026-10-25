@@ -345,12 +345,19 @@ async def ingest_document(doc_id: int):
         return JSONResponse({"status": "error", "message": "Document not found"}, 404)
 
     metadata = doc["metadata"] or {}
-    try:
-        await narrative.sync_and_ingest(doc["document_markdown"], metadata)
-    except Exception as e:
-        return JSONResponse({"status": "error", "message": str(e)}, 500)
+    if isinstance(metadata, str):  # asyncpg hands jsonb back as text
+        metadata = json.loads(metadata)
+    # Same date coordination as the session narrative writers (ADR 0006).
+    async with session_ingest.get_session_ingest().narrative_date(
+        str(metadata.get("date", "unknown"))
+    ):
+        try:
+            await narrative.sync_and_ingest(doc["document_markdown"], metadata)
+        except Exception as e:
+            return JSONResponse({"status": "error", "message": str(e)}, 500)
 
-    result = await db.mark_document_ingested(doc_id)
+        result = await db.mark_document_ingested(doc_id)
+
     return {
         "status": "ok",
         "ingested_at": result["lightrag_ingested_at"].isoformat() if result else None,

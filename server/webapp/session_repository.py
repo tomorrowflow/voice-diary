@@ -82,6 +82,10 @@ class SessionIngestRepository(ABC):
         ...
 
     @abstractmethod
+    async def _list_all(self) -> list[dict]:
+        ...
+
+    @abstractmethod
     async def _list_sweep_candidates(self) -> list[str]:
         ...
 
@@ -154,6 +158,11 @@ class SessionIngestRepository(ABC):
     def restart(self) -> None:
         """Drop the cache, as a process restart does; the rows stay."""
         self._cache.clear()
+
+    async def list_sessions(self) -> list[SessionStatus]:
+        """Every persisted session, read from the rows (the cache is
+        write-through, so the rows are as current). Order is unspecified."""
+        return [SessionStatus.model_validate(row) for row in await self._list_all()]
 
     # -- startup sweep ------------------------------------------------------
 
@@ -236,6 +245,19 @@ class PostgresSessionIngests(SessionIngestRepository):
         pool = await db.get_pool()
         await pool.execute("DELETE FROM session_ingests")
 
+    async def _list_all(self) -> list[dict]:
+        pool = await db.get_pool()
+        rows = await pool.fetch(
+            "SELECT session_id, received_at, state, segments FROM session_ingests"
+        )
+        result = []
+        for row in rows:
+            item = dict(row)
+            if isinstance(item["segments"], str):
+                item["segments"] = json.loads(item["segments"])
+            result.append(item)
+        return result
+
     async def _list_sweep_candidates(self) -> list[str]:
         # The filter runs in Python — this table is small (one row per session).
         pool = await db.get_pool()
@@ -297,6 +319,9 @@ class InMemorySessionIngests(SessionIngestRepository):
 
     async def _delete_all(self) -> None:
         self.rows.clear()
+
+    async def _list_all(self) -> list[dict]:
+        return list(self.rows.values())
 
     async def _list_sweep_candidates(self) -> list[str]:
         return [
