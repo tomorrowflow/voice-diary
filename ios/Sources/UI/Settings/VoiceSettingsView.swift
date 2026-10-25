@@ -168,56 +168,42 @@ public struct VoiceSettingsView: View {
         }
     }
 
-    private var voxtralUpstreamValue: String? {
-        switch reachability.status {
-        case .ok(let upstream), .degraded(let upstream):
-            return upstream["voxtral"]
-        default:
-            return nil
-        }
+    private var voxtralAvailability: ServerVoiceAvailability {
+        ServerVoiceAvailability(status: reachability.status)
     }
 
     private var voxtralReachabilityIcon: String {
-        switch voxtralUpstreamValue {
-        case "ok":      return "checkmark.circle.fill"
-        case "down":    return "exclamationmark.triangle.fill"
-        case "skipped": return "minus.circle"
-        default:        return "questionmark.circle"
-        }
+        voxtralAvailability.iconName
     }
 
     private var voxtralReachabilityColor: Color {
-        switch voxtralUpstreamValue {
-        case "ok":      return Theme.color.status.success
-        case "down":    return Theme.color.status.destructive
-        case "skipped": return Theme.color.text.subdued
-        default:        return Theme.color.text.subdued
+        switch voxtralAvailability.tone {
+        case .success:     return Theme.color.status.success
+        case .destructive: return Theme.color.status.destructive
+        case .subdued:     return Theme.color.text.subdued
         }
     }
 
     private var voxtralReachabilityLabel: String {
-        switch voxtralUpstreamValue {
-        case "ok":      return String(localized: "Connected")
-        case "down":    return String(localized: "Unreachable")
-        case "skipped": return String(localized: "Not configured")
-        default:
-            switch reachability.status {
-            case .authInvalid: return String(localized: "Bearer invalid")
-            case .down:        return String(localized: "Server unreachable")
-            default:           return String(localized: "Status unknown")
-            }
+        switch voxtralAvailability {
+        case .connected:         return String(localized: "Connected")
+        case .unreachable:       return String(localized: "Unreachable")
+        case .notConfigured:     return String(localized: "Not configured")
+        case .bearerInvalid:     return String(localized: "Bearer invalid")
+        case .serverUnreachable: return String(localized: "Server unreachable")
+        case .unknown:           return String(localized: "Status unknown")
         }
     }
 
     private var voxtralReachabilityDetail: String {
-        switch voxtralUpstreamValue {
-        case "ok":
+        switch voxtralAvailability {
+        case .connected:
             return String(localized: "Server voices are available. If the connection drops, playback falls back to your Piper or Apple voice automatically.")
-        case "down":
+        case .unreachable:
             return String(localized: "The server’s voice service is not responding. Server voices fall back to your Piper or Apple voice; the walkthrough keeps running.")
-        case "skipped":
+        case .notConfigured:
             return String(localized: "No server voices are configured on the server.")
-        default:
+        case .unknown, .bearerInvalid, .serverUnreachable:
             return String(localized: "The connection is checked when you open Settings. Tap ↻ to re-check.")
         }
     }
