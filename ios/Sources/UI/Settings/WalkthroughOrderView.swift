@@ -53,11 +53,10 @@ public struct WalkthroughOrderView: View {
 }
 
 private struct OrderRow: View {
-    let entry: WalkthroughSection
-    let generals: [GeneralSection]
+    private let content: WalkthroughOrderRowContent
 
-    private var content: WalkthroughOrderRowContent {
-        WalkthroughOrderRowContent(entry: entry, generals: generals)
+    init(entry: WalkthroughSection, generals: [GeneralSection]) {
+        content = WalkthroughOrderRowContent(entry: entry, generals: generals)
     }
 
     var body: some View {
@@ -91,8 +90,8 @@ private struct OrderRow: View {
 
     private var title: String {
         switch content.kind {
-        case .general(let title):
-            return title
+        case .general(let generalTitle):
+            return generalTitle
         case .missingGeneral:
             return String(localized: "(unknown)")
         case .calendarEvents:
