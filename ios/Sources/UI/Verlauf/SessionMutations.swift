@@ -1,24 +1,15 @@
 import Foundation
 
-/// What `SessionMutations` needs from the Verlauf audio player: which file
-/// is loaded, and a way to stop it before that file goes away.
-@MainActor
-protocol PlaybackStopping: AnyObject {
-    var activeURL: URL? { get }
-    func stop()
-}
-
-extension SegmentPlayer: PlaybackStopping {}
-
 /// The destructive edits the Verlauf screens make to a recorded session:
 /// removing a whole entry, one walkthrough segment, one chunk of a
 /// multi-chunk note, or a note surfaced into a walkthrough, plus the
 /// metadata rewrite that keeps a note's surviving chunks playable.
 ///
-/// Views keep the confirmation, the displayed errors and their own row
-/// state; they call in here after the user confirmed. File removal, the
-/// metadata write and the upload-queue orphan purge are injected so a test
-/// can run every path against a temporary directory and record the order.
+/// Views keep the confirmation, player stop, dismiss, the displayed errors
+/// and their own row state; they call in here after the user confirmed.
+/// File removal, the metadata write and the upload-queue orphan purge are
+/// injected so a test can run every path against a temporary directory and
+/// record the order.
 @MainActor
 struct SessionMutations {
     /// What the caller has to do after a mutation.
@@ -59,37 +50,51 @@ struct SessionMutations {
     /// just the swiped chunk's m4a goes and metadata.json is rewritten so
     /// the remaining chunks stay playable. A removed source also drops
     /// any pending upload.
+    ///
+    /// Stopping playback stays with the view, which calls this after it
+    /// has stopped the player (see `removesWholeEntry`).
     func deleteSegment(
         _ segment: SegmentDescriptor,
-        in item: SessionHistoryStore.Item,
-        player: some PlaybackStopping
+        in item: SessionHistoryStore.Item
     ) -> Outcome {
         switch item {
         case .voiceNote(let entry):
-            if (entry.note.chunks?.count ?? 0) > 1, let url = segment.audioURL {
-                if player.activeURL == url { player.stop() }
+            if let url = Self.multiChunkURL(of: segment, in: entry) {
                 try? removeItem(url)
                 let outcome = rewriteVoiceNoteMetadata(removing: url.lastPathComponent, in: entry)
                 schedulePurge()
                 return outcome
             }
-            player.stop()
             try? SessionHistoryStore.delete(item, removing: removeItem)
             schedulePurge()
             return .entryRemoved
         case .walkthrough:
-            if player.activeURL == segment.audioURL { player.stop() }
             if let url = segment.audioURL { try? removeItem(url) }
             schedulePurge()
             return .rowRemoved
         }
     }
 
+    /// Whether deleting this row takes the whole note with it (a
+    /// single-chunk note's only row), so the view stops whatever is playing
+    /// rather than only a player on the row's own file.
+    func removesWholeEntry(_ segment: SegmentDescriptor, in item: SessionHistoryStore.Item) -> Bool {
+        guard case .voiceNote(let entry) = item else { return false }
+        return Self.multiChunkURL(of: segment, in: entry) == nil
+    }
+
+    /// The row's file when it is one chunk of a multi-chunk note.
+    private static func multiChunkURL(
+        of segment: SegmentDescriptor,
+        in entry: SessionHistoryStore.VoiceNoteEntry
+    ) -> URL? {
+        (entry.note.chunks?.count ?? 0) > 1 ? segment.audioURL : nil
+    }
+
     /// Delete one surfaced note. A surfaced note is a standalone drive-by
     /// recording living under `driveby_seeds/`, so this removes its whole
     /// directory — it disappears from the Verlauf list too.
-    func deleteSurfacedNote(_ note: SurfacedNoteEntry, player: some PlaybackStopping) {
-        if player.activeURL == note.audioURL { player.stop() }
+    func deleteSurfacedNote(_ note: SurfacedNoteEntry) {
         try? removeItem(note.audioURL.deletingLastPathComponent())
         schedulePurge()
     }

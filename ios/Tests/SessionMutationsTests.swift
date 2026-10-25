@@ -17,16 +17,6 @@ struct SessionMutationsTests {
         var purges: Int { events.filter { $0 == "purge" }.count }
     }
 
-    private final class FakePlayer: PlaybackStopping {
-        var activeURL: URL?
-        var stops = 0
-        init(activeURL: URL? = nil) { self.activeURL = activeURL }
-        func stop() {
-            stops += 1
-            activeURL = nil
-        }
-    }
-
     private func scratchDir() throws -> URL {
         let dir = FileManager.default.temporaryDirectory
             .appending(path: "ios-a15-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -171,11 +161,10 @@ struct SessionMutationsTests {
             chunk("audio_003.m4a", 4, "de", "drei"),
         ], in: root)
         let log = Log()
-        let player = FakePlayer()
         let target = entry.directory.appending(path: "audio_002.m4a")
 
         let outcome = mutations(log: log).deleteSegment(
-            descriptor("audio_002.m4a", audio: target), in: .voiceNote(entry), player: player)
+            descriptor("audio_002.m4a", audio: target), in: .voiceNote(entry))
 
         #expect(outcome == .rowRemoved)
         #expect(!exists(target))
@@ -202,7 +191,7 @@ struct SessionMutationsTests {
         let target = entry.directory.appending(path: "audio.m4a")
 
         _ = mutations(log: log).deleteSegment(
-            descriptor("audio.m4a", audio: target), in: .voiceNote(entry), player: FakePlayer())
+            descriptor("audio.m4a", audio: target), in: .voiceNote(entry))
 
         let saved = try decodeMetadata(in: entry.directory)
         #expect(saved.chunks?.map(\.filename) == ["audio_002.m4a", "audio_003.m4a"])
@@ -224,7 +213,7 @@ struct SessionMutationsTests {
         let target = entry.directory.appending(path: "audio.m4a")
 
         let outcome = mutations(log: log).deleteSegment(
-            descriptor("audio.m4a", audio: target), in: .voiceNote(entry), player: FakePlayer())
+            descriptor("audio.m4a", audio: target), in: .voiceNote(entry))
 
         #expect(outcome == .rowRemoved)
         let saved = try decodeMetadata(in: entry.directory)
@@ -236,38 +225,26 @@ struct SessionMutationsTests {
         #expect(exists(entry.directory.appending(path: "audio_002.m4a")))
     }
 
-    @Test("removing a chunk stops a player that has it loaded")
-    func multiChunkStopsPlayerOnRemovedChunk() throws {
+    // The view stops playback itself and asks this to decide how widely.
+    @Test("only a single-chunk note's row, or a chunk without audio, takes the whole entry with it")
+    func removesWholeEntryDecision() throws {
         let root = try scratchDir()
         defer { try? FileManager.default.removeItem(at: root) }
-        let entry = try makeNote(chunks: [
+        let multi = try makeNote(chunks: [
             chunk("audio.m4a", 2, "de", "eins"),
             chunk("audio_002.m4a", 3, "de", "zwei"),
-        ], in: root)
-        let target = entry.directory.appending(path: "audio_002.m4a")
-        let player = FakePlayer(activeURL: target)
+        ], in: root.appending(path: "multi", directoryHint: .isDirectory))
+        let single = try makeNote(chunks: nil, in: root.appending(path: "single", directoryHint: .isDirectory))
+        let (walkthrough, urls) = try makeWalkthrough(in: root)
+        let sut = mutations(log: Log())
 
-        _ = mutations(log: Log()).deleteSegment(
-            descriptor("audio_002.m4a", audio: target), in: .voiceNote(entry), player: player)
-
-        #expect(player.stops == 1)
-    }
-
-    @Test("removing a chunk leaves a player on another chunk alone")
-    func multiChunkLeavesOtherPlayback() throws {
-        let root = try scratchDir()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let entry = try makeNote(chunks: [
-            chunk("audio.m4a", 2, "de", "eins"),
-            chunk("audio_002.m4a", 3, "de", "zwei"),
-        ], in: root)
-        let player = FakePlayer(activeURL: entry.directory.appending(path: "audio.m4a"))
-
-        _ = mutations(log: Log()).deleteSegment(
-            descriptor("audio_002.m4a", audio: entry.directory.appending(path: "audio_002.m4a")),
-            in: .voiceNote(entry), player: player)
-
-        #expect(player.stops == 0)
+        let chunkRow = descriptor("audio_002.m4a", audio: multi.directory.appending(path: "audio_002.m4a"))
+        #expect(!sut.removesWholeEntry(chunkRow, in: .voiceNote(multi)))
+        #expect(sut.removesWholeEntry(descriptor("audio_002.m4a", audio: nil), in: .voiceNote(multi)))
+        #expect(sut.removesWholeEntry(
+            descriptor("audio.m4a", audio: single.directory.appending(path: "audio.m4a")),
+            in: .voiceNote(single)))
+        #expect(!sut.removesWholeEntry(descriptor("s01.m4a", audio: urls[0]), in: .walkthrough(walkthrough)))
     }
 
     // Two chunks sharing a file name is the only way a multi-chunk note can
@@ -285,7 +262,7 @@ struct SessionMutationsTests {
 
         let outcome = mutations(log: log).deleteSegment(
             descriptor("audio.m4a", audio: entry.directory.appending(path: "audio.m4a")),
-            in: .voiceNote(entry), player: FakePlayer())
+            in: .voiceNote(entry))
 
         #expect(outcome == .entryRemoved)
         #expect(!exists(entry.directory))
@@ -301,7 +278,7 @@ struct SessionMutationsTests {
 
         let outcome = mutations(log: log, removeFails: true).deleteSegment(
             descriptor("audio.m4a", audio: entry.directory.appending(path: "audio.m4a")),
-            in: .voiceNote(entry), player: FakePlayer())
+            in: .voiceNote(entry))
 
         #expect(outcome == .entryRemoved)
         #expect(exists(entry.directory))
@@ -320,7 +297,7 @@ struct SessionMutationsTests {
 
         let removeLog = Log()
         let removeOutcome = mutations(log: removeLog, removeFails: true).deleteSegment(
-            descriptor("audio_002.m4a", audio: target), in: .voiceNote(entry), player: FakePlayer())
+            descriptor("audio_002.m4a", audio: target), in: .voiceNote(entry))
         #expect(removeOutcome == .rowRemoved)
         #expect(exists(target))
         #expect(removeLog.events == ["remove:audio_002.m4a", "write:metadata.json", "purge"])
@@ -328,7 +305,7 @@ struct SessionMutationsTests {
         let before = try Data(contentsOf: entry.directory.appending(path: "metadata.json"))
         let writeLog = Log()
         let writeOutcome = mutations(log: writeLog, writeFails: true).deleteSegment(
-            descriptor("audio_002.m4a", audio: target), in: .voiceNote(entry), player: FakePlayer())
+            descriptor("audio_002.m4a", audio: target), in: .voiceNote(entry))
         #expect(writeOutcome == .rowRemoved)
         #expect(try Data(contentsOf: entry.directory.appending(path: "metadata.json")) == before)
         #expect(writeLog.events == ["remove:audio_002.m4a", "write:metadata.json", "purge"])
@@ -336,21 +313,19 @@ struct SessionMutationsTests {
 
     // MARK: - Single-chunk note
 
-    @Test("the only row of a single-chunk note deletes the note, stops playback and asks to dismiss")
+    @Test("the only row of a single-chunk note deletes the note and asks to dismiss")
     func singleChunkNoteIsWholeEntry() throws {
         let root = try scratchDir()
         defer { try? FileManager.default.removeItem(at: root) }
         let entry = try makeNote(chunks: nil, in: root)
         let log = Log()
-        let player = FakePlayer()
 
         let outcome = mutations(log: log).deleteSegment(
             descriptor("audio.m4a", audio: entry.directory.appending(path: "audio.m4a")),
-            in: .voiceNote(entry), player: player)
+            in: .voiceNote(entry))
 
         #expect(outcome == .entryRemoved)
         #expect(!exists(entry.directory))
-        #expect(player.stops == 1)
         #expect(log.events == ["remove:2026-05-20T08-00-00", "purge"])
     }
 
@@ -362,15 +337,13 @@ struct SessionMutationsTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let (entry, urls) = try makeWalkthrough(in: root)
         let log = Log()
-        let player = FakePlayer(activeURL: urls[1])
 
         let outcome = mutations(log: log).deleteSegment(
-            descriptor("s02.m4a", audio: urls[1]), in: .walkthrough(entry), player: player)
+            descriptor("s02.m4a", audio: urls[1]), in: .walkthrough(entry))
 
         #expect(outcome == .rowRemoved)
         #expect(!exists(urls[1]))
         #expect(exists(urls[0]) && exists(urls[2]))
-        #expect(player.stops == 1)
         #expect(log.events == ["remove:s02.m4a", "purge"])
     }
 
@@ -382,7 +355,7 @@ struct SessionMutationsTests {
         let log = Log()
 
         let outcome = mutations(log: log).deleteSegment(
-            descriptor("gone", audio: nil), in: .walkthrough(entry), player: FakePlayer())
+            descriptor("gone", audio: nil), in: .walkthrough(entry))
 
         #expect(outcome == .rowRemoved)
         #expect(urls.allSatisfy { exists($0) })
@@ -397,7 +370,7 @@ struct SessionMutationsTests {
         let log = Log()
 
         let outcome = mutations(log: log, removeFails: true).deleteSegment(
-            descriptor("s01.m4a", audio: urls[0]), in: .walkthrough(entry), player: FakePlayer())
+            descriptor("s01.m4a", audio: urls[0]), in: .walkthrough(entry))
 
         #expect(outcome == .rowRemoved)
         #expect(exists(urls[0]))
@@ -411,13 +384,10 @@ struct SessionMutationsTests {
         let entry = try makeNote(chunks: nil, in: root)
         let audio = entry.directory.appending(path: "audio.m4a")
         let log = Log()
-        let player = FakePlayer(activeURL: audio)
 
-        mutations(log: log).deleteSurfacedNote(
-            SurfacedNoteEntry(note: entry.note, audioURL: audio), player: player)
+        mutations(log: log).deleteSurfacedNote(SurfacedNoteEntry(note: entry.note, audioURL: audio))
 
         #expect(!exists(entry.directory))
-        #expect(player.stops == 1)
         #expect(log.events == ["remove:2026-05-20T08-00-00", "purge"])
     }
 
@@ -429,8 +399,7 @@ struct SessionMutationsTests {
         let log = Log()
 
         mutations(log: log, removeFails: true).deleteSurfacedNote(
-            SurfacedNoteEntry(note: entry.note, audioURL: entry.directory.appending(path: "audio.m4a")),
-            player: FakePlayer())
+            SurfacedNoteEntry(note: entry.note, audioURL: entry.directory.appending(path: "audio.m4a")))
 
         #expect(exists(entry.directory))
         #expect(log.events == ["remove:2026-05-20T08-00-00", "purge"])
