@@ -283,16 +283,14 @@ def test_messages_list_few_shot_examples_in_order_with_optional_context() -> Non
 class _Ollama:
     """Records `/api/chat` request bodies and answers with a canned handler."""
 
-    def __init__(self, handler=None) -> None:
+    def __init__(self, handler) -> None:
         self.bodies: list[dict] = []
         self._handler = handler
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/api/chat"
         self.bodies.append(json.loads(request.read()))
-        if self._handler is not None:
-            return self._handler(request)
-        raise AssertionError("no handler")
+        return self._handler(request)
 
     def client(self) -> OllamaClient:
         return OllamaClient(
@@ -376,6 +374,44 @@ async def test_correct_transcript_applies_cascading_suggestions_from_the_model(m
         ("zwei", 0, 4),
         ("zwei", 5, 9),
     ]
+
+
+async def test_correct_transcript_applies_overlapping_and_length_changing_suggestions(
+    monkeypatch,
+) -> None:
+    reply = json.dumps(
+        {
+            "corrections": [
+                _c("der neue", "die alte"),
+                _c("neue Stand", "frischer Stand"),
+                _c("a", "langer text"),
+            ]
+        }
+    )
+    _wire(monkeypatch, _reply(reply))
+
+    text, applied = await correct_transcript("Das ist der neue Stand a heute")
+
+    assert text == "Das ist der frischer Stand langer text heute"
+    assert applied == [
+        _applied("neue Stand", "frischer Stand", 12, 26),
+        _applied("a", "langer text", 27, 38),
+    ]
+
+
+async def test_correct_transcript_logs_the_call_and_the_applied_count(
+    monkeypatch, caplog
+) -> None:
+    reply = json.dumps({"corrections": [_c("Staat", "Start")]})
+    _wire(monkeypatch, _reply(reply))
+
+    with caplog.at_level(logging.INFO, logger="transcript_corrector"):
+        await correct_transcript("Der Staat")
+
+    assert "Calling Ollama for transcript correction (model: qwen-test, timeout: " in caplog.text
+    assert "Ollama transcript correction responded in" in caplog.text
+    assert "LLM suggested 1 transcript correction(s)" in caplog.text
+    assert "Applied 1 transcript correction(s)" in caplog.text
 
 
 async def test_correct_transcript_honors_the_flag_at_call_time_without_calling_ollama(
