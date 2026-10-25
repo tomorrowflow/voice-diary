@@ -290,29 +290,45 @@ server/
 └── webapp/
     ├── Dockerfile              python:3.11-slim + ffmpeg
     ├── requirements.txt        includes msal
-    ├── main.py                 FastAPI app + HTMX review/admin/harvest UIs
+    ├── main.py                 app composition: lifespan (runs the session
+    │                           sweep), router wiring, legacy HTMX review/admin/
+    │                           harvest routes (Harvest ones adapt harvest.py)
     ├── logging_setup.py        JSON formatter + correlation-ID middleware
     ├── paths.py                $DATA_DIR resolver (default /data in Docker)
     ├── models.py               Pydantic v2 manifest schema (SPEC §10.3)
     ├── enrichment.py           speech-ready Ollama summariser
     ├── msgraph_client.py       MSAL public client + persistent cache
-    ├── routers/
+    ├── routers/                thin HTTP adapters; auth.py gates all but /health
     │   ├── auth.py             bearer-token Depends
     │   ├── calendar.py         /today/calendar, /calendar/event/{id}
     │   ├── email.py            /email/search
     │   ├── lightrag.py         /lightrag/query, /yesterday/open-todos
-    │   ├── sessions.py         POST /api/sessions, GET /status
-    │   └── health.py           upstream-aware /health (no auth)
-    ├── document_processor.py   LightRAG context + Ollama analysis + narrative + ingest
-    ├── entity_detector.py      4-pass entity normalisation
-    ├── transcript_corrector.py Ollama ASR correction
-    ├── fluency_checker.py
-    ├── llm_validator.py
-    ├── vector_store.py         Qdrant client
-    ├── bone_generator.py       LightRAG skeleton bones
-    ├── skeleton_sync.py        LightRAG skeleton sync engine
+    │   ├── sessions.py         /api/sessions routes → session_ingest
+    │   ├── review_stream.py    SSE review routes over narrative + llm_validator
+    │   ├── dictionary.py       /api/admin person/term + vector-status routes
+    │   ├── admin.py            /api/admin org/relationship/role/entity/initiative CRUD
+    │   ├── tts.py              /api/tts voice list + synthesis
+    │   └── health.py           /health route (no auth) → health_checks
+    ├── session_ingest.py       session lifecycle: accept, process, retry, startup sweep, status
+    ├── session_repository.py   session_ingests rows + status cache (Postgres/in-memory)
+    ├── narrative.py            shared narrative stage (context → analysis → render)
+    │                           for the review SSE flow and session ingest
+    ├── document_processor.py   LightRAG context/ingest + Ollama analysis; re-exports
+    │                           the narrative_rendering functions
+    ├── narrative_rendering.py  pure analysis → diary Markdown + document metadata
+    ├── health_checks.py        upstream probes folded into the /health status
+    ├── harvest.py              Harvest pattern-cache lifecycle + booking suggestions
     ├── harvest_llm.py
     ├── harvest_patterns.py
+    ├── entity_detector.py      4-pass entity normalisation
+    ├── entity_validation.py    pure rules applying LLM verdicts to entities
+    ├── llm_validator.py        entity-validation prompts, Ollama call, SSE progress
+    ├── transcript_corrector.py Ollama ASR correction
+    ├── fluency_checker.py
+    ├── vector_store.py         Qdrant + fastembed store of correction/entity-usage
+    │                           samples for few-shot prompts
+    ├── bone_generator.py       LightRAG skeleton bones
+    ├── skeleton_sync.py        LightRAG skeleton sync engine
     ├── import_nocodb.py
     ├── schema.sql              17-table Postgres schema
     ├── seed.sql
