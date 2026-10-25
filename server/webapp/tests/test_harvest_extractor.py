@@ -434,6 +434,9 @@ async def test_wrapper_does_not_cache_failures(upstream: _Upstream) -> None:
     assert len(upstream.requests) == 4
 
 
+# --- call-time client lookup (the one case that swaps `_ollama_client`) ---
+
+
 async def test_wrapper_reads_the_current_client_on_each_call(monkeypatch) -> None:
     harvest_llm._cache.clear()
     other = _Upstream(lambda request: _activities_response([{"description": "Other client"}]))
