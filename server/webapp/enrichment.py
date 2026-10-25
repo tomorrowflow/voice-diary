@@ -62,43 +62,70 @@ class EnrichmentSummariserUnavailable(RuntimeError):
     """Ollama returned an unusable response or was unreachable."""
 
 
+class SpeechSummariser:
+    """Prompt assembly, the Ollama chat call, error translation and speech
+    cleanup, with the client and context window supplied by the caller."""
+
+    def __init__(self, *, client: OllamaClient, num_ctx: int) -> None:
+        self._client = client
+        self._num_ctx = num_ctx
+
+    async def summarise(
+        self,
+        *,
+        query: str,
+        sources_text: str,
+        response_language: ResponseLanguage = "de",
+    ) -> str:
+        """Summarise `sources_text` in answer to `query` for TTS playback."""
+        language = response_language if response_language in ("de", "en") else "de"
+        system_prompt = _SYSTEM_PROMPTS[language]
+
+        user_prompt = (
+            f"Frage: {query}\n\nQuellen:\n{sources_text}"
+            if language == "de"
+            else f"Question: {query}\n\nSources:\n{sources_text}"
+        )
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+        try:
+            result = await self._client.chat(messages, num_ctx=self._num_ctx, temperature=0.2)
+        except OllamaUnavailableError as exc:
+            raise EnrichmentSummariserUnavailable(f"ollama_unreachable: {exc}") from exc
+        except OllamaTimeoutError as exc:
+            raise EnrichmentSummariserUnavailable(f"ollama_timeout: {exc}") from exc
+        except OllamaEngineError as exc:
+            # status_code is None for mid-request transport errors and bad JSON.
+            reason = f"ollama_status_{exc.status_code}" if exc.status_code is not None else f"ollama_error: {exc}"
+            raise EnrichmentSummariserUnavailable(reason) from exc
+
+        content = result.content.strip()
+        if not content:
+            raise EnrichmentSummariserUnavailable("ollama_empty_response")
+        # Drop any speaker labels / leading code fences — defence in depth.
+        return _clean_for_speech(content)
+
+
 async def summarise_for_speech(
     *,
     query: str,
     sources_text: str,
     response_language: ResponseLanguage = "de",
 ) -> str:
-    """Summarise `sources_text` in answer to `query` for TTS playback."""
-    language = response_language if response_language in ("de", "en") else "de"
-    system_prompt = _SYSTEM_PROMPTS[language]
+    """Summarise `sources_text` in answer to `query` for TTS playback.
 
-    user_prompt = (
-        f"Frage: {query}\n\nQuellen:\n{sources_text}"
-        if language == "de"
-        else f"Question: {query}\n\nSources:\n{sources_text}"
+    Reads the module's `_ollama_client` and `OLLAMA_NUM_CTX` on every call, so
+    patching either still takes effect.
+    """
+    return await SpeechSummariser(client=_ollama_client, num_ctx=OLLAMA_NUM_CTX).summarise(
+        query=query,
+        sources_text=sources_text,
+        response_language=response_language,
     )
-
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-
-    try:
-        result = await _ollama_client.chat(messages, num_ctx=OLLAMA_NUM_CTX, temperature=0.2)
-    except OllamaUnavailableError as exc:
-        raise EnrichmentSummariserUnavailable(f"ollama_unreachable: {exc}") from exc
-    except OllamaTimeoutError as exc:
-        raise EnrichmentSummariserUnavailable(f"ollama_timeout: {exc}") from exc
-    except OllamaEngineError as exc:
-        # status_code is None for mid-request transport errors and bad JSON.
-        reason = f"ollama_status_{exc.status_code}" if exc.status_code is not None else f"ollama_error: {exc}"
-        raise EnrichmentSummariserUnavailable(reason) from exc
-
-    content = result.content.strip()
-    if not content:
-        raise EnrichmentSummariserUnavailable("ollama_empty_response")
-    # Drop any speaker labels / leading code fences — defence in depth.
-    return _clean_for_speech(content)
 
 
 def _clean_for_speech(text: str) -> str:
