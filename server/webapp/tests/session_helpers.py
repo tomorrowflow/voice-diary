@@ -429,6 +429,12 @@ class SegmentPipeline:
                 return True
             return False
 
+        async def find_recovered_transcript(*, filename, date):
+            # Only a row written with its entities (the recovery's save) counts.
+            if filename in self.recovered_values:
+                return self.transcript_rows.get(filename)
+            return None
+
         async def correct_and_detect_entities(raw_text, *, snapshot=None, on_step=None):
             self.correct_calls.append({
                 "raw_text": raw_text, "persons": snapshot.persons, "terms": snapshot.terms,
@@ -459,6 +465,7 @@ class SegmentPipeline:
         monkeypatch.setattr(db, "save_recovered_transcript", save_recovered_transcript)
         monkeypatch.setattr(db, "find_saved_transcript", find_saved_transcript)
         monkeypatch.setattr(db, "delete_saved_transcript", delete_saved_transcript)
+        monkeypatch.setattr(db, "find_recovered_transcript", find_recovered_transcript)
         monkeypatch.setattr(transcript_ingest, "transcribe_text", transcribe_text)
         monkeypatch.setattr(transcript_ingest, "transcribe_and_persist", transcribe_and_persist)
         monkeypatch.setattr(correction, "correct_and_detect_entities", correct_and_detect_entities)

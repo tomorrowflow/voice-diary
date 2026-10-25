@@ -457,6 +457,26 @@ async def save_recovered_transcript(
     return row["id"]
 
 
+async def find_recovered_transcript(*, filename: str, date: str) -> int | None:
+    """The id of the transcript a recovery saved for this file name and date,
+    or None. Only a row that holds detected entities counts: a recovery writes
+    the row and its entities in one statement, while the original ingest
+    writes the row first, so one without them is not a finished transcript.
+    Asked at startup for a segment whose recovery was interrupted."""
+    pool = await get_pool()
+    if not isinstance(date, date_type):
+        date = _parse_date_flexible(date)
+    row = await pool.fetchrow(
+        """
+        SELECT id FROM transcripts
+        WHERE filename = $1 AND date = $2 AND detected_entities_json IS NOT NULL
+    """,
+        filename,
+        date,
+    )
+    return row["id"] if row else None
+
+
 async def find_saved_transcript(
     *,
     filename: str,

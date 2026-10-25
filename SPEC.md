@@ -813,7 +813,7 @@ recovers. Two mechanisms retry it:
   `session_busy` if another narrative run for the same session is already in flight — a concurrent
   retry (double tap), the original background ingest, or the startup sweep; nothing is run and the
   caller can retry once the other run has finished.
-- **Startup sweep** — on app start, the server retries every non-`done` session with a
+- **Startup sweep** — on app start, after settling interrupted recoveries (*Restart*, below), the server retries every non-`done` session with a
   `pending_analysis` segment, one at a time, best-effort. A session's retry failing is logged and leaves it
   `pending_analysis` (retryable again on the next start, or via the route above); it does not block
   the rest of the sweep or app startup. A session that is already busy (see `session_busy` above)
@@ -958,6 +958,19 @@ body). One request is one attempt; nothing starts one on its own.
   existing retry (route, sweep) finishes it; nothing about a recovery makes that retry pick up a
   `failed` segment. The session `state` is derived as in §10.5: `done` when the recovered segment was
   the last unfinished one, `partial` while other segments are `failed`.
+- *Restart (ADR 0005, 0007).* A restart never starts a transcription. Before the startup sweep lists
+  its candidates, every segment left `transcribing` by the process that died is settled from what is
+  stored, without calling Whisper: if its transcript row and entities were saved (found by the
+  segment's file name and the manifest date), it becomes `pending_analysis` with its `transcript_id`,
+  and the sweep then analyses it over the whole day; otherwise it becomes `failed` with `code`
+  `recovery_interrupted`, no `upstream` and `retryable: true` (the table below), its audio untouched,
+  and waits for the user's next request. A segment is settled once, and a recovering segment is
+  never `pending_analysis` without a transcript, so the resume of untranscribed segments above
+  cannot pick it up. The session `state` is re-derived from all its segments, so a session no
+  longer reads `processing` because of a recovery; a session `processing` for its original ingest
+  has no `transcribing` segment and is resumed as above. A session whose run is active in the
+  running process is skipped. A session that cannot be settled (the database cannot be read) is
+  logged and left as it is for the next start, without stopping the others or app startup.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
 Voxtral, and Blindfold when the analysis route is `blindfold`) is down, slow or answers with an error, the server reports it in one shape. `detail` stays
@@ -997,6 +1010,11 @@ routes, the read endpoints in §10.7 and `POST /api/tts/synthesize`.
 | `blindfold_unavailable` | blindfold | 503 | yes |
 | `blindfold_timeout` | blindfold | 503 | yes |
 | `blindfold_engine_error` | blindfold | 502 | yes |
+| `recovery_interrupted` | none | — | yes |
+
+`recovery_interrupted` is recorded on a segment only (§10.5): a recovery a server restart interrupted
+before its transcript was saved. It is not an upstream failure and no route answers with it; `upstream`
+is `null`.
 
 The `blindfold_*` codes occur only when `ANALYSIS_ROUTE=blindfold`, and only for the main analysis
 call: unavailable is a refused connection or DNS failure, timeout a call that outlives

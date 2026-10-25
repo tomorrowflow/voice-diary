@@ -12,7 +12,10 @@ is `SessionIngest`:
   retained audio, on request only (FTR-02, ADR 0005, 0007): it validates,
   claims the session, persists the segment `transcribing` and runs the attempt
   on its own, `settled()` waiting for it;
-* **sweep** — `sweep()` retries every stranded session once after a restart;
+* **sweep** — `sweep()` first settles the recoveries a restart interrupted
+  (FTR-03: a saved transcript makes the segment `pending_analysis`, none makes
+  it `failed` as `recovery_interrupted`; Whisper is never called), then
+  retries every stranded session once after a restart;
 * **status** — `status()` reads a session's status;
 * **date coordination** — `narrative_date()` is the one-writer-at-a-time hold
   on a date's diary document, taken by every narrative writer here and by the
@@ -90,10 +93,14 @@ from segment_ingest import (
     SegmentIngest,
     SegmentOperation,
     attendees_to_canonical_names,
+    transcript_filename,
 )
 from session_repository import PostgresSessionIngests, SessionIngestRepository
 
 logger = logging.getLogger(__name__)
+
+# The failure code of a recovery a restart interrupted before it saved a transcript.
+RECOVERY_INTERRUPTED = "recovery_interrupted"
 
 
 # --- errors ---------------------------------------------------------------
@@ -1046,10 +1053,71 @@ class SessionIngest:
         await self._persist_status(session_id, derive_session_state(segments), segments)
         return segments
 
+    # -- interrupted recoveries --------------------------------------------
+
+    async def settle_interrupted_recoveries(self) -> None:
+        """Settle every segment left `transcribing` by a process that died
+        mid-recovery (FTR-03, ADR 0005 and 0007), from what is stored and
+        without calling Whisper: with a transcript and its entities saved the
+        segment becomes `pending_analysis` with its `transcript_id` (the sweep
+        then analyses it); without one it is `failed` with
+        `recovery_interrupted` and waits for the user's next request. The
+        session `state` is re-derived. A session whose run is active in this
+        process holds the claim and is skipped, since its attempt is alive.
+
+        A session that cannot be settled is logged and left as it is for the
+        next startup; the others still are. Never raises, and runs before the
+        sweep lists its candidates.
+        """
+        try:
+            sessions = await self.repository.list_sessions()
+        except Exception:  # noqa: BLE001 — best-effort, never blocks startup
+            logger.exception("startup recovery reconciliation: failed to list sessions")
+            return
+        for session in sessions:
+            if not any(s.status == "transcribing" for s in session.segments):
+                continue
+            try:
+                await self._settle_interrupted_session(session.session_id)
+            except Exception as exc:  # noqa: BLE001 — one session must not stop the rest
+                logger.warning(
+                    "startup recovery reconciliation: session %s could not be settled: %s",
+                    session.session_id, exc,
+                )
+
+    async def _settle_interrupted_session(self, session_id: str) -> None:
+        if not await self._try_begin(session_id):
+            logger.info(
+                "startup recovery reconciliation: session %s busy, skipping", session_id
+            )
+            return
+        try:
+            bind_session_id(session_id)
+            stored = await self.repository.get(session_id)
+            if stored is None:
+                return
+            segments = list(stored.segments)
+            for index, current in enumerate(segments):
+                if current.status != "transcribing":
+                    continue
+                transcript_id = await _saved_recovery_transcript(session_id, current.segment_id)
+                segments[index] = _interrupted_result(current.segment_id, transcript_id)
+                logger.info(
+                    "startup recovery reconciliation: session %s segment %s -> %s",
+                    session_id, current.segment_id, segments[index].status,
+                )
+            await self._persist_status(session_id, derive_session_state(segments), segments)
+        finally:
+            await self._end(session_id)
+
     # -- startup sweep -----------------------------------------------------
 
     async def sweep(self) -> None:
         """Best-effort startup sweep (issue #52).
+
+        First settles the recoveries a restart interrupted
+        (`settle_interrupted_recoveries`, FTR-03), so the sweep never sees a
+        `transcribing` segment and never calls Whisper for one.
 
         Retries every non-`done` session with a `pending_analysis` segment
         (legacy `done` rows that still have one are first corrected to
@@ -1062,6 +1130,8 @@ class SessionIngest:
         never raise, since `main.py`'s lifespan runs this without blocking app
         start.
         """
+        await self.settle_interrupted_recoveries()
+
         try:
             corrected = await self.repository.correct_legacy_done_sessions()
             if corrected:
@@ -1144,6 +1214,39 @@ def _failed_result(segment_id: str, exc: BaseException) -> SegmentResult:
     return SegmentResult(
         segment_id=segment_id, status="failed", error=str(exc),
         **upstream_failure.failure_fields(exc),
+    )
+
+
+async def _saved_recovery_transcript(session_id: str, segment_id: str) -> int | None:
+    """The id of the transcript (with its entities) a recovery of this segment
+    saved before it was interrupted, or None. Without a readable manifest
+    entry there is nothing it could have been saved under. A failing database
+    lookup raises: the segment is then not settled, never guessed."""
+    try:
+        manifest = load_manifest(session_id)
+    except Exception:  # noqa: BLE001 — nothing to look up without it
+        return None
+    segment = next((s for s in manifest.segments if s.segment_id == segment_id), None)
+    if segment is None:
+        return None
+    return await db.find_recovered_transcript(
+        filename=transcript_filename(manifest, segment), date=manifest.date.isoformat()
+    )
+
+
+def _interrupted_result(segment_id: str, transcript_id: int | None) -> SegmentResult:
+    """A `transcribing` segment's settled status after a restart: linked to
+    its saved transcript, or `failed` as `recovery_interrupted` (no upstream,
+    retryable, SPEC §10.6.1)."""
+    if transcript_id is not None:
+        return SegmentResult(
+            segment_id=segment_id, status="pending_analysis", transcript_id=transcript_id
+        )
+    return SegmentResult(
+        segment_id=segment_id,
+        status="failed",
+        error="transcription was interrupted by a server restart; request it again",
+        code=RECOVERY_INTERRUPTED,
     )
 
 
