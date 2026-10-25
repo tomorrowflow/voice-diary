@@ -87,19 +87,11 @@ public struct ServerSettingsView: View {
         hasSavedURL ? UpstreamImpact.lines(health: reachability.upstream) : []
     }
 
-    private var isConnected: Bool {
-        switch displayedStatus {
-        case .ok, .degraded: return true
-        case .unknown, .authInvalid, .down: return false
-        }
+    private var presentation: ServerConnectionPresentation {
+        ServerConnectionPresentation(hasSavedURL: hasSavedURL, probeStatus: reachability.status)
     }
 
-    /// Status shown in the pill. Nothing is configured until a valid URL
-    /// has been saved, so a "down" from probing an empty Keychain would
-    /// only mislead.
-    private var displayedStatus: Reachability.Status {
-        hasSavedURL ? reachability.status : .unknown
-    }
+    private var isConnected: Bool { presentation.isConnected }
 
     // MARK: - Cards
 
@@ -373,7 +365,7 @@ public struct ServerSettingsView: View {
     // MARK: - Status mapping
 
     private var statusLabel: String {
-        switch displayedStatus {
+        switch presentation.state {
         case .unknown:                       return "—"
         case .ok:                            return "OK"
         case .degraded:                      return String(localized: "degraded")
@@ -383,7 +375,7 @@ public struct ServerSettingsView: View {
     }
 
     private var statusColor: Color {
-        switch displayedStatus {
+        switch presentation.state {
         case .ok:                            return Theme.color.status.success
         case .degraded:                      return Theme.color.status.warning
         case .authInvalid, .down:            return Theme.color.status.destructive
