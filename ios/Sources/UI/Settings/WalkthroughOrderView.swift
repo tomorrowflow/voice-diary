@@ -53,8 +53,11 @@ public struct WalkthroughOrderView: View {
 }
 
 private struct OrderRow: View {
-    let entry: WalkthroughSection
-    let generals: [GeneralSection]
+    private let content: WalkthroughOrderRowContent
+
+    init(entry: WalkthroughSection, generals: [GeneralSection]) {
+        content = WalkthroughOrderRowContent(entry: entry, generals: generals)
+    }
 
     var body: some View {
         HStack(spacing: Theme.spacing.sm) {
@@ -65,7 +68,7 @@ private struct OrderRow: View {
                 Text(title)
                     .font(Theme.font.body.weight(.medium))
                     .foregroundStyle(Theme.color.text.primary)
-                if let subtitle, !subtitle.isEmpty {
+                if let subtitle {
                     Text(subtitle)
                         .font(Theme.font.caption)
                         .foregroundStyle(Theme.color.text.subdued)
@@ -78,17 +81,19 @@ private struct OrderRow: View {
     }
 
     private var iconName: String {
-        switch entry {
-        case .general:        return "text.bubble"
-        case .calendarEvents: return "calendar"
-        case .voiceNote:        return "mic.fill"
+        switch content.kind {
+        case .general, .missingGeneral: return "text.bubble"
+        case .calendarEvents:           return "calendar"
+        case .voiceNote:                return "mic.fill"
         }
     }
 
     private var title: String {
-        switch entry {
-        case .general(let id):
-            return generals.first { $0.id == id }?.title ?? String(localized: "(unknown)")
+        switch content.kind {
+        case .general(let generalTitle):
+            return generalTitle
+        case .missingGeneral:
+            return String(localized: "(unknown)")
         case .calendarEvents:
             return String(localized: "Events")
         case .voiceNote:
@@ -97,9 +102,9 @@ private struct OrderRow: View {
     }
 
     private var subtitle: String? {
-        switch entry {
-        case .general(let id):
-            return generals.first { $0.id == id }?.introText
+        switch content.kind {
+        case .general, .missingGeneral:
+            return content.introduction
         case .calendarEvents:
             return String(localized: "Per-event loop with openers + listen phase.")
         case .voiceNote:
