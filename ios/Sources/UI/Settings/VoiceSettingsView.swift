@@ -361,13 +361,13 @@ public struct VoiceSettingsView: View {
         let installed = AVSpeechSynthesisVoice.speechVoices()
         var grouped: [String: [AVSpeechSynthesisVoice]] = [:]
         for lang in Self.supportedLanguages.map(\.code) {
-            // Premium-only — Enhanced and Standard tiers are intentionally
-            // hidden because they sound noticeably worse than both Premium
-            // and Piper, and the long unfiltered list overwhelms the picker.
-            let candidates = installed.filter {
-                $0.language.hasPrefix(lang) && $0.quality == .premium
-            }
-            grouped[lang] = candidates.sorted { $0.name < $1.name }
+            // Premium-only filtering and name ordering live in the policy;
+            // the real voice objects are kept for rows and preview.
+            grouped[lang] = AppleVoicePickerPolicy.ordered(
+                installed,
+                language: lang,
+                describing: AppleVoicePickerPolicy.Descriptor.init
+            )
             selectedIDByLanguage[lang] = VoicePreferences.selectedVoiceID(for: lang)
         }
         appleVoicesByLanguage = grouped
