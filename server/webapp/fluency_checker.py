@@ -121,8 +121,6 @@ def locate_issues(text: str, issues: list[dict]) -> list[dict]:
 class FluencyChecker:
     """The fluency check against an explicitly supplied Ollama client.
 
-    Owns the whole operation: the prompt, the call, the fallbacks for an
-    empty or failed reply, and turning the reply into located annotations.
     Whether the check is enabled is the caller's policy, not this class's.
     """
 
@@ -131,7 +129,9 @@ class FluencyChecker:
         self._num_ctx = num_ctx
 
     async def check(self, raw_text: str) -> list[dict]:
-        """Returns list of located issues:
+        """Send transcript to Ollama for fluency analysis.
+
+        Returns list of located issues:
         [{start, end, text, category, note}, ...]
         """
         messages = _build_messages(raw_text)
