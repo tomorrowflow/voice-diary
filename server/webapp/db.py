@@ -496,9 +496,10 @@ async def delete_saved_transcript(
     detected_entities_json: str,
 ) -> bool:
     """Delete the row `save_recovered_transcript` wrote, if it still holds
-    exactly these values; True when a row was deleted. The compensating step
-    after a save whose outcome is unknown and could not be looked up: a row
-    that holds anything else (a person edited it since) is not touched."""
+    exactly these values and the review state the save left (pending, no
+    human-reviewed entities, not submitted); True when a row was deleted. The
+    compensating step after a save whose outcome is unknown and could not be
+    looked up: a row a person has edited or submitted since is not touched."""
     pool = await get_pool()
     if not isinstance(date, date_type):
         date = _parse_date_flexible(date)
@@ -507,6 +508,7 @@ async def delete_saved_transcript(
         DELETE FROM transcripts
         WHERE filename = $1 AND date = $2 AND raw_text = $3 AND corrected_text = $4
           AND detected_entities_json = $5::jsonb
+          AND status = 'pending' AND entities_json IS NULL AND submitted_at IS NULL
     """,
         filename,
         date,

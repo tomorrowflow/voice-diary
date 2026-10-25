@@ -182,8 +182,8 @@ class SegmentIngest:
             # The statement may have committed before its result was lost. If
             # the row holds exactly what was being saved, it is this attempt's
             # transcript: return it so it gets linked rather than orphaned. If
-            # that can't be told, `_find_saved` takes the row back.
-            transcript_id = await self._find_saved(saved)
+            # that can't be told, `_resolve_unknown_save` takes the row back.
+            transcript_id = await self._resolve_unknown_save(saved)
             if transcript_id is None:
                 raise save_error from None
             logger.warning(
@@ -199,7 +199,7 @@ class SegmentIngest:
             entities=entities,
         )
 
-    async def _find_saved(self, saved: dict) -> int | None:
+    async def _resolve_unknown_save(self, saved: dict) -> int | None:
         """What became of a save that failed with an unknown outcome: the id of
         the row it wrote, or None when there is nothing to link. If the lookup
         fails too, the row is deleted again, but only while it still holds

@@ -193,6 +193,9 @@ def test_delete_saved_transcript_only_deletes_a_row_holding_the_saved_values(
     for condition in ("filename = $1", "date = $2", "raw_text = $3", "corrected_text = $4"):
         assert condition in query
     assert "detected_entities_json = $5::jsonb" in query
+    # Only a row still in the state the save left it in: not reviewed, not submitted.
+    for untouched in ("status = 'pending'", "entities_json IS NULL", "submitted_at IS NULL"):
+        assert untouched in query
     assert args[0] == "session::seg01.m4a"
     assert str(args[1]) == "2026-07-04"
     assert args[2:] == ("hallo welt", "hallo Welt", "[]")
