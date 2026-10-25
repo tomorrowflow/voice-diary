@@ -5,6 +5,8 @@ Personal voice-diary system for a German-speaking CTO. Two components, one repo:
 - **`ios/`** — iOS app (iPhone 17 Pro, iOS 26) for drive-by thought capture and structured evening conversational walkthroughs of the day's calendar.
 - **`server/`** — FastAPI backend (seeded from the prior `diary-processor` codebase on 2026-04-24). Owns the full pipeline: audio conversion, Whisper ASR, 4-pass entity normalization, Ollama analysis (optionally routed to Blindfold, see [`docs/analysis-egress.md`](docs/analysis-egress.md)), narrative generation, LightRAG ingest — plus new iOS-specific routes for session ingest, Microsoft Graph proxy (calendar + email), and enrichment retrieval.
 
+Server tests live in [`server/webapp/tests/`](server/webapp/tests/); run them with the [documented server test command](DEVELOPMENT.md#74-running-the-tests).
+
 ## Quick map
 
 ```
