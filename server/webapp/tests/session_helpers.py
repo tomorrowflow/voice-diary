@@ -352,6 +352,12 @@ class SegmentPipeline:
         # entities (or of the whole recovered transcript) fail.
         self.transcript_rows: dict[str, int] = {}
         self.save_entities_error: BaseException | None = None
+        # A recovery's one-statement save that commits but whose result is
+        # lost (`lose_save_result`); `find_error` makes the follow-up lookup of
+        # what was saved fail too. `recovered_values` is what each row holds.
+        self.lose_save_result = False
+        self.find_error: BaseException | None = None
+        self.recovered_values: dict[str, tuple] = {}
         self._ids = transcript_ids or {}
         self.failing = failing or {}
 
@@ -391,7 +397,22 @@ class SegmentPipeline:
             transcript_id = self._ids.setdefault(segment_of(filename), 10 + len(self._ids))
             self.transcript_rows[filename] = transcript_id
             self.saved_entities.append((transcript_id, corrected_text, detected_entities_json))
+            self.recovered_values[filename] = (raw_text, corrected_text, detected_entities_json)
+            if self.lose_save_result:
+                # Committed, but the answer never reaches the caller.
+                raise ConnectionError("connection lost before the result arrived")
             return transcript_id
+
+        async def find_saved_transcript(
+            *, filename, date, raw_text, corrected_text, detected_entities_json
+        ):
+            if self.find_error is not None:
+                raise self.find_error
+            if self.recovered_values.get(filename) == (
+                raw_text, corrected_text, detected_entities_json,
+            ):
+                return self.transcript_rows.get(filename)
+            return None
 
         async def correct_and_detect_entities(raw_text, *, snapshot=None, on_step=None):
             self.correct_calls.append({
@@ -421,6 +442,7 @@ class SegmentPipeline:
 
         monkeypatch.setattr(db, "delete_transcripts", delete_transcripts)
         monkeypatch.setattr(db, "save_recovered_transcript", save_recovered_transcript)
+        monkeypatch.setattr(db, "find_saved_transcript", find_saved_transcript)
         monkeypatch.setattr(transcript_ingest, "transcribe_text", transcribe_text)
         monkeypatch.setattr(transcript_ingest, "transcribe_and_persist", transcribe_and_persist)
         monkeypatch.setattr(correction, "correct_and_detect_entities", correct_and_detect_entities)

@@ -25,6 +25,7 @@ share dependencies.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -35,6 +36,8 @@ import db
 import dictionary
 import transcript_ingest
 from models import CalendarEventSegment, Manifest, Segment
+
+logger = logging.getLogger(__name__)
 
 _AUTHOR = "Lukas Brandt"
 
@@ -74,8 +77,9 @@ class SegmentIngest:
     """The per-segment operation, over its own collaborators: `transcribe`
     (Whisper + persisted transcript), `load_snapshot` (dictionary), `correct`
     (correction + entity detection) and `save_entities` for `ingest`;
-    `transcribe_text` (Whisper only), `load_snapshot`, `correct` and
-    `save_recovered` (transcript and entities in one write) for `recover`. A
+    `transcribe_text` (Whisper only), `load_snapshot`, `correct`,
+    `save_recovered` (transcript and entities in one write) and `find_saved`
+    (did a failed write commit anyway?) for `recover`. A
     collaborator left unset is the shared module's function, looked up on
     each call."""
 
@@ -88,6 +92,7 @@ class SegmentIngest:
         save_entities: Callable[[int, str, str], Awaitable[object]] | None = None,
         transcribe_text: Callable[..., Awaitable[str]] | None = None,
         save_recovered: Callable[..., Awaitable[int]] | None = None,
+        find_saved: Callable[..., Awaitable[int | None]] | None = None,
     ) -> None:
         self._transcribe = transcribe
         self._load_snapshot = load_snapshot
@@ -95,6 +100,7 @@ class SegmentIngest:
         self._save_entities = save_entities
         self._transcribe_text = transcribe_text
         self._save_recovered = save_recovered
+        self._find_saved_transcript = find_saved
 
     async def ingest(
         self, *, manifest: Manifest, segment: Segment, session_dir: Path
@@ -160,14 +166,26 @@ class SegmentIngest:
             language=source.language,
         )
         corrected_text, entities = await self._correct_and_detect(segment, raw_transcript)
-        transcript_id = await save_recovered(
+        saved = dict(
             filename=source.filename,
             date=source.date,
-            author=_AUTHOR,
             raw_text=raw_transcript,
             corrected_text=corrected_text,
             detected_entities_json=json.dumps(entities),
         )
+        try:
+            transcript_id = await save_recovered(author=_AUTHOR, **saved)
+        except Exception as save_error:
+            # The statement may have committed before its result was lost. If
+            # the row holds exactly what was being saved, it is this attempt's
+            # transcript: return it so it gets linked rather than orphaned.
+            transcript_id = await self._find_saved(saved)
+            if transcript_id is None:
+                raise save_error from None
+            logger.warning(
+                "saving transcript %s: the result was lost but the row was saved (%s)",
+                source.filename, save_error,
+            )
 
         return SegmentArtifact(
             segment=segment,
@@ -176,6 +194,17 @@ class SegmentIngest:
             corrected_text=corrected_text,
             entities=entities,
         )
+
+    async def _find_saved(self, saved: dict) -> int | None:
+        """The id of the row a failed save may have written, or None when
+        there is none or the lookup itself fails (the save's own error is then
+        what the caller raises; a leftover row is replaced by the next attempt)."""
+        find_saved = self._find_saved_transcript or db.find_saved_transcript
+        try:
+            return await find_saved(**saved)
+        except Exception:  # noqa: BLE001
+            logger.exception("could not tell whether the transcript %s was saved", saved["filename"])
+            return None
 
     async def _correct_and_detect(
         self, segment: Segment, raw_transcript: str

@@ -131,6 +131,39 @@ def test_save_recovered_transcript_is_one_upsert_of_the_whole_transcript(monkeyp
     assert args[2:] == ("Lukas Brandt", "hallo welt", "hallo Welt", "[]")
 
 
+@pytest.mark.parametrize(("row", "expected"), [({"id": 7}, 7), (None, None)])
+def test_find_saved_transcript_matches_the_exact_saved_values(monkeypatch, row, expected):
+    """After a save whose result was lost: the row is only ours if it holds
+    exactly what was being saved."""
+    queries = []
+
+    class _Pool:
+        async def fetchrow(self, query, *args):
+            queries.append((query, args))
+            return row
+
+    async def fake_get_pool():
+        return _Pool()
+
+    monkeypatch.setattr(db, "get_pool", fake_get_pool)
+
+    found = asyncio.run(
+        db.find_saved_transcript(
+            filename="session::seg01.m4a", date="2026-07-04", raw_text="hallo welt",
+            corrected_text="hallo Welt", detected_entities_json="[]",
+        )
+    )
+
+    assert found == expected
+    query, args = queries[0]
+    for condition in ("filename = $1", "date = $2", "raw_text = $3", "corrected_text = $4"):
+        assert condition in query
+    assert "detected_entities_json = $5::jsonb" in query
+    assert args[0] == "session::seg01.m4a"
+    assert str(args[1]) == "2026-07-04"
+    assert args[2:] == ("hallo welt", "hallo Welt", "[]")
+
+
 def test_transcribe_and_persist_raises_on_empty_transcript(monkeypatch):
     fake_client = _FakeAsrClient(text="")
     monkeypatch.setattr(asr_client, "get_default_client", lambda: fake_client)

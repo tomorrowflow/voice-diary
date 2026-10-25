@@ -932,7 +932,10 @@ body). One request is one attempt; nothing starts one on its own.
   Whisper and the correction chain have succeeded; the transcript, its corrected text and its entities
   are then saved by one statement, so a failed attempt leaves no transcript row, and a row an earlier
   attempt left (transcripts are unique per file name and date) is replaced in place rather than
-  duplicated. If the segment then cannot be linked to the saved transcript (its status cannot be
+  duplicated. If that save fails with an unknown outcome (the statement may have committed before the
+  connection dropped), the attempt looks the row up by the exact values it was saving: a match is its
+  transcript and is linked as usual; no match means nothing was saved; a lookup that fails too leaves
+  the save's error, and a row that may remain is replaced by the next attempt. If the segment then cannot be linked to the saved transcript (its status cannot be
   persisted), the row is deleted again, best effort; one that cannot be deleted is replaced by the
   next attempt. The segment is `pending_analysis` with its `transcript_id` only once the transcript
   and its entities are saved; the day narrative (above) then runs over the whole date and the segment

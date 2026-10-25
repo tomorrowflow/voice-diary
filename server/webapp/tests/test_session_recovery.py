@@ -805,6 +805,57 @@ def test_a_failure_writing_the_final_outcome_keeps_the_linked_transcript(
     assert len(world.pipeline.transcribe_calls) == 1  # the retry did not transcribe again
 
 
+def test_a_save_that_committed_but_lost_its_result_is_found_and_linked(monkeypatch, tmp_path):
+    """The one-statement save commits, the connection fails before the answer
+    arrives: the lookup of what was saved finds the row, so the segment links
+    it instead of being failed with an orphan behind."""
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    world.pipeline.lose_save_result = True
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return await world.status()
+
+    status = asyncio.run(run())
+
+    assert world.result(status, "s01") == SegmentResult(
+        segment_id="s01", status="processed", transcript_id=10
+    )
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}
+    assert len(world.narrative.runs) == 1
+
+
+def test_a_lost_save_result_that_cannot_be_looked_up_is_replaced_by_the_next_attempt(
+    monkeypatch, tmp_path,
+):
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    world.pipeline.lose_save_result = True
+    world.pipeline.find_error = ConnectionError("still down")
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        failed = await world.status()
+        world.pipeline.lose_save_result = False
+        world.pipeline.find_error = None
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return failed, await world.status()
+
+    failed, recovered = asyncio.run(run())
+
+    assert world.result(failed, "s01").status == "failed"
+    assert world.result(recovered, "s01") == SegmentResult(
+        segment_id="s01", status="processed", transcript_id=10
+    )
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}  # replaced, not duplicated
+
+
 def test_a_row_that_cannot_be_deleted_is_replaced_by_the_next_attempt(monkeypatch, tmp_path):
     world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
     repository = world.ingests.repository

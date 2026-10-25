@@ -80,11 +80,16 @@ class Collaborators:
         self.recovered.append(row)
         return 42
 
+    async def find_saved(self, **row):
+        self.calls.append("find_saved")
+        return None
+
     def segment_ingest(self) -> SegmentIngest:
         return SegmentIngest(
             transcribe=self.transcribe, load_snapshot=self.load_snapshot,
             correct=self.correct, save_entities=self.save_entities,
             transcribe_text=self.transcribe_text, save_recovered=self.save_recovered,
+            find_saved=self.find_saved,
         )
 
 
@@ -251,7 +256,7 @@ async def test_a_recovery_that_fails_before_its_write_leaves_nothing_behind(tmp_
     assert "save_recovered" not in fakes.calls
 
 
-async def test_a_failed_recovery_write_propagates(tmp_path):
+async def test_a_failed_recovery_write_that_saved_nothing_propagates(tmp_path):
     fakes = Collaborators()
 
     async def save_recovered(**row):
@@ -261,6 +266,50 @@ async def test_a_failed_recovery_write_propagates(tmp_path):
     manifest, segment = _bundle(tmp_path)
 
     with pytest.raises(OSError, match="database is down"):
+        await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
+
+    assert fakes.calls[-1] == "find_saved"  # asked whether anything was saved
+
+
+async def test_a_recovery_write_that_committed_but_failed_is_found_and_returned(tmp_path):
+    """The statement committed and the connection dropped before its result
+    arrived: the lookup of the exact saved values finds the row's id."""
+    fakes = Collaborators()
+    saved = {}
+
+    async def save_recovered(*, author, **row):
+        saved.update(row)
+        raise ConnectionError("connection lost")
+
+    async def find_saved(**row):
+        return 77 if row == saved else None
+
+    fakes.save_recovered = save_recovered
+    fakes.find_saved = find_saved
+    manifest, segment = _bundle(tmp_path)
+
+    artifact = await fakes.segment_ingest().recover(
+        manifest=manifest, segment=segment, session_dir=tmp_path
+    )
+
+    assert artifact.transcript_id == 77
+    assert (artifact.raw_text, artifact.corrected_text) == ("hallo welt", "hallo Welt")
+
+
+async def test_a_failed_lookup_after_a_failed_write_raises_the_writes_error(tmp_path):
+    fakes = Collaborators()
+
+    async def save_recovered(**row):
+        raise ConnectionError("connection lost")
+
+    async def find_saved(**row):
+        raise OSError("lookup failed too")
+
+    fakes.save_recovered = save_recovered
+    fakes.find_saved = find_saved
+    manifest, segment = _bundle(tmp_path)
+
+    with pytest.raises(ConnectionError, match="connection lost"):
         await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
 
 
