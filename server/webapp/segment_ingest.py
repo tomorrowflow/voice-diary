@@ -78,8 +78,9 @@ class SegmentIngest:
     (Whisper + persisted transcript), `load_snapshot` (dictionary), `correct`
     (correction + entity detection) and `save_entities` for `ingest`;
     `transcribe_text` (Whisper only), `load_snapshot`, `correct`,
-    `save_recovered` (transcript and entities in one write) and `find_saved`
-    (did a failed write commit anyway?) for `recover`. A
+    `save_recovered` (transcript and entities in one write), `find_saved` (did
+    a failed write commit anyway?) and `delete_saved` (take it back when that
+    can't be told) for `recover`. A
     collaborator left unset is the shared module's function, looked up on
     each call."""
 
@@ -93,6 +94,7 @@ class SegmentIngest:
         transcribe_text: Callable[..., Awaitable[str]] | None = None,
         save_recovered: Callable[..., Awaitable[int]] | None = None,
         find_saved: Callable[..., Awaitable[int | None]] | None = None,
+        delete_saved: Callable[..., Awaitable[bool]] | None = None,
     ) -> None:
         self._transcribe = transcribe
         self._load_snapshot = load_snapshot
@@ -101,6 +103,7 @@ class SegmentIngest:
         self._transcribe_text = transcribe_text
         self._save_recovered = save_recovered
         self._find_saved_transcript = find_saved
+        self._delete_saved_transcript = delete_saved
 
     async def ingest(
         self, *, manifest: Manifest, segment: Segment, session_dir: Path
@@ -178,7 +181,8 @@ class SegmentIngest:
         except Exception as save_error:
             # The statement may have committed before its result was lost. If
             # the row holds exactly what was being saved, it is this attempt's
-            # transcript: return it so it gets linked rather than orphaned.
+            # transcript: return it so it gets linked rather than orphaned. If
+            # that can't be told, `_find_saved` takes the row back.
             transcript_id = await self._find_saved(saved)
             if transcript_id is None:
                 raise save_error from None
@@ -196,15 +200,26 @@ class SegmentIngest:
         )
 
     async def _find_saved(self, saved: dict) -> int | None:
-        """The id of the row a failed save may have written, or None when
-        there is none or the lookup itself fails (the save's own error is then
-        what the caller raises; a leftover row is replaced by the next attempt)."""
+        """What became of a save that failed with an unknown outcome: the id of
+        the row it wrote, or None when there is nothing to link. If the lookup
+        fails too, the row is deleted again, but only while it still holds
+        exactly these values, so the attempt never leaves a row that nothing
+        refers to. If that fails as well (no database at all) the next attempt
+        replaces the row in place."""
         find_saved = self._find_saved_transcript or db.find_saved_transcript
+        delete_saved = self._delete_saved_transcript or db.delete_saved_transcript
         try:
             return await find_saved(**saved)
         except Exception:  # noqa: BLE001
             logger.exception("could not tell whether the transcript %s was saved", saved["filename"])
-            return None
+        try:
+            await delete_saved(**saved)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "could not delete transcript %s after an unknown save outcome; "
+                "the next attempt replaces it", saved["filename"],
+            )
+        return None
 
     async def _correct_and_detect(
         self, segment: Segment, raw_transcript: str

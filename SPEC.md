@@ -934,8 +934,10 @@ body). One request is one attempt; nothing starts one on its own.
   attempt left (transcripts are unique per file name and date) is replaced in place rather than
   duplicated. If that save fails with an unknown outcome (the statement may have committed before the
   connection dropped), the attempt looks the row up by the exact values it was saving: a match is its
-  transcript and is linked as usual; no match means nothing was saved; a lookup that fails too leaves
-  the save's error, and a row that may remain is replaced by the next attempt. If the segment then cannot be linked to the saved transcript (its status cannot be
+  transcript and is linked as usual; no match means nothing was saved; a lookup that fails too is
+  followed by deleting the row, but only while it still holds exactly those values (a row a person
+  has edited is left alone), and the attempt fails with the save's error. Only when the database
+  answers nothing at all can a row remain, and the next attempt replaces it in place. If the segment then cannot be linked to the saved transcript (its status cannot be
   persisted), the row is deleted again, best effort; one that cannot be deleted is replaced by the
   next attempt. The segment is `pending_analysis` with its `transcript_id` only once the transcript
   and its entities are saved; the day narrative (above) then runs over the whole date and the segment

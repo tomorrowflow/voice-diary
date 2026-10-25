@@ -828,32 +828,92 @@ def test_a_save_that_committed_but_lost_its_result_is_found_and_linked(monkeypat
     assert len(world.narrative.runs) == 1
 
 
-def test_a_lost_save_result_that_cannot_be_looked_up_is_replaced_by_the_next_attempt(
+def test_a_lost_save_result_whose_lookup_fails_has_its_row_deleted(monkeypatch, tmp_path):
+    """The save committed and neither its result nor the lookup got through:
+    the attempt deletes exactly what it saved before failing the segment, so
+    no row is left that nothing refers to."""
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    world.pipeline.lose_save_result = True
+    world.pipeline.find_error = ConnectionError("lookup failed")
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        failed = await world.status()
+        rows_after_failure = dict(world.pipeline.transcript_rows)
+        world.pipeline.lose_save_result = False
+        world.pipeline.find_error = None
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return failed, rows_after_failure, await world.status()
+
+    failed, rows_after_failure, recovered = asyncio.run(run())
+
+    assert world.result(failed, "s01").status == "failed"
+    assert rows_after_failure == {}
+    assert world.result(recovered, "s01") == SegmentResult(
+        segment_id="s01", status="processed", transcript_id=10
+    )
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}
+
+
+def test_a_lost_save_result_that_cannot_be_looked_up_or_deleted_is_replaced_next_time(
     monkeypatch, tmp_path,
 ):
     world = World(
         monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
     )
     world.pipeline.lose_save_result = True
-    world.pipeline.find_error = ConnectionError("still down")
+    world.pipeline.find_error = ConnectionError("lookup failed")
+    world.pipeline.delete_error = ConnectionError("delete failed")
 
     async def run():
         await world.ingest.recover(SESSION, "s01")
         await world.ingest.settled()
         failed = await world.status()
+        rows_after_failure = dict(world.pipeline.transcript_rows)
         world.pipeline.lose_save_result = False
         world.pipeline.find_error = None
+        world.pipeline.delete_error = None
         await world.ingest.recover(SESSION, "s01")
         await world.ingest.settled()
-        return failed, await world.status()
+        return failed, rows_after_failure, await world.status()
 
-    failed, recovered = asyncio.run(run())
+    failed, rows_after_failure, recovered = asyncio.run(run())
 
     assert world.result(failed, "s01").status == "failed"
-    assert world.result(recovered, "s01") == SegmentResult(
-        segment_id="s01", status="processed", transcript_id=10
-    )
+    assert list(rows_after_failure.values()) == [10]  # the one case left: no database at all
+    assert world.result(recovered, "s01").transcript_id == 10
     assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}  # replaced, not duplicated
+
+
+def test_a_row_with_other_values_is_not_deleted_after_a_lost_save_result(monkeypatch, tmp_path):
+    """The compensating delete only removes what this attempt saved: a row a
+    person has since edited (other corrected text) stays."""
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    world.pipeline.lose_save_result = True
+    world.pipeline.find_error = ConnectionError("lookup failed")
+    original_delete = db.delete_saved_transcript
+
+    async def delete_after_an_edit(**row):
+        world.pipeline.recovered_values[row["filename"]] = (
+            row["raw_text"], "edited by a person", row["detected_entities_json"],
+        )
+        return await original_delete(**row)
+
+    monkeypatch.setattr(db, "delete_saved_transcript", delete_after_an_edit)
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+
+    asyncio.run(run())
+
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}
 
 
 def test_a_row_that_cannot_be_deleted_is_replaced_by_the_next_attempt(monkeypatch, tmp_path):

@@ -84,12 +84,16 @@ class Collaborators:
         self.calls.append("find_saved")
         return None
 
+    async def delete_saved(self, **row):
+        self.calls.append("delete_saved")
+        return True
+
     def segment_ingest(self) -> SegmentIngest:
         return SegmentIngest(
             transcribe=self.transcribe, load_snapshot=self.load_snapshot,
             correct=self.correct, save_entities=self.save_entities,
             transcribe_text=self.transcribe_text, save_recovered=self.save_recovered,
-            find_saved=self.find_saved,
+            find_saved=self.find_saved, delete_saved=self.delete_saved,
         )
 
 
@@ -296,7 +300,57 @@ async def test_a_recovery_write_that_committed_but_failed_is_found_and_returned(
     assert (artifact.raw_text, artifact.corrected_text) == ("hallo welt", "hallo Welt")
 
 
-async def test_a_failed_lookup_after_a_failed_write_raises_the_writes_error(tmp_path):
+async def test_a_failed_lookup_after_a_failed_write_deletes_what_was_saved(tmp_path):
+    """Neither the result nor the lookup got through: the attempt takes back
+    the row, by the exact values it saved, and raises the write's own error."""
+    fakes = Collaborators()
+    saved = {}
+    deleted = []
+
+    async def save_recovered(*, author, **row):
+        saved.update(row)
+        raise ConnectionError("connection lost")
+
+    async def find_saved(**row):
+        raise OSError("lookup failed too")
+
+    async def delete_saved(**row):
+        deleted.append(row)
+        return True
+
+    fakes.save_recovered = save_recovered
+    fakes.find_saved = find_saved
+    fakes.delete_saved = delete_saved
+    manifest, segment = _bundle(tmp_path)
+
+    with pytest.raises(ConnectionError, match="connection lost"):
+        await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
+
+    assert deleted == [saved]
+
+
+async def test_a_lookup_that_found_nothing_deletes_nothing(tmp_path):
+    fakes = Collaborators()  # `find_saved` answers None
+    deleted = []
+
+    async def save_recovered(**row):
+        raise ConnectionError("connection lost")
+
+    async def delete_saved(**row):
+        deleted.append(row)
+        return True
+
+    fakes.save_recovered = save_recovered
+    fakes.delete_saved = delete_saved
+    manifest, segment = _bundle(tmp_path)
+
+    with pytest.raises(ConnectionError, match="connection lost"):
+        await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
+
+    assert deleted == []
+
+
+async def test_a_failed_delete_after_a_failed_lookup_does_not_hide_the_writes_error(tmp_path):
     fakes = Collaborators()
 
     async def save_recovered(**row):
@@ -305,8 +359,12 @@ async def test_a_failed_lookup_after_a_failed_write_raises_the_writes_error(tmp_
     async def find_saved(**row):
         raise OSError("lookup failed too")
 
+    async def delete_saved(**row):
+        raise OSError("delete failed too")
+
     fakes.save_recovered = save_recovered
     fakes.find_saved = find_saved
+    fakes.delete_saved = delete_saved
     manifest, segment = _bundle(tmp_path)
 
     with pytest.raises(ConnectionError, match="connection lost"):

@@ -487,6 +487,36 @@ async def find_saved_transcript(
     return row["id"] if row else None
 
 
+async def delete_saved_transcript(
+    *,
+    filename: str,
+    date: str,
+    raw_text: str,
+    corrected_text: str,
+    detected_entities_json: str,
+) -> bool:
+    """Delete the row `save_recovered_transcript` wrote, if it still holds
+    exactly these values; True when a row was deleted. The compensating step
+    after a save whose outcome is unknown and could not be looked up: a row
+    that holds anything else (a person edited it since) is not touched."""
+    pool = await get_pool()
+    if not isinstance(date, date_type):
+        date = _parse_date_flexible(date)
+    status = await pool.execute(
+        """
+        DELETE FROM transcripts
+        WHERE filename = $1 AND date = $2 AND raw_text = $3 AND corrected_text = $4
+          AND detected_entities_json = $5::jsonb
+    """,
+        filename,
+        date,
+        raw_text,
+        corrected_text,
+        detected_entities_json,
+    )
+    return status.endswith(" 1")
+
+
 async def save_draft(
     transcript_id: int,
     corrected_text: str,
