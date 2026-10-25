@@ -17,7 +17,7 @@ struct SpeechAssetErrorClassifierTests {
         #expect(SpeechAssetErrorClassifier.indicatesMissingAsset(domain: domain, code: code))
     }
 
-    @Test("other codes in the allowlisted domains do not",
+    @Test("neighbouring codes and the other domain's code do not",
           arguments: [
             ("SFSpeechErrorDomain", 6),
             ("SFSpeechErrorDomain", 8),

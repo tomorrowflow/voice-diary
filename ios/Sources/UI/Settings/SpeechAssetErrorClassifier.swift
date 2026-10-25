@@ -10,8 +10,8 @@ enum SpeechAssetErrorClassifier {
     /// "the per-language dictation asset isn't installed". Everything
     /// else — including the common `kAFAssistantErrorDomain` 1107 /
     /// 216 "no speech" returned when we submit no audio buffers — is
-    /// interpreted as `.installed` because reaching this callback at
-    /// all required the recognizer to spin up successfully.
+    /// not missing: the probe reads it as `.installed` because reaching
+    /// its callback at all required the recognizer to spin up.
     ///
     /// References:
     ///   * `SFSpeechErrorDomain` with `unsupportedLocale` / -ish codes
