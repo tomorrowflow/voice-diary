@@ -13,19 +13,25 @@ struct ServerConnectionPresentationTests {
 
     private static let upstream = ["postgres": "ok", "whisper": "slow"]
 
+    struct Entry: Sendable {
+        let status: Reachability.Status
+        let state: State
+        let connected: Bool
+    }
+
     /// Every `Reachability.Status` case, with non-empty payloads where the
     /// case carries one.
-    private static let statuses: [(name: String, status: Reachability.Status, state: State, connected: Bool)] = [
-        ("unknown", .unknown, .unknown, false),
-        ("ok", .ok(upstream: upstream), .ok, true),
-        ("degraded", .degraded(upstream: upstream), .degraded, true),
-        ("authInvalid", .authInvalid, .authInvalid, false),
-        ("down", .down(reason: "server reports down"), .down, false),
+    private static let statuses: [Entry] = [
+        Entry(status: .unknown, state: .unknown, connected: false),
+        Entry(status: .ok(upstream: upstream), state: .ok, connected: true),
+        Entry(status: .degraded(upstream: upstream), state: .degraded, connected: true),
+        Entry(status: .authInvalid, state: .authInvalid, connected: false),
+        Entry(status: .down(reason: "server reports down"), state: .down, connected: false),
     ]
 
     @Test("a saved URL shows the probe status unchanged",
           arguments: statuses)
-    func savedShowsProbe(entry: (name: String, status: Reachability.Status, state: State, connected: Bool)) {
+    func savedShowsProbe(entry: Entry) {
         let p = Presentation(hasSavedURL: true, probeStatus: entry.status)
         #expect(p.effectiveStatus == entry.status)
         #expect(p.state == entry.state)
@@ -34,7 +40,7 @@ struct ServerConnectionPresentationTests {
 
     @Test("an unsaved URL reads as unknown whatever the probe said",
           arguments: statuses)
-    func unsavedIsUnknown(entry: (name: String, status: Reachability.Status, state: State, connected: Bool)) {
+    func unsavedIsUnknown(entry: Entry) {
         let p = Presentation(hasSavedURL: false, probeStatus: entry.status)
         #expect(p.effectiveStatus == .unknown)
         #expect(p.state == .unknown)
