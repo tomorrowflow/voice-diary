@@ -64,7 +64,7 @@ private struct OrderRow: View {
             Image(systemName: iconName)
                 .foregroundStyle(Theme.color.text.secondary)
                 .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                 Text(title)
                     .font(Theme.font.body.weight(.medium))
                     .foregroundStyle(Theme.color.text.primary)
