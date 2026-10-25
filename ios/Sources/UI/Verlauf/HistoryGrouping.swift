@@ -6,7 +6,7 @@ import Foundation
 /// deterministic and testable without a view.
 enum HistoryGrouping {
 
-    struct Section<Item> {
+    struct DaySection<Item> {
         /// Start of the local day — also the section's identity.
         let dayKey: Date
         let label: String
@@ -22,59 +22,43 @@ enum HistoryGrouping {
         sortDate: (Item) -> Date,
         calendar: Calendar,
         now: Date,
-        locale: Locale,
-        bundle: Bundle = .main
-    ) -> [Section<Item>] {
+        locale: Locale
+    ) -> [DaySection<Item>] {
         let groups = Dictionary(grouping: items) { item in
             calendar.startOfDay(for: sortDate(item))
         }
         return groups.keys.sorted(by: >).map { day in
-            Section(
+            DaySection(
                 dayKey: day,
-                label: dayLabel(day, calendar: calendar, now: now, locale: locale, bundle: bundle),
+                label: dayLabel(day, calendar: calendar, now: now, locale: locale),
                 items: groups[day] ?? []
             )
         }
     }
 
-    private static func dayLabel(
-        _ day: Date,
-        calendar: Calendar,
-        now: Date,
-        locale: Locale,
-        bundle: Bundle = .main
-    ) -> String {
+    private static func dayLabel(_ day: Date, calendar: Calendar, now: Date, locale: Locale) -> String {
+        let isGerman = locale.language.languageCode?.identifier == "de"
         if calendar.isDate(day, inSameDayAs: now) {
-            return localized("Today", locale: locale, bundle: bundle)
+            return localized("Today", isGerman: isGerman)
         }
         if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
            calendar.isDate(day, inSameDayAs: yesterday) {
-            return localized("Yesterday", locale: locale, bundle: bundle)
+            return localized("Yesterday", isGerman: isGerman)
         }
-        return dayFormatter(calendar: calendar, locale: locale).string(from: day)
-    }
-
-    // The pattern works for both German ("Montag, 12. Mai") and English
-    // ("Monday, May 12"): DateFormatter localises `EEEE / MMMM` per locale.
-    private static func dayFormatter(calendar: Calendar, locale: Locale) -> DateFormatter {
+        // The pattern works for both German ("Montag, 12. Mai") and English
+        // ("Monday, May 12"): DateFormatter localises `EEEE / MMMM` per locale.
         let formatter = DateFormatter()
-        formatter.calendar = calendar
-        formatter.timeZone = calendar.timeZone
         formatter.locale = locale
-        formatter.dateFormat = isGerman(locale) ? "EEEE, d. MMMM" : "EEEE, MMMM d"
-        return formatter
+        formatter.timeZone = calendar.timeZone
+        formatter.dateFormat = isGerman ? "EEEE, d. MMMM" : "EEEE, MMMM d"
+        return formatter.string(from: day)
     }
 
-    private static func isGerman(_ locale: Locale) -> Bool {
-        locale.language.languageCode?.identifier == "de"
-    }
-
-    /// Looks the string up in the locale's own `.lproj` so the label follows
-    /// the injected locale, not whatever language the bundle currently
-    /// resolves to. Falls back to the key, which is the English text.
-    private static func localized(_ key: String, locale: Locale, bundle: Bundle) -> String {
-        let code = isGerman(locale) ? "de" : "en"
-        guard let path = bundle.path(forResource: code, ofType: "lproj"),
+    /// Looks the string up in the language's own `.lproj` so the label
+    /// follows the injected locale, not whatever language the bundle
+    /// currently resolves to. Falls back to the key, which is the English text.
+    private static func localized(_ key: String, isGerman: Bool) -> String {
+        guard let path = Bundle.main.path(forResource: isGerman ? "de" : "en", ofType: "lproj"),
               let lproj = Bundle(path: path) else {
             return key
         }

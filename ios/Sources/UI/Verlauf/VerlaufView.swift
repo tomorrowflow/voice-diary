@@ -151,7 +151,7 @@ public struct VerlaufView: View {
 
     // Grouping is rebuilt on each render so a language toggle is visible
     // in a single render tick.
-    private func groupedByDay() -> [HistoryGrouping.Section<SessionHistoryStore.Item>] {
+    private func groupedByDay() -> [HistoryGrouping.DaySection<SessionHistoryStore.Item>] {
         HistoryGrouping.group(
             items,
             sortDate: \.sortDate,

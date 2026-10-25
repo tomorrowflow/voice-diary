@@ -28,7 +28,7 @@ struct HistoryGroupingTests {
         calendar: Calendar,
         now: Date,
         locale: Locale
-    ) -> [HistoryGrouping.Section<Entry>] {
+    ) -> [HistoryGrouping.DaySection<Entry>] {
         HistoryGrouping.group(entries, sortDate: \.date, calendar: calendar, now: now, locale: locale)
     }
 
