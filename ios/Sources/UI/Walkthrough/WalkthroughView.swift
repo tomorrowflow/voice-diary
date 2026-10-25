@@ -1747,6 +1747,12 @@ private struct RecordingDatePickerSheet: View {
         return c
     }
 
+    /// Calendar math for the grid; rebuilt per access so `Date()` and the
+    /// app locale are read fresh, as before the extraction.
+    private var pickerCalendar: RecordingDateCalendar {
+        RecordingDateCalendar(calendar: calendar, now: Date())
+    }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: Theme.spacing.md) {
@@ -1766,9 +1772,7 @@ private struct RecordingDatePickerSheet: View {
             .navigationTitle("Pick day")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
-                visibleMonth = calendar.date(
-                    from: calendar.dateComponents([.year, .month], from: selectedDate)
-                ) ?? selectedDate
+                visibleMonth = pickerCalendar.monthStart(containing: selectedDate) ?? selectedDate
             }
         }
     }
@@ -1807,11 +1811,8 @@ private struct RecordingDatePickerSheet: View {
     }
 
     private var weekdayHeader: some View {
-        let symbols = calendar.shortStandaloneWeekdaySymbols
-        let firstIdx = (calendar.firstWeekday - 1) % 7
-        let ordered = (0..<7).map { symbols[(firstIdx + $0) % 7] }
-        return HStack(spacing: 0) {
-            ForEach(ordered, id: \.self) { sym in
+        HStack(spacing: 0) {
+            ForEach(pickerCalendar.orderedWeekdaySymbols, id: \.self) { sym in
                 Text(sym)
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.subdued)
@@ -1821,7 +1822,7 @@ private struct RecordingDatePickerSheet: View {
     }
 
     private var monthGrid: some View {
-        let cells = monthCells()
+        let cells = pickerCalendar.monthCells(for: visibleMonth)
         let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
         return LazyVGrid(columns: columns, spacing: 4) {
             ForEach(cells.indices, id: \.self) { i in
@@ -1835,10 +1836,10 @@ private struct RecordingDatePickerSheet: View {
     }
 
     private func dayCell(_ day: Date) -> some View {
-        let isSelected = calendar.isDate(day, inSameDayAs: selectedDate)
-        let isToday    = calendar.isDateInToday(day)
-        let isFuture   = day > calendar.startOfDay(for: Date())
-                         && !calendar.isDateInToday(day)
+        let state      = pickerCalendar.classify(day: day, selectedDate: selectedDate)
+        let isSelected = state.isSelected
+        let isToday    = state.isToday
+        let isFuture   = state.isFuture
         let hasRecord  = recordedDates.contains(Self.isoDay.string(from: day))
 
         return Button {
@@ -1885,33 +1886,11 @@ private struct RecordingDatePickerSheet: View {
     }
 
     private func step(_ delta: Int) {
-        guard let next = calendar.date(byAdding: .month, value: delta, to: visibleMonth) else { return }
+        guard let next = pickerCalendar.steppedMonth(from: visibleMonth, by: delta) else { return }
         visibleMonth = next
     }
 
     private var canStepForward: Bool {
-        guard let next = calendar.date(byAdding: .month, value: 1, to: visibleMonth) else { return false }
-        let startOfNext = calendar.date(from: calendar.dateComponents([.year, .month], from: next)) ?? next
-        return startOfNext <= Date()
-    }
-
-    /// Returns 7-aligned cells for the visible month: leading nils for
-    /// days before the 1st, then each day, padded with trailing nils so
-    /// the grid is rectangular.
-    private func monthCells() -> [Date?] {
-        guard
-            let monthStart = calendar.date(from: calendar.dateComponents([.year, .month], from: visibleMonth)),
-            let range = calendar.range(of: .day, in: .month, for: monthStart)
-        else { return [] }
-        let weekdayOfFirst = calendar.component(.weekday, from: monthStart)
-        let leading = (weekdayOfFirst - calendar.firstWeekday + 7) % 7
-        var cells: [Date?] = Array(repeating: nil, count: leading)
-        for day in range {
-            if let d = calendar.date(byAdding: .day, value: day - 1, to: monthStart) {
-                cells.append(d)
-            }
-        }
-        while cells.count % 7 != 0 { cells.append(nil) }
-        return cells
+        pickerCalendar.canStepForward(from: visibleMonth)
     }
 }
