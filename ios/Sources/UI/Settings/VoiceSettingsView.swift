@@ -87,7 +87,7 @@ public struct VoiceSettingsView: View {
                                 WalkthroughSettingsStore.setMixedLanguageSpeech(newValue)
                             }
                         )) {
-                            VStack(alignment: .leading, spacing: 4) {
+                            VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
                                 Text("Detect language per event")
                                     .font(Theme.font.body)
                                 Text("Events with English titles are read with the English voice; the surrounding German frame stays German.")
@@ -127,7 +127,7 @@ public struct VoiceSettingsView: View {
             HStack(spacing: Theme.spacing.sm) {
                 Image(systemName: voxtralReachabilityIcon)
                     .foregroundStyle(voxtralReachabilityColor)
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                     Text(voxtralReachabilityLabel)
                         .font(Theme.font.body)
                         .foregroundStyle(Theme.color.text.primary)
@@ -221,7 +221,7 @@ public struct VoiceSettingsView: View {
                 HStack(spacing: Theme.spacing.sm) {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(isSelected ? Theme.color.text.link : Theme.color.text.subdued)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                         Text(voice.name)
                             .font(Theme.font.body)
                             .foregroundStyle(Theme.color.text.primary)
@@ -265,7 +265,7 @@ public struct VoiceSettingsView: View {
                 HStack(spacing: Theme.spacing.sm) {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(isSelected ? Theme.color.text.link : Theme.color.text.subdued)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                         Text(voice.label)
                             .font(Theme.font.body)
                             .foregroundStyle(available ? Theme.color.text.primary : Theme.color.text.subdued)
@@ -310,7 +310,7 @@ public struct VoiceSettingsView: View {
                 HStack(spacing: Theme.spacing.sm) {
                     Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(isSelected ? Theme.color.text.link : Theme.color.text.subdued)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                         Text(voice.label)
                             .font(Theme.font.body)
                             .foregroundStyle(Theme.color.text.primary)

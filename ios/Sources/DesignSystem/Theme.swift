@@ -106,6 +106,7 @@ public enum Theme {
     // ---------- Spacing -------------------------------------------------
 
     public struct SpacingTokens: Sendable {
+        public let xxxs: CGFloat = DSSpacing.spacing_r0_5 // 2
         public let xxs:  CGFloat = DSSpacing.spacing_r1   // 4
         public let xs:   CGFloat = DSSpacing.spacing_r2   // 8
         public let sm:   CGFloat = DSSpacing.spacing_r3   // 12
