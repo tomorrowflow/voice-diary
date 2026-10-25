@@ -113,13 +113,16 @@ public enum SessionHistoryStore {
     /// segments). Note: the entire `driveby_seeds/{ts}/` directory
     /// (audio + metadata). The matching upload-queue entry is purged
     /// in a follow-up since the queue actor lives elsewhere.
-    public static func delete(_ item: Item) throws {
+    public static func delete(
+        _ item: Item,
+        removing removeItem: (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }
+    ) throws {
         let url: URL
         switch item {
         case .walkthrough(let w): url = w.directory
         case .voiceNote(let d):     url = d.directory
         }
-        try FileManager.default.removeItem(at: url)
+        try removeItem(url)
     }
 
     // MARK: - Walkthrough enumeration

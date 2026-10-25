@@ -32,7 +32,7 @@ struct MetadataProtectionTests {
         let sites = [
             ("Sources/Capture/CaptureCoordinator.swift", "static func writeMetadata("),
             ("Sources/Dialog/SessionBundle.swift", "static func writeJournalData("),
-            ("Sources/UI/Verlauf/VerlaufView.swift", "static func writeVoiceNoteMetadata("),
+            ("Sources/Storage/SessionMutations.swift", "static func writeVoiceNoteMetadata("),
         ]
         for (path, marker) in sites {
             let source = try String(contentsOf: iosDir.appending(path: path), encoding: .utf8)
@@ -82,7 +82,7 @@ struct MetadataProtectionTests {
         let payload = Data(#"{"seed_id":"note-sec45"}"#.utf8)
         let url = dir.appending(path: "metadata.json")
 
-        try VerlaufDetailView.writeVoiceNoteMetadata(payload, to: url)
+        try SessionMutations.writeVoiceNoteMetadata(payload, to: url)
 
         try expectAppWideProtection(url, expecting: payload)
     }
