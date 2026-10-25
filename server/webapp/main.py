@@ -356,6 +356,15 @@ async def ingest_document(doc_id: int):
         doc = await db.get_processed_document(doc_id)
         if not doc:
             return JSONResponse({"status": "error", "message": "Document not found"}, 404)
+        # A narrative writer that held the date meanwhile saved a newer version
+        # for the transcript; sending this one would replace `diary:{date}`
+        # with the older text.
+        latest = await db.get_latest_processed_document(doc["transcript_id"])
+        if latest is not None and latest["id"] != doc_id:
+            return JSONResponse(
+                {"status": "error", "message": "Document is outdated: a newer version exists"},
+                409,
+            )
         try:
             await narrative.sync_and_ingest(doc["document_markdown"], metadata)
         except Exception as e:
