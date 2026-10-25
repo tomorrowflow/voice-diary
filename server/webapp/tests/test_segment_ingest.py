@@ -39,17 +39,12 @@ class Collaborators:
         self.transcribed: list[dict] = []
         self.corrected: list[dict] = []
         self.saved: list[tuple] = []
-        self.replaced: list[bool] = []
-        self.deleted: list[list[int]] = []
+        self.recovered: list[dict] = []
         self._persons = persons or []
         self._entities = entities or []
 
-    async def transcribe(
-        self, audio_bytes, *, src_suffix, filename, date, author, language="de",
-        replace_existing=False,
-    ):
+    async def transcribe(self, audio_bytes, *, src_suffix, filename, date, author, language="de"):
         self.calls.append("transcribe")
-        self.replaced.append(replace_existing)
         self.transcribed.append({
             "audio_bytes": audio_bytes, "src_suffix": src_suffix, "filename": filename,
             "date": date, "author": author, "language": language,
@@ -72,15 +67,24 @@ class Collaborators:
         self.calls.append("save")
         self.saved.append((transcript_id, text, detected_entities_json))
 
-    async def delete_transcripts(self, ids):
-        self.calls.append("delete")
-        self.deleted.append(ids)
+    async def transcribe_text(self, audio_bytes, *, src_suffix, filename, language="de"):
+        self.calls.append("transcribe_text")
+        self.transcribed.append({
+            "audio_bytes": audio_bytes, "src_suffix": src_suffix, "filename": filename,
+            "language": language,
+        })
+        return "hallo welt"
+
+    async def save_recovered(self, **row):
+        self.calls.append("save_recovered")
+        self.recovered.append(row)
+        return 42
 
     def segment_ingest(self) -> SegmentIngest:
         return SegmentIngest(
             transcribe=self.transcribe, load_snapshot=self.load_snapshot,
             correct=self.correct, save_entities=self.save_entities,
-            delete_transcripts=self.delete_transcripts,
+            transcribe_text=self.transcribe_text, save_recovered=self.save_recovered,
         )
 
 
@@ -201,18 +205,37 @@ async def test_a_collaborator_failure_propagates_and_persists_nothing(tmp_path):
     assert fakes.saved == []
 
 
-async def test_only_a_recovery_replaces_an_existing_transcript_row(tmp_path):
-    fakes = Collaborators()
-    manifest, segment = _bundle(tmp_path)
+async def test_a_recovery_saves_the_transcript_and_its_entities_in_one_write_at_the_end(tmp_path):
+    entity = DetectedEntity(
+        start=0, end=4, original_text="Anna", canonical="Anna", entity_type="PERSON",
+        match_type="exact", confidence="high", status="auto-matched",
+    )
+    fakes = Collaborators(entities=[entity])
+    manifest, segment = _bundle(tmp_path, date="2026-07-04")
 
-    await fakes.segment_ingest().ingest(manifest=manifest, segment=segment, session_dir=tmp_path)
-    await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
+    artifact = await fakes.segment_ingest().recover(
+        manifest=manifest, segment=segment, session_dir=tmp_path
+    )
 
-    assert fakes.replaced == [False, True]
+    assert fakes.calls == ["transcribe_text", "snapshot", "correct", "save_recovered"]
+    assert fakes.transcribed == [{
+        "audio_bytes": b"fake-audio", "src_suffix": ".m4a", "filename": "sess-1::s01.m4a",
+        "language": "de",
+    }]
+    row = fakes.recovered[0]
+    assert (row["filename"], row["date"], row["author"]) == (
+        "sess-1::s01.m4a", "2026-07-04", "Lukas Brandt",
+    )
+    assert (row["raw_text"], row["corrected_text"]) == ("hallo welt", "hallo Welt")
+    assert [e["canonical"] for e in json.loads(row["detected_entities_json"])] == ["Anna"]
+    assert (artifact.transcript_id, artifact.raw_text, artifact.corrected_text) == (
+        42, "hallo welt", "hallo Welt",
+    )
+    assert artifact.entities == json.loads(row["detected_entities_json"])
 
 
-@pytest.mark.parametrize("failing_step", ["correct", "save_entities"])
-async def test_a_recovery_deletes_the_row_it_wrote_when_a_later_step_fails(tmp_path, failing_step):
+@pytest.mark.parametrize("failing_step", ["transcribe_text", "correct", "load_snapshot"])
+async def test_a_recovery_that_fails_before_its_write_leaves_nothing_behind(tmp_path, failing_step):
     fakes = Collaborators()
 
     async def fail(*args, **kwargs):
@@ -224,39 +247,32 @@ async def test_a_recovery_deletes_the_row_it_wrote_when_a_later_step_fails(tmp_p
     with pytest.raises(RuntimeError, match="step failed"):
         await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
 
-    assert fakes.deleted == [[42]]
+    assert fakes.recovered == []
+    assert "save_recovered" not in fakes.calls
 
 
-async def test_the_original_ingest_keeps_the_row_when_a_later_step_fails(tmp_path):
+async def test_a_failed_recovery_write_propagates(tmp_path):
     fakes = Collaborators()
 
-    async def correct(raw_text, *, snapshot=None, on_step=None):
-        raise RuntimeError("ollama down")
-
-    fakes.correct = correct
-    manifest, segment = _bundle(tmp_path)
-
-    with pytest.raises(RuntimeError, match="ollama down"):
-        await fakes.segment_ingest().ingest(manifest=manifest, segment=segment, session_dir=tmp_path)
-
-    assert fakes.deleted == []
-
-
-async def test_a_failed_row_cleanup_does_not_hide_the_attempts_error(tmp_path):
-    fakes = Collaborators()
-
-    async def correct(raw_text, *, snapshot=None, on_step=None):
-        raise RuntimeError("ollama down")
-
-    async def delete_transcripts(ids):
+    async def save_recovered(**row):
         raise OSError("database is down")
 
-    fakes.correct = correct
-    fakes.delete_transcripts = delete_transcripts
+    fakes.save_recovered = save_recovered
     manifest, segment = _bundle(tmp_path)
 
-    with pytest.raises(RuntimeError, match="ollama down"):
+    with pytest.raises(OSError, match="database is down"):
         await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
+
+
+async def test_a_recovery_with_the_audio_gone_runs_no_collaborator(tmp_path):
+    fakes = Collaborators()
+    manifest, segment = _bundle(tmp_path)
+    (tmp_path / segment.audio_file).unlink()
+
+    with pytest.raises(FileNotFoundError, match="segment audio missing on disk"):
+        await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
+
+    assert fakes.calls == []
 
 
 async def test_calendar_attendees_are_seeded_into_the_persons_the_detector_sees(tmp_path):

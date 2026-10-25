@@ -347,28 +347,51 @@ class SegmentPipeline:
         self.saved_entities: list[tuple] = []
         # The `transcripts` table as far as the pipeline touches it, by file
         # name (unique per date, like the real index): a plain insert over an
-        # existing row fails, a `replace_existing` one reuses its id.
+        # existing row fails, the recovery's one-statement save replaces it in
+        # place and keeps its id. `save_entities_error` makes the write of the
+        # entities (or of the whole recovered transcript) fail.
         self.transcript_rows: dict[str, int] = {}
         self.save_entities_error: BaseException | None = None
         self._ids = transcript_ids or {}
         self.failing = failing or {}
 
+        def segment_of(filename: str) -> str:
+            return filename.split("::", 1)[1].rsplit(".", 1)[0]
+
         async def transcribe_and_persist(
             audio_bytes, *, src_suffix, filename, date, author, language="de",
-            replace_existing=False,
         ):
-            segment_id = filename.split("::", 1)[1].rsplit(".", 1)[0]
+            segment_id = segment_of(filename)
             self.transcribe_calls.append({
                 "audio_bytes": audio_bytes, "src_suffix": src_suffix, "filename": filename,
                 "date": date, "author": author, "language": language,
             })
             if segment_id in self.failing:
                 raise self.failing[segment_id]
-            if filename in self.transcript_rows and not replace_existing:
+            if filename in self.transcript_rows:
                 raise RuntimeError("duplicate key value violates idx_transcripts_filename_date")
             transcript_id = self._ids.setdefault(segment_id, 10 + len(self._ids))
             self.transcript_rows[filename] = transcript_id
             return transcript_ingest.TranscribedSegment(transcript_id=transcript_id, raw_text="hallo welt")
+
+        async def transcribe_text(audio_bytes, *, src_suffix, filename, language="de"):
+            self.transcribe_calls.append({
+                "audio_bytes": audio_bytes, "src_suffix": src_suffix, "filename": filename,
+                "language": language,
+            })
+            if segment_of(filename) in self.failing:
+                raise self.failing[segment_of(filename)]
+            return "hallo welt"
+
+        async def save_recovered_transcript(
+            *, filename, date, author, raw_text, corrected_text, detected_entities_json
+        ):
+            if self.save_entities_error is not None:
+                raise self.save_entities_error
+            transcript_id = self._ids.setdefault(segment_of(filename), 10 + len(self._ids))
+            self.transcript_rows[filename] = transcript_id
+            self.saved_entities.append((transcript_id, corrected_text, detected_entities_json))
+            return transcript_id
 
         async def correct_and_detect_entities(raw_text, *, snapshot=None, on_step=None):
             self.correct_calls.append({
@@ -397,6 +420,8 @@ class SegmentPipeline:
             }
 
         monkeypatch.setattr(db, "delete_transcripts", delete_transcripts)
+        monkeypatch.setattr(db, "save_recovered_transcript", save_recovered_transcript)
+        monkeypatch.setattr(transcript_ingest, "transcribe_text", transcribe_text)
         monkeypatch.setattr(transcript_ingest, "transcribe_and_persist", transcribe_and_persist)
         monkeypatch.setattr(correction, "correct_and_detect_entities", correct_and_detect_entities)
         monkeypatch.setattr(dictionary, "load_dictionary_snapshot", load_dictionary_snapshot)
