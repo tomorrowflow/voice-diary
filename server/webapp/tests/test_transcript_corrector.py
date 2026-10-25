@@ -408,10 +408,42 @@ async def test_correct_transcript_logs_the_call_and_the_applied_count(
     with caplog.at_level(logging.INFO, logger="transcript_corrector"):
         await correct_transcript("Der Staat")
 
-    assert "Calling Ollama for transcript correction (model: qwen-test, timeout: " in caplog.text
+    assert "Calling Ollama for transcript correction (model: " in caplog.text
     assert "Ollama transcript correction responded in" in caplog.text
     assert "LLM suggested 1 transcript correction(s)" in caplog.text
     assert "Applied 1 transcript correction(s)" in caplog.text
+
+
+async def test_correct_transcript_logs_the_module_model_and_timeout_not_the_clients(
+    monkeypatch, caplog
+) -> None:
+    _wire(monkeypatch, _reply('{"corrections": []}'))
+    monkeypatch.setattr(transcript_corrector, "OLLAMA_MODEL", "module-model")
+    monkeypatch.setattr(transcript_corrector, "OLLAMA_TIMEOUT", 42.5)
+
+    with caplog.at_level(logging.INFO, logger="transcript_corrector"):
+        await correct_transcript("Der Staat")
+
+    assert (
+        "Calling Ollama for transcript correction (model: module-model, timeout: 42.5s)"
+        in caplog.text
+    )
+    assert "qwen-test" not in caplog.text
+
+
+@pytest.mark.parametrize("module_url", ["http://module.test:11434/", "http://module.test:11434"])
+async def test_correct_transcript_logs_the_module_url_verbatim_when_unreachable(
+    monkeypatch, caplog, module_url: str
+) -> None:
+    _wire(monkeypatch, _raise(httpx.ConnectError("refused")))
+    monkeypatch.setattr(transcript_corrector, "OLLAMA_BASE_URL", module_url)
+
+    with caplog.at_level(logging.INFO, logger="transcript_corrector"):
+        result = await correct_transcript("Der Staat")
+
+    assert result == ("Der Staat", [])
+    assert f"Ollama unreachable at {module_url} for transcript correction" in caplog.text
+    assert "http://ollama.test" not in caplog.text
 
 
 async def test_correct_transcript_honors_the_flag_at_call_time_without_calling_ollama(
@@ -525,6 +557,35 @@ async def test_corrector_does_not_consult_the_module_enabled_flag(monkeypatch) -
 
     assert text == "Start"
     assert len(ollama.bodies) == 1
+
+
+async def test_corrector_logs_the_client_values_unless_told_otherwise(caplog) -> None:
+    ok = _Ollama(_reply('{"corrections": []}'))
+    down = _Ollama(_raise(httpx.ConnectError("refused")))
+
+    with caplog.at_level(logging.INFO, logger="transcript_corrector"):
+        await TranscriptCorrector(ok.client(), num_ctx=1).correct("Der Staat")
+        await TranscriptCorrector(down.client(), num_ctx=1).correct("Der Staat")
+
+    assert "(model: qwen-test, timeout: " in caplog.text
+    assert "Ollama unreachable at http://ollama.test for transcript correction" in caplog.text
+
+
+async def test_corrector_logs_the_labels_it_was_given(caplog) -> None:
+    ollama = _Ollama(_raise(httpx.ConnectError("refused")))
+    corrector = TranscriptCorrector(
+        ollama.client(),
+        num_ctx=1,
+        timeout_seconds=9.0,
+        model="label-model",
+        base_url="http://label.test/",
+    )
+
+    with caplog.at_level(logging.INFO, logger="transcript_corrector"):
+        await corrector.correct("Der Staat")
+
+    assert "(model: label-model, timeout: 9.0s)" in caplog.text
+    assert "Ollama unreachable at http://label.test/ for transcript correction" in caplog.text
 
 
 async def test_corrector_falls_back_to_the_raw_text_on_a_typed_error() -> None:

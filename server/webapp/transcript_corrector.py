@@ -162,9 +162,10 @@ class TranscriptCorrector:
     """Contextual ASR correction of one transcript with an LLM.
 
     Owns the whole prompt -> chat -> parse -> apply sequence. The Ollama client
-    and context window are supplied by the caller; `timeout_seconds` is only
-    reported in the log line. Any typed Ollama failure, empty output or
-    unusable suggestion list returns `(raw_text, [])`.
+    and context window are supplied by the caller; `timeout_seconds`, `model`
+    and `base_url` are only reported in log lines (the client's own values when
+    omitted). Any typed Ollama failure, empty output or unusable suggestion
+    list returns `(raw_text, [])`.
     """
 
     def __init__(
@@ -173,10 +174,14 @@ class TranscriptCorrector:
         num_ctx: int,
         *,
         timeout_seconds: float = OLLAMA_TIMEOUT,
+        model: str | None = None,
+        base_url: str | None = None,
     ) -> None:
         self._client = client
         self._num_ctx = num_ctx
         self._timeout_seconds = timeout_seconds
+        self._log_model = model if model is not None else client.model
+        self._log_base_url = base_url if base_url is not None else client.base_url
 
     async def correct(
         self, raw_text: str, correction_examples: list[dict] | None = None
@@ -186,7 +191,7 @@ class TranscriptCorrector:
 
         logger.info(
             "Calling Ollama for transcript correction (model: %s, timeout: %ss)",
-            self._client.model,
+            self._log_model,
             self._timeout_seconds,
         )
         t0 = time.monotonic()
@@ -195,7 +200,7 @@ class TranscriptCorrector:
             result = await self._client.chat(messages, format="json", num_ctx=self._num_ctx)
         except OllamaUnavailableError:
             logger.warning(
-                "Ollama unreachable at %s for transcript correction", self._client.base_url
+                "Ollama unreachable at %s for transcript correction", self._log_base_url
             )
             return raw_text, []
         except OllamaTimeoutError:
@@ -232,7 +237,8 @@ async def correct_transcript(
     """Send transcript to Ollama for contextual ASR error correction.
 
     Uses the module's current `LLM_CORRECTION_ENABLED`, `_ollama_client` and
-    `OLLAMA_NUM_CTX`.
+    `OLLAMA_NUM_CTX`, and logs `OLLAMA_MODEL`, `OLLAMA_TIMEOUT` and
+    `OLLAMA_BASE_URL` as configured.
 
     Returns (corrected_text, corrections_list).
     Each correction: {original, corrected, reason, start, end}
@@ -247,6 +253,10 @@ async def correct_transcript(
         return raw_text, []
 
     corrector = TranscriptCorrector(
-        _ollama_client, OLLAMA_NUM_CTX, timeout_seconds=OLLAMA_TIMEOUT
+        _ollama_client,
+        OLLAMA_NUM_CTX,
+        timeout_seconds=OLLAMA_TIMEOUT,
+        model=OLLAMA_MODEL,
+        base_url=OLLAMA_BASE_URL,
     )
     return await corrector.correct(raw_text, correction_examples=correction_examples)
