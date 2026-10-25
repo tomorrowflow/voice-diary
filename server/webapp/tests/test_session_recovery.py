@@ -797,10 +797,7 @@ def test_a_failure_writing_the_final_outcome_keeps_the_linked_transcript(
     world.ingests.repository.restart()
     world.narrative.analysis_error = None
 
-    async def retry():
-        return await world.ingest.retry(SESSION)
-
-    retried = asyncio.run(retry())
+    retried = asyncio.run(world.ingest.retry(SESSION))
 
     assert world.result(retried, "s01") == SegmentResult(
         segment_id="s01", status="processed", transcript_id=10
