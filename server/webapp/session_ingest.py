@@ -869,7 +869,7 @@ class SessionIngest:
     def _forget_recovery(self, task: asyncio.Task) -> None:
         self._recoveries.discard(task)
         if not task.cancelled():
-            task.exception()  # retrieved: an abandoned acceptance's error was already reported to its caller, if any
+            task.exception()  # mark it retrieved; a caller that stayed got it already
 
     async def settled(self) -> None:
         """Wait until no recovery is being accepted or attempted."""

@@ -663,7 +663,7 @@ def test_cancelling_the_request_while_it_is_accepted_never_strands_the_segment(
         updates.append(state)
         if len(updates) == 1:  # the `transcribing` write
             entered.set()
-            await gate.wait()
+            await asyncio.wait_for(gate.wait(), 1)
         await original_update(session_id, state, segments)
 
     monkeypatch.setattr(repository, "_update", held_update)
