@@ -35,18 +35,11 @@ private enum Category: String, Identifiable {
         case .queue:    return "arrow.up.circle"
         }
     }
-    func count(_ s: SessionHistoryStore.StorageSnapshot) -> Int {
+    func usage(in summary: StorageUsageSummary) -> StorageUsageSummary.Usage {
         switch self {
-        case .sessions: return s.walkthroughs.count
-        case .notes:    return s.voiceNotes.count
-        case .queue:    return s.queueCount
-        }
-    }
-    func bytes(_ s: SessionHistoryStore.StorageSnapshot) -> Int64 {
-        switch self {
-        case .sessions: return s.walkthroughs.totalBytes
-        case .notes:    return s.voiceNotes.totalBytes
-        case .queue:    return s.queueBytes
+        case .sessions: return summary.sessions
+        case .notes:    return summary.notes
+        case .queue:    return summary.queue
         }
     }
     var confirmTitle: String {
@@ -192,8 +185,7 @@ public struct DangerZoneView: View {
     private func alertMessage(for action: PendingDeletion) -> String {
         switch action {
         case .category(let c):
-            let count = snapshot.map(c.count) ?? 0
-            return c.confirmMessage(count: count)
+            return c.confirmMessage(count: c.usage(in: usageSummary).count)
         case .partial:
             return partialAlertMessage
         case .nuke:
@@ -222,8 +214,9 @@ public struct DangerZoneView: View {
     /// is already empty, and full-swipe is disabled so a stray gesture
     /// can't wipe a whole category without the deliberate tap + confirm.
     private func categoryRow(_ cat: Category) -> some View {
-        let count = snapshot.map(cat.count) ?? 0
-        let bytes = snapshot.map(cat.bytes) ?? 0
+        let usage = cat.usage(in: usageSummary)
+        let count = usage.count
+        let bytes = usage.bytes
         return HStack(spacing: Theme.spacing.sm) {
             Image(systemName: cat.icon)
                 .font(.body)
@@ -262,7 +255,7 @@ public struct DangerZoneView: View {
                 .font(Theme.font.body.weight(.semibold))
                 .foregroundStyle(Theme.color.text.primary)
             Spacer()
-            Text(byteFormatter.string(fromByteCount: snapshot?.totalBytes ?? 0))
+            Text(byteFormatter.string(fromByteCount: usageSummary.totalBytes))
                 .font(Theme.font.monoBody.weight(.semibold))
                 .foregroundStyle(Theme.color.text.primary)
                 .monospacedDigit()
@@ -449,6 +442,10 @@ public struct DangerZoneView: View {
     }
 
     // MARK: - Derived
+
+    private var usageSummary: StorageUsageSummary {
+        StorageUsageSummary(snapshot: snapshot)
+    }
 
     private var partialIsEmpty: Bool {
         (snapshot?.olderThanCutoff.count ?? 0) == 0
