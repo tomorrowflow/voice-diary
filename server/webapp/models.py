@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date as date_type, datetime
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 
 # --- value types -----------------------------------------------------------
@@ -189,13 +189,24 @@ class Manifest(BaseModel):
 
 class SegmentResult(BaseModel):
     segment_id: str
-    status: Literal["processed", "failed", "pending_analysis"]
+    status: Literal["processed", "failed", "pending_analysis", "transcribing"]
     transcript_id: int | None = None
     error: str | None = None
     # Machine-readable failure (SPEC §10.5); null on rows written before the
     # contract and for errors that are not an upstream failure.
     code: str | None = None
     upstream: str | None = None
+    # Failed segments only (SPEC §10.5, ADR 0007): whether the manifest entry
+    # and the retained audio still exist. Computed on read, never stored, and
+    # left out of the JSON entirely (not `null`) wherever it does not apply.
+    recoverable: bool | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_recoverable_unless_set(self, handler):
+        data = handler(self)
+        if data.get("recoverable") is None:
+            data.pop("recoverable", None)
+        return data
 
 
 class SessionAccepted(BaseModel):

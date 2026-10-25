@@ -5,6 +5,7 @@ verify stack's network and talks to the real webapp at $BASE_URL.
     python /drive.py health | calendar-today | sessions-dates
     python /drive.py session-upload-whisper-down <session_id>
     python /drive.py session-status <session_id> legacy|coded
+    python /drive.py segment-retry-transcription <session_id>
     python /drive.py document-ingest-refusals
     python /drive.py document-ingest-outdated <doc_id>
     python /drive.py static-entity-create <name>
@@ -185,6 +186,47 @@ def session_status(session_id, expect):
                   for s in segments))
 
 
+def segment_retry_transcription(session_id):
+    """Every refusal of the recovery route that a stack without Whisper can reach,
+    against the seeded `ftr02-recoverable` session. Nothing may change: the session
+    reads back as seeded."""
+
+    def retry(sid, segment_id, auth=True):
+        return call("POST", f"/api/sessions/{sid}/segments/{segment_id}/retry-transcription", auth=auth)
+
+    status, body = retry(session_id, "s02", auth=False)
+    check("POST without bearer -> 401 missing_bearer_token",
+          status == 401 and body.get("detail") == "missing_bearer_token")
+    status, body = retry("ftr02-no-such-session", "s02")
+    check("unknown session -> 404 session_not_found",
+          status == 404 and body.get("detail") == "session_not_found")
+    status, body = retry(session_id, "s99")
+    check("unknown segment -> 404 segment_not_found",
+          status == 404 and body.get("detail") == "segment_not_found")
+    status, body = retry(session_id, "s01")
+    check("processed segment -> 409 segment_not_failed",
+          status == 409 and body.get("detail") == "segment_not_failed")
+    status, body = retry(session_id, "s03")
+    check("failed segment without audio -> 409 segment_audio_missing",
+          status == 409 and body.get("detail") == "segment_audio_missing")
+    status, body = retry(session_id, "s02")
+    check("failed segment with audio, Whisper not in this stack -> 503 failure contract",
+          status == 503 and body == {"detail": "whisper_unavailable", "code": "whisper_unavailable",
+                                     "upstream": "whisper", "retryable": True})
+    check("no Retry-After header (no wait is known)", "retry-after" not in LAST_RESPONSE_HEADERS)
+
+    status, body = call("GET", f"/api/sessions/{session_id}/status", auth=True)
+    check("status -> 200", status == 200)
+    segments = {s["segment_id"]: s for s in body.get("segments", [])} if isinstance(body, dict) else {}
+    check("state and segment statuses are as seeded (nothing changed, nothing transcribing)",
+          body.get("state") == "partial"
+          and [segments[k]["status"] for k in ("s01", "s02", "s03")] == ["processed", "failed", "failed"])
+    check("recoverable: absent on processed, true with audio, false without",
+          "recoverable" not in segments["s01"]
+          and segments["s02"].get("recoverable") is True
+          and segments["s03"].get("recoverable") is False)
+
+
 def document_ingest_refusals():
     """The manual ingest's refusals, which never reach LightRAG: the bearer
     gate, then the lookup of an unknown document."""
@@ -234,6 +276,7 @@ COMMANDS = {
     "sessions-dates": (sessions_dates, 0),
     "session-upload-whisper-down": (session_upload_whisper_down, 1),
     "session-status": (session_status, 2),
+    "segment-retry-transcription": (segment_retry_transcription, 1),
     "document-ingest-refusals": (document_ingest_refusals, 0),
     "document-ingest-outdated": (document_ingest_outdated, 1),
     "static-entity-create": (static_entity_create, 1),

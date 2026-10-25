@@ -17,6 +17,7 @@ dependencies.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -27,6 +28,8 @@ import db
 import dictionary
 import transcript_ingest
 from models import CalendarEventSegment, Manifest, Segment
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -41,7 +44,8 @@ class SegmentArtifact:
 
 
 class SegmentOperation(Protocol):
-    """What `SessionIngest` calls per segment; `SegmentIngest.ingest`."""
+    """What `SessionIngest` calls per segment; `SegmentIngest.ingest` (and
+    `SegmentIngest.recover` for a transcription recovery)."""
 
     def __call__(
         self, *, manifest: Manifest, segment: Segment, session_dir: Path
@@ -49,10 +53,11 @@ class SegmentOperation(Protocol):
 
 
 class SegmentIngest:
-    """The per-segment operation, over its own four collaborators: `transcribe`
+    """The per-segment operation, over its own collaborators: `transcribe`
     (Whisper + persisted transcript), `load_snapshot` (dictionary), `correct`
-    (correction + entity detection) and `save_entities`. A collaborator left
-    unset is the shared module's function, looked up on each `ingest`."""
+    (correction + entity detection), `save_entities` and, for a recovery,
+    `delete_transcripts`. A collaborator left unset is the shared module's
+    function, looked up on each `ingest`."""
 
     def __init__(
         self,
@@ -61,11 +66,13 @@ class SegmentIngest:
         load_snapshot: Callable[[], Awaitable[dictionary.DictionarySnapshot]] | None = None,
         correct: Callable[..., Awaitable[correction.CorrectionResult]] | None = None,
         save_entities: Callable[[int, str, str], Awaitable[object]] | None = None,
+        delete_transcripts: Callable[[list[int]], Awaitable[object]] | None = None,
     ) -> None:
         self._transcribe = transcribe
         self._load_snapshot = load_snapshot
         self._correct = correct
         self._save_entities = save_entities
+        self._delete_transcripts = delete_transcripts
 
     async def ingest(
         self, *, manifest: Manifest, segment: Segment, session_dir: Path
@@ -76,6 +83,21 @@ class SegmentIngest:
         entities. Document analysis + LightRAG ingest happen once per run in
         `SessionIngest`'s narrative stage.
         """
+        return await self._run(manifest, segment, session_dir, recovering=False)
+
+    async def recover(
+        self, *, manifest: Manifest, segment: Segment, session_dir: Path
+    ) -> SegmentArtifact:
+        """The same pipeline for a transcription recovery (ADR 0005): it
+        reuses the transcript row an earlier attempt left behind (transcripts
+        are unique per file name and date) and, when a step after Whisper
+        fails, deletes the row it just wrote, so a failed attempt leaves no
+        orphan and the next one starts clean."""
+        return await self._run(manifest, segment, session_dir, recovering=True)
+
+    async def _run(
+        self, manifest: Manifest, segment: Segment, session_dir: Path, *, recovering: bool
+    ) -> SegmentArtifact:
         transcribe = self._transcribe or transcript_ingest.transcribe_and_persist
         load_snapshot = self._load_snapshot or dictionary.load_dictionary_snapshot
         correct = self._correct or correction.correct_and_detect_entities
@@ -90,6 +112,9 @@ class SegmentIngest:
         # 1-2. ffmpeg → Whisper → persisted transcript row, via the core shared
         # with main.py's /api/ingest/upload (SRV-A7).
         suffix = Path(segment.audio_file).suffix
+        # Only a recovery passes `replace_existing`, so the original ingest and
+        # the resume of a stored bundle call the collaborator as they always did.
+        persistence = {"replace_existing": True} if recovering else {}
         transcribed = await transcribe(
             audio_bytes,
             src_suffix=suffix or ".m4a",
@@ -97,7 +122,20 @@ class SegmentIngest:
             date=manifest.date.isoformat(),
             author="Lukas Brandt",
             language=language,
+            **persistence,
         )
+        try:
+            return await self._after_transcription(
+                segment, transcribed, load_snapshot, correct, save_entities
+            )
+        except Exception:
+            if recovering:
+                await self._discard_transcript(transcribed.transcript_id)
+            raise
+
+    async def _after_transcription(
+        self, segment: Segment, transcribed, load_snapshot, correct, save_entities
+    ) -> SegmentArtifact:
         transcript_id = transcribed.transcript_id
         raw_transcript = transcribed.raw_text
 
@@ -144,6 +182,17 @@ class SegmentIngest:
             corrected_text=corrected_text,
             entities=entities,
         )
+
+
+    async def _discard_transcript(self, transcript_id: int) -> None:
+        """Best effort: a row that cannot be deleted is reused by the next
+        recovery attempt, so a failure here is logged, not raised over the
+        error that made the attempt fail."""
+        delete = self._delete_transcripts or db.delete_transcripts
+        try:
+            await delete([transcript_id])
+        except Exception:  # noqa: BLE001
+            logger.warning("could not delete transcript %s after a failed recovery", transcript_id)
 
 
 def attendees_to_canonical_names(attendees: list[str]) -> list[str]:

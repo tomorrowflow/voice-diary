@@ -8,6 +8,10 @@ is `SessionIngest`:
   row; `process()` then runs the two-phase pipeline in the background;
 * **retry** — `retry()` re-runs the narrative stage for the segments left
   `pending_analysis`, resuming the ones that never got a transcript;
+* **recovery** — `recover()` transcribes one `failed` segment again from its
+  retained audio, on request only (FTR-02, ADR 0005, 0007): it validates,
+  claims the session, persists the segment `transcribing` and runs the attempt
+  on its own, `settled()` waiting for it;
 * **sweep** — `sweep()` retries every stranded session once after a restart;
 * **status** — `status()` reads a session's status;
 * **date coordination** — `narrative_date()` is the one-writer-at-a-time hold
@@ -131,6 +135,26 @@ class SessionManifestMissing(SessionError):
     code = "session_manifest_missing"
 
 
+class SegmentNotFound(SessionError):
+    """The session has no segment with that id."""
+
+    code = "segment_not_found"
+
+
+class SegmentNotFailed(SessionError):
+    """Only a `failed` segment is recovered: a `processed`, `pending_analysis`
+    or already `transcribing` one is left alone."""
+
+    code = "segment_not_failed"
+
+
+class SegmentAudioMissing(SessionError):
+    """The segment's manifest entry or its retained audio is gone, so it can't
+    be transcribed again."""
+
+    code = "segment_audio_missing"
+
+
 # --- storage layout -------------------------------------------------------
 
 
@@ -187,9 +211,12 @@ async def _asr_reachable() -> bool:
 
 
 def derive_session_state(results: list[SegmentResult]) -> str:
-    """`done` only when every segment is `processed`, `failed` when every one
+    """`processing` while any segment is `transcribing` (a recovery runs),
+    `done` only when every segment is `processed`, `failed` when every one
     failed, otherwise `partial` — including any `pending_analysis` segment
     (BUG-114/#114)."""
+    if any(r.status == "transcribing" for r in results):
+        return "processing"
     if all(r.status == "processed" for r in results):
         return "done"
     if all(r.status == "failed" for r in results):
@@ -218,7 +245,8 @@ class SessionIngest:
     Postgres adapter unless a test passes another. `segment_operation` is
     what runs for each segment, in the original ingest and when a retry
     resumes a stored bundle (ARCH-3): a `SegmentIngest` over the shared
-    modules unless a test passes another.
+    modules unless a test passes another, which then also serves a
+    transcription recovery (`SegmentIngest.recover` otherwise).
     """
 
     def __init__(
@@ -229,8 +257,12 @@ class SessionIngest:
         segment_operation: SegmentOperation | None = None,
     ) -> None:
         self._whisper_reachable = whisper_reachable
+        segment_ingest = SegmentIngest()
         self._segment_operation: SegmentOperation = (
-            segment_operation if segment_operation is not None else SegmentIngest().ingest
+            segment_operation if segment_operation is not None else segment_ingest.ingest
+        )
+        self._recovery_operation: SegmentOperation = (
+            segment_operation if segment_operation is not None else segment_ingest.recover
         )
         self.repository: SessionIngestRepository = (
             repository if repository is not None else PostgresSessionIngests()
@@ -242,6 +274,9 @@ class SessionIngest:
         # transcript and ingest `diary:{date}` into LightRAG twice. Guarded by
         # `_lock`; single-process app, so an in-process set is enough.
         self._in_flight: set[str] = set()
+        # Running recovery attempts. They belong to the server, not to the
+        # request that started them, so a client leaving never stops one.
+        self._recoveries: set[asyncio.Task] = set()
         # One lock per date for the narrative stage (`narrative_date`). Only
         # that stage takes it: transcription, uploads and other dates are not
         # held up. A date's lock is created on first use and kept (one small
@@ -283,8 +318,9 @@ class SessionIngest:
     async def status(self, session_id: str) -> SessionStatus | None:
         """Cache-then-row lookup; `None` for an unknown session. A cache miss
         (e.g. after a restart) falls back to the persisted row (SRV-A6) and
-        repopulates the cache from it."""
-        return await self.repository.get(session_id)
+        repopulates the cache from it. Failed segments carry `recoverable`."""
+        stored = await self.repository.get(session_id)
+        return None if stored is None else _with_recoverable(session_id, stored)
 
     async def _current_status(self, session_id: str) -> SessionStatus:
         """The session's status after a transition was persisted. Only a data
@@ -608,7 +644,7 @@ class SessionIngest:
         whose resumed segments all fail is not an error: it is persisted and
         returned `failed`.
         """
-        status_obj = await self.status(session_id)
+        status_obj = await self.repository.get(session_id)
         if status_obj is None:
             raise SessionNotFound()
 
@@ -618,7 +654,8 @@ class SessionIngest:
             if not _has_pending_analysis(status_obj):
                 raise SessionNotRetryable()
 
-            return await self._retry_session_analysis(session_id, status_obj)
+            retried = await self._retry_session_analysis(session_id, status_obj)
+            return _with_recoverable(session_id, retried)
         finally:
             await self._end(session_id)
 
@@ -748,6 +785,136 @@ class SessionIngest:
             await self._persist_status(session_id, status_obj.state, list(results))
         return results, artifacts
 
+    # -- transcription recovery --------------------------------------------
+
+    async def recover(self, session_id: str, segment_id: str) -> SessionStatus:
+        """Start the transcription recovery of a `failed` segment (FTR-02,
+        ADR 0005 and 0007) and return the status with the segment
+        `transcribing`. The attempt then runs on its own, whether or not the
+        caller stays: transcript and entities, then the day narrative.
+
+        The checks run in order and change nothing until all pass: `404` for an
+        unknown session (`SessionNotFound`) or segment (`SegmentNotFound`),
+        `SegmentNotFailed` for any other status, `SegmentAudioMissing` without
+        its manifest entry or audio, `upstream_failure.whisper_unavailable()`
+        when Whisper is down, `SessionBusy` when another run holds the session.
+        The state-dependent checks are repeated under the claim.
+
+        The attempt reuses the per-segment operation for this one segment and
+        changes no other segment. Its outcome is the segment's status:
+        `pending_analysis` once its transcript and entities are saved, then
+        `processed`; `failed` with the latest error when transcription fails;
+        still `pending_analysis` with an `analysis_pending: …` error when only
+        the narrative fails, which the analysis retry then finishes.
+        """
+        stored = await self.repository.get(session_id)
+        if stored is None:
+            raise SessionNotFound()
+        _check_recoverable(session_id, stored, segment_id)
+        if not await self._whisper_reachable():
+            raise upstream_failure.whisper_unavailable()
+        if not await self._try_begin(session_id):
+            raise SessionBusy()
+        try:
+            stored = await self.repository.get(session_id)
+            if stored is None:
+                raise SessionNotFound()
+            _check_recoverable(session_id, stored, segment_id)
+            segments = [
+                SegmentResult(segment_id=segment_id, status="transcribing")
+                if r.segment_id == segment_id
+                else r
+                for r in stored.segments
+            ]
+            await self._persist_status(session_id, derive_session_state(segments), segments)
+            # A copy: the attempt starts changing the cached status at once.
+            accepted = (await self._current_status(session_id)).model_copy(deep=True)
+            attempt = asyncio.create_task(self._run_recovery(session_id, segment_id))
+        except BaseException:
+            await self._end(session_id)
+            raise
+        self._recoveries.add(attempt)
+        attempt.add_done_callback(self._recoveries.discard)
+        return _with_recoverable(session_id, accepted)
+
+    async def settled(self) -> None:
+        """Wait until no recovery attempt is running."""
+        while self._recoveries:
+            await asyncio.gather(*self._recoveries, return_exceptions=True)
+
+    async def _run_recovery(self, session_id: str, segment_id: str) -> None:
+        """The background attempt `recover()` started: releases the claim it
+        holds on every exit and settles the segment even if the attempt
+        itself breaks, so a segment never stays `transcribing`."""
+        bind_session_id(session_id)
+        try:
+            await self._recover_segment(session_id, segment_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("session %s segment %s recovery crashed", session_id, segment_id)
+            try:
+                await self._settle_segment(session_id, _failed_result(segment_id, exc))
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "session %s segment %s could not be settled", session_id, segment_id
+                )
+        finally:
+            await self._end(session_id)
+
+    async def _recover_segment(self, session_id: str, segment_id: str) -> None:
+        try:
+            manifest = load_manifest(session_id)
+            segment = next((s for s in manifest.segments if s.segment_id == segment_id), None)
+            if segment is None:
+                raise LookupError(f"segment {segment_id} is not in manifest.json")
+            artifact = await self._recovery_operation(
+                manifest=manifest, segment=segment, session_dir=session_dir_for(session_id)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("session %s segment %s recovery failed: %s", session_id, segment_id, exc)
+            await self._settle_segment(session_id, _failed_result(segment_id, exc))
+            return
+
+        results = await self._settle_segment(
+            session_id,
+            SegmentResult(
+                segment_id=segment_id, status="pending_analysis", transcript_id=artifact.transcript_id
+            ),
+        )
+        if results is None:
+            return
+        try:
+            await self._narrate_day(manifest, results, {segment_id: artifact}, republish=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "session %s segment %s recovered but analysis failed: %s — leaving it pending",
+                session_id, segment_id, exc,
+            )
+            final = SegmentResult(
+                segment_id=segment_id,
+                status="pending_analysis",
+                transcript_id=artifact.transcript_id,
+                error=f"analysis_pending: {exc}",
+                **upstream_failure.failure_fields(exc),
+            )
+        else:
+            final = SegmentResult(
+                segment_id=segment_id, status="processed", transcript_id=artifact.transcript_id
+            )
+        await self._settle_segment(session_id, final)
+
+    async def _settle_segment(
+        self, session_id: str, result: SegmentResult
+    ) -> list[SegmentResult] | None:
+        """Persist `result` as its segment's status, leave every other segment
+        as stored, and re-derive the session state. `None` when the session is
+        gone (a data reset landed mid-run)."""
+        current = await self.repository.get(session_id)
+        if current is None:
+            return None
+        segments = [result if r.segment_id == result.segment_id else r for r in current.segments]
+        await self._persist_status(session_id, derive_session_state(segments), segments)
+        return segments
+
     # -- startup sweep -----------------------------------------------------
 
     async def sweep(self) -> None:
@@ -785,7 +952,7 @@ class SessionIngest:
                 logger.info("startup retry sweep: session %s busy, skipping", session_id)
                 continue
             try:
-                status_obj = await self.status(session_id)
+                status_obj = await self.repository.get(session_id)
                 if status_obj is None:
                     continue
                 # We hold the in-flight claim, so no run in this process owns
@@ -840,6 +1007,51 @@ def _has_pending_analysis(status_obj: SessionStatus) -> bool:
 def _is_untranscribed(result: SegmentResult) -> bool:
     """A segment cut off before its transcript was persisted (BUG-112)."""
     return result.status == "pending_analysis" and result.transcript_id is None
+
+
+def _failed_result(segment_id: str, exc: BaseException) -> SegmentResult:
+    return SegmentResult(
+        segment_id=segment_id, status="failed", error=str(exc),
+        **upstream_failure.failure_fields(exc),
+    )
+
+
+def _segments_with_retained_audio(session_id: str) -> set[str]:
+    """Ids of the segments whose manifest entry and audio file both exist. A
+    missing or unreadable manifest leaves none."""
+    try:
+        manifest = load_manifest(session_id)
+    except Exception:  # noqa: BLE001 — nothing to recover from without it
+        return set()
+    session_dir = session_dir_for(session_id)
+    return {
+        segment.segment_id
+        for segment in manifest.segments
+        if (session_dir / segment.audio_file).is_file()
+    }
+
+
+def _check_recoverable(session_id: str, status_obj: SessionStatus, segment_id: str) -> None:
+    """The request checks of a recovery that depend on state, in order."""
+    result = next((r for r in status_obj.segments if r.segment_id == segment_id), None)
+    if result is None:
+        raise SegmentNotFound()
+    if result.status != "failed":
+        raise SegmentNotFailed()
+    if segment_id not in _segments_with_retained_audio(session_id):
+        raise SegmentAudioMissing()
+
+
+def _with_recoverable(session_id: str, status_obj: SessionStatus) -> SessionStatus:
+    """`status_obj` with `recoverable` on its failed segments (SPEC §10.5),
+    computed now and never stored; the object itself when none failed."""
+    if not any(r.status == "failed" for r in status_obj.segments):
+        return status_obj
+    retained = _segments_with_retained_audio(session_id)
+    return status_obj.model_copy(update={"segments": [
+        r.model_copy(update={"recoverable": r.segment_id in retained}) if r.status == "failed" else r
+        for r in status_obj.segments
+    ]})
 
 
 # --- day assembly ---------------------------------------------------------

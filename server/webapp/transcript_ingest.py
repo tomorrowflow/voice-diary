@@ -34,6 +34,7 @@ async def transcribe_and_persist(
     date: str,
     author: str,
     language: str = "de",
+    replace_existing: bool = False,
 ) -> TranscribedSegment:
     """ffmpeg -> Whisper -> a persisted `transcripts` row.
 
@@ -41,13 +42,17 @@ async def transcribe_and_persist(
     worth persisting); the ASR-specific errors (`AsrTimeoutError`,
     `AsrUnavailableError`, `AsrEngineError`) propagate from `asr_client`
     unchanged for callers to classify into their own HTTP response shape.
+
+    `replace_existing` reuses the row an earlier attempt for the same file
+    name and date left behind instead of failing on its unique index.
     """
     client = asr_client.get_default_client()
     wav_bytes = await client.to_wav_16k_mono(audio_bytes, src_suffix)
     raw_text = await client.transcribe(wav_bytes, language=language)
     if not raw_text:
         raise RuntimeError("Whisper returned an empty transcript")
-    transcript_id = await db.create_transcript(
+    persist = db.replace_transcript if replace_existing else db.create_transcript
+    transcript_id = await persist(
         filename=filename, date=date, author=author, raw_text=raw_text,
     )
     return TranscribedSegment(transcript_id=transcript_id, raw_text=raw_text)

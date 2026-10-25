@@ -417,6 +417,36 @@ async def create_transcript(
     return row["id"]
 
 
+async def replace_transcript(
+    filename: str, date: str, author: str, raw_text: str
+) -> int:
+    """`create_transcript` for a file name that may already have a row for the
+    date (transcripts are unique per file name and date): an earlier attempt's
+    row keeps its id and is reset to a fresh transcript of `raw_text`, with
+    the derived text, entities and review state cleared, so a retry never
+    fails on or duplicates what an interrupted attempt left."""
+    pool = await get_pool()
+    if not isinstance(date, date_type):
+        date = _parse_date_flexible(date)
+    row = await pool.fetchrow(
+        """
+        INSERT INTO transcripts (filename, date, author, raw_text)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (filename, date) DO UPDATE
+        SET author = EXCLUDED.author, raw_text = EXCLUDED.raw_text,
+            corrected_text = NULL, entities_json = NULL, detected_entities_json = NULL,
+            status = 'pending', submitted_at = NULL, processed_at = NULL,
+            processing_error = NULL
+        RETURNING id
+    """,
+        filename,
+        date,
+        author,
+        raw_text,
+    )
+    return row["id"]
+
+
 async def save_draft(
     transcript_id: int,
     corrected_text: str,

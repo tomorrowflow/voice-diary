@@ -179,8 +179,9 @@ def test_process_derives_the_final_state_from_the_segment_outcomes(
     cached = asyncio.run(scenario())
 
     assert ingests.row["state"] == cached.state == state
-    # Write-through: the cache holds exactly what was persisted.
-    assert [s.model_dump() for s in cached.segments] == ingests.row["segments"]
+    # Write-through: the cache holds exactly what was persisted (`recoverable`
+    # is computed on read, never stored).
+    assert [s.model_dump(exclude={"recoverable"}) for s in cached.segments] == ingests.row["segments"]
     # Narrative runs only when something was transcribed.
     assert len(stage.runs) == (0 if state == "failed" else 1)
 

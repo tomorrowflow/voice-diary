@@ -736,7 +736,7 @@ Manifest-level fields tied to the drive-by section:
 }
 ```
 
-Processing (per-segment Whisper re-transcription + entity normalization, then a single day-level Ollama analysis + LightRAG ingest covering every session of the date, §10.6.1) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed`; if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres. This holds when the analysis is routed to Blindfold (`ANALYSIS_ROUTE=blindfold`) too: its outage, timeout or error leaves the segments `pending_analysis` with a `blindfold_*` code (§10.6.1), and the server never retries that analysis on Ollama or any other provider. A retry or the startup sweep sends it to whichever route is then configured.
+Processing (per-segment Whisper re-transcription + entity normalization, then a single day-level Ollama analysis + LightRAG ingest covering every session of the date, §10.6.1) happens asynchronously on the server. The iOS app does not wait for processing to complete; it only needs successful upload. Per-segment failure semantics are unchanged: a segment that fails before transcription is recorded as `failed` (and can be transcribed again on request from the audio the server retained, §10.6.1); if every segment transcribed but the session-level analysis/ingest fails, all transcribed segments are marked `pending_analysis` and can be retried — the raw + corrected transcripts are already in Postgres. This holds when the analysis is routed to Blindfold (`ANALYSIS_ROUTE=blindfold`) too: its outage, timeout or error leaves the segments `pending_analysis` with a `blindfold_*` code (§10.6.1), and the server never retries that analysis on Ollama or any other provider. A retry or the startup sweep sends it to whichever route is then configured.
 
 Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-analysis` response, §10.6.1) have this shape:
 
@@ -745,18 +745,18 @@ Per-segment results (`GET /api/sessions/{session_id}/status`, and the `retry-ana
   "error": "whisper read timed out", "code": "whisper_timeout", "upstream": "whisper" }
 ```
 
-`status` is `processed`, `failed` or `pending_analysis`. `error` is the free-form string and is unchanged. `code` and `upstream` are optional machine-readable fields using the failure catalogue in §10.6.1; both are `null` on a `processed` segment, when the error is not an upstream failure, and for sessions written before they existed (the status is stored as JSON, so old rows simply lack the keys). Clients must treat a null `code` as "unknown reason" and fall back to `error` / `status`.
+`status` is `processed`, `failed`, `pending_analysis` or `transcribing`. `transcribing` is additive (ADR 0007): the segment is being transcribed again after a recovery request (§10.6.1), it has no transcript yet and `transcript_id` is `null`; an app build that predates it shows it as an unknown status. `recoverable` is an optional boolean on `failed` segments only: `true` while the segment's manifest entry and its retained audio both exist, `false` once either is gone. It is computed when the status is read, never stored, and absent on every other segment and on older servers (clients show the recovery action only for `true`). `error` is the free-form string and is unchanged. `code` and `upstream` are optional machine-readable fields using the failure catalogue in §10.6.1; both are `null` on a `processed` segment, when the error is not an upstream failure, and for sessions written before they existed (the status is stored as JSON, so old rows simply lack the keys). Clients must treat a null `code` as "unknown reason" and fall back to `error` / `status`.
 
 The session-level `state` in the same responses is derived from the segment statuses:
 
 | `state` | When |
 |---|---|
-| `processing` | The server accepted the session and is still running it. |
+| `processing` | The server accepted the session and is still running it, or any segment is `transcribing` (a recovery attempt runs). |
 | `done` | Every segment is `processed`. |
 | `failed` | Every segment is `failed`. |
 | `partial` | Anything else, including any `pending_analysis` segment: all pending, `processed` + `pending_analysis`, or a mix with `failed`. |
 
-A session whose analysis or ingest failed therefore reports `partial`, never `done`, until a retry (§10.6.1) processes its pending segments. The startup sweep (§10.6.1) does not look at `done` sessions. Sessions persisted as `done` with a `pending_analysis` segment before this derivation existed are corrected to `partial` by the first sweep after the upgrade.
+A session whose analysis or ingest failed therefore reports `partial`, never `done`, until a retry (§10.6.1) processes its pending segments. A session whose only failed segment is recovered becomes `done`; recovering one of several failed segments leaves it `partial` (or `failed` again if the attempt fails and every segment is then failed). The startup sweep (§10.6.1) does not look at `done` sessions. Sessions persisted as `done` with a `pending_analysis` segment before this derivation existed are corrected to `partial` by the first sweep after the upgrade.
 
 ### 10.6 Retry & offline behaviour
 
@@ -906,6 +906,41 @@ exists. If every segment fails, the route returns that `failed` status with `200
 the sweep leaves the session settled. The route still answers `409 session_not_retryable`
 when no segment is `pending_analysis`, or when a pending segment's stored transcript row is gone and
 there was nothing to resume. `session_busy` applies as above.
+
+**Recovering a failed segment (ADR 0005, 0007).** A `failed` segment has no transcript, so neither
+`retry-analysis` nor the sweep touches it and a re-upload answers `409 session_exists`. It is
+transcribed again only when someone asks, from the audio the server retained in the session's bundle:
+**`POST /api/sessions/{session_id}/segments/{segment_id}/retry-transcription`** (bearer token, no
+body). One request is one attempt; nothing starts one on its own.
+
+- *Request checks.* They run in this order and change nothing until all pass: `404`
+  `session_not_found` / `segment_not_found`; `409` `segment_not_failed` (the segment is
+  `processed`, `pending_analysis` or already `transcribing`, so a repeated request has no effect);
+  `409` `segment_audio_missing` (its manifest entry or audio file is gone); `503`
+  `whisper_unavailable` in the failure shape below, when Whisper is unreachable; `409`
+  `session_busy` when another run holds the session (the original ingest, `retry-analysis`, the sweep
+  or another segment's recovery; the other segment needs a new request). The session is then
+  claimed, the segment state and the audio are checked again under the claim, and the segment is
+  persisted as `transcribing`. Whisper unreachable, a missing segment and missing audio persist
+  nothing and start no work.
+- *Response.* `202` with the updated `SessionStatus` (§10.5): the segment `transcribing`, the session
+  `state` `processing`. The outcome is read from `GET /api/sessions/{session_id}/status`.
+- *The attempt.* It runs on in the background whether or not the client stays connected, and holds
+  only its own session, plus the date during the narrative stage, so an upload or another date's
+  work is never held up. It runs the per-segment pipeline (Whisper, correction, entity detection,
+  persistence) for that one segment and changes no other segment's result. A transcript row an
+  earlier attempt left (transcripts are unique per file name and date) is reused, and a failure after
+  Whisper deletes the row it wrote, so no orphan or duplicate row remains and the next attempt starts
+  clean. The segment is `pending_analysis` with its `transcript_id` only once the transcript and its
+  entities are saved; the day narrative (above) then runs over the whole date and the segment becomes
+  `processed`.
+- *Outcomes.* Transcription fails (Whisper, conversion, an empty transcript, storage): the segment is
+  `failed` again with the new `error`, `code` and `upstream` replacing the old ones, and the audio is
+  untouched, so the next request can succeed. The narrative or the LightRAG ingest fails: the segment
+  stays `pending_analysis` with its transcript and the usual `analysis_pending: …` error, and the
+  existing retry (route, sweep) finishes it; nothing about a recovery makes that retry pick up a
+  `failed` segment. The session `state` is derived as in §10.5: `done` when the recovered segment was
+  the last unfinished one, `partial` while other segments are `failed`.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
 Voxtral, and Blindfold when the analysis route is `blindfold`) is down, slow or answers with an error, the server reports it in one shape. `detail` stays

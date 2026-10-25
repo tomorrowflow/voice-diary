@@ -39,11 +39,17 @@ class Collaborators:
         self.transcribed: list[dict] = []
         self.corrected: list[dict] = []
         self.saved: list[tuple] = []
+        self.replaced: list[bool] = []
+        self.deleted: list[list[int]] = []
         self._persons = persons or []
         self._entities = entities or []
 
-    async def transcribe(self, audio_bytes, *, src_suffix, filename, date, author, language="de"):
+    async def transcribe(
+        self, audio_bytes, *, src_suffix, filename, date, author, language="de",
+        replace_existing=False,
+    ):
         self.calls.append("transcribe")
+        self.replaced.append(replace_existing)
         self.transcribed.append({
             "audio_bytes": audio_bytes, "src_suffix": src_suffix, "filename": filename,
             "date": date, "author": author, "language": language,
@@ -66,10 +72,15 @@ class Collaborators:
         self.calls.append("save")
         self.saved.append((transcript_id, text, detected_entities_json))
 
+    async def delete_transcripts(self, ids):
+        self.calls.append("delete")
+        self.deleted.append(ids)
+
     def segment_ingest(self) -> SegmentIngest:
         return SegmentIngest(
             transcribe=self.transcribe, load_snapshot=self.load_snapshot,
             correct=self.correct, save_entities=self.save_entities,
+            delete_transcripts=self.delete_transcripts,
         )
 
 
@@ -188,6 +199,64 @@ async def test_a_collaborator_failure_propagates_and_persists_nothing(tmp_path):
         await fakes.segment_ingest().ingest(manifest=manifest, segment=segment, session_dir=tmp_path)
 
     assert fakes.saved == []
+
+
+async def test_only_a_recovery_replaces_an_existing_transcript_row(tmp_path):
+    fakes = Collaborators()
+    manifest, segment = _bundle(tmp_path)
+
+    await fakes.segment_ingest().ingest(manifest=manifest, segment=segment, session_dir=tmp_path)
+    await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
+
+    assert fakes.replaced == [False, True]
+
+
+@pytest.mark.parametrize("failing_step", ["correct", "save_entities"])
+async def test_a_recovery_deletes_the_row_it_wrote_when_a_later_step_fails(tmp_path, failing_step):
+    fakes = Collaborators()
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("step failed")
+
+    setattr(fakes, failing_step, fail)
+    manifest, segment = _bundle(tmp_path)
+
+    with pytest.raises(RuntimeError, match="step failed"):
+        await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
+
+    assert fakes.deleted == [[42]]
+
+
+async def test_the_original_ingest_keeps_the_row_when_a_later_step_fails(tmp_path):
+    fakes = Collaborators()
+
+    async def correct(raw_text, *, snapshot=None, on_step=None):
+        raise RuntimeError("ollama down")
+
+    fakes.correct = correct
+    manifest, segment = _bundle(tmp_path)
+
+    with pytest.raises(RuntimeError, match="ollama down"):
+        await fakes.segment_ingest().ingest(manifest=manifest, segment=segment, session_dir=tmp_path)
+
+    assert fakes.deleted == []
+
+
+async def test_a_failed_row_cleanup_does_not_hide_the_attempts_error(tmp_path):
+    fakes = Collaborators()
+
+    async def correct(raw_text, *, snapshot=None, on_step=None):
+        raise RuntimeError("ollama down")
+
+    async def delete_transcripts(ids):
+        raise OSError("database is down")
+
+    fakes.correct = correct
+    fakes.delete_transcripts = delete_transcripts
+    manifest, segment = _bundle(tmp_path)
+
+    with pytest.raises(RuntimeError, match="ollama down"):
+        await fakes.segment_ingest().recover(manifest=manifest, segment=segment, session_dir=tmp_path)
 
 
 async def test_calendar_attendees_are_seeded_into_the_persons_the_detector_sees(tmp_path):
