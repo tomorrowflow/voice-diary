@@ -49,40 +49,60 @@ struct PermissionActionStateTests {
 
     @Test("dispatch runs only the handler for the state")
     func dispatch() {
-        var calls: [String] = []
-        for state in [PermissionActionState.canRequest, .alreadyGranted, .openSettings] {
-            calls.append("--")
+        func calls(for state: PermissionActionState) -> [String] {
+            var calls: [String] = []
             state.perform(
                 request: { calls.append("request") },
                 openSettings: { calls.append("settings") }
             )
+            return calls
         }
-        #expect(calls == ["--", "request", "--", "--", "settings"])
+        #expect(calls(for: .canRequest) == ["request"])
+        #expect(calls(for: .alreadyGranted).isEmpty)
+        #expect(calls(for: .openSettings) == ["settings"])
     }
 
-    @Test("a status dispatches through its projection",
+    @Test("a microphone status dispatches through its projection",
           arguments: [
-            (SFSpeechRecognizerAuthorizationStatus.authorized, ""),
-            (.denied, "settings"),
-            (.restricted, "settings"),
-            (.notDetermined, "request"),
+            (AVAudioApplication.recordPermission.granted, []),
+            (.denied, ["settings"]),
+            (.undetermined, ["request"]),
           ])
-    func statusDispatch(status: SFSpeechRecognizerAuthorizationStatus, expected: String) {
-        var calls = ""
-        PermissionActionState(speech: status).perform(
-            request: { calls += "request" },
-            openSettings: { calls += "settings" }
+    func microphoneDispatch(status: AVAudioApplication.recordPermission, expected: [String]) {
+        var calls: [String] = []
+        PermissionActionState(microphone: status).perform(
+            request: { calls.append("request") },
+            openSettings: { calls.append("settings") }
         )
         #expect(calls == expected)
     }
 
-    @Test("only alreadyGranted disables the button")
-    func disabled() {
-        #expect(PermissionActionState.alreadyGranted.isDisabled(isBusy: false))
-        #expect(!PermissionActionState.canRequest.isDisabled(isBusy: false))
-        #expect(!PermissionActionState.openSettings.isDisabled(isBusy: false))
-        #expect(PermissionActionState.canRequest.isDisabled(isBusy: true))
-        #expect(PermissionActionState.openSettings.isDisabled(isBusy: true))
-        #expect(PermissionActionState.alreadyGranted.isDisabled(isBusy: true))
+    @Test("a speech status dispatches through its projection",
+          arguments: [
+            (SFSpeechRecognizerAuthorizationStatus.authorized, []),
+            (.denied, ["settings"]),
+            (.restricted, ["settings"]),
+            (.notDetermined, ["request"]),
+          ])
+    func speechDispatch(status: SFSpeechRecognizerAuthorizationStatus, expected: [String]) {
+        var calls: [String] = []
+        PermissionActionState(speech: status).perform(
+            request: { calls.append("request") },
+            openSettings: { calls.append("settings") }
+        )
+        #expect(calls == expected)
+    }
+
+    @Test("alreadyGranted or a request in flight disables the button",
+          arguments: [
+            (PermissionActionState.canRequest, false, false),
+            (.openSettings, false, false),
+            (.alreadyGranted, false, true),
+            (.canRequest, true, true),
+            (.openSettings, true, true),
+            (.alreadyGranted, true, true),
+          ])
+    func disabled(state: PermissionActionState, isBusy: Bool, expected: Bool) {
+        #expect(state.isDisabled(isBusy: isBusy) == expected)
     }
 }
