@@ -36,6 +36,10 @@ _Avoid_: backend (ambiguous with the server itself), dependency, provider
 What the server does with an uploaded session bundle from acceptance to settled status, owned by one module (`session_ingest`) that the HTTP routes and the startup lifespan only call. It accepts the bundle (the session is `processing`), processes it in the background (transcribe, correct, detect entities per segment, then one narrative analysis per session, which ADR 0006 widens to the whole **day narrative**), retries a session's analysis on request, recovers a failed segment on request, and sweeps the sessions a restart stranded. A session settles as `done`, `partial` or `failed`; it never processes twice at once, and an interrupted session resumes from its stored audio, except that a failed segment is never transcribed again without a request. Refusals are domain errors (unknown session, busy, not retryable, bundle manifest gone); only the routes turn them into HTTP statuses.
 _Avoid_: session processing, session lifecycle (as module names), processor
 
+**Segment ingest**:
+What the server does with one segment of a session, owned by one module (`segment_ingest`) that each **Session ingest** is given: read the stored audio, transcribe and persist it, correct it against the Dictionary (seeding a calendar event's attendees), detect entities and persist them. It runs the same way for the original ingest and for the resume of a stored bundle, and raises on failure; the session's lifecycle decides what a failed segment means.
+_Avoid_: segment processing, segment pipeline
+
 **Pending analysis**:
 The state of an uploaded session whose transcripts are safely stored but whose session-level analysis or LightRAG ingest failed. No data is lost; it is retried by the server (startup sweep) or on request (`retry-analysis`).
 _Avoid_: stuck, failed (a failed segment has no transcript; it is recovered from retained audio on request, ADR 0005, not by re-upload)

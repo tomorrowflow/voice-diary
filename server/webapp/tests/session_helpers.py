@@ -8,7 +8,10 @@ helpers stub only what it talks to — `db`, `transcript_ingest`, `correction`,
   repository (REF-122/#122), installed as the process-wide one so the routes
   use it too;
 * `FakeSessionIngests` — rows for that repository's `session_ingests` table;
-* `SegmentPipeline` — phase 1 (Whisper, correction, entity persistence);
+* `SegmentPipeline` — phase 1 (Whisper, correction, entity persistence) with
+  the shared modules stubbed, behind the real `SegmentIngest`;
+* `RecordingSegmentOperation` — a segment operation handed to one
+  `SessionIngest` through `fresh_ingest(segment_operation=...)`;
 * `NarrativeStage` — phase 2 (analysis, LightRAG) with in-memory
   `processed_documents`;
 * `stage_bundle` / `stage_pending_session` — a bundle on disk / a persisted
@@ -30,6 +33,7 @@ import session_ingest
 import transcript_ingest
 from dictionary import DictionarySnapshot
 from models import Manifest
+from segment_ingest import SegmentArtifact, SegmentOperation
 from session_repository import InMemorySessionIngests
 
 BEARER = "test-token"
@@ -155,14 +159,46 @@ class RecordingIngests(InMemorySessionIngests):
         return await super()._correct_legacy_done()
 
 
+class RecordingSegmentOperation:
+    """A `SessionIngest` segment operation (ARCH-3) that never touches a
+    collaborator: it hands out `transcript_ids[segment_id]` or raises
+    `failing[segment_id]`, and notes each call as `(session_id, segment_id)`
+    in `calls`. The artifact's text is `text-{transcript_id}`."""
+
+    def __init__(
+        self,
+        transcript_ids: dict[str, int],
+        *,
+        failing: dict[str, BaseException] | None = None,
+    ):
+        self.calls: list[tuple[str, str]] = []
+        self._ids = transcript_ids
+        self._failing = failing or {}
+
+    async def __call__(self, *, manifest, segment, session_dir) -> SegmentArtifact:
+        self.calls.append((manifest.session_id, segment.segment_id))
+        if segment.segment_id in self._failing:
+            raise self._failing[segment.segment_id]
+        transcript_id = self._ids[segment.segment_id]
+        return SegmentArtifact(
+            segment=segment, transcript_id=transcript_id,
+            raw_text=f"raw-{transcript_id}", corrected_text=f"text-{transcript_id}",
+        )
+
+
 def fresh_ingest(
-    monkeypatch, *, whisper_up=True, repository: RecordingIngests | None = None
+    monkeypatch,
+    *,
+    whisper_up=True,
+    repository: RecordingIngests | None = None,
+    segment_operation: SegmentOperation | None = None,
 ) -> session_ingest.SessionIngest:
     """A clean `SessionIngest` over an in-memory repository, installed as the
     process-wide one (what the routes and `main.py` use). `whisper_up` is a
     bool, or a callable returning one to change it mid-test. Passing the
     `repository` of an earlier session ingest models a restart: the rows stay,
-    the status cache and the in-flight claims are gone."""
+    the status cache and the in-flight claims are gone. `segment_operation`
+    replaces the real per-segment operation for this ingest alone."""
     monkeypatch.setenv("IOS_BEARER_TOKEN", BEARER)
 
     async def whisper_reachable() -> bool:
@@ -173,6 +209,7 @@ def fresh_ingest(
     ingest = session_ingest.SessionIngest(
         whisper_reachable=whisper_reachable,
         repository=repository if repository is not None else RecordingIngests(),
+        segment_operation=segment_operation,
     )
     monkeypatch.setattr(session_ingest, "_default", ingest)
     # No test reaches the database: a reset only clears the tables `db` owns.

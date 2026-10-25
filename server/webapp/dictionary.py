@@ -1,7 +1,7 @@
 """
 The Dictionary snapshot both transcript pipelines run their correction chain
 against: the HTMX SSE review flow (`routers/review_stream.py`) and the iOS
-per-segment pipeline (`session_ingest._process_segment`).
+per-segment pipeline (`segment_ingest.SegmentIngest`).
 
 One loader reads persons, terms, text corrections and entity dismissals so
 callers hold a single value instead of four lists. Dismissals live in the

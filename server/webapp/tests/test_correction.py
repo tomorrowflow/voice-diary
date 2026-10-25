@@ -1,6 +1,6 @@
 """Tests for `correction.correct_and_detect_entities` — the shared
 non-interactive correction chain both `routers/review_stream.py::process_transcript_stream`
-(HTMX SSE) and `session_ingest._process_segment` (iOS sessions)
+(HTMX SSE) and `segment_ingest.SegmentIngest` (iOS sessions)
 delegate to (#51).
 
 `detect_entities` is monkeypatched at the module level (the established
