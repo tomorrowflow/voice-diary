@@ -42,12 +42,12 @@ class _Upstream:
     """Counts and records requests, replying through `respond`."""
 
     def __init__(self, respond) -> None:
-        self._respond = respond
+        self.respond = respond
         self.requests: list[httpx.Request] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
-        return self._respond(request)
+        return self.respond(request)
 
     @property
     def payloads(self) -> list[dict]:
@@ -404,7 +404,7 @@ async def test_clearing_module_cache_refetches(upstream: _Upstream) -> None:
 
 
 async def test_wrapper_caches_successful_empty_list(upstream: _Upstream) -> None:
-    upstream._respond = lambda request: _activities_response([])
+    upstream.respond = lambda request: _activities_response([])
 
     first = await harvest_llm.extract_work_activities(TRANSCRIPT, DATE)
     second = await harvest_llm.extract_work_activities(TRANSCRIPT, DATE)
@@ -415,19 +415,19 @@ async def test_wrapper_caches_successful_empty_list(upstream: _Upstream) -> None
 
 
 async def test_wrapper_does_not_cache_failures(upstream: _Upstream) -> None:
-    upstream._respond = lambda request: httpx.Response(503, json={"error": "down"})
+    upstream.respond = lambda request: httpx.Response(503, json={"error": "down"})
     assert await harvest_llm.extract_work_activities(TRANSCRIPT, DATE) == []
 
-    upstream._respond = lambda request: _content_response("not json")
+    upstream.respond = lambda request: _content_response("not json")
     assert await harvest_llm.extract_work_activities(TRANSCRIPT, DATE) == []
 
-    upstream._respond = lambda request: _json_response({"activities": "nope"})
+    upstream.respond = lambda request: _json_response({"activities": "nope"})
     assert await harvest_llm.extract_work_activities(TRANSCRIPT, DATE) == []
 
     assert harvest_llm._cache == {}
     assert len(upstream.requests) == 3
 
-    upstream._respond = lambda request: _activities_response([{"description": "Recovered"}])
+    upstream.respond = lambda request: _activities_response([{"description": "Recovered"}])
     recovered = await harvest_llm.extract_work_activities(TRANSCRIPT, DATE)
 
     assert [a["description"] for a in recovered] == ["Recovered"]
