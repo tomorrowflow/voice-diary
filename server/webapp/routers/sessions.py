@@ -5,7 +5,8 @@ persists it under `data/sessions/{session_id}/` and hands it to
 `session_ingest` (ARCH-2, REF-126), which runs the per-segment pipeline in a
 `BackgroundTasks` task; progress is poll-able via
 `GET /api/sessions/{id}/status`. `POST /api/sessions/{id}/retry-analysis` is
-the manual retry entry. Both, and the startup sweep `main.py` runs, go through
+the manual retry entry and `POST /api/sessions/{id}/segments/{segment_id}/retry-transcription`
+recovers one failed segment. All of them, and the startup sweep `main.py` runs, go through
 `session_ingest.get_session_ingest()`.
 
 This module is HTTP only: multipart parsing, bundle storage, and mapping the
@@ -50,6 +51,9 @@ _ERROR_STATUS: dict[type[session_ingest.SessionError], int] = {
     session_ingest.SessionManifestMissing: status.HTTP_404_NOT_FOUND,
     session_ingest.SessionBusy: status.HTTP_409_CONFLICT,
     session_ingest.SessionNotRetryable: status.HTTP_409_CONFLICT,
+    session_ingest.SegmentNotFound: status.HTTP_404_NOT_FOUND,
+    session_ingest.SegmentNotFailed: status.HTTP_409_CONFLICT,
+    session_ingest.SegmentAudioMissing: status.HTTP_409_CONFLICT,
 }
 
 
@@ -218,6 +222,27 @@ async def retry_analysis(session_id: str) -> SessionStatus:
     """
     try:
         return await session_ingest.get_session_ingest().retry(session_id)
+    except session_ingest.SessionError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post(
+    "/api/sessions/{session_id}/segments/{segment_id}/retry-transcription",
+    response_model=SessionStatus,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_transcription(session_id: str, segment_id: str) -> SessionStatus:
+    """Transcribe one `failed` segment again from its retained audio
+    (FTR-02, ADR 0005 and 0007).
+
+    `202` with the session status, the segment `transcribing`; the attempt
+    runs on in the background and `GET /api/sessions/{id}/status` shows its
+    outcome. Refusals change nothing, in this order: 404 `session_not_found` /
+    `segment_not_found`; 409 `segment_not_failed`; 409 `segment_audio_missing`;
+    503 `whisper_unavailable` (the shared failure shape); 409 `session_busy`.
+    """
+    try:
+        return await session_ingest.get_session_ingest().recover(session_id, segment_id)
     except session_ingest.SessionError as exc:
         raise _http_error(exc) from exc
 

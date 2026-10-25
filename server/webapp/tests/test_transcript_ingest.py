@@ -64,6 +64,36 @@ def test_transcribe_and_persist_returns_transcript_id_and_raw_text(monkeypatch):
     assert created == [("session::seg01.m4a", "2026-07-04", "Lukas Brandt", "hallo welt")]
 
 
+def test_replace_existing_reuses_the_row_an_earlier_attempt_left(monkeypatch):
+    monkeypatch.setattr(asr_client, "get_default_client", lambda: _FakeAsrClient())
+
+    async def fail_create_transcript(*args, **kwargs):
+        raise AssertionError("a plain insert would hit the unique index")
+
+    replaced = []
+
+    async def fake_replace_transcript(filename, date, author, raw_text):
+        replaced.append((filename, date, author, raw_text))
+        return 7
+
+    monkeypatch.setattr(db, "create_transcript", fail_create_transcript)
+    monkeypatch.setattr(db, "replace_transcript", fake_replace_transcript)
+
+    result = asyncio.run(
+        transcribe_and_persist(
+            b"raw-audio-bytes",
+            src_suffix=".m4a",
+            filename="session::seg01.m4a",
+            date="2026-07-04",
+            author="Lukas Brandt",
+            replace_existing=True,
+        )
+    )
+
+    assert result.transcript_id == 7
+    assert replaced == [("session::seg01.m4a", "2026-07-04", "Lukas Brandt", "hallo welt")]
+
+
 def test_transcribe_and_persist_raises_on_empty_transcript(monkeypatch):
     fake_client = _FakeAsrClient(text="")
     monkeypatch.setattr(asr_client, "get_default_client", lambda: fake_client)

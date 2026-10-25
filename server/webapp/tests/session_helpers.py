@@ -345,18 +345,29 @@ class SegmentPipeline:
         self.transcribe_calls: list[dict] = []
         self.correct_calls: list[dict] = []
         self.saved_entities: list[tuple] = []
+        # The `transcripts` table as far as the pipeline touches it, by file
+        # name (unique per date, like the real index): a plain insert over an
+        # existing row fails, a `replace_existing` one reuses its id.
+        self.transcript_rows: dict[str, int] = {}
+        self.save_entities_error: BaseException | None = None
         self._ids = transcript_ids or {}
-        self._failing = failing or {}
+        self.failing = failing or {}
 
-        async def transcribe_and_persist(audio_bytes, *, src_suffix, filename, date, author, language="de"):
+        async def transcribe_and_persist(
+            audio_bytes, *, src_suffix, filename, date, author, language="de",
+            replace_existing=False,
+        ):
             segment_id = filename.split("::", 1)[1].rsplit(".", 1)[0]
             self.transcribe_calls.append({
                 "audio_bytes": audio_bytes, "src_suffix": src_suffix, "filename": filename,
                 "date": date, "author": author, "language": language,
             })
-            if segment_id in self._failing:
-                raise self._failing[segment_id]
+            if segment_id in self.failing:
+                raise self.failing[segment_id]
+            if filename in self.transcript_rows and not replace_existing:
+                raise RuntimeError("duplicate key value violates idx_transcripts_filename_date")
             transcript_id = self._ids.setdefault(segment_id, 10 + len(self._ids))
+            self.transcript_rows[filename] = transcript_id
             return transcript_ingest.TranscribedSegment(transcript_id=transcript_id, raw_text="hallo welt")
 
         async def correct_and_detect_entities(raw_text, *, snapshot=None, on_step=None):
@@ -376,8 +387,16 @@ class SegmentPipeline:
             )
 
         async def save_detected_entities(transcript_id, text, detected_entities_json):
+            if self.save_entities_error is not None:
+                raise self.save_entities_error
             self.saved_entities.append((transcript_id, text, detected_entities_json))
 
+        async def delete_transcripts(ids):
+            self.transcript_rows = {
+                name: row_id for name, row_id in self.transcript_rows.items() if row_id not in ids
+            }
+
+        monkeypatch.setattr(db, "delete_transcripts", delete_transcripts)
         monkeypatch.setattr(transcript_ingest, "transcribe_and_persist", transcribe_and_persist)
         monkeypatch.setattr(correction, "correct_and_detect_entities", correct_and_detect_entities)
         monkeypatch.setattr(dictionary, "load_dictionary_snapshot", load_dictionary_snapshot)
