@@ -932,7 +932,13 @@ body). One request is one attempt; nothing starts one on its own.
   Whisper and the correction chain have succeeded; the transcript, its corrected text and its entities
   are then saved by one statement, so a failed attempt leaves no transcript row, and a row an earlier
   attempt left (transcripts are unique per file name and date) is replaced in place rather than
-  duplicated. If the segment then cannot be linked to the saved transcript (its status cannot be
+  duplicated. If that save fails with an unknown outcome (the statement may have committed before the
+  connection dropped), the attempt looks the row up by the exact values it was saving: a match is its
+  transcript and is linked as usual; no match means nothing was saved; a lookup that fails too is
+  followed by deleting the row, but only while it still holds exactly those values and has not been
+  reviewed or submitted (a row a person has edited or submitted is left alone), and the attempt
+  fails with the save's error. A row can remain only when that delete fails too (the database
+  answers nothing), and the next attempt replaces it in place. If the segment then cannot be linked to the saved transcript (its status cannot be
   persisted), the row is deleted again, best effort; one that cannot be deleted is replaced by the
   next attempt. The segment is `pending_analysis` with its `transcript_id` only once the transcript
   and its entities are saved; the day narrative (above) then runs over the whole date and the segment
@@ -940,7 +946,11 @@ body). One request is one attempt; nothing starts one on its own.
   `failed`: if the narrative's outcome cannot be persisted, the stored segment stays `pending_analysis`
   with its transcript and the existing retry or the sweep finishes it. Accepting the request is not
   interrupted by the client leaving: either the
-  segment is `transcribing` with an attempt running, or the stored status is unchanged.
+  segment is `transcribing` with an attempt running, or the stored status is unchanged. The admin
+  "Reset All Data" stops running recoveries before it clears anything, so none saves a transcript
+  afterwards, and a recovery requested while it runs, or caught by it, is refused with `404
+  session_not_found`; the reset finishes even if the admin request is cancelled. A recovery that
+  finds its session gone deletes the transcript it had saved.
 - *Outcomes.* Transcription fails (Whisper, conversion, an empty transcript, storage): the segment is
   `failed` again with the new `error`, `code` and `upstream` replacing the old ones, and the audio is
   untouched, so the next request can succeed. The narrative or the LightRAG ingest fails: the segment

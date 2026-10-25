@@ -805,6 +805,283 @@ def test_a_failure_writing_the_final_outcome_keeps_the_linked_transcript(
     assert len(world.pipeline.transcribe_calls) == 1  # the retry did not transcribe again
 
 
+def test_a_save_that_committed_but_lost_its_result_is_found_and_linked(monkeypatch, tmp_path):
+    """The one-statement save commits, the connection fails before the answer
+    arrives: the lookup of what was saved finds the row, so the segment links
+    it instead of being failed with an orphan behind."""
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    world.pipeline.lose_save_result = True
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return await world.status()
+
+    status = asyncio.run(run())
+
+    assert world.result(status, "s01") == SegmentResult(
+        segment_id="s01", status="processed", transcript_id=10
+    )
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}
+    assert len(world.narrative.runs) == 1
+
+
+def test_a_lost_save_result_whose_lookup_fails_has_its_row_deleted(monkeypatch, tmp_path):
+    """The save committed and neither its result nor the lookup got through:
+    the attempt deletes exactly what it saved before failing the segment, so
+    no row is left that nothing refers to."""
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    world.pipeline.lose_save_result = True
+    world.pipeline.find_error = ConnectionError("lookup failed")
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        failed = await world.status()
+        rows_after_failure = dict(world.pipeline.transcript_rows)
+        world.pipeline.lose_save_result = False
+        world.pipeline.find_error = None
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return failed, rows_after_failure, await world.status()
+
+    failed, rows_after_failure, recovered = asyncio.run(run())
+
+    assert world.result(failed, "s01").status == "failed"
+    assert rows_after_failure == {}
+    assert world.result(recovered, "s01") == SegmentResult(
+        segment_id="s01", status="processed", transcript_id=10
+    )
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}
+
+
+def test_a_lost_save_result_that_cannot_be_looked_up_or_deleted_is_replaced_next_time(
+    monkeypatch, tmp_path,
+):
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    world.pipeline.lose_save_result = True
+    world.pipeline.find_error = ConnectionError("lookup failed")
+    world.pipeline.delete_error = ConnectionError("delete failed")
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        failed = await world.status()
+        rows_after_failure = dict(world.pipeline.transcript_rows)
+        world.pipeline.lose_save_result = False
+        world.pipeline.find_error = None
+        world.pipeline.delete_error = None
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return failed, rows_after_failure, await world.status()
+
+    failed, rows_after_failure, recovered = asyncio.run(run())
+
+    assert world.result(failed, "s01").status == "failed"
+    assert list(rows_after_failure.values()) == [10]  # the one case left: no database at all
+    assert world.result(recovered, "s01").transcript_id == 10
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}  # replaced, not duplicated
+
+
+def test_a_row_with_other_values_is_not_deleted_after_a_lost_save_result(monkeypatch, tmp_path):
+    """The compensating delete only removes what this attempt saved: a row a
+    person has since edited (other corrected text) stays."""
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    world.pipeline.lose_save_result = True
+    world.pipeline.find_error = ConnectionError("lookup failed")
+    original_delete = db.delete_saved_transcript
+
+    async def delete_after_an_edit(**row):
+        world.pipeline.recovered_values[row["filename"]] = (
+            row["raw_text"], "edited by a person", row["detected_entities_json"],
+        )
+        return await original_delete(**row)
+
+    monkeypatch.setattr(db, "delete_saved_transcript", delete_after_an_edit)
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+
+    asyncio.run(run())
+
+    assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}
+
+
+def test_reset_all_data_stops_a_running_recovery_and_leaves_no_transcript(monkeypatch, tmp_path):
+    """Reset All Data waits for uploads and now also stops recoveries: one
+    that was past Whisper cannot save a transcript after the tables were
+    cleared, and its claim is released."""
+    started, release, correct = _latched_correction()
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", correct=correct,
+    )
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(world.ingest.reset_all_data(), 1)
+        release.set()  # too late: the attempt was stopped
+        await world.ingest.settled()
+        return await world.ingest.status(SESSION)
+
+    status = asyncio.run(run())
+
+    assert status is None
+    assert world.pipeline.transcript_rows == {}
+    assert world.ingests.rows == {}
+    assert world.narrative.runs == []
+
+
+def test_a_recovery_whose_session_disappeared_deletes_the_transcript_it_saved(
+    monkeypatch, tmp_path,
+):
+    """The session row vanishes while the attempt is past Whisper (anything
+    that forgets the session, not only a reset): once the transcript is saved
+    and there is no session to link it to, the row is deleted again."""
+    started, release, correct = _latched_correction()
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", correct=correct,
+    )
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await asyncio.wait_for(started.wait(), 1)
+        await world.ingest.repository.delete(SESSION)
+        release.set()
+        await world.ingest.settled()
+
+    asyncio.run(run())
+
+    assert world.pipeline.transcript_rows == {}
+    assert world.narrative.runs == []
+
+
+def test_a_recovery_requested_while_a_reset_runs_waits_for_it_and_finds_no_session(
+    monkeypatch, tmp_path,
+):
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
+    cleared = asyncio.Event()
+    original_clear = world.ingest._clear_everything
+    resume = asyncio.Event()
+
+    async def slow_clear():
+        cleared.set()
+        await asyncio.wait_for(resume.wait(), 1)
+        await original_clear()
+
+    monkeypatch.setattr(world.ingest, "_clear_everything", slow_clear)
+
+    async def run():
+        reset = asyncio.create_task(world.ingest.reset_all_data())
+        await asyncio.wait_for(cleared.wait(), 1)
+        recovery = asyncio.create_task(world.ingest.recover(SESSION, "s01"))
+        await asyncio.sleep(0)
+        waiting = not recovery.done()
+        resume.set()
+        await reset
+        with pytest.raises(session_ingest.SessionNotFound):
+            await asyncio.wait_for(recovery, 1)
+        return waiting
+
+    waiting = asyncio.run(run())
+
+    assert waiting
+    assert world.pipeline.transcribe_calls == []
+    assert world.pipeline.transcript_rows == {}
+
+
+def _slow_stop(world: World, monkeypatch):
+    """Make the reset's stopping of recoveries wait until `gate` is set;
+    `entered` says it began."""
+    entered, gate = asyncio.Event(), asyncio.Event()
+    original_stop = world.ingest._stop_recoveries
+
+    async def slow_stop():
+        entered.set()
+        await asyncio.wait_for(gate.wait(), 1)
+        await original_stop()
+
+    monkeypatch.setattr(world.ingest, "_stop_recoveries", slow_stop)
+    return entered, gate
+
+
+def test_a_cancelled_reset_still_finishes_what_it_started(monkeypatch, tmp_path):
+    """The admin request is cancelled while the reset is stopping recoveries:
+    the reset still clears everything, so no recovery is stopped for nothing
+    and left `transcribing`."""
+    started, release, correct = _latched_correction()
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed", correct=correct)
+    entered, gate = _slow_stop(world, monkeypatch)
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await asyncio.wait_for(started.wait(), 1)
+        reset = asyncio.create_task(world.ingest.reset_all_data())
+        await asyncio.wait_for(entered.wait(), 1)
+        reset.cancel()
+        gate.set()
+        await asyncio.gather(reset, return_exceptions=True)
+        await asyncio.wait_for(world.ingest.settled(), 1)
+        return await world.ingest.status(SESSION)
+
+    status = asyncio.run(run())
+
+    assert status is None
+    assert world.ingests.rows == {}
+    assert world.pipeline.transcript_rows == {}
+
+
+def test_a_recovery_stopped_by_a_reset_before_the_clear_is_refused_as_not_found(
+    monkeypatch, tmp_path,
+):
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
+    entered, gate = _slow_stop(world, monkeypatch)
+
+    async def run():
+        reset = asyncio.create_task(world.ingest.reset_all_data())
+        await asyncio.wait_for(entered.wait(), 1)
+        recovery = asyncio.create_task(world.ingest.recover(SESSION, "s01"))
+        await asyncio.sleep(0)  # it reaches the gate and waits there
+        gate.set()
+        await reset
+        with pytest.raises(session_ingest.SessionNotFound):
+            await asyncio.wait_for(recovery, 1)
+
+    asyncio.run(run())
+
+    assert world.pipeline.transcribe_calls == []
+
+
+def test_an_attempt_stopped_before_it_starts_releases_the_claim(monkeypatch, tmp_path):
+    """The attempt's task is cancelled before its first step, so its own
+    cleanup never runs: the claim is released regardless."""
+    world = World(monkeypatch, tmp_path, [_failed("s01"), _failed("s02")], state="failed")
+
+    async def run():
+        await world.ingest._accept_recovery(SESSION, "s01")
+        # No yield since the attempt was created: it has not started.
+        for task in list(world.ingest._recoveries):
+            task.cancel()
+        await asyncio.wait_for(world.ingest.settled(), 1)
+        # The claim is free: the other segment can be recovered.
+        await world.ingest.recover(SESSION, "s02")
+        await asyncio.wait_for(world.ingest.settled(), 1)
+        return await world.status()
+
+    status = asyncio.run(run())
+
+    assert world.result(status, "s02").status == "processed"
+
+
 def test_a_row_that_cannot_be_deleted_is_replaced_by_the_next_attempt(monkeypatch, tmp_path):
     world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
     repository = world.ingests.repository
