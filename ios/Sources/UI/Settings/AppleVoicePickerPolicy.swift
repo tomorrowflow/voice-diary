@@ -1,9 +1,8 @@
 import AVFoundation
 
 /// Which installed Apple voices `VoiceSettingsView` offers for a language,
-/// and in what order. Pure: it reads only the `Descriptor` of each voice,
-/// never the installed catalog, so the rule is testable without any voices
-/// present.
+/// and in what order. Pure: it sees synthetic `Descriptor`s, never the
+/// installed catalog, so the rule is testable without any voices present.
 ///
 /// The rule is exactly: `language.hasPrefix(code)` (case-sensitive, no
 /// normalisation), `quality == .premium` (Enhanced and Default tiers sound
@@ -19,20 +18,28 @@ enum AppleVoicePickerPolicy {
         let quality: AVSpeechSynthesisVoiceQuality
     }
 
-    /// The voices to show for `language`, in display order. Returns the
-    /// caller's own elements, so rows and preview keep the real voice
-    /// objects and nothing is looked up by identifier.
-    static func ordered<Voice>(
-        _ voices: [Voice],
-        language: String,
-        describing describe: (Voice) -> Descriptor
-    ) -> [Voice] {
+    /// Identifiers of the voices to show for `language`, in display order.
+    static func orderedIdentifiers(from voices: [Descriptor], language: String) -> [String] {
         voices
-            .filter {
-                let voice = describe($0)
-                return voice.language.hasPrefix(language) && voice.quality == .premium
-            }
-            .sorted { describe($0).name < describe($1).name }
+            .filter { $0.language.hasPrefix(language) && $0.quality == .premium }
+            .sorted { $0.name < $1.name }
+            .map(\.identifier)
+    }
+
+    /// Maps ordered identifiers back onto the voice objects they came from,
+    /// so rows and preview keep using the real voice. Relies on installed
+    /// voice identifiers being unique, as the picker's `ForEach` already does.
+    /// An identifier with no matching object is skipped.
+    static func resolve<Voice>(
+        _ identifiers: [String],
+        in voices: [Voice],
+        identifier: (Voice) -> String
+    ) -> [Voice] {
+        var byIdentifier: [String: Voice] = [:]
+        for voice in voices where byIdentifier[identifier(voice)] == nil {
+            byIdentifier[identifier(voice)] = voice
+        }
+        return identifiers.compactMap { byIdentifier[$0] }
     }
 }
 

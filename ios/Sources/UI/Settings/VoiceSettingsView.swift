@@ -359,15 +359,13 @@ public struct VoiceSettingsView: View {
 
     private func loadVoices() {
         let installed = AVSpeechSynthesisVoice.speechVoices()
+        let descriptors = installed.map(AppleVoicePickerPolicy.Descriptor.init)
         var grouped: [String: [AVSpeechSynthesisVoice]] = [:]
         for lang in Self.supportedLanguages.map(\.code) {
             // Premium-only filtering and name ordering live in the policy;
             // the real voice objects are kept for rows and preview.
-            grouped[lang] = AppleVoicePickerPolicy.ordered(
-                installed,
-                language: lang,
-                describing: AppleVoicePickerPolicy.Descriptor.init
-            )
+            let identifiers = AppleVoicePickerPolicy.orderedIdentifiers(from: descriptors, language: lang)
+            grouped[lang] = AppleVoicePickerPolicy.resolve(identifiers, in: installed, identifier: \.identifier)
             selectedIDByLanguage[lang] = VoicePreferences.selectedVoiceID(for: lang)
         }
         appleVoicesByLanguage = grouped

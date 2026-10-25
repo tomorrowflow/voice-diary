@@ -19,7 +19,7 @@ struct AppleVoicePickerPolicyTests {
 
     /// Identifiers the picker would show for `language`, in order.
     private func shown(_ catalog: [Descriptor], language: String) -> [String] {
-        AppleVoicePickerPolicy.ordered(catalog, language: language, describing: { $0 }).map(\.identifier)
+        AppleVoicePickerPolicy.orderedIdentifiers(from: catalog, language: language)
     }
 
     @Test("keeps regional variants of the requested language")
@@ -128,35 +128,33 @@ struct AppleVoicePickerPolicyTests {
     // Stand-in for a retained `AVSpeechSynthesisVoice`.
     private final class Row {
         let descriptor: Descriptor
+        var identifier: String { descriptor.identifier }
         init(_ descriptor: Descriptor) { self.descriptor = descriptor }
     }
 
-    @Test("returns the caller's own objects, not copies or lookups")
+    @Test("ordered identifiers resolve back to the original objects, in order")
     func identifierToObjectMapping() {
         let beta = Row(voice("b", language: "de-DE", name: "Beta"))
         let alpha = Row(voice("a", language: "de-DE", name: "Alpha"))
         let skipped = Row(voice("skip", language: "de-DE", name: "Gamma", quality: .enhanced))
         let other = Row(voice("en", language: "en-US", name: "Aaron"))
+        let installed = [beta, alpha, skipped, other]
 
-        let result = AppleVoicePickerPolicy.ordered(
-            [beta, alpha, skipped, other], language: "de", describing: \.descriptor
+        let identifiers = AppleVoicePickerPolicy.orderedIdentifiers(
+            from: installed.map(\.descriptor), language: "de"
         )
-        #expect(result.count == 2)
-        #expect(result[0] === alpha)
-        #expect(result[1] === beta)
+        let resolved = AppleVoicePickerPolicy.resolve(identifiers, in: installed, identifier: \.identifier)
+        #expect(resolved.count == 2)
+        #expect(resolved[0] === alpha)
+        #expect(resolved[1] === beta)
     }
 
-    @Test("duplicate identifiers are neither merged nor swapped for another voice")
-    func duplicateIdentifiersKeepTheirOwnObjects() {
-        let rejected = Row(voice("x", language: "fr-FR", name: "Amelie", quality: .default))
-        let first = Row(voice("x", language: "de-DE", name: "Anna"))
-        let second = Row(voice("x", language: "de-DE", name: "Bernd"))
-
-        let result = AppleVoicePickerPolicy.ordered(
-            [rejected, first, second], language: "de", describing: \.descriptor
-        )
-        #expect(result.count == 2)
-        #expect(result[0] === first)
-        #expect(result[1] === second)
+    @Test("identifiers with no installed object are skipped")
+    func unresolvedIdentifiersAreSkipped() {
+        let alpha = Row(voice("a", language: "de-DE", name: "Alpha"))
+        let resolved = AppleVoicePickerPolicy.resolve(["missing", "a"], in: [alpha], identifier: \.identifier)
+        #expect(resolved.count == 1)
+        #expect(resolved[0] === alpha)
+        #expect(AppleVoicePickerPolicy.resolve([], in: [alpha], identifier: \.identifier).isEmpty)
     }
 }
