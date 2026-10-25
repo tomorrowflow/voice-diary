@@ -42,47 +42,59 @@ MAX_DESCRIPTION_LENGTH = 500
 _cache: dict[tuple, list[dict]] = {}
 
 
+class WorkActivityExtractor:
+    """Extract work activities from a diary transcript with an LLM.
+
+    Owns the whole cache -> prompt -> chat -> parse -> cache sequence. The
+    Ollama client and the cache mapping are supplied by the caller; the cache
+    has no TTL, eviction or locking, and only successful results enter it.
+    """
+
+    def __init__(self, client: OllamaClient, cache: dict[tuple, list[dict]]) -> None:
+        self._client = client
+        self._cache = cache
+
+    async def extract(self, transcript: str, date_str: str) -> list[dict]:
+        """Return `[{"description": "...", "estimated_hours": 1.0, "category": "development"}, ...]`."""
+        cache_key = (hash(transcript), date_str)
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        prompt = _build_prompt(transcript, date_str)
+
+        try:
+            result = await self._client.chat(prompt, format="json")
+        except Exception as e:
+            logger.warning("Ollama call failed for harvest LLM: %s", e)
+            return []
+
+        try:
+            data = json.loads(result.content)
+        except json.JSONDecodeError as e:
+            logger.warning("Failed to parse Ollama response: %s", e)
+            return []
+
+        activities = []
+        items = data if isinstance(data, list) else data.get("activities", data.get("work_activities", []))
+        if not isinstance(items, list):
+            return []
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            activities.append({
+                "description": _parse_description(item.get("description")),
+                "estimated_hours": _parse_hours(item.get("estimated_hours", 1.0)),
+                "category": _parse_category(item.get("category")),
+            })
+
+        self._cache[cache_key] = activities
+        return activities
+
+
 async def extract_work_activities(transcript: str, date_str: str) -> list[dict]:
-    """
-    Ask the LLM to extract work activities from a diary transcript.
-
-    Returns a list of dicts:
-    [{"description": "...", "estimated_hours": 1.0, "category": "development"}, ...]
-    """
-    cache_key = (hash(transcript), date_str)
-    if cache_key in _cache:
-        return _cache[cache_key]
-
-    prompt = _build_prompt(transcript, date_str)
-
-    try:
-        result = await _ollama_client.chat(prompt, format="json")
-    except Exception as e:
-        logger.warning("Ollama call failed for harvest LLM: %s", e)
-        return []
-
-    try:
-        data = json.loads(result.content)
-    except json.JSONDecodeError as e:
-        logger.warning("Failed to parse Ollama response: %s", e)
-        return []
-
-    activities = []
-    items = data if isinstance(data, list) else data.get("activities", data.get("work_activities", []))
-    if not isinstance(items, list):
-        return []
-
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        activities.append({
-            "description": _parse_description(item.get("description")),
-            "estimated_hours": _parse_hours(item.get("estimated_hours", 1.0)),
-            "category": _parse_category(item.get("category")),
-        })
-
-    _cache[cache_key] = activities
-    return activities
+    """Extract work activities with the module's current client and `_cache`."""
+    return await WorkActivityExtractor(_ollama_client, _cache).extract(transcript, date_str)
 
 
 def _parse_hours(val) -> float:
