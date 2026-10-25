@@ -12,11 +12,11 @@ Loaded on every review. Distilled from `CLAUDE.md` and `SPEC.md`, which stay aut
 2. **No n8n. Anywhere.** Remove any n8n reference found in copied code.
 3. **No telemetry, ever.** Errors log locally only. The phone sends traffic to the user's own
    server over Tailscale and nowhere else. The server reaches only the upstreams it already uses
-   (local Ollama, LightRAG, speech-to-text and Microsoft Graph), plus one accepted exception: when
-   the operator sets `ANALYSIS_ROUTE=blindfold` in the server environment (default `local`), the
-   main narrative analysis call (`document_processor.analyze_transcript`) goes to the configured
-   Blindfold proxy and nothing else does (ADR 0001, ADR 0004). A failed Blindfold call never falls
-   back to another destination. Any other destination or data flow is a violation.
+   (for example local Ollama, LightRAG, speech-to-text, Microsoft Graph), plus one accepted
+   exception: when the operator sets `ANALYSIS_ROUTE=blindfold` in the server environment (default
+   `local`), the main narrative analysis call (`document_processor.analyze_transcript`) goes to the
+   configured Blindfold proxy and nothing else does (ADR 0001, ADR 0004). A failed Blindfold call
+   never falls back to another destination. Any other destination or data flow is a violation.
 4. **No secrets committed or introduced.** `server/.env`, Keychain entries, and
    `data/msal_cache.bin` stay out of git and out of prompts; code must not assume a `.env` exists.
    Never hard-code the bearer token or a tailnet hostname.
