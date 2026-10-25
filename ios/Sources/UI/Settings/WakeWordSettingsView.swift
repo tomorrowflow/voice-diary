@@ -434,7 +434,7 @@ private enum SpeechAssetProbe {
                 // codes that explicitly mean "the language asset
                 // isn't downloaded"; everything else is `.installed`.
                 if let err = error as NSError? {
-                    if Self.indicatesMissingAsset(err) {
+                    if SpeechAssetErrorClassifier.indicatesMissingAsset(domain: err.domain, code: err.code) {
                         gate.resolveOnce(.notInstalled(reason: "\(err.domain):\(err.code)"))
                     } else {
                         gate.resolveOnce(.installed)
@@ -477,51 +477,6 @@ private enum SpeechAssetProbe {
 private final class SFRTaskBox: @unchecked Sendable {
     let task: SFSpeechRecognitionTask
     init(_ task: SFSpeechRecognitionTask) { self.task = task }
-}
-
-extension SpeechAssetProbe {
-    /// Conservative allowlist of error codes that empirically mean
-    /// "the per-language dictation asset isn't installed". Everything
-    /// else — including the common `kAFAssistantErrorDomain` 1107 /
-    /// 216 "no speech" returned when we submit no audio buffers — is
-    /// interpreted as `.installed` because reaching this callback at
-    /// all required the recognizer to spin up successfully.
-    ///
-    /// References:
-    ///   * `SFSpeechErrorDomain` with `unsupportedLocale` / -ish codes
-    ///     surfaces when the locale's model isn't on disk.
-    ///   * `kAFAssistantErrorDomain` 203 has been reported for
-    ///     "request was canceled because language isn't available".
-    ///
-    /// Keep this list short and conservative — false positives here
-    /// (treating an installed asset as missing) are exactly the bug
-    /// the user just hit. False negatives only mean "Test" claims
-    /// installed for one extra error we haven't catalogued; that's
-    /// graceful because the wake-word listen window will then fail
-    /// gracefully at the actual use site.
-    static func indicatesMissingAsset(_ err: NSError) -> Bool {
-        // SFSpeechErrorDomain (Swift 5.7+/iOS 17). The exact case set
-        // depends on the SDK; rather than enum-match (which would
-        // tie us to the SDK shape), we compare against the codes
-        // Apple uses for "language not supported" / "asset not
-        // available". `unsupportedLocale` is the canonical one.
-        if err.domain == "SFSpeechErrorDomain" {
-            // Code 7 corresponds to `.unsupportedLocale` on current
-            // iOS. We deliberately don't add other SFSpeechError
-            // codes because they overwhelmingly mean transient
-            // recognition failures, not "asset missing".
-            return err.code == 7
-        }
-        // kAFAssistantErrorDomain 203 has been observed when the
-        // assistant subsystem refuses the request because the
-        // language model isn't on disk. The same domain's 1107 / 216
-        // are "no speech" / "empty audio" — those are NOT
-        // asset-missing and should map to `.installed`.
-        if err.domain == "kAFAssistantErrorDomain" {
-            return err.code == 203
-        }
-        return false
-    }
 }
 
 private final class ProbeGate: @unchecked Sendable {
