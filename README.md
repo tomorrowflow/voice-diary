@@ -20,7 +20,7 @@ voice-diary/
     ├── .env.example
     ├── docker-compose.yml
     ├── docs-archive/   (historical design docs from diary-processor)
-    └── webapp/         (FastAPI app, 17 Python modules, Postgres schema, HTMX UI)
+    └── webapp/         (FastAPI services and routers, Postgres schema, HTMX UI)
 ```
 
 ## Where to start reading
