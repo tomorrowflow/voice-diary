@@ -137,12 +137,9 @@ public struct VerlaufView: View {
 
     private func delete(_ item: SessionHistoryStore.Item) {
         do {
-            try SessionHistoryStore.delete(item)
+            try SessionMutations().deleteEntry(item)
             items.removeAll { $0.id == item.id }
             deleteError = nil
-            // Belt-and-braces: drop any matching upload-queue entry so
-            // we don't keep retrying an upload whose source is gone.
-            Task { _ = await SessionUploader.shared.purgeOrphans() }
         } catch {
             deleteError = String(localized:
                 "Delete failed: \(error.localizedDescription)")
@@ -471,86 +468,16 @@ struct VerlaufDetailView: View {
 
     // MARK: - Per-row deletion
 
-    /// Delete one segment. For a walkthrough that's the segment's audio
-    /// file (the session and its other segments stay). For a single-chunk
-    /// note the single row *is* the whole note, so it deletes the note
-    /// and pops back. For a multi-chunk note (pause/resume) we drop just
-    /// the swiped chunk's m4a + rewrite metadata.json so the remaining
-    /// chunks stay playable; the whole drive-by element is only deleted
-    /// when the last chunk goes. A removed source also drops any
-    /// pending upload.
     private func deleteSegment(_ d: SegmentDescriptor) {
-        switch item {
-        case .voiceNote(let entry):
-            if entry.note.chunks?.isEmpty == false,
-               (entry.note.chunks?.count ?? 0) > 1,
-               let url = d.audioURL {
-                if player.activeURL == url { player.stop() }
-                let filename = url.lastPathComponent
-                try? FileManager.default.removeItem(at: url)
-                deletedSegmentIDs.insert(d.id)
-                rewriteVoiceNoteMetadata(removing: filename, in: entry)
-                Task { _ = await SessionUploader.shared.purgeOrphans() }
-            } else {
-                player.stop()
-                try? SessionHistoryStore.delete(item)
-                Task { _ = await SessionUploader.shared.purgeOrphans() }
-                dismiss()
-            }
-        case .walkthrough:
-            if player.activeURL == d.audioURL { player.stop() }
-            if let url = d.audioURL { try? FileManager.default.removeItem(at: url) }
-            deletedSegmentIDs.insert(d.id)
-            Task { _ = await SessionUploader.shared.purgeOrphans() }
+        switch SessionMutations().deleteSegment(d, in: item, player: player) {
+        case .rowRemoved: deletedSegmentIDs.insert(d.id)
+        case .entryRemoved: dismiss()
         }
     }
 
-    /// Rewrite the drive-by recording's metadata.json after a single
-    /// chunk was swiped out, keeping the surviving chunks intact. If the
-    /// removal leaves zero chunks the directory is purged and we
-    /// dismiss; if one survives we collapse `chunks` back to nil so the
-    /// record looks like a normal single-shot capture again.
-    private func rewriteVoiceNoteMetadata(
-        removing filename: String,
-        in entry: SessionHistoryStore.VoiceNoteEntry
-    ) {
-        var note = entry.note
-        let surviving = (note.chunks ?? []).filter { $0.filename != filename }
-        guard !surviving.isEmpty else {
-            try? SessionHistoryStore.delete(item)
-            dismiss()
-            return
-        }
-        let total = surviving.reduce(0) { $0 + $1.duration_seconds }
-        let first = surviving[0]
-        note.duration_seconds = total
-        note.language = first.language
-        note.transcript = first.transcript
-        note.audio_file_url = entry.directory.appending(path: first.filename)
-        note.chunks = surviving.count > 1 ? surviving : nil
-
-        let metaURL = entry.directory.appending(path: "metadata.json")
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        if let data = try? encoder.encode(note) {
-            try? Self.writeVoiceNoteMetadata(data, to: metaURL)
-        }
-    }
-
-    /// Seam for the protection-class test.
-    static func writeVoiceNoteMetadata(_ data: Data, to url: URL) throws {
-        try data.write(to: url, options: [.atomic, LocalStore.dataProtectionWriteOption])
-    }
-
-    /// Delete one surfaced note. A surfaced note is a standalone drive-by
-    /// recording living under `driveby_seeds/`, so this removes its whole
-    /// directory — it disappears from the Verlauf list too.
     private func deleteNote(_ e: SurfacedNoteEntry) {
-        if player.activeURL == e.audioURL { player.stop() }
-        try? FileManager.default.removeItem(at: e.audioURL.deletingLastPathComponent())
+        SessionMutations().deleteSurfacedNote(e, player: player)
         deletedNoteIDs.insert(e.note.seed_id)
-        Task { _ = await SessionUploader.shared.purgeOrphans() }
     }
 
     private func loadServerStatus() async {
