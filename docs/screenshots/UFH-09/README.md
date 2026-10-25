@@ -22,5 +22,6 @@ built ad hoc signed so the Keychain keeps the server URL.
   covered by `FailureCatalogTests.segmentExplanationRule` and was read from the accessibility tree
   (label "Processed", no explanation line).
 
-The explanation keeps the destructive (red) caption colour used for failed segments, next to the
-unchanged amber "Processing" pill, as the ticket specifies.
+These screenshots show the explanation in the destructive (red) caption colour used for failed
+segments. UFH-10 changed that: a pending row's caption is now amber, with the impact line under it
+(see `docs/screenshots/UFH-10/`).

@@ -891,7 +891,7 @@ struct VerlaufDetailView: View {
                     language: language,
                     audioURL: url,
                     serverStatus: serverStatusFetched ? (segmentStatus?.status ?? "unknown") : nil,
-                    failureExplanation: FailureCatalog.segmentExplanation(
+                    analysisExplanation: SegmentAnalysisExplanation.make(
                         status: segmentStatus?.status,
                         code: segmentStatus?.code,
                         upstream: segmentStatus?.upstream
@@ -1209,6 +1209,36 @@ struct PlaybackScrubber: View {
 
 // MARK: - Segment row
 
+/// The caption a Verlauf row shows under its details. A `failed` segment gets
+/// the title alone, in the destructive colour. A `pending_analysis` one keeps
+/// its texts and catches up later, so it gets the title in the Processing
+/// pill's amber plus the catalog's impact line.
+struct SegmentAnalysisExplanation: Equatable {
+    let title: String
+    /// Only on a pending segment.
+    let impact: String?
+    let isPending: Bool
+
+    static func make(
+        status: String?,
+        code: String?,
+        upstream: String?,
+        language: OpenerLanguage? = nil
+    ) -> SegmentAnalysisExplanation? {
+        guard let title = FailureCatalog.segmentExplanation(
+            status: status, code: code, upstream: upstream, language: language
+        ) else { return nil }
+        let isPending = status == "pending_analysis"
+        return SegmentAnalysisExplanation(
+            title: title,
+            impact: isPending
+                ? FailureCatalog.copy(forSegmentCode: code, upstream: upstream, language: language)?.impact
+                : nil,
+            isPending: isPending
+        )
+    }
+}
+
 struct SegmentDescriptor: Identifiable {
     let id: String
     let title: String
@@ -1224,7 +1254,7 @@ struct SegmentDescriptor: Identifiable {
     /// Why a `failed` or `pending_analysis` segment is in that state, from
     /// its server `code`. `nil` for every other segment and for ones without
     /// a code, which keep the plain pill.
-    var failureExplanation: String? = nil
+    var analysisExplanation: SegmentAnalysisExplanation? = nil
     /// Audio length when it's known without decoding — notes carry
     /// `duration_seconds` in their metadata. `nil` for walkthrough
     /// segments, which the row loads lazily from the file instead.
@@ -1277,11 +1307,19 @@ private struct SegmentRow: View {
                             .foregroundStyle(Theme.color.text.subdued)
                             .monospacedDigit()
                     }
-                    if let explanation = descriptor.failureExplanation {
-                        Text(explanation)
+                    if let explanation = descriptor.analysisExplanation {
+                        Text(explanation.title)
                             .font(Theme.font.caption)
-                            .foregroundStyle(Theme.color.status.destructive)
+                            .foregroundStyle(explanation.isPending
+                                ? Theme.color.status.warning
+                                : Theme.color.status.destructive)
                             .fixedSize(horizontal: false, vertical: true)
+                        if let impact = explanation.impact {
+                            Text(impact)
+                                .font(Theme.font.caption)
+                                .foregroundStyle(Theme.color.text.subdued)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
 

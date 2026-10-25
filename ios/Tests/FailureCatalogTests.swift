@@ -198,14 +198,38 @@ struct FailureCatalogTests {
         #expect(explanation("failed", "whisper_timeout", "whisper") == "Transcription is taking too long")
         #expect(explanation("pending_analysis", "blindfold_unavailable", "blindfold")
                 == "Private analysis isn’t available")
-        #expect(explanation("pending_analysis", "ollama_timeout", "ollama") != nil)
-        #expect(explanation("pending_analysis", "lightrag_unavailable", "lightrag") != nil)
+        #expect(explanation("pending_analysis", "ollama_timeout", "ollama") == "Analysis is taking too long")
+        #expect(explanation("pending_analysis", "lightrag_unavailable", "lightrag")
+                == "Diary memory isn’t available")
         #expect(explanation("failed", nil, nil) == nil)
         #expect(explanation("pending_analysis", nil, "blindfold") == nil)
         #expect(explanation("pending_analysis", "", nil) == nil)
         #expect(explanation("processed", "blindfold_timeout", "blindfold") == nil)
         #expect(explanation("unknown", "blindfold_timeout", "blindfold") == nil)
         #expect(explanation(nil, "blindfold_timeout", "blindfold") == nil)
+    }
+
+    @Test("a pending segment's explanation carries the impact line, a failed one's does not")
+    func segmentAnalysisExplanationImpact() throws {
+        func explanation(_ status: String?, _ code: String?, _ upstream: String?,
+                         _ language: OpenerLanguage = .en) -> SegmentAnalysisExplanation? {
+            SegmentAnalysisExplanation.make(status: status, code: code, upstream: upstream, language: language)
+        }
+        let pending = try #require(explanation("pending_analysis", "ollama_timeout", "ollama"))
+        #expect(pending.title == "Analysis is taking too long")
+        #expect(pending.impact == "Analysis is delayed; your texts are saved.")
+        #expect(pending.isPending)
+
+        let pendingDE = try #require(explanation("pending_analysis", "blindfold_unavailable", "blindfold", .de))
+        #expect(pendingDE.impact == "Auswertung verzögert sich, deine Texte sind gespeichert.")
+
+        let failed = try #require(explanation("failed", "whisper_timeout", "whisper"))
+        #expect(failed.title == "Transcription is taking too long")
+        #expect(failed.impact == nil)
+        #expect(!failed.isPending)
+
+        #expect(explanation("pending_analysis", nil, "blindfold") == nil)
+        #expect(explanation("processed", "ollama_timeout", "ollama") == nil)
     }
 
     @Test("ConnectionDiagnosis explains a Blindfold failure in either language")
