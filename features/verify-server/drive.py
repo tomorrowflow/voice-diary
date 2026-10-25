@@ -6,6 +6,7 @@ verify stack's network and talks to the real webapp at $BASE_URL.
     python /drive.py session-upload-whisper-down <session_id>
     python /drive.py session-status <session_id> legacy|coded
     python /drive.py segment-retry-transcription <session_id>
+    python /drive.py session-interrupted-recovery <session_id> saved|unsaved
     python /drive.py document-ingest-refusals
     python /drive.py document-ingest-outdated <doc_id>
     python /drive.py static-entity-create <name>
@@ -227,6 +228,34 @@ def segment_retry_transcription(session_id):
           and segments["s03"].get("recoverable") is False)
 
 
+def session_interrupted_recovery(session_id, expect):
+    """Read back a session whose recovery a webapp restart interrupted (seeded
+    `transcribing`, then settled at startup). expect = saved (its transcript was
+    saved: `pending_analysis` with the id; the stack's missing Ollama and LightRAG
+    leave it there) or unsaved (`failed` as `recovery_interrupted`)."""
+    path = f"/api/sessions/{session_id}/status"
+    require_auth_first(path)
+    status, body = call("GET", path, auth=True)
+    check("with bearer -> 200", status == 200)
+    segments = body.get("segments", []) if isinstance(body, dict) else []
+    check("one segment, no longer transcribing, session no longer processing",
+          len(segments) == 1 and segments[0].get("status") != "transcribing"
+          and body.get("state") != "processing")
+    segment = segments[0] if segments else {}
+    if expect == "saved":
+        check("saved transcript -> pending_analysis with its transcript_id",
+              segment.get("status") == "pending_analysis"
+              and isinstance(segment.get("transcript_id"), int))
+        check("state partial", body.get("state") == "partial")
+    else:
+        check("no saved transcript -> failed, recovery_interrupted, no upstream, no transcript",
+              segment.get("status") == "failed" and segment.get("code") == "recovery_interrupted"
+              and segment.get("upstream") is None and segment.get("transcript_id") is None
+              and segment.get("error"))
+        check("audio retained -> recoverable true, state failed",
+              segment.get("recoverable") is True and body.get("state") == "failed")
+
+
 def document_ingest_refusals():
     """The manual ingest's refusals, which never reach LightRAG: the bearer
     gate, then the lookup of an unknown document."""
@@ -277,6 +306,7 @@ COMMANDS = {
     "session-upload-whisper-down": (session_upload_whisper_down, 1),
     "session-status": (session_status, 2),
     "segment-retry-transcription": (segment_retry_transcription, 1),
+    "session-interrupted-recovery": (session_interrupted_recovery, 2),
     "document-ingest-refusals": (document_ingest_refusals, 0),
     "document-ingest-outdated": (document_ingest_outdated, 1),
     "static-entity-create": (static_entity_create, 1),

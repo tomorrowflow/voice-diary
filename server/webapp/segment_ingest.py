@@ -258,6 +258,12 @@ class SegmentIngest:
         return result.corrected_text, entities
 
 
+def transcript_filename(manifest: Manifest, segment: Segment) -> str:
+    """The file name a segment's transcript row is stored under (unique per
+    date)."""
+    return f"{manifest.session_id}::{segment.segment_id}{Path(segment.audio_file).suffix}"
+
+
 def _read_source(manifest: Manifest, segment: Segment, session_dir: Path) -> _Source:
     audio_path = session_dir / segment.audio_file
     if not audio_path.exists():
@@ -266,7 +272,7 @@ def _read_source(manifest: Manifest, segment: Segment, session_dir: Path) -> _So
     return _Source(
         audio_bytes=audio_path.read_bytes(),
         suffix=suffix,
-        filename=f"{manifest.session_id}::{segment.segment_id}{suffix}",
+        filename=transcript_filename(manifest, segment),
         date=manifest.date.isoformat(),
         language=(segment.language or "de").split("-")[0],
     )
