@@ -38,7 +38,7 @@ This is the common case: Claude Design has output a screen mock that uses the ex
 
 1. **Read the token map** in the output bundle. Verify every name appears in `DESIGN.md` or `docs/design-system/tokens/*`.
 2. **If everything maps cleanly**, this is purely an iOS layout change. Open the relevant file in `ios/Sources/UI/...`, edit the SwiftUI views to match the mock. Use `Theme.color.*`, `Theme.spacing.*`, `Theme.radius.*`, `Theme.font.*` — no raw values.
-3. **Run the app on iPhone 17 Pro simulator** (`xcodebuild -scheme VoiceDiary -destination 'platform=iOS Simulator,name=iPhone 17 Pro'`).
+3. **Build and run the app on the iPhone 17 simulator** (macOS with Xcode only). The supported gate is in [`DEVELOPMENT.md` §7.4](../../DEVELOPMENT.md); the iPhone 17 Pro simulator is not available there, so use the plain iPhone 17. For light and dark screenshots of the real running app, follow [`.claude/skills/verify-ios/SKILL.md`](../../.claude/skills/verify-ios/SKILL.md), which uses its dedicated `vd-verify-ios` simulator.
 4. **Diff the mock** mentally against the rendered view. Fix discrepancies in spacing/radius using existing tokens before considering whether to add new ones.
 
 If a discrepancy can't be resolved with existing tokens, see Workflow B.
@@ -159,7 +159,7 @@ The user does most reflection in the evening. Dark mode is the default during th
 - [ ] Light + dark both rendered and acceptable.
 - [ ] `DESIGN.md` updated if any token / component variant was added.
 - [ ] If `tokens/*.json` was edited, the build script ran and generated outputs were committed.
-- [ ] iPhone 17 Pro simulator screenshot attached to the PR for any visible screen change.
+- [ ] Light and dark screenshots of the real running app, captured on the `vd-verify-ios` simulator per [`.claude/skills/verify-ios/SKILL.md`](../../.claude/skills/verify-ios/SKILL.md), attached to the PR for any visible screen change. A build, SwiftUI preview or `ImageRenderer` render does not count.
 
 ---
 
