@@ -353,6 +353,10 @@ class SessionIngest:
         itself stays). Runs with no upload inside the gate, so no upload can create a
         row or bundle between the database reset and the bundle removal.
 
+        Recoveries are stopped first, so none can save a transcript after the
+        tables were cleared; a recovery requested meanwhile waits at the gate
+        until the reset is done and then finds no session.
+
         `_resetting` is cleared on every exit, including cancellation while
         waiting for the uploads to drain; otherwise every later upload and
         reset would wait forever."""
@@ -362,10 +366,21 @@ class SessionIngest:
         try:
             async with self._gate:
                 await self._gate.wait_for(lambda: self._uploads_inside == 0)
+            await self._stop_recoveries()
             await _finish_despite_cancellation(asyncio.ensure_future(self._clear_everything()))
         finally:
             self._resetting = False
             await self._wake_gate_waiters()
+
+    async def _stop_recoveries(self) -> None:
+        """Cancel every recovery being accepted or attempted and wait until
+        none is left. Called with `_resetting` set, so no new one can pass the
+        gate while this runs."""
+        while self._recoveries:
+            stopping = list(self._recoveries)
+            for task in stopping:
+                task.cancel()
+            await asyncio.gather(*stopping, return_exceptions=True)
 
     async def _clear_everything(self) -> None:
         await db.reset_all_data()
@@ -826,7 +841,10 @@ class SessionIngest:
     async def _accept_recovery(self, session_id: str, segment_id: str) -> SessionStatus:
         """Claim the session, repeat the state checks under the claim, persist
         the segment `transcribing` and start the attempt, which then owns the
-        claim. Without an attempt started the claim is released."""
+        claim. Without an attempt started the claim is released. Waits first
+        while a data reset runs, then finds the session gone."""
+        async with self._gate:
+            await self._gate.wait_for(lambda: not self._resetting)
         if not await self._try_begin(session_id):
             raise SessionBusy()
         previous: tuple[str, list[SegmentResult]] | None = None
@@ -919,6 +937,9 @@ class SessionIngest:
             await self._discard_transcript(session_id, segment_id, artifact.transcript_id)
             raise
         if results is None:
+            # The session is gone (forgotten while the attempt ran): there is
+            # nothing to link the saved transcript to.
+            await self._discard_transcript(session_id, segment_id, artifact.transcript_id)
             return
 
         # From here the segment is linked to its saved transcript. Nothing that

@@ -916,6 +916,89 @@ def test_a_row_with_other_values_is_not_deleted_after_a_lost_save_result(monkeyp
     assert world.pipeline.transcript_rows == {f"{SESSION}::s01.m4a": 10}
 
 
+def test_reset_all_data_stops_a_running_recovery_and_leaves_no_transcript(monkeypatch, tmp_path):
+    """Reset All Data waits for uploads and now also stops recoveries: one
+    that was past Whisper cannot save a transcript after the tables were
+    cleared, and its claim is released."""
+    started, release, correct = _latched_correction()
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", correct=correct,
+    )
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await asyncio.wait_for(started.wait(), 1)
+        await asyncio.wait_for(world.ingest.reset_all_data(), 1)
+        release.set()  # too late: the attempt was stopped
+        await world.ingest.settled()
+        return await world.ingest.status(SESSION)
+
+    status = asyncio.run(run())
+
+    assert status is None
+    assert world.pipeline.transcript_rows == {}
+    assert world.ingests.rows == {}
+    assert world.narrative.runs == []
+
+
+def test_a_recovery_whose_session_disappeared_deletes_the_transcript_it_saved(
+    monkeypatch, tmp_path,
+):
+    """The session row vanishes while the attempt is past Whisper (anything
+    that forgets the session, not only a reset): once the transcript is saved
+    and there is no session to link it to, the row is deleted again."""
+    started, release, correct = _latched_correction()
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", correct=correct,
+    )
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await asyncio.wait_for(started.wait(), 1)
+        await world.ingest.repository.delete(SESSION)
+        release.set()
+        await world.ingest.settled()
+
+    asyncio.run(run())
+
+    assert world.pipeline.transcript_rows == {}
+    assert world.narrative.runs == []
+
+
+def test_a_recovery_requested_while_a_reset_runs_waits_for_it_and_finds_no_session(
+    monkeypatch, tmp_path,
+):
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
+    cleared = asyncio.Event()
+    original_clear = world.ingest._clear_everything
+    resume = asyncio.Event()
+
+    async def slow_clear():
+        cleared.set()
+        await asyncio.wait_for(resume.wait(), 1)
+        await original_clear()
+
+    monkeypatch.setattr(world.ingest, "_clear_everything", slow_clear)
+
+    async def run():
+        reset = asyncio.create_task(world.ingest.reset_all_data())
+        await asyncio.wait_for(cleared.wait(), 1)
+        recovery = asyncio.create_task(world.ingest.recover(SESSION, "s01"))
+        await asyncio.sleep(0)
+        waiting = not recovery.done()
+        resume.set()
+        await reset
+        with pytest.raises(session_ingest.SessionNotFound):
+            await asyncio.wait_for(recovery, 1)
+        return waiting
+
+    waiting = asyncio.run(run())
+
+    assert waiting
+    assert world.pipeline.transcribe_calls == []
+    assert world.pipeline.transcript_rows == {}
+
+
 def test_a_row_that_cannot_be_deleted_is_replaced_by_the_next_attempt(monkeypatch, tmp_path):
     world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
     repository = world.ingests.repository

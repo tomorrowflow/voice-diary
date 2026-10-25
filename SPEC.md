@@ -946,7 +946,10 @@ body). One request is one attempt; nothing starts one on its own.
   `failed`: if the narrative's outcome cannot be persisted, the stored segment stays `pending_analysis`
   with its transcript and the existing retry or the sweep finishes it. Accepting the request is not
   interrupted by the client leaving: either the
-  segment is `transcribing` with an attempt running, or the stored status is unchanged.
+  segment is `transcribing` with an attempt running, or the stored status is unchanged. The admin
+  "Reset All Data" stops running recoveries before it clears anything, so none saves a transcript
+  afterwards, and a recovery requested while it runs waits and then finds no session (`404`); a
+  recovery that finds its session gone deletes the transcript it had saved.
 - *Outcomes.* Transcription fails (Whisper, conversion, an empty transcript, storage): the segment is
   `failed` again with the new `error`, `code` and `upstream` replacing the old ones, and the audio is
   untouched, so the next request can succeed. The narrative or the LightRAG ingest fails: the segment
