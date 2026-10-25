@@ -999,6 +999,89 @@ def test_a_recovery_requested_while_a_reset_runs_waits_for_it_and_finds_no_sessi
     assert world.pipeline.transcript_rows == {}
 
 
+def _slow_stop(world: World, monkeypatch):
+    """Make the reset's stopping of recoveries wait until `gate` is set;
+    `entered` says it began."""
+    entered, gate = asyncio.Event(), asyncio.Event()
+    original_stop = world.ingest._stop_recoveries
+
+    async def slow_stop():
+        entered.set()
+        await asyncio.wait_for(gate.wait(), 1)
+        await original_stop()
+
+    monkeypatch.setattr(world.ingest, "_stop_recoveries", slow_stop)
+    return entered, gate
+
+
+def test_a_cancelled_reset_still_finishes_what_it_started(monkeypatch, tmp_path):
+    """The admin request is cancelled while the reset is stopping recoveries:
+    the reset still clears everything, so no recovery is stopped for nothing
+    and left `transcribing`."""
+    started, release, correct = _latched_correction()
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed", correct=correct)
+    entered, gate = _slow_stop(world, monkeypatch)
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await asyncio.wait_for(started.wait(), 1)
+        reset = asyncio.create_task(world.ingest.reset_all_data())
+        await asyncio.wait_for(entered.wait(), 1)
+        reset.cancel()
+        gate.set()
+        await asyncio.gather(reset, return_exceptions=True)
+        await asyncio.wait_for(world.ingest.settled(), 1)
+        return await world.ingest.status(SESSION)
+
+    status = asyncio.run(run())
+
+    assert status is None
+    assert world.ingests.rows == {}
+    assert world.pipeline.transcript_rows == {}
+
+
+def test_a_recovery_stopped_by_a_reset_before_the_clear_is_refused_as_not_found(
+    monkeypatch, tmp_path,
+):
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
+    entered, gate = _slow_stop(world, monkeypatch)
+
+    async def run():
+        reset = asyncio.create_task(world.ingest.reset_all_data())
+        await asyncio.wait_for(entered.wait(), 1)
+        recovery = asyncio.create_task(world.ingest.recover(SESSION, "s01"))
+        await asyncio.sleep(0)  # it reaches the gate and waits there
+        gate.set()
+        await reset
+        with pytest.raises(session_ingest.SessionNotFound):
+            await asyncio.wait_for(recovery, 1)
+
+    asyncio.run(run())
+
+    assert world.pipeline.transcribe_calls == []
+
+
+def test_an_attempt_stopped_before_it_starts_releases_the_claim(monkeypatch, tmp_path):
+    """The attempt's task is cancelled before its first step, so its own
+    cleanup never runs: the claim is released regardless."""
+    world = World(monkeypatch, tmp_path, [_failed("s01"), _failed("s02")], state="failed")
+
+    async def run():
+        await world.ingest._accept_recovery(SESSION, "s01")
+        # No yield since the attempt was created: it has not started.
+        for task in list(world.ingest._recoveries):
+            task.cancel()
+        await asyncio.wait_for(world.ingest.settled(), 1)
+        # The claim is free: the other segment can be recovered.
+        await world.ingest.recover(SESSION, "s02")
+        await asyncio.wait_for(world.ingest.settled(), 1)
+        return await world.status()
+
+    status = asyncio.run(run())
+
+    assert world.result(status, "s02").status == "processed"
+
+
 def test_a_row_that_cannot_be_deleted_is_replaced_by_the_next_attempt(monkeypatch, tmp_path):
     world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
     repository = world.ingests.repository

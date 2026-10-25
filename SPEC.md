@@ -948,8 +948,9 @@ body). One request is one attempt; nothing starts one on its own.
   interrupted by the client leaving: either the
   segment is `transcribing` with an attempt running, or the stored status is unchanged. The admin
   "Reset All Data" stops running recoveries before it clears anything, so none saves a transcript
-  afterwards, and a recovery requested while it runs waits and then finds no session (`404`); a
-  recovery that finds its session gone deletes the transcript it had saved.
+  afterwards, and a recovery requested while it runs, or caught by it, is refused with `404
+  session_not_found`; the reset finishes even if the admin request is cancelled. A recovery that
+  finds its session gone deletes the transcript it had saved.
 - *Outcomes.* Transcription fails (Whisper, conversion, an empty transcript, storage): the segment is
   `failed` again with the new `error`, `code` and `upstream` replacing the old ones, and the audio is
   untouched, so the next request can succeed. The narrative or the LightRAG ingest fails: the segment

@@ -366,11 +366,19 @@ class SessionIngest:
         try:
             async with self._gate:
                 await self._gate.wait_for(lambda: self._uploads_inside == 0)
-            await self._stop_recoveries()
-            await _finish_despite_cancellation(asyncio.ensure_future(self._clear_everything()))
+            await _finish_despite_cancellation(
+                asyncio.ensure_future(self._stop_recoveries_and_clear())
+            )
         finally:
             self._resetting = False
             await self._wake_gate_waiters()
+
+    async def _stop_recoveries_and_clear(self) -> None:
+        """Both steps as one unit the caller's cancellation cannot split:
+        stopping recoveries and then not clearing would leave their segments
+        `transcribing` with no attempt."""
+        await self._stop_recoveries()
+        await self._clear_everything()
 
     async def _stop_recoveries(self) -> None:
         """Cancel every recovery being accepted or attempted and wait until
@@ -835,7 +843,15 @@ class SessionIngest:
         # back; either way the claim is released or handed to the attempt.
         accepting = asyncio.ensure_future(self._accept_recovery(session_id, segment_id))
         self._track_recovery(accepting)
-        accepted = await asyncio.shield(accepting)
+        try:
+            accepted = await asyncio.shield(accepting)
+        except asyncio.CancelledError:
+            # Cancelled by a data reset that is clearing the sessions (not by
+            # this caller leaving): the session is gone as far as it is concerned.
+            current = asyncio.current_task()
+            if accepting.cancelled() and current is not None and not current.cancelling():
+                raise SessionNotFound() from None
+            raise
         return _with_recoverable(session_id, accepted)
 
     async def _accept_recovery(self, session_id: str, segment_id: str) -> SessionStatus:
@@ -877,7 +893,20 @@ class SessionIngest:
                     )
             await self._end(session_id)
             raise
-        self._track_recovery(asyncio.create_task(self._run_recovery(session_id, segment_id)))
+        started: list[bool] = []
+
+        async def attempt() -> None:
+            started.append(True)
+            await self._run_recovery(session_id, segment_id)
+
+        task = asyncio.create_task(attempt())
+        # A started attempt releases the claim itself when it ends. One that is
+        # cancelled before its first step never runs that, so the claim is
+        # released here; only then, or it could release a later run's claim.
+        task.add_done_callback(
+            lambda _task: None if started else self._in_flight.discard(session_id)
+        )
+        self._track_recovery(task)
         return accepted
 
     def _track_recovery(self, task: asyncio.Task) -> None:
