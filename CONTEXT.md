@@ -2,6 +2,8 @@
 
 A personal voice-journaling system: an iPhone app captures voice notes during the day and runs a guided evening walkthrough; a server turns the recordings into diary narratives and a knowledge graph.
 
+Architecture map: docs/architecture/*.json (SeeCode specs, evidence-linked; rules in docs/architecture/README.md).
+
 ## Language
 
 ### Capture

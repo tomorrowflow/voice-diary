@@ -1,0 +1,60 @@
+{
+  "type": "architecture",
+  "title": "iOS app",
+  "subtitle": "ios/Sources and ios/WidgetExtension",
+  "eyebrow": "Architecture",
+  "motion": "trace",
+  "nodes": [
+    {"id":"ui","label":"Screens","sub":"SwiftUI, App Intents","row":1,"col":0},
+    {"id":"widget","label":"Widget","sub":"lock screen, Live Activity","kind":"input","row":0,"col":0},
+    {"id":"walk","label":"Walkthrough flow","sub":"WalkthroughCoordinator","focal":true,"row":1,"col":1},
+    {"id":"capture","label":"Capture","sub":"AudioEngine, Parakeet ASR","row":0,"col":1},
+    {"id":"llm","label":"Dialog LLM","sub":"Gemma MLX, Apple FM","row":1,"col":2},
+    {"id":"tts","label":"Speech output","sub":"Voxtral, Apple, Piper","row":2,"col":2},
+    {"id":"store","label":"Local store","sub":"session bundles","kind":"store","row":2,"col":1},
+    {"id":"client","label":"Server client","sub":"URLSession, uploader","row":1,"col":3},
+    {"id":"server","label":"Diary server","sub":"over Tailscale","kind":"external","row":2,"col":3}
+  ],
+  "edges": [
+    ["ui","walk","start evening","primary"],
+    ["widget","ui","capture request","link"],
+    ["walk","capture","record, transcribe"],
+    ["walk","llm","prompts"],
+    ["walk","tts","speak"],
+    ["walk","store","write bundle","primary"],
+    ["walk","client","enrich"],
+    ["store","client","upload queue","primary"],
+    ["client","server","HTTP","link"],
+    ["tts","server","synthesize","link"]
+  ],
+  "evidence": [
+    {"id":"ui","file":"ios/Sources/App/VoiceDiaryApp.swift","line":22},
+    {"id":"widget","file":"ios/WidgetExtension/CaptureWidgetBundle.swift","line":7},
+    {
+      "id": "widget>ui",
+      "file": "ios/Sources/Shared/CaptureThoughtIntent.swift",
+      "line": 43,
+      "note": "writes CaptureIntentInbox; app consumes at VoiceDiaryApp.swift:213"
+    },
+    {"id":"walk","file":"ios/Sources/Dialog/WalkthroughCoordinator.swift","line":25},
+    {"id":"ui>walk","file":"ios/Sources/App/VoiceDiaryApp.swift","line":127},
+    {"id":"capture","file":"ios/Sources/Capture/ParakeetManager.swift","line":17},
+    {"id":"walk>capture","file":"ios/Sources/Dialog/WalkthroughCoordinator.swift","line":96},
+    {"id":"llm","file":"ios/Sources/Dialog/DialogLLMResolver.swift","line":45},
+    {"id":"walk>llm","file":"ios/Sources/Dialog/WalkthroughCoordinator.swift","line":1874},
+    {
+      "id": "tts",
+      "file": "ios/Sources/TTS/TTSFallbackPolicy.swift",
+      "line": 14,
+      "note": "Piper is gated by the PIPER_TTS flag, see PiperTTS.swift:17"
+    },
+    {"id":"walk>tts","file":"ios/Sources/Dialog/WalkthroughCoordinator.swift","line":104},
+    {"id":"store","file":"ios/Sources/Storage/LocalStore.swift","line":6},
+    {"id":"walk>store","file":"ios/Sources/Dialog/WalkthroughCoordinator.swift","line":617},
+    {"id":"client","file":"ios/Sources/Backend/ServerClient.swift","line":3},
+    {"id":"walk>client","file":"ios/Sources/Dialog/EnrichmentService.swift","line":84},
+    {"id":"store>client","file":"ios/Sources/Backend/SessionUploader.swift","line":153},
+    {"id":"client>server","file":"ios/Sources/Backend/ServerClient.swift","line":157},
+    {"id":"tts>server","file":"ios/Sources/TTS/VoxtralTTSClient.swift","line":64}
+  ]
+}

@@ -18,6 +18,7 @@ active implementation. Trust `git log` and the source trees over any status tabl
   `scripts/build_design_system.sh`.
 - `CODING_STANDARDS.md` — coding conventions and the reviewer's hard rules.
 - `CONTEXT.md` + `docs/adr/` — domain language and decisions; see `docs/agents/domain.md`.
+- Architecture map: docs/architecture/*.json (SeeCode specs, evidence-linked; rules in docs/architecture/README.md).
 - `ios/README.md` — iOS setup, signing, device builds, manual test plan.
 - `server/README.md` — server setup, environment, operations.
 - `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md` — issue tracker and label rules.
