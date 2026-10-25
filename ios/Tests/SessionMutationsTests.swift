@@ -270,18 +270,42 @@ struct SessionMutationsTests {
         #expect(player.stops == 0)
     }
 
-    @Test("removing the last remaining chunk deletes the whole note and asks to dismiss")
-    func rewriteWithNoSurvivorsRemovesEntry() throws {
+    // Two chunks sharing a file name is the only way a multi-chunk note can
+    // lose every chunk to one removal: the metadata rewrite then finds no
+    // survivor and takes the whole note with it.
+    @Test("a removal that leaves no chunk deletes the whole note, purges once and asks to dismiss")
+    func noSurvivorsRemovesEntry() throws {
         let root = try scratchDir()
         defer { try? FileManager.default.removeItem(at: root) }
-        let entry = try makeNote(chunks: [chunk("audio.m4a", 2, "de", "eins")], in: root)
+        let entry = try makeNote(chunks: [
+            chunk("audio.m4a", 2, "de", "eins"),
+            chunk("audio.m4a", 3, "de", "zwei"),
+        ], in: root)
         let log = Log()
 
-        let outcome = mutations(log: log).rewriteVoiceNoteMetadata(removing: "audio.m4a", in: entry)
+        let outcome = mutations(log: log).deleteSegment(
+            descriptor("audio.m4a", audio: entry.directory.appending(path: "audio.m4a")),
+            in: .voiceNote(entry), player: FakePlayer())
 
         #expect(outcome == .entryRemoved)
         #expect(!exists(entry.directory))
-        #expect(log.events == ["remove:2026-05-20T08-00-00"])
+        #expect(log.events == ["remove:audio.m4a", "remove:2026-05-20T08-00-00", "purge"])
+    }
+
+    @Test("a failed whole-note removal for a single-chunk note is swallowed, still purges and asks to dismiss")
+    func singleChunkRemovalFailureSwallowed() throws {
+        let root = try scratchDir()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let entry = try makeNote(chunks: nil, in: root)
+        let log = Log()
+
+        let outcome = mutations(log: log, removeFails: true).deleteSegment(
+            descriptor("audio.m4a", audio: entry.directory.appending(path: "audio.m4a")),
+            in: .voiceNote(entry), player: FakePlayer())
+
+        #expect(outcome == .entryRemoved)
+        #expect(exists(entry.directory))
+        #expect(log.events == ["remove:2026-05-20T08-00-00", "purge"])
     }
 
     @Test("a failed file removal or metadata write is swallowed, and the purge still follows")

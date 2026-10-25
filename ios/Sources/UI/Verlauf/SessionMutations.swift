@@ -99,7 +99,7 @@ struct SessionMutations {
     /// removal leaves zero chunks the directory is purged (`.entryRemoved`);
     /// if one survives we collapse `chunks` back to nil so the record
     /// looks like a normal single-shot capture again.
-    func rewriteVoiceNoteMetadata(
+    private func rewriteVoiceNoteMetadata(
         removing filename: String,
         in entry: SessionHistoryStore.VoiceNoteEntry
     ) -> Outcome {

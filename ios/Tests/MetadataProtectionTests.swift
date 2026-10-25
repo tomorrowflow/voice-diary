@@ -32,7 +32,7 @@ struct MetadataProtectionTests {
         let sites = [
             ("Sources/Capture/CaptureCoordinator.swift", "static func writeMetadata("),
             ("Sources/Dialog/SessionBundle.swift", "static func writeJournalData("),
-            ("Sources/Storage/SessionMutations.swift", "static func writeVoiceNoteMetadata("),
+            ("Sources/UI/Verlauf/SessionMutations.swift", "static func writeVoiceNoteMetadata("),
         ]
         for (path, marker) in sites {
             let source = try String(contentsOf: iosDir.appending(path: path), encoding: .utf8)
