@@ -10,7 +10,6 @@ Ollama summariser, returns a 2–3 sentence summary in the requested language.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Query
@@ -18,6 +17,7 @@ from pydantic import BaseModel, Field
 
 import fixtures
 import upstream_failure
+from email_results import prepare_email_results
 from enrichment import summarise_for_speech
 from msgraph_client import get_client
 from routers.auth import require_bearer
@@ -44,31 +44,6 @@ class EmailSearchResponse(BaseModel):
     source_count: int
     response_language: ResponseLanguage
     links: list[EmailLink] = Field(default_factory=list)
-
-
-def _shape_message(raw: dict) -> EmailLink:
-    sender_obj = (raw.get("from") or {}).get("emailAddress") or {}
-    sender = sender_obj.get("name") or sender_obj.get("address") or ""
-    return EmailLink(
-        id=raw.get("id", ""),
-        subject=raw.get("subject") or "",
-        sender=sender,
-        received=raw.get("receivedDateTime") or "",
-        web_link=raw.get("webLink") or "",
-    )
-
-
-def _format_sources(messages: list[dict]) -> str:
-    """Compact text block fed to the summariser. Keep it short — Piper
-    will speak only 2–3 sentences anyway."""
-    parts: list[str] = []
-    for raw in messages:
-        link = _shape_message(raw)
-        body = (raw.get("bodyPreview") or "").strip().replace("\n", " ")
-        parts.append(
-            f"- Von {link.sender} ({link.received}): {link.subject}. {body[:400]}"
-        )
-    return "\n".join(parts) or "(keine Treffer)"
 
 
 @router.get("/email/search", response_model=EmailSearchResponse)
@@ -98,48 +73,19 @@ async def email_search(
             client = await get_client()
             data = await client.get_json("/me/messages", params=params)
         raw_messages = data.get("value", []) or []
-    raw_messages = _filter_by_date(raw_messages, from_, to)
+    results = prepare_email_results(raw_messages, from_, to)
+    links = [EmailLink(**link) for link in results.links]
 
-    sources_text = _format_sources(raw_messages)
     with upstream_failure.raise_as_failure():
         summary = await summarise_for_speech(
             query=q,
-            sources_text=sources_text,
+            sources_text=results.sources_text,
             response_language=response_language,
         )
 
     return EmailSearchResponse(
         summary=summary,
-        source_count=len(raw_messages),
+        source_count=len(links),
         response_language=response_language,
-        links=[_shape_message(m) for m in raw_messages],
+        links=links,
     )
-
-
-def _filter_by_date(
-    messages: list[dict], from_iso: str | None, to_iso: str | None
-) -> list[dict]:
-    if not from_iso and not to_iso:
-        return messages
-
-    def parse(value: str | None) -> datetime | None:
-        if not value:
-            return None
-        try:
-            return datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-
-    start = parse(from_iso)
-    end = parse(to_iso)
-    out: list[dict] = []
-    for raw in messages:
-        received = parse(raw.get("receivedDateTime"))
-        if received is None:
-            continue
-        if start and received < start:
-            continue
-        if end and received > end:
-            continue
-        out.append(raw)
-    return out
