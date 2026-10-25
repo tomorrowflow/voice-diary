@@ -158,10 +158,81 @@ def apply_llm_corrections(
     return result, applied
 
 
+class TranscriptCorrector:
+    """Contextual ASR correction of one transcript with an LLM.
+
+    Owns the whole prompt -> chat -> parse -> apply sequence. The Ollama client
+    and context window are supplied by the caller; `timeout_seconds` is only
+    reported in the log line. Any typed Ollama failure, empty output or
+    unusable suggestion list returns `(raw_text, [])`.
+    """
+
+    def __init__(
+        self,
+        client: OllamaClient,
+        num_ctx: int,
+        *,
+        timeout_seconds: float = OLLAMA_TIMEOUT,
+    ) -> None:
+        self._client = client
+        self._num_ctx = num_ctx
+        self._timeout_seconds = timeout_seconds
+
+    async def correct(
+        self, raw_text: str, correction_examples: list[dict] | None = None
+    ) -> tuple[str, list[dict]]:
+        """Return `(corrected_text, [{original, corrected, reason, start, end}, ...])`."""
+        messages = _build_messages(raw_text, correction_examples=correction_examples)
+
+        logger.info(
+            "Calling Ollama for transcript correction (model: %s, timeout: %ss)",
+            self._client.model,
+            self._timeout_seconds,
+        )
+        t0 = time.monotonic()
+
+        try:
+            result = await self._client.chat(messages, format="json", num_ctx=self._num_ctx)
+        except OllamaUnavailableError:
+            logger.warning(
+                "Ollama unreachable at %s for transcript correction", self._client.base_url
+            )
+            return raw_text, []
+        except OllamaTimeoutError:
+            elapsed = time.monotonic() - t0
+            logger.warning("Ollama transcript correction timed out after %.1fs", elapsed)
+            return raw_text, []
+        except OllamaEngineError as e:
+            logger.warning("Ollama error for transcript correction: %s", e)
+            return raw_text, []
+
+        elapsed = time.monotonic() - t0
+        logger.info("Ollama transcript correction responded in %.1fs", elapsed)
+
+        content = result.content
+        if not content:
+            logger.warning("Empty Ollama response for transcript correction")
+            return raw_text, []
+
+        corrections = _parse_corrections(content)
+        if not corrections:
+            logger.info("LLM found no transcript corrections")
+            return raw_text, []
+
+        logger.info("LLM suggested %d transcript correction(s)", len(corrections))
+        corrected_text, applied = apply_llm_corrections(raw_text, corrections)
+        logger.info("Applied %d transcript correction(s)", len(applied))
+
+        return corrected_text, applied
+
+
 async def correct_transcript(
     raw_text: str, correction_examples: list[dict] | None = None
 ) -> tuple[str, list[dict]]:
     """Send transcript to Ollama for contextual ASR error correction.
+
+    Uses the module's current `LLM_CORRECTION_ENABLED`, `_ollama_client` and
+    `OLLAMA_NUM_CTX`.
 
     Returns (corrected_text, corrections_list).
     Each correction: {original, corrected, reason, start, end}
@@ -175,43 +246,7 @@ async def correct_transcript(
         logger.info("LLM transcript correction disabled")
         return raw_text, []
 
-    messages = _build_messages(raw_text, correction_examples=correction_examples)
-
-    logger.info(
-        "Calling Ollama for transcript correction (model: %s, timeout: %ss)",
-        OLLAMA_MODEL,
-        OLLAMA_TIMEOUT,
+    corrector = TranscriptCorrector(
+        _ollama_client, OLLAMA_NUM_CTX, timeout_seconds=OLLAMA_TIMEOUT
     )
-    t0 = time.monotonic()
-
-    try:
-        result = await _ollama_client.chat(messages, format="json", num_ctx=OLLAMA_NUM_CTX)
-    except OllamaUnavailableError:
-        logger.warning("Ollama unreachable at %s for transcript correction", OLLAMA_BASE_URL)
-        return raw_text, []
-    except OllamaTimeoutError:
-        elapsed = time.monotonic() - t0
-        logger.warning("Ollama transcript correction timed out after %.1fs", elapsed)
-        return raw_text, []
-    except OllamaEngineError as e:
-        logger.warning("Ollama error for transcript correction: %s", e)
-        return raw_text, []
-
-    elapsed = time.monotonic() - t0
-    logger.info("Ollama transcript correction responded in %.1fs", elapsed)
-
-    content = result.content
-    if not content:
-        logger.warning("Empty Ollama response for transcript correction")
-        return raw_text, []
-
-    corrections = _parse_corrections(content)
-    if not corrections:
-        logger.info("LLM found no transcript corrections")
-        return raw_text, []
-
-    logger.info("LLM suggested %d transcript correction(s)", len(corrections))
-    corrected_text, applied = apply_llm_corrections(raw_text, corrections)
-    logger.info("Applied %d transcript correction(s)", len(applied))
-
-    return corrected_text, applied
+    return await corrector.correct(raw_text, correction_examples=correction_examples)
