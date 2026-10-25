@@ -1,9 +1,10 @@
 """Tests for the `harvest` module (REF-125): `suggest(date)` over fake calendar
 and pattern data, the pattern-cache lifecycle, and the Harvest routes' contracts.
 
-Run inside the webapp container so deps + env match prod:
+Run inside the webapp container so deps + env match prod. From `server/`, with
+the `.env` stub from DEVELOPMENT.md §7.4:
 
-    docker compose run --rm webapp pytest tests/test_harvest.py
+    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_harvest.py -q -p no:cacheprovider
 """
 
 from __future__ import annotations

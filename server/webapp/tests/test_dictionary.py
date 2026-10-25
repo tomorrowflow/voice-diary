@@ -5,9 +5,10 @@ No `db.*` loader is monkeypatched: the snapshot is built from fake data
 directly, and the loader runs against a fake connection pool so the real `db`
 queries' result shapes (including how dismissals are stored) are exercised.
 
-Run inside the webapp container so deps match prod:
+Run inside the webapp container so deps match prod. From `server/`, with the
+`.env` stub from DEVELOPMENT.md §7.4:
 
-    docker compose run --rm webapp pytest tests/test_dictionary.py
+    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_dictionary.py -q -p no:cacheprovider
 """
 
 from __future__ import annotations

@@ -6,9 +6,10 @@ sessions) delegate to (SRV-A1/#50).
 Fakes are injected at the ports (`NarrativePorts.lightrag_client` wired to
 an `httpx.MockTransport`, `NarrativePorts.llm_transport` likewise) — no
 monkeypatching of `document_processor` module globals. Run inside the
-webapp container so deps match prod:
+webapp container so deps match prod. From `server/`, with the `.env` stub from
+DEVELOPMENT.md §7.4:
 
-    docker compose run --rm webapp pytest tests/test_narrative.py
+    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_narrative.py -q -p no:cacheprovider
 """
 
 from __future__ import annotations

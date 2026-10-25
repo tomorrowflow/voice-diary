@@ -6,9 +6,10 @@ delegate to (#51).
 `detect_entities` is monkeypatched at the module level (the established
 pattern in `test_sessions.py`), since it has no injectable-port seam.
 
-Run inside the webapp container so deps match prod:
+Run inside the webapp container so deps match prod. From `server/`, with the
+`.env` stub from DEVELOPMENT.md §7.4:
 
-    docker compose run --rm webapp pytest tests/test_correction.py
+    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_correction.py -q -p no:cacheprovider
 """
 
 from __future__ import annotations

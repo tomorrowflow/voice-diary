@@ -1,8 +1,10 @@
 """Tests for `gate.EngineGate` — the sleep/wake decision logic.
 
-Run inside the gate container so deps match prod:
+Run inside the gate container so deps match prod. From `server/`, with the
+`.env` stub from DEVELOPMENT.md §7.4. The repo is mounted so the run uses the
+working tree, not the files baked into the image:
 
-    docker compose run --rm --no-deps --entrypoint pytest voxtral -q tests/test_gate.py
+    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server/voxtral-gate --entrypoint pytest voxtral tests/test_gate.py -q -p no:cacheprovider
 
 The engine is an `httpx.MockTransport`, so no live vLLM is needed. What's
 under test is *when* the gate decides to sleep or wake, not the proxying

@@ -9,9 +9,10 @@ The lifecycle behind them is tested through its own interface in
 `db`, `transcript_ingest`, `correction` and `narrative` stubbed
 (`session_helpers`).
 
-Run inside the webapp container so deps + env match prod:
+Run inside the webapp container so deps + env match prod. From `server/`, with
+the `.env` stub from DEVELOPMENT.md §7.4:
 
-    docker compose run --rm webapp pytest webapp/tests/test_sessions.py
+    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_sessions.py -q -p no:cacheprovider
 
 No live Postgres is needed.
 """

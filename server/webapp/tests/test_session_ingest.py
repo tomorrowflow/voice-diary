@@ -3,9 +3,10 @@ behind the HTTP routes, driven through `SessionIngest`'s public interface —
 `accept` / `process` (original ingest), `retry` (manual retry), `sweep`
 (startup sweep), `status`.
 
-Run inside the webapp container so deps + env match prod:
+Run inside the webapp container so deps + env match prod. From `server/`, with
+the `.env` stub from DEVELOPMENT.md §7.4:
 
-    docker compose run --rm webapp pytest webapp/tests/test_session_ingest.py
+    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_session_ingest.py -q -p no:cacheprovider
 
 No live Postgres, Whisper, Ollama or LightRAG: `session_helpers` stubs `db`,
 `transcript_ingest`, `correction` and `narrative`. The routes' side of the same
