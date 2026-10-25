@@ -6,6 +6,7 @@ verify stack's network and talks to the real webapp at $BASE_URL.
     python /drive.py session-upload-whisper-down <session_id>
     python /drive.py session-status <session_id> legacy|coded
     python /drive.py document-ingest-refusals
+    python /drive.py document-ingest-outdated <doc_id>
     python /drive.py static-entity-create <name>
     python /drive.py static-entity-list <name>
     python /drive.py static-entity-delete <id>
@@ -196,6 +197,16 @@ def document_ingest_refusals():
           status == 404 and body == {"status": "error", "message": "Document not found"})
 
 
+def document_ingest_outdated(doc_id):
+    """Manual ingest of a document that has a newer version for its transcript:
+    refused with 409 before anything is sent to LightRAG."""
+    path = f"/api/documents/{doc_id}/ingest"
+    status, body = call("POST", path, auth=True)
+    check("older version -> 409 Document is outdated",
+          status == 409 and body == {"status": "error",
+                                     "message": "Document is outdated: a newer version exists"})
+
+
 def static_entity_create(name):
     payload = {"name": name, "entity_type": "Category", "description": "KA-8 verify-server probe"}
     status, body = call("POST", "/api/admin/static-entities", auth=False, body=payload)
@@ -224,6 +235,7 @@ COMMANDS = {
     "session-upload-whisper-down": (session_upload_whisper_down, 1),
     "session-status": (session_status, 2),
     "document-ingest-refusals": (document_ingest_refusals, 0),
+    "document-ingest-outdated": (document_ingest_outdated, 1),
     "static-entity-create": (static_entity_create, 1),
     "static-entity-list": (static_entity_list, 1),
     "static-entity-delete": (static_entity_delete, 1),

@@ -428,29 +428,48 @@ def test_a_new_transcript_in_the_day_is_analysed_not_just_republished(monkeypatc
 # --- review UI's manual ingest --------------------------------------------
 
 
-def _manual_ingest(monkeypatch, stage: NarrativeStage, *, date: str):
-    """The review UI's `POST /api/documents/{id}/ingest` over `main.app`, for a
-    saved document of `date` (`2026-07-DD`, document id DD); returns the
-    awaitable response."""
-    async def get_processed_document(doc_id: int) -> dict:
-        day = f"2026-07-{doc_id:02d}"
-        # asyncpg hands jsonb columns back as text.
-        return {"id": doc_id, "document_markdown": f"# manual {day}", "metadata": json.dumps({"date": day})}
+class _SavedDocuments:
+    """`processed_documents` as the review UI's manual ingest sees them:
+    document `DD` is saved for transcript `DD` and date `2026-07-DD`, with the
+    text `# manual 2026-07-DD` unless `markdown[DD]` says otherwise. It is the
+    latest version of its transcript unless `latest[DD]` names a newer one."""
 
-    async def mark_document_ingested(doc_id: int) -> dict:
-        stage.marked.append(doc_id)
-        return {"id": doc_id, "lightrag_ingested_at": datetime(2026, 7, 1, tzinfo=timezone.utc)}
+    def __init__(self, monkeypatch, stage: NarrativeStage):
+        self.markdown: dict[int, str] = {}
+        self.latest: dict[int, int] = {}
+        self.ingested: set[int] = set()  # documents asked for so far
 
-    monkeypatch.setattr(db, "get_processed_document", get_processed_document)
-    monkeypatch.setattr(db, "mark_document_ingested", mark_document_ingested)
+        async def get_processed_document(doc_id: int) -> dict:
+            day = f"2026-07-{doc_id:02d}"
+            return {
+                "id": doc_id, "transcript_id": doc_id,
+                "document_markdown": self.markdown.get(doc_id, f"# manual {day}"),
+                # asyncpg hands jsonb columns back as text.
+                "metadata": json.dumps({"date": day}),
+            }
 
-    async def post() -> httpx.Response:
+        narrative_stage_documents = db.get_latest_processed_document
+
+        async def get_latest_processed_document(transcript_id: int) -> dict | None:
+            if transcript_id not in self.ingested:  # a session writer's transcript
+                return await narrative_stage_documents(transcript_id)
+            return {"id": self.latest.get(transcript_id, transcript_id)}
+
+        async def mark_document_ingested(doc_id: int) -> dict:
+            stage.marked.append(doc_id)
+            return {"id": doc_id, "lightrag_ingested_at": datetime(2026, 7, 1, tzinfo=timezone.utc)}
+
+        monkeypatch.setattr(db, "get_processed_document", get_processed_document)
+        monkeypatch.setattr(db, "get_latest_processed_document", get_latest_processed_document)
+        monkeypatch.setattr(db, "mark_document_ingested", mark_document_ingested)
+
+    async def ingest(self, doc_id: int) -> httpx.Response:
+        """`POST /api/documents/{doc_id}/ingest` over `main.app`."""
+        self.ingested.add(doc_id)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=main.app), base_url="http://test"
         ) as client:
-            return await client.post(f"/api/documents/{int(date[-2:])}/ingest", headers=auth())
-
-    return post()
+            return await client.post(f"/api/documents/{doc_id}/ingest", headers=auth())
 
 
 def test_the_manual_ingest_waits_for_a_narrative_writer_holding_its_date(monkeypatch, tmp_path):
@@ -459,13 +478,14 @@ def test_the_manual_ingest_waits_for_a_narrative_writer_holding_its_date(monkeyp
         MORNING: _morning_session([segment_row("s01", "pending_analysis", 5, PENDING)]),
     })
     stage = NarrativeStage(monkeypatch)
+    documents = _SavedDocuments(monkeypatch, stage)
 
     async def scenario():
         started, release = stage.latch()
         writer = asyncio.create_task(processor.retry(MORNING))
         await asyncio.wait_for(started.wait(), 1)
-        manual =asyncio.create_task(_manual_ingest(monkeypatch, stage, date=DAY))
-        other_date = await asyncio.wait_for(_manual_ingest(monkeypatch, stage, date="2026-07-02"), 1)
+        manual = asyncio.create_task(documents.ingest(1))
+        other_date = await asyncio.wait_for(documents.ingest(2), 1)
         await asyncio.sleep(0.05)
         waiting = not manual.done()
         release.set()
@@ -488,34 +508,54 @@ def test_the_manual_ingest_sends_the_document_as_saved_once_it_holds_the_date(mo
         MORNING: _morning_session([segment_row("s01", "pending_analysis", 5, PENDING)]),
     })
     stage = NarrativeStage(monkeypatch)
-    saved = {"markdown": "# before the wait"}
-
-    async def get_processed_document(doc_id: int) -> dict:
-        return {"id": doc_id, "document_markdown": saved["markdown"], "metadata": json.dumps({"date": DAY})}
+    documents = _SavedDocuments(monkeypatch, stage)
+    documents.markdown[1] = "# before the wait"
 
     async def scenario():
         started, release = stage.latch()
         writer = asyncio.create_task(processor.retry(MORNING))
         await asyncio.wait_for(started.wait(), 1)
-        monkeypatch.setattr(db, "get_processed_document", get_processed_document)
-        monkeypatch.setattr(db, "mark_document_ingested", lambda doc_id: _marked(doc_id))
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=main.app), base_url="http://test"
-        ) as client:
-            manual = asyncio.create_task(client.post("/api/documents/1/ingest", headers=auth()))
-            await asyncio.sleep(0.05)
-            saved["markdown"] = "# edited while waiting"
-            release.set()
-            await writer
-            return await manual
-
-    async def _marked(doc_id: int) -> dict:
-        return {"id": doc_id, "lightrag_ingested_at": datetime(2026, 7, 1, tzinfo=timezone.utc)}
+        manual = asyncio.create_task(documents.ingest(1))
+        await asyncio.sleep(0.05)
+        documents.markdown[1] = "# edited while waiting"
+        release.set()
+        await writer
+        return await manual
 
     response = asyncio.run(scenario())
 
     assert response.status_code == 200
     assert stage.ingested[-1][0] == "# edited while waiting"
+
+
+def test_the_manual_ingest_refuses_a_document_a_writer_superseded_while_it_waited(monkeypatch, tmp_path):
+    """The writer that held the date saved a newer version for the transcript
+    (the day narrative, published). Sending the older document afterwards would
+    replace `diary:{date}` with stale text."""
+    processor = fresh_ingest(monkeypatch)
+    _stage_sessions(monkeypatch, tmp_path, {
+        MORNING: _morning_session([segment_row("s01", "pending_analysis", 5, PENDING)]),
+    })
+    stage = NarrativeStage(monkeypatch)
+    documents = _SavedDocuments(monkeypatch, stage)
+
+    async def scenario():
+        started, release = stage.latch()
+        writer = asyncio.create_task(processor.retry(MORNING))
+        await asyncio.wait_for(started.wait(), 1)
+        manual = asyncio.create_task(documents.ingest(1))
+        await asyncio.sleep(0.05)
+        documents.latest[1] = 101  # the day narrative's version of transcript 1
+        release.set()
+        await writer
+        return await manual
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 409
+    assert response.json() == {"status": "error", "message": "Document is outdated: a newer version exists"}
+    assert [markdown.split("\n")[0] for markdown, _ in stage.ingested] == ["# narrative"]
+    assert stage.marked == [105]
 
 
 def test_the_manual_ingest_reports_a_failed_publication_and_releases_the_date(monkeypatch, tmp_path):
@@ -525,9 +565,10 @@ def test_the_manual_ingest_reports_a_failed_publication_and_releases_the_date(mo
     })
     stage = NarrativeStage(monkeypatch)
     stage.ingest_error = RuntimeError("lightrag down")
+    documents = _SavedDocuments(monkeypatch, stage)
 
     async def scenario():
-        failed = await _manual_ingest(monkeypatch, stage, date=DAY)
+        failed = await documents.ingest(1)
         stage.ingest_error = None
         retried = await asyncio.wait_for(processor.retry(MORNING), 1)
         return failed, retried
