@@ -110,6 +110,10 @@ public actor TranscriptionRecoveryRunner {
     private var submitting = false
     /// An unknown outcome whose status read has not succeeded yet.
     private var readPending = false
+    /// Bumped when a request goes out and again when it is answered. A status
+    /// read that began under an older epoch may predate the request, so its
+    /// answer is dropped instead of overwriting what the request returned.
+    private var readEpoch = 0
     private var followTask: Task<Void, Never>?
     private var followGeneration = 0
 
@@ -160,12 +164,15 @@ public actor TranscriptionRecoveryRunner {
         state.attemptSegmentID = segmentID
         state.notices[segmentID] = nil
         submitting = true
+        readEpoch += 1
         do {
             let accepted = try await deps.retry(sessionID, segmentID)
             submitting = false
+            readEpoch += 1
             apply(accepted)
         } catch {
             submitting = false
+            readEpoch += 1
             await settle(afterFailure: error, segmentID: segmentID)
         }
         startFollowingIfNeeded()
@@ -210,8 +217,11 @@ public actor TranscriptionRecoveryRunner {
 
     /// A status read is never a retry. A failed read changes nothing.
     private func read() async {
+        let epoch = readEpoch
         do {
-            if let status = try await deps.status(sessionID) {
+            let answer = try await deps.status(sessionID)
+            guard epoch == readEpoch else { return }
+            if let status = answer {
                 apply(status)
             } else if !submitting {
                 // The server forgot the session: nothing left to follow.

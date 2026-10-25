@@ -43,8 +43,17 @@ private actor FakeServer {
     private var readIndex = 0
     private var hold: RecoveryGate?
     private var started: RecoveryGate?
+    private var readHold: RecoveryGate?
+    private var readStarted: RecoveryGate?
 
     init(retry: [Result<Response, any Error>] = []) { retryScript = retry }
+
+    /// Makes the next status read take its answer, then open `started` and
+    /// wait for `hold` before returning it.
+    func holdNextRead(started: RecoveryGate, until hold: RecoveryGate) {
+        readStarted = started
+        readHold = hold
+    }
 
     func scriptReads(_ script: [Result<Response?, any Error>]) {
         readScript = script
@@ -69,10 +78,16 @@ private actor FakeServer {
         return try retryScript[min(index, retryScript.count - 1)].get()
     }
 
-    func read(_ sessionID: String) throws -> Response? {
+    func read(_ sessionID: String) async throws -> Response? {
         reads += 1
         let result = readScript[min(readIndex, readScript.count - 1)]
         readIndex += 1
+        if let readStarted, let readHold {
+            self.readStarted = nil
+            self.readHold = nil
+            await readStarted.open()
+            await readHold.wait()
+        }
         return try result.get()
     }
 
@@ -132,7 +147,7 @@ private actor Ticker {
 }
 
 private func waitUntil(_ condition: @Sendable () async -> Bool) async {
-    for _ in 0..<2_000 {
+    for _ in 0..<500 {  // 1 s at most (CODING_STANDARDS.md, Tests)
         if await condition() { return }
         try? await Task.sleep(for: .milliseconds(2))
     }
@@ -197,6 +212,31 @@ struct TranscriptionRecoveryRunnerTests {
         await first.value
 
         #expect(await server.retries == ["\(session)/s02"])
+    }
+
+    @Test("a status read that began before the tap and lands after it cannot end the attempt")
+    func staleReadDoesNotEndAttempt() async {
+        let server = FakeServer(retry: [.success(twoFailed("transcribing"))])
+        await server.scriptReads([.success(twoFailed("failed"))])
+        let readStarted = RecoveryGate()
+        let readRelease = RecoveryGate()
+        await server.holdNextRead(started: readStarted, until: readRelease)
+        let ticker = Ticker()
+        let runner = makeRunner(server, ticker: ticker)
+
+        let appearing = Task { await runner.screenAppeared() }
+        await readStarted.wait()
+        await runner.start(segmentID: "s02")
+        await readRelease.open()
+        await appearing.value
+
+        let state = await runner.state
+        #expect(state.attemptSegmentID == "s02")
+        #expect(state.status?.segments[1].state == .transcribing)
+        #expect(state.action(for: "s02", whisper: .ok) == .inFlight)
+        await runner.start(segmentID: "s02")
+        #expect(await server.retries == ["\(session)/s02"])
+        await runner.screenLeft()
     }
 
     @Test("a tap while the attempt is still being followed does nothing")
