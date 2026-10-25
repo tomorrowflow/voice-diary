@@ -276,8 +276,8 @@ def test_writers_for_one_date_run_one_at_a_time_and_the_later_gathers_after_the_
     async def scenario():
         started, release = stage.latch()
         first = asyncio.create_task(processor.retry(MORNING))
-        await asyncio.wait_for(started.wait(), 5)
-        second = asyncio.create_task(processor.retry(EVENING))
+        await asyncio.wait_for(started.wait(), 1)
+        second =asyncio.create_task(processor.retry(EVENING))
         await asyncio.sleep(0.05)
         assert len(stage.runs) == 1, "the second writer must wait for the date"
         # Content the first writer's run stores while it holds the date.
@@ -329,18 +329,23 @@ def test_an_upload_and_a_transcription_proceed_while_a_narrative_stage_holds_the
     stage = NarrativeStage(monkeypatch)
 
     async def scenario():
+        persisted = asyncio.Event()
+        write_row = ingests.repository._update
+
+        async def update(session_id, state, segments):
+            await write_row(session_id, state, segments)
+            if session_id == EVENING and segments[0]["transcript_id"] == 7:
+                persisted.set()
+
+        ingests.repository._update = update
         started, release = stage.latch()
         holder = asyncio.create_task(processor.retry(MORNING))
-        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.wait_for(started.wait(), 1)
 
         async with processor.upload_gate():
             await asyncio.wait_for(processor.accept(parsed, session_dir), 1)
         ingest = asyncio.create_task(processor.process(parsed, session_dir))
-        for _ in range(100):
-            if pipeline.transcribe_calls:
-                break
-            await asyncio.sleep(0.01)
-        await asyncio.sleep(0.05)
+        await asyncio.wait_for(persisted.wait(), 1)
         transcribed_meanwhile = len(pipeline.transcribe_calls)
         narrated_meanwhile = len(stage.runs)
         persisted_meanwhile = (await processor.status(EVENING)).segments[0].transcript_id
@@ -458,9 +463,9 @@ def test_the_manual_ingest_waits_for_a_narrative_writer_holding_its_date(monkeyp
     async def scenario():
         started, release = stage.latch()
         writer = asyncio.create_task(processor.retry(MORNING))
-        await asyncio.wait_for(started.wait(), 5)
-        manual = asyncio.create_task(_manual_ingest(monkeypatch, stage, date=DAY))
-        other_date = await asyncio.wait_for(_manual_ingest(monkeypatch, stage, date="2026-07-02"), 2)
+        await asyncio.wait_for(started.wait(), 1)
+        manual =asyncio.create_task(_manual_ingest(monkeypatch, stage, date=DAY))
+        other_date = await asyncio.wait_for(_manual_ingest(monkeypatch, stage, date="2026-07-02"), 1)
         await asyncio.sleep(0.05)
         waiting = not manual.done()
         release.set()
@@ -477,6 +482,42 @@ def test_the_manual_ingest_waits_for_a_narrative_writer_holding_its_date(monkeyp
     assert stage.ingested[0][1] == {"date": "2026-07-02"}
 
 
+def test_the_manual_ingest_sends_the_document_as_saved_once_it_holds_the_date(monkeypatch, tmp_path):
+    processor = fresh_ingest(monkeypatch)
+    _stage_sessions(monkeypatch, tmp_path, {
+        MORNING: _morning_session([segment_row("s01", "pending_analysis", 5, PENDING)]),
+    })
+    stage = NarrativeStage(monkeypatch)
+    saved = {"markdown": "# before the wait"}
+
+    async def get_processed_document(doc_id: int) -> dict:
+        return {"id": doc_id, "document_markdown": saved["markdown"], "metadata": json.dumps({"date": DAY})}
+
+    async def scenario():
+        started, release = stage.latch()
+        writer = asyncio.create_task(processor.retry(MORNING))
+        await asyncio.wait_for(started.wait(), 1)
+        monkeypatch.setattr(db, "get_processed_document", get_processed_document)
+        monkeypatch.setattr(db, "mark_document_ingested", lambda doc_id: _marked(doc_id))
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=main.app), base_url="http://test"
+        ) as client:
+            manual = asyncio.create_task(client.post("/api/documents/1/ingest", headers=auth()))
+            await asyncio.sleep(0.05)
+            saved["markdown"] = "# edited while waiting"
+            release.set()
+            await writer
+            return await manual
+
+    async def _marked(doc_id: int) -> dict:
+        return {"id": doc_id, "lightrag_ingested_at": datetime(2026, 7, 1, tzinfo=timezone.utc)}
+
+    response = asyncio.run(scenario())
+
+    assert response.status_code == 200
+    assert stage.ingested[-1][0] == "# edited while waiting"
+
+
 def test_the_manual_ingest_reports_a_failed_publication_and_releases_the_date(monkeypatch, tmp_path):
     processor = fresh_ingest(monkeypatch)
     _stage_sessions(monkeypatch, tmp_path, {
@@ -488,7 +529,7 @@ def test_the_manual_ingest_reports_a_failed_publication_and_releases_the_date(mo
     async def scenario():
         failed = await _manual_ingest(monkeypatch, stage, date=DAY)
         stage.ingest_error = None
-        retried = await asyncio.wait_for(processor.retry(MORNING), 2)
+        retried = await asyncio.wait_for(processor.retry(MORNING), 1)
         return failed, retried
 
     failed, retried = asyncio.run(scenario())

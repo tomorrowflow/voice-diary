@@ -351,6 +351,11 @@ async def ingest_document(doc_id: int):
     async with session_ingest.get_session_ingest().narrative_date(
         str(metadata.get("date", "unknown"))
     ):
+        # Read the document again now that the date is held, so a save made
+        # while this request waited is what gets sent.
+        doc = await db.get_processed_document(doc_id)
+        if not doc:
+            return JSONResponse({"status": "error", "message": "Document not found"}, 404)
         try:
             await narrative.sync_and_ingest(doc["document_markdown"], metadata)
         except Exception as e:

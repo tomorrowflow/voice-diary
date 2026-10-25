@@ -1134,7 +1134,8 @@ async def _analyse_and_publish_day(date_str: str, day: list[_DaySession]) -> Non
     mirroring `main.py`'s manual `/api/documents/{id}/ingest` route — so
     `/process/{id}` doesn't show an already-ingested day as pending and the
     re-ingest button doesn't re-post it. The ingest re-posts the fixed id
-    `diary:{date}`, which LightRAG replaces (SPEC §10.6.1).
+    `diary:{date}` and relies on LightRAG replacing it (operator decision,
+    live check pending, SPEC §10.6.1).
     """
     artifacts = [art for session in day for art in session.artifacts]
     combined_text = _build_combined_transcript(artifacts)
