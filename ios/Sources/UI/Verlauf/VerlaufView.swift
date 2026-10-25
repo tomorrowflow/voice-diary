@@ -149,47 +149,16 @@ public struct VerlaufView: View {
         }
     }
 
-    // MARK: - Day grouping
-
-    private struct DaySection {
-        let dayKey: Date          // start-of-day used as Identifiable key
-        let label: String
-        let items: [SessionHistoryStore.Item]
-    }
-
-    private func groupedByDay() -> [DaySection] {
-        let calendar = Calendar.current
-        let groups = Dictionary(grouping: items) { item in
-            calendar.startOfDay(for: item.sortDate)
-        }
-        return groups.keys.sorted(by: >).map { day in
-            DaySection(
-                dayKey: day,
-                label: Self.dayLabel(day),
-                items: groups[day] ?? []
-            )
-        }
-    }
-
-    private static func dayLabel(_ day: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(day) { return String(localized: "Today") }
-        if cal.isDateInYesterday(day) { return String(localized: "Yesterday") }
-        return Self.dayFormatter().string(from: day)
-    }
-
-    // DateFormatter is sensitive to AppLanguage at call time. The pattern
-    // works for both German ("Montag, 12. Mai") and English ("Monday,
-    // May 12") because DateFormatter localises `EEEE / MMMM` per locale
-    // and reorders the components according to the locale's own
-    // dateFormat template logic. We rebuild on each call rather than
-    // mutating a cached instance so toggle is single-render-tick visible.
-    private static func dayFormatter() -> DateFormatter {
-        let f = DateFormatter()
-        f.locale = AppLanguage.shared.locale
-        let template = AppLanguage.shared.isGerman ? "EEEE, d. MMMM" : "EEEE, MMMM d"
-        f.dateFormat = template
-        return f
+    // Grouping is rebuilt on each render so a language toggle is visible
+    // in a single render tick.
+    private func groupedByDay() -> [HistoryGrouping.DaySection<SessionHistoryStore.Item>] {
+        HistoryGrouping.group(
+            items,
+            sortDate: \.sortDate,
+            calendar: .current,
+            now: Date(),
+            locale: AppLanguage.shared.locale
+        )
     }
 }
 
