@@ -1,0 +1,87 @@
+{
+  "type": "architecture",
+  "title": "Server",
+  "subtitle": "server/webapp and server/voxtral-gate",
+  "eyebrow": "Architecture",
+  "motion": "trace",
+  "nodes": [
+    {"id":"routes","label":"HTTP routes","sub":"FastAPI, bearer auth","tag":"API","row":1,"col":0},
+    {
+      "id": "ingest",
+      "label": "Session ingest",
+      "sub": "session_ingest, segment_ingest",
+      "focal": true,
+      "row": 1,
+      "col": 1
+    },
+    {"id":"correct","label":"Dictionary","sub":"correction, dictionary","row":0,"col":2},
+    {"id":"narrative","label":"Narrative","sub":"narrative, document_processor","row":1,"col":2},
+    {"id":"pg","label":"Postgres","sub":"asyncpg","kind":"store","row":2,"col":1},
+    {"id":"qdrant","label":"Qdrant","sub":"fastembed vectors","kind":"store","row":0,"col":3},
+    {
+      "id": "upstream",
+      "label": "Upstreams",
+      "sub": "Whisper, Ollama, LightRAG, Graph",
+      "kind": "external",
+      "row": 1,
+      "col": 3
+    },
+    {"id":"gate","label":"Voxtral gate","sub":"lazy-wake proxy","tag":"GATE","row":3,"col":0},
+    {"id":"engine","label":"Voxtral engine","sub":"vLLM Omni","kind":"external","row":3,"col":1}
+  ],
+  "edges": [
+    ["routes","ingest","accept bundle","primary"],
+    ["ingest","narrative","day analysis","primary"],
+    ["ingest","correct","correct text"],
+    ["ingest","pg","session status"],
+    ["correct","qdrant","name match"],
+    ["correct","pg","dictionary rows"],
+    ["ingest","upstream","transcribe"],
+    ["routes","upstream","calendar, mail, RAG"],
+    ["routes","gate","TTS","link"],
+    ["gate","engine","wake, forward","link"],
+    ["narrative","upstream","analyse"]
+  ],
+  "evidence": [
+    {"id":"routes","file":"server/webapp/main.py","line":138,"note":"routers included here"},
+    {"id":"routes>ingest","file":"server/webapp/routers/sessions.py","line":78},
+    {"id":"ingest","file":"server/webapp/session_ingest.py","line":88},
+    {"id":"correct","file":"server/webapp/segment_ingest.py","line":33},
+    {"id":"narrative","file":"server/webapp/narrative.py","line":36},
+    {"id":"ingest>narrative","file":"server/webapp/session_ingest.py","line":72},
+    {"id":"ingest>correct","file":"server/webapp/segment_ingest.py","line":35},
+    {"id":"pg","file":"server/webapp/db.py","line":1},
+    {"id":"ingest>pg","file":"server/webapp/session_ingest.py","line":94},
+    {"id":"qdrant","file":"server/webapp/vector_store.py","line":32},
+    {"id":"correct>qdrant","file":"server/webapp/dictionary.py","line":25},
+    {"id":"correct>pg","file":"server/webapp/dictionary.py","line":127},
+    {
+      "id": "upstream",
+      "file": "server/webapp/asr_client.py",
+      "line": 26,
+      "note": "Whisper; Ollama in ollama_client.py; Graph in msgraph_client.py:41"
+    },
+    {"id":"ingest>upstream","file":"server/webapp/session_ingest.py","line":70},
+    {
+      "id": "narrative>upstream",
+      "file": "server/webapp/narrative.py",
+      "line": 39,
+      "note": "LightRAG; Ollama via document_processor.py:42"
+    },
+    {
+      "id": "routes>upstream",
+      "file": "server/webapp/routers/lightrag.py",
+      "line": 22,
+      "note": "calendar.py:25 and email.py:22 use msgraph_client"
+    },
+    {"id":"gate","file":"server/voxtral-gate/gate.py","line":57},
+    {
+      "id": "routes>gate",
+      "file": "server/webapp/voxtral_client.py",
+      "line": 85,
+      "note": "webapp talks to voxtral:8001; routers/tts.py:34"
+    },
+    {"id":"engine","file":"server/docker-compose.yml","line":60},
+    {"id":"gate>engine","file":"server/docker-compose.yml","line":43}
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "type": "high-level",
+  "title": "Voice Diary",
+  "subtitle": "How a spoken evening becomes a diary entry",
+  "eyebrow": "Overview",
+  "motion": "reveal",
+  "nodes": [
+    {
+      "id": "app",
+      "label": "iPhone app",
+      "sub": "Records and guides the evening",
+      "kind": "input",
+      "row": 1,
+      "col": 0
+    },
+    {
+      "id": "server",
+      "label": "Diary server",
+      "sub": "Turns recordings into entries",
+      "focal": true,
+      "row": 1,
+      "col": 1
+    },
+    {
+      "id": "speech",
+      "label": "Speech services",
+      "sub": "Listens and talks back",
+      "kind": "external",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "writer",
+      "label": "AI writer",
+      "sub": "Drafts the diary narrative",
+      "kind": "external",
+      "row": 1,
+      "col": 2
+    },
+    {
+      "id": "memory",
+      "label": "Diary memory",
+      "sub": "Links people, places, days",
+      "kind": "external",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "calendar",
+      "label": "Calendar and mail",
+      "sub": "Context for each day",
+      "kind": "external",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "storage",
+      "label": "Private storage",
+      "sub": "Sessions, words, names",
+      "kind": "store",
+      "row": 2,
+      "col": 1
+    }
+  ],
+  "edges": [
+    ["app","server","sends recordings","primary"],
+    ["server","app","calendar, answers, voice","return"],
+    ["server","speech","transcribes"],
+    ["server","writer","writes entry","primary"],
+    ["server","memory","remembers"],
+    ["server","calendar","looks up day"],
+    ["server","storage","saves"]
+  ],
+  "evidence": [
+    {
+      "id": "app",
+      "file": "ios/Sources/Backend/ServerClient.swift",
+      "line": 3,
+      "note": "multipart upload to POST /api/sessions"
+    },
+    {"id":"server","file":"server/webapp/main.py","line":119},
+    {"id":"app>server","file":"ios/Sources/Backend/SessionUploader.swift","line":153},
+    {
+      "id": "server>app",
+      "file": "server/webapp/routers/calendar.py",
+      "line": 147,
+      "note": "also /api/tts/synthesize and /api/lightrag"
+    },
+    {
+      "id": "speech",
+      "file": "server/webapp/asr_client.py",
+      "line": 26,
+      "note": "Whisper transcription; Voxtral speech via voxtral_client.py"
+    },
+    {"id":"server>speech","file":"server/webapp/session_ingest.py","line":70},
+    {
+      "id": "writer",
+      "file": "server/webapp/document_processor.py",
+      "line": 42,
+      "note": "Ollama by default, Blindfold cloud route is opt-in"
+    },
+    {"id":"server>writer","file":"server/webapp/narrative.py","line":36},
+    {"id":"memory","file":"server/webapp/lightrag_client.py","line":12},
+    {"id":"server>memory","file":"server/webapp/narrative.py","line":39},
+    {"id":"calendar","file":"server/webapp/msgraph_client.py","line":41},
+    {"id":"server>calendar","file":"server/webapp/routers/calendar.py","line":25},
+    {"id":"storage","file":"server/webapp/db.py","line":1,"note":"Postgres; Qdrant holds name vectors"},
+    {"id":"server>storage","file":"server/webapp/session_ingest.py","line":71}
+  ]
+}

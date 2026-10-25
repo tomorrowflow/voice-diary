@@ -1,0 +1,85 @@
+{
+  "type": "deployment",
+  "title": "Deployment",
+  "subtitle": "Where things run: iPhone, Linux host with Docker Compose, and the tailnet",
+  "eyebrow": "Deployment",
+  "motion": "reveal",
+  "nodes": [
+    {
+      "id": "phone",
+      "label": "iPhone app",
+      "sub": "iPhone 17 Pro, iOS 26",
+      "kind": "input",
+      "row": 1,
+      "col": 0,
+      "group": "device"
+    },
+    {
+      "id": "webapp",
+      "label": "webapp (FastAPI)",
+      "sub": "python:3.11, uvicorn :8000",
+      "focal": true,
+      "row": 1,
+      "col": 1,
+      "group": "compose"
+    },
+    {
+      "id": "pg",
+      "label": "postgres",
+      "sub": "postgres:16-alpine",
+      "kind": "store",
+      "row": 2,
+      "col": 1,
+      "group": "compose"
+    },
+    {
+      "id": "qdrant",
+      "label": "qdrant",
+      "sub": "qdrant v1.17.0",
+      "kind": "store",
+      "row": 0,
+      "col": 1,
+      "group": "compose"
+    },
+    {"id":"whisper","label":"whisper","sub":"asr-webservice","row":0,"col":2,"group":"compose"},
+    {"id":"gate","label":"voxtral","sub":"python:3.12, gate :8001","row":1,"col":2,"group":"compose"},
+    {"id":"engine","label":"voxtral-engine","sub":"vLLM Omni, GPU 1","row":2,"col":2,"group":"compose"},
+    {"id":"ollama","label":"Ollama","sub":"LAN host :11434","kind":"external","row":0,"col":0},
+    {"id":"lightrag","label":"LightRAG","sub":"separate instance","kind":"external","row":1,"col":3}
+  ],
+  "groups": [{"id":"device","label":"iPhone"},{"id":"compose","label":"Linux host: docker compose"}],
+  "edges": [
+    ["phone","webapp","tailnet :8000","primary"],
+    ["webapp","pg",":5432"],
+    ["webapp","qdrant",":6333"],
+    ["webapp","whisper",":9000"],
+    ["webapp","gate",":8001","link"],
+    ["gate","engine",":8001","link"],
+    ["webapp","ollama",":11434","link"],
+    ["webapp","lightrag","HTTP","link"]
+  ],
+  "evidence": [
+    {"id":"phone","file":"DEVELOPMENT.md","line":36},
+    {"id":"webapp","file":"server/docker-compose.yml","line":2},
+    {
+      "id": "phone>webapp",
+      "file": "server/docker-compose.yml",
+      "line": 7,
+      "note": "published on TAILNET_IP only"
+    },
+    {"id":"pg","file":"server/docker-compose.yml","line":130},
+    {"id":"webapp>pg","file":"server/docker-compose.yml","line":11},
+    {"id":"qdrant","file":"server/docker-compose.yml","line":121},
+    {"id":"webapp>qdrant","file":"server/webapp/vector_store.py","line":32},
+    {"id":"whisper","file":"server/docker-compose.yml","line":103},
+    {"id":"webapp>whisper","file":"server/docker-compose.yml","line":12},
+    {"id":"gate","file":"server/voxtral-gate/Dockerfile","line":1},
+    {"id":"webapp>gate","file":"server/docker-compose.yml","line":13},
+    {"id":"engine","file":"server/docker-compose.yml","line":60,"note":"GPU device 1 at line 95"},
+    {"id":"gate>engine","file":"server/docker-compose.yml","line":43},
+    {"id":"ollama","file":"server/webapp/document_processor.py","line":42},
+    {"id":"webapp>ollama","file":"server/webapp/document_processor.py","line":42},
+    {"id":"lightrag","file":"server/README.md","line":35,"note":"not part of docker-compose.yml"},
+    {"id":"webapp>lightrag","file":"server/webapp/lightrag_client.py","line":12}
+  ]
+}
