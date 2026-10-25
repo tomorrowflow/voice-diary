@@ -1,8 +1,8 @@
 """Tests for `lightrag_client.LightRAGClient`.
 
-Run inside the webapp container so deps + env match prod:
-
-    docker compose run --rm webapp pytest tests/test_lightrag_client.py
+Run inside the webapp container so deps + env match prod. From `server/`, use
+the Server command in DEVELOPMENT.md §7.4 with
+`webapp/tests/test_lightrag_client.py` in place of `webapp/tests/`.
 
 The httpx transport is injected via `httpx.MockTransport`, so no live
 LightRAG instance is needed. Each test drives one branch of the client's

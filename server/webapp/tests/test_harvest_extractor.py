@@ -7,9 +7,9 @@ and a private cache dict. The wiring cases go through the unchanged public
 only `httpx.AsyncClient`'s transport, so they prove the production client and
 the `_cache` mapping are what the wrapper supplies.
 
-Run inside the webapp container so deps + env match prod:
-
-    docker compose run --rm webapp pytest tests/test_harvest_extractor.py
+Run inside the webapp container so deps + env match prod. From `server/`, use
+the Server command in DEVELOPMENT.md §7.4 with
+`webapp/tests/test_harvest_extractor.py` in place of `webapp/tests/`.
 """
 
 from __future__ import annotations

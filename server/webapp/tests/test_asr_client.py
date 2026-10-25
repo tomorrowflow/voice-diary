@@ -1,8 +1,8 @@
 """Tests for `asr_client.AsrClient` — the shared ffmpeg + Whisper module.
 
-Run inside the webapp container so deps + env match prod:
-
-    docker compose run --rm webapp pytest webapp/tests/test_asr_client.py
+Run inside the webapp container so deps + env match prod. From `server/`, use
+the Server command in DEVELOPMENT.md §7.4 with `webapp/tests/test_asr_client.py`
+in place of `webapp/tests/`.
 
 The httpx transport is injected via `httpx.MockTransport` for the Whisper
 calls, so no live sidecar is needed. `to_wav_16k_mono` shells out to the
