@@ -869,8 +869,10 @@ another `processed_documents` version per transcript and ingest `diary:{date}` i
   same hold on the date of the document it sends. Once it holds the date it reads the document
   again, and if a newer version of the document's transcript has been saved meanwhile (a writer
   that held the date saved the day narrative), it sends nothing and answers `409`
-  `{"status": "error", "message": "Document is outdated: a newer version exists"}`, so an older
-  document can never replace a newer `diary:{date}`.
+  `{"status": "error", "message": "Document is outdated: a newer version exists"}`, so an
+  older version of a transcript's document can never replace the day narrative that superseded it.
+  Sending a document of a transcript the day narrative does not cover (a single-transcript review
+  document) stays an explicit manual action and is not refused.
 - *Status.* Unchanged and per session: a successful run marks the triggering session's segments
   `processed`; other sessions' segments keep their status, and a failed run leaves the triggering
   session's segments `pending_analysis` with the `analysis_pending: …` error.
