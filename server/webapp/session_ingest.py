@@ -22,8 +22,10 @@ sweep (persisted through a `SessionIngestRepository`, REF-122, which owns the
 status cache and the `session_ingests` table, SRV-A6), the per-session
 in-flight claim that keeps two runs from saving two narratives for one session
 (BUG-54), interrupted-session resume (BUG-112), where a session bundle lives on
-disk and reading its manifest back, the per-segment pipeline, and the
-narrative persistence.
+disk and reading its manifest back, and the narrative persistence. The
+per-segment operation is `segment_ingest.SegmentIngest` (ARCH-3), supplied to
+each `SessionIngest` and run for both the original ingest and the resume of a
+stored bundle.
 
 Pipeline for one segment:
 
@@ -45,7 +47,7 @@ changes the status of its own session's segments only.
 
 State lives on a `SessionIngest`; the app uses the process-wide one from
 `get_session_ingest()` (Postgres-backed), tests build their own over an
-in-memory repository.
+in-memory repository and their own segment operation.
 """
 
 from __future__ import annotations
@@ -56,17 +58,14 @@ import logging
 import re
 import shutil
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import AsyncIterator, Awaitable, Callable
 
 import asr_client
-import correction
 import db
-import dictionary
 import narrative
-import transcript_ingest
 import upstream_failure
 from logging_setup import bind_session_id
 from models import (
@@ -82,6 +81,12 @@ from models import (
     utcnow_iso,
 )
 from paths import sessions_dir
+from segment_ingest import (
+    SegmentArtifact,
+    SegmentIngest,
+    SegmentOperation,
+    attendees_to_canonical_names,
+)
 from session_repository import PostgresSessionIngests, SessionIngestRepository
 
 logger = logging.getLogger(__name__)
@@ -193,23 +198,12 @@ def derive_session_state(results: list[SegmentResult]) -> str:
 
 
 @dataclass
-class _SegmentArtifact:
-    """Per-segment outputs handed off to the session-level analysis stage."""
-
-    segment: Segment
-    transcript_id: int
-    raw_text: str
-    corrected_text: str
-    entities: list[dict] = field(default_factory=list)
-
-
-@dataclass
 class _DaySession:
     """One session's contribution to a day narrative: its manifest (for the
     todos) and its transcribed segments in manifest order."""
 
     manifest: Manifest
-    artifacts: list[_SegmentArtifact]
+    artifacts: list[SegmentArtifact]
 
 
 # --- lifecycle ------------------------------------------------------------
@@ -221,7 +215,10 @@ class SessionIngest:
     `whisper_reachable` is the pre-flight used by `accept()`; Whisper is the
     one upstream a session can't work around. `repository` holds the status
     cache and the persisted `session_ingests` rows (SRV-A6, REF-122): the
-    Postgres adapter unless a test passes another.
+    Postgres adapter unless a test passes another. `segment_operation` is
+    what runs for each segment, in the original ingest and when a retry
+    resumes a stored bundle (ARCH-3): a `SegmentIngest` over the shared
+    modules unless a test passes another.
     """
 
     def __init__(
@@ -229,8 +226,12 @@ class SessionIngest:
         *,
         whisper_reachable: Callable[[], Awaitable[bool]] = _asr_reachable,
         repository: SessionIngestRepository | None = None,
+        segment_operation: SegmentOperation | None = None,
     ) -> None:
         self._whisper_reachable = whisper_reachable
+        self._segment_operation: SegmentOperation = (
+            segment_operation if segment_operation is not None else SegmentIngest().ingest
+        )
         self.repository: SessionIngestRepository = (
             repository if repository is not None else PostgresSessionIngests()
         )
@@ -379,7 +380,7 @@ class SessionIngest:
         self,
         manifest: Manifest,
         results: list[SegmentResult],
-        known: dict[str, _SegmentArtifact],
+        known: dict[str, SegmentArtifact],
         *,
         republish: bool,
     ) -> None:
@@ -404,7 +405,7 @@ class SessionIngest:
         self,
         manifest: Manifest,
         results: list[SegmentResult],
-        known: dict[str, _SegmentArtifact],
+        known: dict[str, SegmentArtifact],
     ) -> list[_DaySession]:
         """Every session whose manifest date is `manifest`'s, in session start
         order, each with its transcribed segments in manifest order. Called
@@ -517,12 +518,12 @@ class SessionIngest:
         """
         bind_session_id(parsed.session_id)
         results_by_id: dict[str, SegmentResult] = {}
-        artifacts: list[_SegmentArtifact] = []
+        artifacts: list[SegmentArtifact] = []
 
         # Phase 1 — per segment
         for seg in parsed.segments:
             try:
-                artifact = await _process_segment(
+                artifact = await self._segment_operation(
                     manifest=parsed,
                     segment=seg,
                     session_dir=session_dir,
@@ -701,7 +702,7 @@ class SessionIngest:
 
     async def _resume_untranscribed_segments(
         self, session_id: str, parsed: Manifest, status_obj: SessionStatus
-    ) -> tuple[list[SegmentResult], list[_SegmentArtifact]]:
+    ) -> tuple[list[SegmentResult], list[SegmentArtifact]]:
         """Run phase 1 from the stored bundle for every `pending_analysis`
         segment that has no transcript (BUG-112): the process died, or the
         upload was cut off, before its transcript was persisted.
@@ -717,7 +718,7 @@ class SessionIngest:
         segments_by_id = {seg.segment_id: seg for seg in parsed.segments}
         session_dir = session_dir_for(session_id)
         results = list(status_obj.segments)
-        artifacts: list[_SegmentArtifact] = []
+        artifacts: list[SegmentArtifact] = []
         for index, current in enumerate(results):
             if not _is_untranscribed(current):
                 continue
@@ -725,7 +726,7 @@ class SessionIngest:
             try:
                 if segment is None:
                     raise LookupError(f"segment {current.segment_id} is not in manifest.json")
-                artifact = await _process_segment(
+                artifact = await self._segment_operation(
                     manifest=parsed, segment=segment, session_dir=session_dir
                 )
             except Exception as exc:  # noqa: BLE001
@@ -860,14 +861,14 @@ def _session_start_key(session_id: str, received_at: str) -> tuple:
 async def _stored_artifacts(
     manifest: Manifest,
     results: list[SegmentResult],
-    known: dict[str, _SegmentArtifact] | None = None,
-) -> list[_SegmentArtifact]:
+    known: dict[str, SegmentArtifact] | None = None,
+) -> list[SegmentArtifact]:
     """The transcribed segments among `results`, in manifest order: every
     segment that has a transcript and did not fail, read from its
     `transcripts` row unless `known` already holds its artifact. A segment
     whose row is gone, or that the manifest no longer lists, is left out."""
     by_id = {r.segment_id: r for r in results}
-    artifacts: list[_SegmentArtifact] = []
+    artifacts: list[SegmentArtifact] = []
     for segment in manifest.segments:
         result = by_id.get(segment.segment_id)
         if result is None or result.status == "failed" or result.transcript_id is None:
@@ -877,7 +878,7 @@ async def _stored_artifacts(
             transcript = await db.get_transcript(result.transcript_id)
             if transcript is None:
                 continue
-            artifact = _SegmentArtifact(
+            artifact = SegmentArtifact(
                 segment=segment,
                 transcript_id=result.transcript_id,
                 raw_text=transcript.get("raw_text") or "",
@@ -896,7 +897,7 @@ async def _stored_artifacts(
 # --- saved-document republish ---------------------------------------------
 
 
-async def _publish_saved_day(artifacts: list[_SegmentArtifact]) -> bool:
+async def _publish_saved_day(artifacts: list[SegmentArtifact]) -> bool:
     """Ingest-only shortcut, keyed by the date: `artifacts` are the whole
     day's transcribed segments.
 
@@ -950,128 +951,6 @@ def _parse_entities_json(raw: object) -> list[dict]:
     if isinstance(raw, str):
         return json.loads(raw)
     return raw
-
-
-# --- per-segment pipeline -------------------------------------------------
-
-
-async def _process_segment(
-    *,
-    manifest: Manifest,
-    segment: Segment,
-    session_dir: Path,
-) -> _SegmentArtifact:
-    """Per-segment pipeline up to entity detection.
-
-    Returns an artifact with the persisted transcript ID and detected
-    entities. Document analysis + LightRAG ingest happen once per session
-    in `_analyse_and_publish_day`.
-    """
-    audio_path = session_dir / segment.audio_file
-    if not audio_path.exists():
-        raise FileNotFoundError(f"segment audio missing on disk: {segment.audio_file}")
-    audio_bytes = audio_path.read_bytes()
-    language = (segment.language or "de").split("-")[0]
-
-    # 1-2. ffmpeg → Whisper → persisted transcript row, via the core shared
-    # with main.py's /api/ingest/upload (SRV-A7).
-    suffix = Path(segment.audio_file).suffix
-    transcribed = await transcript_ingest.transcribe_and_persist(
-        audio_bytes,
-        src_suffix=suffix or ".m4a",
-        filename=f"{manifest.session_id}::{segment.segment_id}{suffix}",
-        date=manifest.date.isoformat(),
-        author="Lukas Brandt",
-        language=language,
-    )
-    transcript_id = transcribed.transcript_id
-    raw_transcript = transcribed.raw_text
-
-    # 3-4. Dictionary corrections → vector few-shot LLM correction (falls
-    # back to the pre-LLM text on failure) → entity detection → dismissal
-    # filtering — the same non-interactive chain the HTMX review flow runs
-    # (#51). For calendar_event segments we additionally seed the persons
-    # dict with the manifest's canonical attendee names so the detector
-    # resolves them deterministically (Graph already gave us the truth — no
-    # need to fuzzy-match again).
-    snapshot = await dictionary.load_dictionary_snapshot()
-    if isinstance(segment, CalendarEventSegment):
-        seed_persons = _attendees_to_canonical_names(segment.calendar_ref.attendees)
-        if seed_persons:
-            snapshot = replace(
-                snapshot,
-                persons=_seed_persons_into_dict(snapshot.persons, seed_persons),
-            )
-
-    result = await correction.correct_and_detect_entities(
-        raw_transcript, snapshot=snapshot
-    )
-    corrected_text = result.corrected_text
-
-    # Convert dataclass instances to dicts in the shape document_processor
-    # expects (the HTMX review flow stores `text` for the canonical name).
-    entities: list[dict] = []
-    for d in result.entities:
-        item = d.to_dict()
-        item["text"] = d.canonical or d.original_text
-        item["type"] = d.entity_type
-        entities.append(item)
-
-    # Always persist, even when correction left the text unchanged —
-    # otherwise the detected entities are lost and a retry-analysis (#52)
-    # rebuilding the session narrative from Postgres would see none. Goes to
-    # `detected_entities_json`, not `save_draft`: status='saved' and
-    # `entities_json` are reserved for human review (BUG-55), and the review
-    # page skips SSE processing for transcripts that carry them.
-    await db.save_detected_entities(transcript_id, corrected_text, json.dumps(entities))
-
-    return _SegmentArtifact(
-        segment=segment,
-        transcript_id=transcript_id,
-        raw_text=raw_transcript,
-        corrected_text=corrected_text,
-        entities=entities,
-    )
-
-
-def _attendees_to_canonical_names(attendees: list[str]) -> list[str]:
-    """Strip emails to local-parts and Title-case for the entity seed list."""
-    out: list[str] = []
-    for entry in attendees:
-        local = entry.split("@", 1)[0].strip()
-        if not local:
-            continue
-        # `firstname.lastname` → `Firstname Lastname`
-        cleaned = re.sub(r"[._]+", " ", local).strip()
-        cleaned = " ".join(part.capitalize() for part in cleaned.split() if part)
-        if cleaned:
-            out.append(cleaned)
-    return out
-
-
-def _seed_persons_into_dict(
-    persons_dict: list[dict], seed_names: list[str]
-) -> list[dict]:
-    """Ensure each calendar attendee appears in the persons dict so the
-    detector resolves them on Pass 1 (exact match)."""
-    existing = {(p.get("canonical_name") or "").lower() for p in persons_dict}
-    augmented = list(persons_dict)
-    for name in seed_names:
-        if name.lower() in existing:
-            continue
-        first = name.split()[0] if name.split() else ""
-        augmented.append({
-            "id": None,
-            "canonical_name": name,
-            "first_name": first,
-            "role": "",
-            "department": "",
-            "company": "",
-            "context": "",
-            "variations": [],
-        })
-        existing.add(name.lower())
-    return augmented
 
 
 # --- session narrative ----------------------------------------------------
@@ -1178,7 +1057,7 @@ async def _analyse_and_publish_day(date_str: str, day: list[_DaySession]) -> Non
         await db.mark_document_ingested(doc_id)
 
 
-def _build_combined_transcript(artifacts: list[_SegmentArtifact]) -> str:
+def _build_combined_transcript(artifacts: list[SegmentArtifact]) -> str:
     """Concatenate all transcribed segments with German per-segment headers.
 
     The headers preserve enough context (meeting title, time range,
@@ -1201,7 +1080,7 @@ def _segment_header(segment: Segment) -> str:
         ref = segment.calendar_ref
         title = (ref.title or "Termin").strip()
         time_range = _format_time_range(ref.start, ref.end)
-        attendees = _attendees_to_canonical_names(ref.attendees)
+        attendees = attendees_to_canonical_names(ref.attendees)
         attendee_str = (
             f", Teilnehmer: {', '.join(attendees)}" if attendees else ""
         )
