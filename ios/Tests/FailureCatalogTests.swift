@@ -190,6 +190,24 @@ struct FailureCatalogTests {
         #expect(copy.title == "Geschützte Auswertung nicht verfügbar")
     }
 
+    @Test("Verlauf explains a failed or pending segment that carries a code, and nothing else")
+    func segmentExplanationRule() {
+        func explanation(_ status: String?, _ code: String?, _ upstream: String?) -> String? {
+            FailureCatalog.segmentExplanation(status: status, code: code, upstream: upstream, language: .en)
+        }
+        #expect(explanation("failed", "whisper_timeout", "whisper") == "Transcription is taking too long")
+        #expect(explanation("pending_analysis", "blindfold_unavailable", "blindfold")
+                == "Private analysis isn’t available")
+        #expect(explanation("pending_analysis", "ollama_timeout", "ollama") != nil)
+        #expect(explanation("pending_analysis", "lightrag_unavailable", "lightrag") != nil)
+        #expect(explanation("failed", nil, nil) == nil)
+        #expect(explanation("pending_analysis", nil, "blindfold") == nil)
+        #expect(explanation("pending_analysis", "", nil) == nil)
+        #expect(explanation("processed", "blindfold_timeout", "blindfold") == nil)
+        #expect(explanation("unknown", "blindfold_timeout", "blindfold") == nil)
+        #expect(explanation(nil, "blindfold_timeout", "blindfold") == nil)
+    }
+
     @Test("ConnectionDiagnosis explains a Blindfold failure in either language")
     func blindfoldDiagnosis() {
         let error = ServerClientError.http(

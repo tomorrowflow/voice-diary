@@ -25,6 +25,8 @@ Scenarios (a route takes a comma-separated list: request n gets the n-th, the la
                        voxtral down, msgraph not_bootstrapped, lightrag ok
     blindfold          (session status only; ok elsewhere) 200, segment s01 failed `blindfold_timeout`
                        upstream `blindfold` instead of `whisper_timeout` (BAR-06)
+    pending            (session status only; ok elsewhere) 200, segments s01 and s02 `pending_analysis` instead of
+                       failed: s01 `blindfold_unavailable` upstream `blindfold`, s02 without a code (UFH-09)
     slow               the retryable 503 after a delay (default 15 s)
     slow-ok            the 200 after a delay (default 15 s)
 
@@ -67,7 +69,7 @@ FAILURES: dict[str, tuple[int, str, str, bool, str | None]] = {
     "engine-error": (502, "msgraph_engine_error", "msgraph", True, None),
     "slow": (503, "msgraph_unavailable", "msgraph", True, None),
 }
-SCENARIOS = ("ok", "slow-ok", "unhealthy", "blindfold", *FAILURES)
+SCENARIOS = ("ok", "slow-ok", "unhealthy", "blindfold", "pending", *FAILURES)
 # `/health` scenario `unhealthy`: Whisper (essential) down, so the overall status is `down`
 # (SPEC 10.7), plus Ollama and Voxtral down and Graph not bootstrapped. LightRAG stays ok.
 UNHEALTHY_UPSTREAM = {"postgres": "ok", "qdrant": "ok", "whisper": "down", "lightrag": "ok",
@@ -123,8 +125,12 @@ def calendar_body(date: str, rsvp_filter: list[str]) -> dict:
     return {"date": date, "rsvp_filter": rsvp_filter, "events": events}
 
 
-def session_status_body(failed_code: str = "whisper_timeout", failed_upstream: str = "whisper") -> dict:
-    """`GET /api/sessions/<id>/status` (SPEC 10.5): one coded failure, one without a code, one processed."""
+def session_status_body(failed_code: str = "whisper_timeout", failed_upstream: str = "whisper",
+                        status: str = "failed") -> dict:
+    """`GET /api/sessions/<id>/status` (SPEC 10.5): one coded failure, one without a code, one processed.
+
+    `status="pending_analysis"` makes the first two pending instead of failed: what an analysis outage leaves.
+    """
     def segment(segment_id: str, status: str, error: str | None, code: str | None, upstream: str | None) -> dict:
         return {"segment_id": segment_id, "status": status,
                 "transcript_id": 3 if status == "processed" else None,
@@ -132,8 +138,8 @@ def session_status_body(failed_code: str = "whisper_timeout", failed_upstream: s
 
     return {"session_id": "stub", "received_at": "2026-10-15T20:05:00+02:00", "state": "partial",
             "segments": [
-                segment("s01", "failed", f"{failed_upstream} read timed out", failed_code, failed_upstream),
-                segment("s02", "failed", "unexpected error", None, None),
+                segment("s01", status, f"{failed_upstream} read timed out", failed_code, failed_upstream),
+                segment("s02", status, "unexpected error", None, None),
                 segment("s03", "processed", None, None, None),
             ]}
 
@@ -242,7 +248,10 @@ class Handler(BaseHTTPRequestHandler):
         if name == "blindfold" and route == SESSION_STATUS:
             self.send_json(200, session_status_body("blindfold_timeout", "blindfold"))
             return
-        if name in ("ok", "slow-ok", "unhealthy", "blindfold"):  # the last two only mean something on one route
+        if name == "pending" and route == SESSION_STATUS:
+            self.send_json(200, session_status_body("blindfold_unavailable", "blindfold", "pending_analysis"))
+            return
+        if name in ("ok", "slow-ok", "unhealthy", "blindfold", "pending"):  # the last three only mean something on one route
             self.send_json(200, ok_body(route, parse_qs(parts.query)))
             return
         if route == "/health" and name in HEALTH_MSGRAPH:
@@ -351,6 +360,14 @@ def check(port: int) -> int:
         segments = body.get("segments", [])
         report("session status [blindfold]",
                status == 200 and [s.get("code") for s in segments] == ["blindfold_timeout", None, None]
+               and segments[0].get("upstream") == "blindfold",
+               f"HTTP {status} {json.dumps(body)[:200]}")
+        set_route(port, f"{SESSION_STATUS}=pending")
+        status, _, body, _ = request(port, "GET", "/api/sessions/stub/status", bearer="check")
+        segments = body.get("segments", [])
+        report("session status [pending]",
+               status == 200 and [s.get("status") for s in segments] == ["pending_analysis", "pending_analysis", "processed"]
+               and [s.get("code") for s in segments] == ["blindfold_unavailable", None, None]
                and segments[0].get("upstream") == "blindfold",
                f"HTTP {status} {json.dumps(body)[:200]}")
         set_route(port, "/health=unhealthy")

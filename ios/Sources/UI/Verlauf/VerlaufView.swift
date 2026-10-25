@@ -891,10 +891,11 @@ struct VerlaufDetailView: View {
                     language: language,
                     audioURL: url,
                     serverStatus: serverStatusFetched ? (segmentStatus?.status ?? "unknown") : nil,
-                    failureExplanation: segmentStatus?.status == "failed"
-                        ? FailureCatalog.copy(forSegmentCode: segmentStatus?.code,
-                                              upstream: segmentStatus?.upstream)?.title
-                        : nil
+                    failureExplanation: FailureCatalog.segmentExplanation(
+                        status: segmentStatus?.status,
+                        code: segmentStatus?.code,
+                        upstream: segmentStatus?.upstream
+                    )
                 )
             }
         case .voiceNote(let d):
@@ -1220,9 +1221,9 @@ struct SegmentDescriptor: Identifiable {
     /// in-memory status was lost). `nil` while the lookup is in flight
     /// or doesn't apply (note detail).
     let serverStatus: String?
-    /// Why a `failed` segment failed, from its server `code`. `nil` for
-    /// every other segment and for failures without a code, which keep the
-    /// plain "Failed" pill.
+    /// Why a `failed` or `pending_analysis` segment is in that state, from
+    /// its server `code`. `nil` for every other segment and for ones without
+    /// a code, which keep the plain pill.
     var failureExplanation: String? = nil
     /// Audio length when it's known without decoding — notes carry
     /// `duration_seconds` in their metadata. `nil` for walkthrough
