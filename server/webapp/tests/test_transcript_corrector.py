@@ -228,7 +228,7 @@ def test_parse_returns_empty_for_invalid_or_unusable_shapes(payload: str) -> Non
 
 def test_parse_keeps_non_string_fields_untouched() -> None:
     assert _parse_corrections('{"corrections": [{"original": 1, "corrected": 2}]}') == [
-        _c(1, 2)  # type: ignore[arg-type]
+        {"original": 1, "corrected": 2, "reason": ""}
     ]
 
 
