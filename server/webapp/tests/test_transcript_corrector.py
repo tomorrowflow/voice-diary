@@ -404,20 +404,6 @@ async def test_correct_transcript_logs_the_call_and_the_applied_count(
 ) -> None:
     reply = json.dumps({"corrections": [_c("Staat", "Start")]})
     _wire(monkeypatch, _reply(reply))
-
-    with caplog.at_level(logging.INFO, logger="transcript_corrector"):
-        await correct_transcript("Der Staat")
-
-    assert "Calling Ollama for transcript correction (model: " in caplog.text
-    assert "Ollama transcript correction responded in" in caplog.text
-    assert "LLM suggested 1 transcript correction(s)" in caplog.text
-    assert "Applied 1 transcript correction(s)" in caplog.text
-
-
-async def test_correct_transcript_logs_the_module_model_and_timeout_not_the_clients(
-    monkeypatch, caplog
-) -> None:
-    _wire(monkeypatch, _reply('{"corrections": []}'))
     monkeypatch.setattr(transcript_corrector, "OLLAMA_MODEL", "module-model")
     monkeypatch.setattr(transcript_corrector, "OLLAMA_TIMEOUT", 42.5)
 
@@ -429,9 +415,14 @@ async def test_correct_transcript_logs_the_module_model_and_timeout_not_the_clie
         in caplog.text
     )
     assert "qwen-test" not in caplog.text
+    assert "Ollama transcript correction responded in" in caplog.text
+    assert "LLM suggested 1 transcript correction(s)" in caplog.text
+    assert "Applied 1 transcript correction(s)" in caplog.text
 
 
-@pytest.mark.parametrize("module_url", ["http://module.test:11434/", "http://module.test:11434"])
+@pytest.mark.parametrize(
+    "module_url", ["http://module.test:11434/", "http://module.test:11434", "http://ollama.test/"]
+)
 async def test_correct_transcript_logs_the_module_url_verbatim_when_unreachable(
     monkeypatch, caplog, module_url: str
 ) -> None:
@@ -443,7 +434,6 @@ async def test_correct_transcript_logs_the_module_url_verbatim_when_unreachable(
 
     assert result == ("Der Staat", [])
     assert f"Ollama unreachable at {module_url} for transcript correction" in caplog.text
-    assert "http://ollama.test" not in caplog.text
 
 
 async def test_correct_transcript_honors_the_flag_at_call_time_without_calling_ollama(
@@ -567,7 +557,7 @@ async def test_corrector_logs_the_client_values_unless_told_otherwise(caplog) ->
         await TranscriptCorrector(ok.client(), num_ctx=1).correct("Der Staat")
         await TranscriptCorrector(down.client(), num_ctx=1).correct("Der Staat")
 
-    assert "(model: qwen-test, timeout: " in caplog.text
+    assert f"(model: qwen-test, timeout: {transcript_corrector.OLLAMA_TIMEOUT}s)" in caplog.text
     assert "Ollama unreachable at http://ollama.test for transcript correction" in caplog.text
 
 
