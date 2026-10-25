@@ -169,9 +169,7 @@ private struct GeneralEditorSheet: View {
     let onSave: (GeneralSection) -> Void
     let onCancel: () -> Void
 
-    @State private var title: String
-    @State private var introText: String
-    @State private var followUpEnabled: Bool
+    @State private var draft: GeneralSectionDraft
     @FocusState private var titleFocused: Bool
 
     init(
@@ -182,9 +180,7 @@ private struct GeneralEditorSheet: View {
         self.initial = initial
         self.onSave = onSave
         self.onCancel = onCancel
-        _title = State(initialValue: initial?.title ?? "")
-        _introText = State(initialValue: initial?.introText ?? "")
-        _followUpEnabled = State(initialValue: initial?.followUpEnabled ?? false)
+        _draft = State(initialValue: GeneralSectionDraft(editing: initial))
     }
 
     var body: some View {
@@ -193,7 +189,7 @@ private struct GeneralEditorSheet: View {
                 Theme.color.bg.surface.ignoresSafeArea()
                 Form {
                     Section {
-                        TextField("e.g. Morning routine", text: $title)
+                        TextField("e.g. Morning routine", text: $draft.title)
                             .focused($titleFocused)
                             .font(Theme.font.body)
                     } header: {
@@ -209,7 +205,7 @@ private struct GeneralEditorSheet: View {
                     Section {
                         TextField(
                             "e.g. How did your morning land today?",
-                            text: $introText,
+                            text: $draft.introText,
                             axis: .vertical
                         )
                         .lineLimit(3...6)
@@ -225,7 +221,7 @@ private struct GeneralEditorSheet: View {
                     }
 
                     Section {
-                        Toggle("Ask follow-up on silence", isOn: $followUpEnabled)
+                        Toggle("Ask follow-up on silence", isOn: $draft.followUpEnabled)
                             .font(Theme.font.body)
                     } header: {
                         Text("Follow-up")
@@ -247,21 +243,10 @@ private struct GeneralEditorSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let trimmedIntro = introText.trimmingCharacters(in: .whitespacesAndNewlines)
-                        let section = GeneralSection(
-                            id: initial?.id ?? UUID().uuidString,
-                            title: trimmedTitle,
-                            introText: trimmedIntro,
-                            followUpEnabled: followUpEnabled
-                        )
-                        onSave(section)
+                        onSave(draft.section(id: initial?.id ?? UUID().uuidString))
                         onCancel()
                     }
-                    .disabled(
-                        title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
-                        introText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    )
+                    .disabled(!draft.canSave)
                 }
             }
             .onAppear {
