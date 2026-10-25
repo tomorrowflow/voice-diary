@@ -290,11 +290,12 @@ public struct DialogModelSettingsView: View {
                 // Progress returns until the total is known) to 0 so
                 // the bar doesn't flash artifacts.
                 let raw = progress.fractionCompleted
-                let fraction = raw.isFinite ? min(max(raw, 0), 1) : 0
+                let fraction = DialogDownloadProgress.normalizedFraction(raw)
                 let completed = progress.completedUnitCount
                 let total = progress.totalUnitCount
                 Task { @MainActor in
-                    let advanced = completed > completedBytes
+                    let advanced = DialogDownloadProgress.advanced(
+                        completed: completed, previous: completedBytes)
                     progressFraction = fraction
                     completedBytes = completed
                     totalBytes = total
