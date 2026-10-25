@@ -233,25 +233,11 @@ public final class DiagnosticsCollector: NSObject, @unchecked Sendable {
         stemFormatter.date(from: stem)
     }
 
-    private static func summarize(payloadAt url: URL) -> String {
-        guard let data = try? Data(contentsOf: url),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return "Diagnostic"
+    static func summarize(payloadAt url: URL) -> String {
+        guard let data = try? Data(contentsOf: url) else {
+            return DiagnosticPayloadSummary.fallback
         }
-        var parts: [String] = []
-        if let crashes = obj["crashDiagnostics"] as? [Any], !crashes.isEmpty {
-            parts.append("Crash×\(crashes.count)")
-        }
-        if let hangs = obj["hangDiagnostics"] as? [Any], !hangs.isEmpty {
-            parts.append("Hang×\(hangs.count)")
-        }
-        if let cpu = obj["cpuExceptionDiagnostics"] as? [Any], !cpu.isEmpty {
-            parts.append("CPU×\(cpu.count)")
-        }
-        if let disk = obj["diskWriteExceptionDiagnostics"] as? [Any], !disk.isEmpty {
-            parts.append("Disk×\(disk.count)")
-        }
-        return parts.isEmpty ? "Diagnostic" : parts.joined(separator: " · ")
+        return DiagnosticPayloadSummary.summary(fromJSON: data)
     }
 
     private static func kindsSummary(for payload: MXDiagnosticPayload) -> String {
