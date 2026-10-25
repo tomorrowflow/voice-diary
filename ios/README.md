@@ -4,19 +4,40 @@ Swift 6 / SwiftUI app for iPhone 17 Pro on iOS 26. The Xcode project is **genera
 
 ## Status
 
-> This table predates most of the iOS work and lags the code (e.g. the widget extension, Live
-> Activity, App Intents, dialog and TTS modules are all on disk). Trust `git log` and
-> `ios/Sources/` for current state.
+The app and its widget extension are implemented in source. This section lists what the code
+provides; it does not claim on-device validation or that every milestone is complete. Trust
+`git log` and `ios/Sources/` for details.
 
-| Milestone | What's in this commit |
-|---|---|
-| M1 — Xcode foundation | ✅ project.yml, Package.swift, entitlements, scaffolding |
-| M2 — Drive-by capture MVP | ⚪ partial: real `AudioEngine` + `M4AWriter`, in-app record button, on-device file write. `ParakeetManager` is a stub — the server's Whisper sidecar re-transcribes. |
-| M3 — Backend bridge | ✅ `ServerClient` (multipart upload + bearer auth), `SessionUploader` (persistent FIFO queue, exp. backoff 1/2/4/8/30/60/600 s), `Reachability` (probes `/health`), Keychain storage, debug screens. |
-| M4 — Drive-by surfaces | ⚪ parked — WidgetKit, ActivityKit, App Intents come next cycle |
-| M5–M12 | ⚪ parked |
+**Implemented in source** (targets from `project.yml`: `VoiceDiary`, `VoiceDiaryWidget`,
+`VoiceDiaryTests`):
 
-The current build supports the **dogfoodable loop**: tap *Test-Upload* → record 5 s → upload to your server over Tailscale → see the segment processed end-to-end (Whisper → entity_detector → document_processor → LightRAG).
+- **Capture.** `AudioEngine` and `M4AWriter` record drive-by notes; `CaptureCoordinator` stores them
+  and transcribes them on-device through `ParakeetManager` (FluidAudio Parakeet v3, batch
+  `transcribe(audioURL:)`).
+- **Backend bridge.** `ServerClient` (multipart upload with bearer auth, `/health`, calendar),
+  `SessionUploader` (persistent FIFO queue, backoff 1/2/4/8/30/60/600 s), `Reachability`, and
+  Keychain storage.
+- **Walkthrough.** `WalkthroughCoordinator` runs the evening walkthrough from a plan of ordered
+  sections, with dialog backends in `Sources/Dialog/` (Apple Foundation Models by default,
+  Gemma 4 E4B opt-in) and wake-word steering through `StreamingASR`.
+- **TTS.** `VoiceRegistry` picks the engine per language: `VoxtralTTS` (server-mediated), `PiperTTS`
+  (on-device, when its assets are installed) or `AppleSpeechTTS` (default and fallback).
+- **Drive-by surfaces.** `VoiceDiaryAppShortcuts` / `CaptureThoughtIntent` (App Shortcuts and Action
+  Button), and in the `VoiceDiaryWidget` extension a lock-screen widget
+  (`LockScreenCaptureWidget`) and a Live Activity (`CaptureLiveActivity`).
+- **App UI.** First-run onboarding gate, Verlauf history, and settings screens; English and German
+  localization.
+
+**Still needed before these are usable or validated:**
+
+- **Parakeet model.** `ParakeetManager` downloads the ~1.2 GB model on first use; until that
+  succeeds, a note is saved without an on-device transcript and the server's Whisper sidecar
+  transcribes the upload.
+- **Piper voices.** `PiperTTS` is a no-op stub until `scripts/fetch_piper_voices.sh` has run and the
+  project is regenerated; `VoiceRegistry` falls back to `AppleSpeechTTS` meanwhile.
+- **Hardware.** Nothing here records device validation. The widget, Live Activity, Action Button
+  binding, lock-screen behaviour and wake-word steering need a physical iPhone; use the manual
+  test plan below.
 
 ---
 
@@ -146,51 +167,33 @@ swiftlint lint --strict
 ```
 ios/
 ├── README.md                     (this file)
-├── project.yml                   XcodeGen spec
+├── project.yml                   XcodeGen spec (VoiceDiary, VoiceDiaryWidget, VoiceDiaryTests)
 ├── Package.swift                 SwiftPM (FluidAudio dep)
-├── Config/
-│   ├── Info.plist
-│   └── VoiceDiary.entitlements
-├── Sources/
-│   ├── App/
-│   │   └── VoiceDiaryApp.swift   App entry + RootView (TabView)
-│   ├── Backend/
-│   │   ├── KeychainStore.swift
-│   │   ├── ServerClient.swift    multipart upload, /health, /today/calendar
-│   │   ├── SessionUploader.swift persistent FIFO + exp. backoff
-│   │   └── Reachability.swift    /health probe + NWPathMonitor
-│   ├── Capture/
-│   │   ├── AudioEngine.swift     AVAudioEngine dual sink
-│   │   ├── M4AWriter.swift       AAC-LC 16 kHz mono 64 kbps CBR
-│   │   └── ParakeetManager.swift FluidAudio stub (M2 final pass)
-│   ├── Models/
-│   │   ├── Manifest.swift        SPEC §10.3 — segments + todos + ai_prompts
-│   │   └── DriveBySeed.swift
-│   ├── Storage/
-│   │   └── LocalStore.swift      Application Support paths
-│   ├── UI/
-│   │   ├── DriveBy/CaptureView.swift
-│   │   └── Settings/
-│   │       ├── ServerSettingsView.swift  server URL + bearer paste
-│   │       └── DebugUploadView.swift     synthetic-session uploader
-│   ├── TTS/                      placeholder — M5
-│   ├── Dialog/                   placeholder — M5/M6/M7
-│   └── Widget/                   placeholder — M4
-├── Resources/
-│   └── Models/                   Piper voice models go here (M5)
-└── Tests/
-    └── ManifestTests.swift       round-trip JSON
+├── Config/                       Info.plist, VoiceDiary.entitlements
+├── Sources/                      app target (+ Shared and DesignSystem, also built into the widget)
+│   ├── App/                      app entry, RootView, permissions
+│   ├── Backend/                  ServerClient, SessionUploader, Reachability, KeychainStore, failure copy
+│   ├── Capture/                  AudioEngine, M4AWriter, ParakeetManager, CaptureCoordinator, wake word, Live Activity hub
+│   ├── Dialog/                   WalkthroughCoordinator, dialog LLMs (Apple FM, Gemma), todo extraction, opener prefetch
+│   ├── TTS/                      TTSEngine, VoiceRegistry, AppleSpeechTTS, PiperTTS, VoxtralTTS
+│   ├── Intents/                  VoiceDiaryAppShortcuts (main app only)
+│   ├── Shared/                   CaptureThoughtIntent, CaptureActivityAttributes, App Group helpers
+│   ├── DesignSystem/             Theme and design tokens
+│   ├── Localization/             AppLanguage, language preferences
+│   ├── Models/                   Manifest, DriveBySeed, CalendarEvent
+│   ├── Storage/                  LocalStore, SessionHistoryStore, AudioMerger, ShareStaging
+│   └── UI/                       Chrome, DriveBy, Onboarding, Settings, Verlauf, Walkthrough
+├── WidgetExtension/              VoiceDiaryWidget: LockScreenCaptureWidget, CaptureLiveActivity
+├── Resources/                    fonts, asset catalog, string catalogs; Models/Voices/ is created by the Piper script
+├── scripts/                      fetch_piper_voices.sh, run_on_device.sh, build_app_icon.swift
+└── Tests/                        VoiceDiaryTests unit tests
 ```
 
 ---
 
-## Deferred bits (for future cycles)
+## Deferred bits
 
-- **FluidAudio Parakeet model bundle.** `ParakeetManager` returns placeholder text right now. The dependency is in `Package.swift`; M2's final pass downloads the model on first launch (or bundles it under `Resources/Models/`) and wires `feed(buffer:)` into `AudioEngine`'s streaming sink.
-- **sherpa-onnx xcframework + Piper voices.** Deferred to M5 alongside the walkthrough state machine. Drop the xcframework into `Resources/` (or add via Xcode → *Add Files*), then place `de_DE-thorsten-high.onnx`/`.json` and `en_US-lessac-high.onnx`/`.json` plus the espeak-ng data dir under `Resources/Models/`.
-- **App Intents + Action Button + WidgetKit + ActivityKit.** Deferred to M4.
-- **Walkthrough state machine + Apple FM dialog + wake-word + multilingual TTS.** Deferred to M5–M9.
-- **Full SPEC §14 onboarding (Tailscale check, Action Button binding, voice preview).** Intentionally dropped; the reduced first-run gate (server setup + permission priming) is what shipped for M11.
-- **`URLSessionConfiguration.background`** so uploads survive app suspension. Currently using the default config — fine for foreground-only dogfooding. Not tied to a milestone.
+- **Full SPEC §14 onboarding (Tailscale check, Action Button binding, voice preview).** Intentionally dropped; the reduced first-run gate (server setup + permission priming) is what shipped. `OnboardingFlowView` contains none of those three steps.
+- **`URLSessionConfiguration.background`** so uploads survive app suspension. `ServerClient` still uses `URLSessionConfiguration.default`, which is fine for foreground-only dogfooding. Not tied to a milestone.
 
-Each item maps 1:1 to a story in `.planning/stories/`.
+The Parakeet model download, the Piper bootstrap and device validation are install-time and hardware prerequisites, not deferred code. They are listed under *Status*.
