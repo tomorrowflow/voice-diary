@@ -175,10 +175,9 @@ class FluencyChecker:
 
 
 async def check_fluency(raw_text: str) -> list[dict]:
-    """Send transcript to Ollama for fluency analysis.
+    """Run FluencyChecker.check with the module's current client and context window.
 
-    Returns list of located issues:
-    [{start, end, text, category, note}, ...]
+    Returns [] without calling Ollama when FLUENCY_CHECK_ENABLED is off.
     """
     if not FLUENCY_CHECK_ENABLED:
         logger.info("Fluency check disabled")

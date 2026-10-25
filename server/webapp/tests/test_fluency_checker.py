@@ -1,8 +1,6 @@
 """Tests for `fluency_checker`.
 
-Run inside the webapp container so deps + env match prod:
-
-    docker compose run --rm webapp pytest tests/test_fluency_checker.py
+Run it as described in DEVELOPMENT.md §7.4.
 
 Two layers are covered. The pure parsing and locating rules are pinned
 directly. The production path (`check_fluency` with the module's real default
@@ -77,7 +75,7 @@ def production(monkeypatch):
     return install
 
 
-def _service(respond, *, num_ctx: int = 4096) -> tuple[FluencyChecker, _Wire]:
+def _checker(respond, *, num_ctx: int = 4096) -> tuple[FluencyChecker, _Wire]:
     wire = _Wire(respond)
     client = OllamaClient(
         base_url="http://ollama.test",
@@ -161,6 +159,13 @@ def test_locate_case_fallback_handles_non_ascii_letters() -> None:
     assert (hit["start"], hit["end"]) == (3, 12)
 
 
+def test_locate_case_fallback_position_comes_from_the_lowered_text() -> None:
+    # "İ".lower() is two code points, so the fallback index drifts by one.
+    [hit] = locate_issues("İ ab", [_issue("AB")])
+
+    assert (hit["start"], hit["end"]) == (3, 5)
+
+
 def test_locate_returns_empty_for_no_issues() -> None:
     assert locate_issues(TRANSCRIPT, []) == []
 
@@ -173,9 +178,19 @@ def test_locate_passes_category_and_note_through() -> None:
     assert (hit["category"], hit["note"]) == ("run_on", "weil")
 
 
-def test_locate_with_non_string_quote_raises_as_before() -> None:
+@pytest.mark.parametrize("quote", [123, ["a"], {"a": 1}])
+def test_locate_with_non_string_quote_raises_as_before(quote) -> None:
     with pytest.raises(TypeError):
-        locate_issues(TRANSCRIPT, [{"text": 123, "category": "x", "note": ""}])
+        locate_issues(TRANSCRIPT, [{"text": quote, "category": "x", "note": ""}])
+
+
+@pytest.mark.parametrize("missing", ["category", "note"])
+def test_locate_requires_category_and_note_as_before(missing: str) -> None:
+    issue = {"text": "Dann kam", "category": "x", "note": ""}
+    del issue[missing]
+
+    with pytest.raises(KeyError):
+        locate_issues(TRANSCRIPT, [issue])
 
 
 # --- _parse_issues --------------------------------------------------------
@@ -464,31 +479,31 @@ REPLIES = {
 
 
 @pytest.mark.parametrize("name", REPLIES)
-async def test_service_matches_the_module_entry_point(name: str, production) -> None:
+async def test_checker_matches_the_module_entry_point(name: str, production) -> None:
     respond = lambda request: REPLIES[name]  # noqa: E731
     production(respond, num_ctx=4096)
-    service, _ = _service(respond, num_ctx=4096)
+    checker, _ = _checker(respond, num_ctx=4096)
 
-    assert await service.check(TRANSCRIPT) == await check_fluency(TRANSCRIPT)
+    assert await checker.check(TRANSCRIPT) == await check_fluency(TRANSCRIPT)
 
 
 @pytest.mark.parametrize(
     "exc", [httpx.ConnectError("x"), httpx.ReadTimeout("x"), httpx.ReadError("x")]
 )
-async def test_service_matches_the_module_entry_point_on_transport_failure(
+async def test_checker_matches_the_module_entry_point_on_transport_failure(
     exc, production
 ) -> None:
     production(_raise(exc))
-    service, _ = _service(_raise(exc))
+    checker, _ = _checker(_raise(exc))
 
-    assert await service.check(TRANSCRIPT) == await check_fluency(TRANSCRIPT) == []
+    assert await checker.check(TRANSCRIPT) == await check_fluency(TRANSCRIPT) == []
 
 
-async def test_service_uses_its_own_client_and_context_window(production) -> None:
+async def test_checker_uses_its_own_client_and_context_window(production) -> None:
     prod_wire = production(lambda request: pytest.fail("module client must not be used"))
-    service, wire = _service(lambda request: _issues_reply({"text": "zwei"}), num_ctx=777)
+    checker, wire = _checker(lambda request: _issues_reply({"text": "zwei"}), num_ctx=777)
 
-    issues = await service.check("eins zwei")
+    issues = await checker.check("eins zwei")
 
     assert issues == [
         {"start": 5, "end": 9, "text": "zwei", "category": "broken_syntax", "note": ""}
@@ -500,19 +515,19 @@ async def test_service_uses_its_own_client_and_context_window(production) -> Non
     assert body["messages"] == fluency_checker._build_messages("eins zwei")
 
 
-async def test_service_does_not_consult_the_enabled_flag(production) -> None:
+async def test_checker_does_not_consult_the_enabled_flag(production) -> None:
     production(lambda request: _issues_reply(), enabled=False)
-    service, wire = _service(lambda request: _issues_reply({"text": "eins"}))
+    checker, wire = _checker(lambda request: _issues_reply({"text": "eins"}))
 
-    assert [i["text"] for i in await service.check("eins")] == ["eins"]
+    assert [i["text"] for i in await checker.check("eins")] == ["eins"]
     assert len(wire.requests) == 1
 
 
-async def test_service_reuses_one_instance_across_calls() -> None:
-    service, wire = _service(lambda request: _issues_reply({"text": "b"}))
+async def test_checker_reuses_one_instance_across_calls() -> None:
+    checker, wire = _checker(lambda request: _issues_reply({"text": "b"}))
 
-    first = await service.check("a b")
-    second = await service.check("b a")
+    first = await checker.check("a b")
+    second = await checker.check("b a")
 
     assert [i["start"] for i in first] == [2]
     assert [i["start"] for i in second] == [0]
