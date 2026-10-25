@@ -159,7 +159,7 @@ def test_recovery_goes_transcribing_then_pending_analysis_then_processed(monkeyp
         async with world.client() as client:
             response = await world.post(client, "s02")
             body = response.json()
-            await asyncio.wait_for(started.wait(), 5)
+            await asyncio.wait_for(started.wait(), 1)
             mid = await world.status()
             release.set()
             await world.ingest.settled()
@@ -359,7 +359,7 @@ def test_whisper_unreachable_wins_over_a_busy_session(monkeypatch, tmp_path):
 
     async def run():
         await world.ingest.recover(SESSION, "s01")
-        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.wait_for(started.wait(), 1)
         state["up"] = False
         try:
             async with world.client() as client:
@@ -382,7 +382,7 @@ def test_a_second_segment_of_a_busy_session_is_409_and_does_nothing(monkeypatch,
 
     async def run():
         first = await world.ingest.recover(SESSION, "s01")
-        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.wait_for(started.wait(), 1)
         updates_before = len(world.ingests.updates)
         try:
             async with world.client() as client:
@@ -606,11 +606,11 @@ def test_recovery_does_not_wait_for_or_block_a_concurrent_upload(monkeypatch, tm
 
     async def run():
         await world.ingest.recover(SESSION, "s02")
-        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.wait_for(started.wait(), 1)
         try:
             async with world.client() as client:
                 upload = await asyncio.wait_for(
-                    client.post("/api/sessions", files=bundle("upload-1")), 5
+                    client.post("/api/sessions", files=bundle("upload-1")), 1
                 )
             uploaded = await world.ingest.status("upload-1")
             during = await world.status()
@@ -634,7 +634,7 @@ def test_the_attempt_continues_when_the_requesting_task_is_cancelled(monkeypatch
 
     async def run():
         request = asyncio.create_task(world.ingest.recover(SESSION, "s01"))
-        await asyncio.wait_for(started.wait(), 5)
+        await asyncio.wait_for(started.wait(), 1)
         request.cancel()
         await asyncio.gather(request, return_exceptions=True)
         release.set()

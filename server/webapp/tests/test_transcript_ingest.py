@@ -94,6 +94,33 @@ def test_replace_existing_reuses_the_row_an_earlier_attempt_left(monkeypatch):
     assert replaced == [("session::seg01.m4a", "2026-07-04", "Lukas Brandt", "hallo welt")]
 
 
+def test_replace_transcript_upserts_on_file_name_and_date_and_resets_the_derived_columns(monkeypatch):
+    queries = []
+
+    class _Pool:
+        async def fetchrow(self, query, *args):
+            queries.append((query, args))
+            return {"id": 7}
+
+    async def fake_get_pool():
+        return _Pool()
+
+    monkeypatch.setattr(db, "get_pool", fake_get_pool)
+
+    transcript_id = asyncio.run(
+        db.replace_transcript("session::seg01.m4a", "2026-07-04", "Lukas Brandt", "hallo welt")
+    )
+
+    assert transcript_id == 7
+    query, args = queries[0]
+    assert "ON CONFLICT (filename, date) DO UPDATE" in query
+    for column in ("corrected_text = NULL", "entities_json = NULL", "detected_entities_json = NULL"):
+        assert column in query
+    assert args[0] == "session::seg01.m4a"
+    assert str(args[1]) == "2026-07-04"
+    assert args[2:] == ("Lukas Brandt", "hallo welt")
+
+
 def test_transcribe_and_persist_raises_on_empty_transcript(monkeypatch):
     fake_client = _FakeAsrClient(text="")
     monkeypatch.setattr(asr_client, "get_default_client", lambda: fake_client)
