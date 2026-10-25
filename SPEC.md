@@ -936,7 +936,10 @@ body). One request is one attempt; nothing starts one on its own.
   persisted), the row is deleted again, best effort; one that cannot be deleted is replaced by the
   next attempt. The segment is `pending_analysis` with its `transcript_id` only once the transcript
   and its entities are saved; the day narrative (above) then runs over the whole date and the segment
-  becomes `processed`. Accepting the request is not interrupted by the client leaving: either the
+  becomes `processed`. Once the segment is linked to its saved transcript it never goes back to
+  `failed`: if the narrative's outcome cannot be persisted, the stored segment stays `pending_analysis`
+  with its transcript and the existing retry or the sweep finishes it. Accepting the request is not
+  interrupted by the client leaving: either the
   segment is `transcribing` with an attempt running, or the stored status is unchanged.
 - *Outcomes.* Transcription fails (Whisper, conversion, an empty transcript, storage): the segment is
   `failed` again with the new `error`, `code` and `upstream` replacing the old ones, and the audio is

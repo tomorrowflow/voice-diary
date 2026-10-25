@@ -908,14 +908,11 @@ class SessionIngest:
             await self._settle_segment(session_id, _failed_result(segment_id, exc))
             return
 
+        linked = SegmentResult(
+            segment_id=segment_id, status="pending_analysis", transcript_id=artifact.transcript_id
+        )
         try:
-            results = await self._settle_segment(
-                session_id,
-                SegmentResult(
-                    segment_id=segment_id, status="pending_analysis",
-                    transcript_id=artifact.transcript_id,
-                ),
-            )
+            results = await self._settle_segment(session_id, linked)
         except BaseException:
             # The transcript is saved but the segment cannot be linked to it:
             # drop the row rather than leave one nothing refers to.
@@ -923,25 +920,53 @@ class SessionIngest:
             raise
         if results is None:
             return
+
+        # From here the segment is linked to its saved transcript. Nothing that
+        # goes wrong may turn it back into `failed` (its row would be an
+        # orphan): the worst outcome is that it stays `pending_analysis`, which
+        # the existing retry finishes.
+        try:
+            final = await self._narrate_recovered(manifest, results, artifact)
+            await self._settle_segment(session_id, final)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "session %s segment %s: its outcome could not be saved; leaving it "
+                "pending_analysis with transcript %s",
+                session_id, segment_id, artifact.transcript_id,
+            )
+            try:
+                await self._settle_segment(session_id, linked)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "session %s segment %s: the stored status may be out of date; the "
+                    "persisted row still links transcript %s",
+                    session_id, segment_id, artifact.transcript_id,
+                )
+
+    async def _narrate_recovered(
+        self, manifest: Manifest, results: list[SegmentResult], artifact: SegmentArtifact
+    ) -> SegmentResult:
+        """Run the day narrative for a recovered segment and return its outcome:
+        `processed`, or `pending_analysis` with the `analysis_pending: …` error
+        when the narrative or the LightRAG ingest fails."""
+        segment_id = artifact.segment.segment_id
         try:
             await self._narrate_day(manifest, results, {segment_id: artifact}, republish=False)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "session %s segment %s recovered but analysis failed: %s — leaving it pending",
-                session_id, segment_id, exc,
+                manifest.session_id, segment_id, exc,
             )
-            final = SegmentResult(
+            return SegmentResult(
                 segment_id=segment_id,
                 status="pending_analysis",
                 transcript_id=artifact.transcript_id,
                 error=f"analysis_pending: {exc}",
                 **upstream_failure.failure_fields(exc),
             )
-        else:
-            final = SegmentResult(
-                segment_id=segment_id, status="processed", transcript_id=artifact.transcript_id
-            )
-        await self._settle_segment(session_id, final)
+        return SegmentResult(
+            segment_id=segment_id, status="processed", transcript_id=artifact.transcript_id
+        )
 
     async def _discard_transcript(
         self, session_id: str, segment_id: str, transcript_id: int

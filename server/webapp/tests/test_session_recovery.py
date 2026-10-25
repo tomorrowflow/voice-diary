@@ -747,6 +747,67 @@ def test_a_transcript_that_cannot_be_linked_to_its_segment_is_deleted(monkeypatc
     assert world.narrative.runs == []
 
 
+def _failing_updates(world: World, monkeypatch, failing: set[int]) -> list[str]:
+    """Make the n-th session-row write (1-based) of this test fail. Returns the
+    list of states written, in order."""
+    repository = world.ingests.repository
+    original_update = repository._update
+    calls: list[str] = []
+
+    async def update(session_id, state, segments):
+        calls.append(state)
+        if len(calls) in failing:
+            raise OSError("database is down")
+        await original_update(session_id, state, segments)
+
+    monkeypatch.setattr(repository, "_update", update)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("failing", "narrative_fails"),
+    [({3}, False), ({3, 4}, False), ({3}, True), ({3, 4}, True)],
+    ids=["final-write", "final-write-and-repair", "pending-write", "pending-write-and-repair"],
+)
+def test_a_failure_writing_the_final_outcome_keeps_the_linked_transcript(
+    monkeypatch, tmp_path, failing, narrative_fails,
+):
+    """The transcript is linked (`pending_analysis` persisted, write 2); the
+    write of its outcome (3) fails, and the repair (4) may fail too. The
+    segment is never overwritten with `failed`, the transcript row stays, and
+    the existing retry finishes it."""
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", transcript_ids={"s01": 10},
+    )
+    if narrative_fails:
+        world.narrative.analysis_error = RuntimeError("ollama unreachable")
+    _failing_updates(world, monkeypatch, failing)
+
+    async def run():
+        await world.ingest.recover(SESSION, "s01")
+        await world.ingest.settled()
+        return dict(world.ingests.rows[SESSION]["segments"][0]), dict(world.pipeline.transcript_rows)
+
+    stored, rows = asyncio.run(run())
+
+    assert (stored["status"], stored["transcript_id"]) == ("pending_analysis", 10)
+    assert rows == {f"{SESSION}::s01.m4a": 10}
+
+    # After a restart only the stored row is left; the sweep and the route work from it.
+    world.ingests.repository.restart()
+    world.narrative.analysis_error = None
+
+    async def retry():
+        return await world.ingest.retry(SESSION)
+
+    retried = asyncio.run(retry())
+
+    assert world.result(retried, "s01") == SegmentResult(
+        segment_id="s01", status="processed", transcript_id=10
+    )
+    assert len(world.pipeline.transcribe_calls) == 1  # the retry did not transcribe again
+
+
 def test_a_row_that_cannot_be_deleted_is_replaced_by_the_next_attempt(monkeypatch, tmp_path):
     world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
     repository = world.ingests.repository
