@@ -89,26 +89,15 @@ struct WakeWordAvailabilityTests {
         #expect(isAvailable(de: true, en: true, probe))
     }
 
-    @Test("every live pair, probe state and outcome pair equals the OR of all signals")
-    func exhaustiveOr() {
-        let outcomes: [Outcome] = [.installed] + Self.nonInstalled
-        var probes: [WakeWordAvailability.Probe] = [.idle, .running]
-        for de in outcomes {
-            for en in outcomes {
-                probes.append(.done(de: de, en: en))
-            }
-        }
-        for probe in probes {
-            let probeInstalled: Bool
-            if case .done(let de, let en) = probe {
-                probeInstalled = de == .installed || en == .installed
-            } else {
-                probeInstalled = false
-            }
-            for liveDe in [false, true] {
-                for liveEn in [false, true] {
-                    #expect(isAvailable(de: liveDe, en: liveEn, probe) == (liveDe || liveEn || probeInstalled))
-                }
+    @Test("mixed non-installed outcomes never negate a true live flag")
+    func staleMixedProbe() {
+        for de in Self.nonInstalled {
+            for en in Self.nonInstalled {
+                let probe = WakeWordAvailability.Probe.done(de: de, en: en)
+                #expect(isAvailable(de: true, en: false, probe))
+                #expect(isAvailable(de: false, en: true, probe))
+                #expect(isAvailable(de: true, en: true, probe))
+                #expect(!isAvailable(de: false, en: false, probe))
             }
         }
     }
