@@ -382,16 +382,16 @@ public struct DialogModelSettingsView: View {
     /// when our background-task grace runs out — we collapse it to a
     /// one-liner that points at the actual fix (keep the page open).
     private static func friendlyFailureText(reason: String) -> String {
-        if reason.contains("-1005") || reason.contains("network connection was lost") {
+        switch DialogDownloadFailure.classify(reason: reason) {
+        case .connectionLost:
             return String(localized: "Download paused — the connection was interrupted while the app was in the background. Tap “Load model” to continue where it left off. Until then, the Apple model takes over.")
-        }
-        if reason.contains("-1009") || reason.contains("not connected to the Internet") {
+        case .offline:
             return String(localized: "No internet connection. Connect to Wi-Fi and try again. Until then, the Apple model takes over.")
-        }
-        if reason.contains("-1001") || reason.contains("timed out") {
+        case .timeout:
             return String(localized: "Connection timed out. Try again on a stronger Wi-Fi. Until then, the Apple model takes over.")
+        case .other(let reason):
+            return String(localized: "Load failed: \(reason). Until then, the Apple model takes over.")
         }
-        return String(localized: "Load failed: \(reason). Until then, the Apple model takes over.")
     }
 
     private var loadStatusColor: Color {
