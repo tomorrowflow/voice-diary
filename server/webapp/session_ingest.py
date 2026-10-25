@@ -1224,7 +1224,10 @@ async def _saved_recovery_transcript(session_id: str, segment_id: str) -> int | 
     lookup raises: the segment is then not settled, never guessed."""
     try:
         manifest = load_manifest(session_id)
-    except Exception:  # noqa: BLE001 — nothing to look up without it
+    except Exception as exc:  # noqa: BLE001 — nothing to look up without it
+        logger.warning(
+            "session %s: manifest unreadable, no saved transcript to look for: %s", session_id, exc
+        )
         return None
     segment = next((s for s in manifest.segments if s.segment_id == segment_id), None)
     if segment is None:

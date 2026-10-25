@@ -277,6 +277,7 @@ Contract and statuses: SPEC §10.6.1; every upstream-facing route uses it (SPEC 
 | `msgraph_rate_limited` / `msgraph_unavailable` / `msgraph_engine_error` | msgraph | 429 / 503 / 502 | yes | Graph throttling (`Retry-After` sent when Graph gave one), network or outage; wait |
 | `voxtral_unavailable` / `voxtral_timeout` / `voxtral_engine_error` | voxtral | 503 / 503 / 502 | yes | voxtral-gate and engine; a timeout is 503 like the others, not 504 |
 | `unknown_voice` | voxtral | 400 | no | the voice id is not in the catalogue |
+| `recovery_interrupted` | none | segment only | yes | a restart cut a transcription recovery short before its transcript was saved; nothing to fix, tap recover again (SPEC §10.6.1) |
 
 A segment with no `code` failed for a reason that is not an upstream failure (or predates the
 contract); read its `error` string and the webapp log.
