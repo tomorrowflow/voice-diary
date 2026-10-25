@@ -6,9 +6,10 @@ import Foundation
 /// metadata rewrite that keeps a note's surviving chunks playable.
 ///
 /// Views keep the confirmation, player stop, dismiss, the displayed errors
-/// and their own row state; they call in here after the user confirmed. File removal, the
-/// metadata write and the upload-queue orphan purge are injected so a test
-/// can run every path against a temporary directory and record the order.
+/// and their own row state; they call in here after the user confirmed.
+/// File removal, the metadata write and the upload-queue orphan purge are
+/// injected so a test can run every path against a temporary directory and
+/// record the order.
 @MainActor
 struct SessionMutations {
     /// What the caller has to do after a mutation.
@@ -58,7 +59,7 @@ struct SessionMutations {
     ) -> Outcome {
         switch item {
         case .voiceNote(let entry):
-            if let url = Self.chunkURL(of: segment, in: entry) {
+            if let url = Self.multiChunkURL(of: segment, in: entry) {
                 try? removeItem(url)
                 let outcome = rewriteVoiceNoteMetadata(removing: url.lastPathComponent, in: entry)
                 schedulePurge()
@@ -79,11 +80,11 @@ struct SessionMutations {
     /// rather than only a player on the row's own file.
     func removesWholeEntry(_ segment: SegmentDescriptor, in item: SessionHistoryStore.Item) -> Bool {
         guard case .voiceNote(let entry) = item else { return false }
-        return Self.chunkURL(of: segment, in: entry) == nil
+        return Self.multiChunkURL(of: segment, in: entry) == nil
     }
 
     /// The row's file when it is one chunk of a multi-chunk note.
-    private static func chunkURL(
+    private static func multiChunkURL(
         of segment: SegmentDescriptor,
         in entry: SessionHistoryStore.VoiceNoteEntry
     ) -> URL? {
