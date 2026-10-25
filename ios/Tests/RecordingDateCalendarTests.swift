@@ -84,10 +84,9 @@ struct RecordingDateCalendarTests {
     func sundayFirstPadding() {
         let calendar = Self.makeCalendar(firstWeekday: 1)
         let picker = Self.picker(now: Self.date(2030, 1, 1, in: calendar), calendar: calendar)
-        // February 2026 begins on a Sunday.
+        // February 2026 begins on a Sunday: no padding when Sunday is first.
         let cells = picker.monthCells(for: Self.date(2026, 2, 10, in: calendar))
-        #expect(cells.count == 28)
-        #expect(cells.first! != nil)
+        #expect(dayNumbers(cells, calendar: calendar) == Array(1...28).map { Optional($0) })
     }
 
     @Test("months spanning a DST change keep one midnight-aligned cell per day", arguments: [

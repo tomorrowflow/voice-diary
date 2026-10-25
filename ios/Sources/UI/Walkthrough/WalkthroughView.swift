@@ -1748,7 +1748,7 @@ private struct RecordingDatePickerSheet: View {
     }
 
     /// Calendar math for the grid; rebuilt per access so `Date()` and the
-    /// app locale are read fresh, as before the extraction.
+    /// app locale are always current.
     private var pickerCalendar: RecordingDateCalendar {
         RecordingDateCalendar(calendar: calendar, now: Date())
     }

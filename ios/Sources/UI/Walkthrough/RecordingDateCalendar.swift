@@ -44,14 +44,14 @@ struct RecordingDateCalendar {
     /// nils so the grid is rectangular.
     func monthCells(for month: Date) -> [Date?] {
         guard
-            let monthStart = monthStart(containing: month),
-            let range = calendar.range(of: .day, in: .month, for: monthStart)
+            let firstOfMonth = monthStart(containing: month),
+            let range = calendar.range(of: .day, in: .month, for: firstOfMonth)
         else { return [] }
-        let weekdayOfFirst = calendar.component(.weekday, from: monthStart)
+        let weekdayOfFirst = calendar.component(.weekday, from: firstOfMonth)
         let leading = (weekdayOfFirst - calendar.firstWeekday + 7) % 7
         var cells: [Date?] = Array(repeating: nil, count: leading)
         for day in range {
-            if let d = calendar.date(byAdding: .day, value: day - 1, to: monthStart) {
+            if let d = calendar.date(byAdding: .day, value: day - 1, to: firstOfMonth) {
                 cells.append(d)
             }
         }
