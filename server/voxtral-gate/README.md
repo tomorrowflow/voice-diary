@@ -77,12 +77,10 @@ curl -s http://voxtral:8001/gate/status
 
 # Watch the transitions
 docker compose logs -f voxtral | grep -E "woke|slept"
-
-# Tests (no live vLLM needed — the engine is an httpx.MockTransport). From server/,
-# with the .env stub from DEVELOPMENT.md §7.4; the repo is mounted so the run uses
-# the working tree, not the files baked into the image.
-docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server/voxtral-gate --entrypoint pytest voxtral tests/test_gate.py -q -p no:cacheprovider
 ```
+
+Tests need no live vLLM (the engine is an `httpx.MockTransport`). From `server/`,
+use the Voxtral gate command in DEVELOPMENT.md §7.4.
 
 `/gate/status` reports `asleep`, `inflight`, `idle_seconds`, and cumulative
 `wakes`/`sleeps`.

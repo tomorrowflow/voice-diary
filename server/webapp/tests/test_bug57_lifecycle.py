@@ -1,10 +1,9 @@
 """BUG-57/#57: hardening of session retry, SSE bridge cancellation, the
 startup sweep's shutdown lifecycle, and the vector lookup's thread use.
 
-Run inside the webapp container so deps + env match prod. From `server/`, with
-the `.env` stub from DEVELOPMENT.md §7.4:
-
-    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_bug57_lifecycle.py -q -p no:cacheprovider
+Run inside the webapp container so deps + env match prod. From `server/`, use
+the Server command in DEVELOPMENT.md §7.4 with
+`webapp/tests/test_bug57_lifecycle.py` in place of `webapp/tests/`.
 """
 
 from __future__ import annotations

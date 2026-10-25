@@ -1,10 +1,9 @@
 """REF-121/#121: `sse_steps.StepStream`, the shared on_step → SSE bridge used by
 the transcript-correction and narrative review routes.
 
-Run inside the webapp container so deps + env match prod. From `server/`, with
-the `.env` stub from DEVELOPMENT.md §7.4:
-
-    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_sse_steps.py -q -p no:cacheprovider
+Run inside the webapp container so deps + env match prod. From `server/`, use
+the Server command in DEVELOPMENT.md §7.4 with `webapp/tests/test_sse_steps.py`
+in place of `webapp/tests/`.
 """
 
 from __future__ import annotations

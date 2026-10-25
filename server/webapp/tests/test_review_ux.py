@@ -8,9 +8,8 @@ things pytest *can* verify without a browser:
     (empty-state containers, the toast host, focus-visible affordances)
   - static/app.js contains the behavior that drives those hooks
 
-Run from `server/`, with the `.env` stub from DEVELOPMENT.md §7.4:
-
-    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_review_ux.py -q -p no:cacheprovider
+Run from `server/`: use the Server command in DEVELOPMENT.md §7.4 with
+`webapp/tests/test_review_ux.py` in place of `webapp/tests/`.
 """
 
 from __future__ import annotations

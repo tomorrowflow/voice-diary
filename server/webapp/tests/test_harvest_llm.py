@@ -6,10 +6,9 @@ transcript — user-controlled, transcribed speech. `category` and
 eventually submitted as Harvest time-entry fields), so free-form LLM
 output must be constrained before it leaves this module. See SEC-6.
 
-Run inside the webapp container so deps + env match prod. From `server/`, with
-the `.env` stub from DEVELOPMENT.md §7.4:
-
-    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_harvest_llm.py -q -p no:cacheprovider
+Run inside the webapp container so deps + env match prod. From `server/`, use
+the Server command in DEVELOPMENT.md §7.4 with `webapp/tests/test_harvest_llm.py`
+in place of `webapp/tests/`.
 """
 
 from __future__ import annotations

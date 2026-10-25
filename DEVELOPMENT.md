@@ -529,6 +529,14 @@ cd server && printf 'POSTGRES_PASSWORD=test\nTAILNET_IP=127.0.0.1\n' > .env && d
 To narrow the run, replace `webapp/tests/` with a file (`webapp/tests/test_sessions.py`) or a test
 id (`webapp/tests/test_session_ingest.py::test_retry_marks_only_the_remainder_when_some_rows_were_already_marked`).
 
+**Voxtral gate** — its tests run in the gate image, which has its own dependencies and pytest
+settings, so the workdir is `/repo/server/voxtral-gate`. Run from `server/` with the same `.env`
+stub; mounting the repo means the run uses the working tree, not the files baked into the image.
+
+```bash
+docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server/voxtral-gate --entrypoint pytest voxtral tests/test_gate.py -q -p no:cacheprovider
+```
+
 **iOS** — macOS with Xcode 16.2+ and XcodeGen only (`xcodebuild` does not run on Linux). The Xcode
 project is generated and gitignored, and `project.yml` includes `project-piper.yml` (gitignored,
 normally written by `ios/scripts/fetch_piper_voices.sh`). On a checkout without the Piper bootstrap,

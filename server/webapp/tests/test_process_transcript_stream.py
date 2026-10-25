@@ -11,10 +11,9 @@ follow, which stay HTMX-only (decision D2) — not on
 monkeypatched with a fake that drives `on_step` directly, mirroring the
 existing `test_process_document_stream.py` pattern for `narrative`.
 
-Run inside the webapp container so deps + env match prod. From `server/`, with
-the `.env` stub from DEVELOPMENT.md §7.4:
-
-    docker compose -p vd-test run --rm --no-deps -e PYTHONDONTWRITEBYTECODE=1 -v ..:/repo -w /repo/server webapp pytest webapp/tests/test_process_transcript_stream.py -q -p no:cacheprovider
+Run inside the webapp container so deps + env match prod. From `server/`, use
+the Server command in DEVELOPMENT.md §7.4 with
+`webapp/tests/test_process_transcript_stream.py` in place of `webapp/tests/`.
 """
 
 from __future__ import annotations
