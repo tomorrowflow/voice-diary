@@ -24,10 +24,8 @@ def prepare_email_results(
 ) -> EmailResults:
     """Filter `messages` to the inclusive `from_iso`..`to_iso` window and project them."""
     kept = _filter_by_date(messages, from_iso, to_iso)
-    return EmailResults(
-        sources_text=_format_sources(kept),
-        links=[_shape_message(raw) for raw in kept],
-    )
+    links = [_shape_message(raw) for raw in kept]
+    return EmailResults(sources_text=_format_sources(kept, links), links=links)
 
 
 def _parse_iso(value: str | None) -> datetime | None:
@@ -71,12 +69,11 @@ def _shape_message(raw: dict) -> dict[str, str]:
     }
 
 
-def _format_sources(messages: list[dict]) -> str:
+def _format_sources(messages: list[dict], links: list[dict[str, str]]) -> str:
     """Compact text block fed to the summariser. Keep it short — Piper
     will speak only 2–3 sentences anyway."""
     parts: list[str] = []
-    for raw in messages:
-        link = _shape_message(raw)
+    for raw, link in zip(messages, links, strict=True):
         body = (raw.get("bodyPreview") or "").strip().replace("\n", " ")
         parts.append(
             f"- Von {link['sender']} ({link['received']}): {link['subject']}. {body[:400]}"

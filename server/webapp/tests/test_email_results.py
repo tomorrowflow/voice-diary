@@ -520,6 +520,25 @@ def test_unauthorized_search_makes_no_upstream_calls(monkeypatch, tmp_path, head
     assert msgraph_client._instance is None
 
 
+@pytest.mark.parametrize(
+    "params",
+    [{"q": ""}, {"q": "x" * 201}, {"q": "x", "top": 0}, {"q": "x", "top": 26}],
+    ids=["empty-q", "long-q", "top-zero", "top-too-big"],
+)
+def test_query_and_top_constraints_reject_before_any_upstream_call(
+    monkeypatch, tmp_path, params
+) -> None:
+    client = client_for(email_router.router, monkeypatch)
+    graph = _Graph(monkeypatch, tmp_path, [_msg()])
+    ollama = _Ollama(monkeypatch)
+
+    resp = client.get("/email/search", params=params, headers=auth())
+
+    assert resp.status_code == 422
+    assert graph.requests == []
+    assert ollama.requests == []
+
+
 def test_unauthorized_fixture_mode_search_makes_no_upstream_calls(monkeypatch, tmp_path) -> None:
     client = client_for(email_router.router, monkeypatch)
     _fixture_mode(monkeypatch, tmp_path)
