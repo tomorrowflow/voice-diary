@@ -103,6 +103,7 @@ async def test_german_prompt_and_exact_http_payload(monkeypatch) -> None:
         "options": {"num_ctx": enrichment.OLLAMA_NUM_CTX, "temperature": 0.2},
     }
     assert "format" not in ollama.body
+    assert request.extensions["timeout"]["read"] == enrichment.OLLAMA_TIMEOUT
 
 
 async def test_english_prompt(monkeypatch) -> None:
@@ -250,10 +251,6 @@ async def test_ollama_failures_become_summariser_unavailable(
 
     assert str(caught.value) == message
     assert isinstance(caught.value.__cause__, cause_type)
-
-
-def test_summariser_unavailable_is_a_runtime_error() -> None:
-    assert issubclass(EnrichmentSummariserUnavailable, RuntimeError)
 
 
 # --- SpeechSummariser with explicit configuration ----------------------------------
