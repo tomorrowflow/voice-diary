@@ -118,6 +118,62 @@ def locate_issues(text: str, issues: list[dict]) -> list[dict]:
     return located
 
 
+class FluencyChecker:
+    """The fluency check against an explicitly supplied Ollama client.
+
+    Owns the whole operation: the prompt, the call, the fallbacks for an
+    empty or failed reply, and turning the reply into located annotations.
+    Whether the check is enabled is the caller's policy, not this class's.
+    """
+
+    def __init__(self, client: OllamaClient, num_ctx: int) -> None:
+        self._client = client
+        self._num_ctx = num_ctx
+
+    async def check(self, raw_text: str) -> list[dict]:
+        """Returns list of located issues:
+        [{start, end, text, category, note}, ...]
+        """
+        messages = _build_messages(raw_text)
+
+        logger.info(
+            "Calling Ollama for fluency check (model: %s, timeout: %ss)",
+            OLLAMA_MODEL,
+            OLLAMA_TIMEOUT,
+        )
+        t0 = time.monotonic()
+
+        try:
+            result = await self._client.chat(messages, format="json", num_ctx=self._num_ctx)
+        except OllamaUnavailableError:
+            logger.warning("Ollama unreachable at %s for fluency check", OLLAMA_BASE_URL)
+            return []
+        except OllamaTimeoutError:
+            elapsed = time.monotonic() - t0
+            logger.warning("Fluency check timed out after %.1fs", elapsed)
+            return []
+        except OllamaEngineError as e:
+            logger.warning("Ollama error for fluency check: %s", e)
+            return []
+
+        elapsed = time.monotonic() - t0
+        logger.info("Fluency check responded in %.1fs", elapsed)
+
+        content = result.content
+        if not content:
+            logger.warning("Empty Ollama response for fluency check")
+            return []
+
+        issues = _parse_issues(content)
+        if not issues:
+            logger.info("No fluency issues found")
+            return []
+
+        located = locate_issues(raw_text, issues)
+        logger.info("Found %d fluency issues (%d located)", len(issues), len(located))
+        return located
+
+
 async def check_fluency(raw_text: str) -> list[dict]:
     """Send transcript to Ollama for fluency analysis.
 
@@ -128,41 +184,4 @@ async def check_fluency(raw_text: str) -> list[dict]:
         logger.info("Fluency check disabled")
         return []
 
-    messages = _build_messages(raw_text)
-
-    logger.info(
-        "Calling Ollama for fluency check (model: %s, timeout: %ss)",
-        OLLAMA_MODEL,
-        OLLAMA_TIMEOUT,
-    )
-    t0 = time.monotonic()
-
-    try:
-        result = await _ollama_client.chat(messages, format="json", num_ctx=OLLAMA_NUM_CTX)
-    except OllamaUnavailableError:
-        logger.warning("Ollama unreachable at %s for fluency check", OLLAMA_BASE_URL)
-        return []
-    except OllamaTimeoutError:
-        elapsed = time.monotonic() - t0
-        logger.warning("Fluency check timed out after %.1fs", elapsed)
-        return []
-    except OllamaEngineError as e:
-        logger.warning("Ollama error for fluency check: %s", e)
-        return []
-
-    elapsed = time.monotonic() - t0
-    logger.info("Fluency check responded in %.1fs", elapsed)
-
-    content = result.content
-    if not content:
-        logger.warning("Empty Ollama response for fluency check")
-        return []
-
-    issues = _parse_issues(content)
-    if not issues:
-        logger.info("No fluency issues found")
-        return []
-
-    located = locate_issues(raw_text, issues)
-    logger.info("Found %d fluency issues (%d located)", len(issues), len(located))
-    return located
+    return await FluencyChecker(_ollama_client, OLLAMA_NUM_CTX).check(raw_text)
