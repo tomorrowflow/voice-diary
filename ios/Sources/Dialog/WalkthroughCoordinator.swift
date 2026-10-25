@@ -328,13 +328,7 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
 
     // MARK: - Plan model -----------------------------------------------
 
-    /// One scheduled section. The calendar block is a single step that
-    /// expands at runtime into per-event sub-states.
-    enum PlanStep: Sendable {
-        case general(GeneralSection)
-        case calendar(events: [ServerCalendarEvent])
-        case voiceNote(notes: [VoiceNote])
-    }
+    typealias PlanStep = WalkthroughPlanStep
 
     // MARK: - Public commands -----------------------------------------
 
@@ -1499,34 +1493,14 @@ public final class WalkthroughCoordinator: TodoConfirmationHost {
         )
     }
 
-    /// The steps of a walkthrough. A day with no events (or none fetched,
-    /// when starting without the calendar) has no calendar step, so no
-    /// calendar segment can be recorded.
+    /// The steps of a walkthrough; assembly lives in `WalkthroughPlanBuilder`.
     nonisolated static func makePlan(
         order: [WalkthroughSection],
         generals: [GeneralSection],
         events: [ServerCalendarEvent],
         notes: [VoiceNote]
     ) -> [PlanStep] {
-        let generalsByID: [String: GeneralSection] = Dictionary(
-            uniqueKeysWithValues: generals.map { ($0.id, $0) }
-        )
-        var steps: [PlanStep] = []
-        for entry in order {
-            switch entry {
-            case .general(let id):
-                if let g = generalsByID[id] {
-                    steps.append(.general(g))
-                }
-            case .calendarEvents:
-                if !events.isEmpty {
-                    steps.append(.calendar(events: events))
-                }
-            case .voiceNote:
-                steps.append(.voiceNote(notes: notes))
-            }
-        }
-        return steps
+        WalkthroughPlanBuilder.build(order: order, generals: generals, events: events, notes: notes)
     }
 
     /// Seeds captured on or before the session's target day that haven't
