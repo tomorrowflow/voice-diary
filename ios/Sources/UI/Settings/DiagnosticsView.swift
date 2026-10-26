@@ -171,7 +171,7 @@ public struct DiagnosticsView: View {
 
     private func reportRow(_ report: DiagnosticsCollector.Report) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                 Text(report.summary)
                     .font(Theme.font.body)
                     .foregroundStyle(Theme.color.text.primary)
