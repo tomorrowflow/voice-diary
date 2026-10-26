@@ -36,19 +36,8 @@ public struct WakeWordSettingsView: View {
     @Environment(\.scenePhase) private var scenePhase
 
     /// One outcome for both languages so the row UI can swap its pill in place.
-    enum TestOutcome: Equatable {
-        case installed
-        case notInstalled(reason: String)
-        case unauthorized
-        case unavailable
-        case timeout
-    }
-
-    enum TestResult: Equatable {
-        case idle
-        case running
-        case done(de: TestOutcome, en: TestOutcome)
-    }
+    typealias TestOutcome = WakeWordAvailability.ProbeOutcome
+    typealias TestResult = WakeWordAvailability.Probe
 
     public init() {}
 
@@ -143,13 +132,13 @@ public struct WakeWordSettingsView: View {
             languageRow(
                 label: String(localized: "German"),
                 installed: monitor.deInstalled,
-                probeOutcome: probeOutcome(\.de)
+                probeOutcome: testResult.outcome(for: .german)
             )
             Divider().background(Theme.color.border.subdued)
             languageRow(
                 label: String(localized: "English"),
                 installed: monitor.enInstalled,
-                probeOutcome: probeOutcome(\.en)
+                probeOutcome: testResult.outcome(for: .english)
             )
 
             Text("Voice Diary uses Apple’s dictation asset for wake-word recognition. While a language’s asset is missing, the wake word is off in that language — tapping still works, and the automatic silence detection keeps working.")
@@ -273,12 +262,11 @@ public struct WakeWordSettingsView: View {
     // MARK: - State
 
     private var anySupported: Bool {
-        monitor.deInstalled || monitor.enInstalled || lastProbeShowsAnyInstalled
-    }
-
-    private var lastProbeShowsAnyInstalled: Bool {
-        guard case .done(let de, let en) = testResult else { return false }
-        return de == .installed || en == .installed
+        WakeWordAvailability.isAvailable(
+            deLive: monitor.deInstalled,
+            enLive: monitor.enInstalled,
+            probe: testResult
+        )
     }
 
     private var toggleCaption: String {
@@ -289,16 +277,6 @@ public struct WakeWordSettingsView: View {
             return String(localized: "Wake word is on. During an event, after 3 s of silence a listening window opens: “next” / “weiter” → next event, “done” / “fertig” → end the walkthrough.")
         }
         return String(localized: "Wake word is off. Keep tapping the arrow at the bottom right to step through events.")
-    }
-
-    private func probeOutcome(_ keyPath: KeyPath<ProbePair, TestOutcome>) -> TestOutcome? {
-        guard case .done(let de, let en) = testResult else { return nil }
-        return ProbePair(de: de, en: en)[keyPath: keyPath]
-    }
-
-    private struct ProbePair {
-        let de: TestOutcome
-        let en: TestOutcome
     }
 
     // MARK: - Actions
