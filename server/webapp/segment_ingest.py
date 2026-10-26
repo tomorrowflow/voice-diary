@@ -264,6 +264,13 @@ def transcript_filename(manifest: Manifest, segment: Segment) -> str:
     return f"{manifest.session_id}::{segment.segment_id}{Path(segment.audio_file).suffix}"
 
 
+def transcript_filename_session(filename: str) -> str | None:
+    """The session id a transcript row is named for, when its file name has the
+    shape `transcript_filename` gives; None for any other transcript."""
+    session_id, separator, segment = filename.partition("::")
+    return session_id if session_id and separator and segment else None
+
+
 def _read_source(manifest: Manifest, segment: Segment, session_dir: Path) -> _Source:
     audio_path = session_dir / segment.audio_file
     if not audio_path.exists():
