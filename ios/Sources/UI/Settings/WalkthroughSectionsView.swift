@@ -123,7 +123,7 @@ private struct GeneralRow: View {
     let section: GeneralSection
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
             Text(section.title)
                 .font(Theme.font.body.weight(.medium))
                 .foregroundStyle(Theme.color.text.primary)
@@ -149,7 +149,7 @@ private struct SystemSectionRow: View {
             Image(systemName: iconName)
                 .foregroundStyle(Theme.color.text.secondary)
                 .frame(width: 24)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                 Text(title)
                     .font(Theme.font.body.weight(.medium))
                     .foregroundStyle(Theme.color.text.primary)
