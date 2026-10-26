@@ -1462,8 +1462,11 @@ private struct NoteReviewCard: View {
     }
 
     private func isOrphan(note: VoiceNote) -> Bool {
-        let cal = Calendar.current
-        return !cal.isDate(note.captured_at, inSameDayAs: coordinator.selectedDate)
+        NoteReviewOrphanDay.isOrphan(
+            capturedAt: note.captured_at,
+            selectedDate: coordinator.selectedDate,
+            calendar: .current
+        )
     }
 
     private func orphanBadgeText(note: VoiceNote) -> String {
