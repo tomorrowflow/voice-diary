@@ -697,11 +697,21 @@ struct RecoveryNeverImplicitTests {
     }
 
     // The foreground hook (`VoiceDiaryApp`), the health refresh (`Reachability`)
-    // and `AnalysisRetrier` must not reach the runner. When the Verlauf detail
-    // screen adopts it (FTR-05) this list gains that one view.
+    // and `AnalysisRetrier` must not reach the runner. Only the Verlauf detail
+    // screen's model (FTR-05) does, and it starts nothing but on the button.
     @Test("no hook, health refresh or retrier references the runner")
-    func runnerIsReferencedOnlyByItself() throws {
-        #expect(try sources(mentioning: "TranscriptionRecoveryRunner") == ["TranscriptionRecoveryRunner.swift"])
+    func runnerIsReferencedOnlyByItselfAndTheScreenModel() throws {
+        #expect(try sources(mentioning: "TranscriptionRecoveryRunner") ==
+                ["TranscriptionRecoveryRunner.swift", "TranscriptionRecoveryModel.swift"])
+    }
+
+    @Test("the screen model starts an attempt only from recover(segmentID:)")
+    func modelStartsOnlyFromRecover() throws {
+        let sourcesDir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent()
+            .appending(path: "Sources/UI/Verlauf/TranscriptionRecoveryModel.swift")
+        let source = try String(contentsOf: sourcesDir, encoding: .utf8)
+        #expect(source.components(separatedBy: ".start(segmentID:").count == 2)
     }
 
     @Test("a screen appearing, health improving and the status refresh make no request on their own")

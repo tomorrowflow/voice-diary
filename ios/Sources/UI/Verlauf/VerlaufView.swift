@@ -278,13 +278,16 @@ struct VerlaufDetailView: View {
     let item: SessionHistoryStore.Item
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var shareURL: URL?
     @State private var isPreparing: Bool = false
     @State private var prepareTask: Task<Void, Never>?
     @State private var prepareError: String?
     @State private var showShare: Bool = false
-    @State private var serverStatus: ServerClient.SessionStatusResponse?
-    @State private var serverStatusFetched: Bool = false
+    /// Server status of the session's segments and the transcription
+    /// recovery of its failed ones. Walkthroughs only: notes upload as part
+    /// of a session and have no per-note status.
+    @State private var recovery: TranscriptionRecoveryModel?
     @State private var player = SegmentPlayer()
     /// Segment ids swiped away in this view — filtered out of the list.
     /// (Walkthrough detail; the underlying audio file is removed too.)
@@ -295,6 +298,13 @@ struct VerlaufDetailView: View {
     /// the audio file irreversibly, so the swipe only stages the row.
     @State private var pendingSegmentDelete: SegmentDescriptor?
     @State private var pendingNoteDelete: SurfacedNoteEntry?
+
+    init(item: SessionHistoryStore.Item) {
+        self.item = item
+        if case .walkthrough(let w) = item {
+            _recovery = State(initialValue: TranscriptionRecoveryModel(sessionID: w.sessionID))
+        }
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -365,8 +375,13 @@ struct VerlaufDetailView: View {
                 )
             }
         }
-        .task { await loadServerStatus() }
+        // Reads only: the status and `/health` on appearing and on coming
+        // back to the foreground, the status every few seconds while an
+        // attempt runs. Only the button starts one.
+        .onAppear { recovery?.setVisible(true) }
+        .onChange(of: scenePhase) { _, phase in recovery?.setVisible(phase == .active) }
         .onDisappear {
+            recovery?.setVisible(false)
             player.stop()
             prepareTask?.cancel()
             prepareTask = nil
@@ -425,7 +440,7 @@ struct VerlaufDetailView: View {
         if !segs.isEmpty {
             Section {
                 ForEach(segs) { d in
-                    SegmentRow(descriptor: d, player: player)
+                    SegmentRow(descriptor: d, player: player) { recovery?.recover(segmentID: $0) }
                         .listRowBackground(Theme.color.bg.surface)
                         .listRowInsets(EdgeInsets(top: 8, leading: Theme.spacing.md,
                                                   bottom: 8, trailing: Theme.spacing.md))
@@ -485,22 +500,6 @@ struct VerlaufDetailView: View {
         if player.activeURL == e.audioURL { player.stop() }
         SessionMutations().deleteSurfacedNote(e)
         deletedNoteIDs.insert(e.note.seed_id)
-    }
-
-    private func loadServerStatus() async {
-        guard !serverStatusFetched else { return }
-        serverStatusFetched = true
-        let sessionID: String
-        switch item {
-        case .walkthrough(let w): sessionID = w.sessionID
-        case .voiceNote:            return  // notes upload as part of a session, no per-note status
-        }
-        do {
-            serverStatus = try await ServerClient.shared.sessionStatus(sessionID: sessionID)
-        } catch {
-            // Network/auth errors are non-fatal — leave the pill as "unknown".
-            serverStatus = nil
-        }
     }
 
     private var title: String {
@@ -741,7 +740,7 @@ struct VerlaufDetailView: View {
             }
             // segment_id (e.g. "s01") → server status
             let statusBySegmentID: [String: ServerClient.SessionStatusResponse.SegmentStatus] = Dictionary(
-                uniqueKeysWithValues: (serverStatus?.segments ?? []).map {
+                uniqueKeysWithValues: (recovery?.state.status?.segments ?? []).map {
                     ($0.segment_id, $0)
                 }
             )
@@ -785,7 +784,18 @@ struct VerlaufDetailView: View {
                     transcript = gs.transcript
                     language = gs.language
                 }
-                let segmentStatus = statusBySegmentID[segmentIDFor(segment: seg)]
+                let serverSegmentID = segmentIDFor(segment: seg)
+                let segmentStatus = statusBySegmentID[serverSegmentID]
+                let recoveryRow = segmentStatus.flatMap { status in
+                    recovery.flatMap { model in
+                        SegmentRecoveryPresentation.make(
+                            segment: status,
+                            action: model.action(for: serverSegmentID),
+                            audioMissing: model.state.audioMissing.contains(serverSegmentID),
+                            notice: model.state.notices[serverSegmentID]
+                        )
+                    }
+                }
                 return SegmentDescriptor(
                     id: seg.audioFile,
                     title: title,
@@ -793,12 +803,17 @@ struct VerlaufDetailView: View {
                     transcript: transcript,
                     language: language,
                     audioURL: url,
-                    serverStatus: serverStatusFetched ? (segmentStatus?.status ?? "unknown") : nil,
-                    analysisExplanation: SegmentAnalysisExplanation.make(
-                        status: segmentStatus?.status,
-                        code: segmentStatus?.code,
-                        upstream: segmentStatus?.upstream
-                    )
+                    serverStatus: recovery?.statusRequested == true
+                        ? (recoveryRow?.isTranscribing == true ? "transcribing" : segmentStatus?.status ?? "unknown")
+                        : nil,
+                    analysisExplanation: recoveryRow == nil
+                        ? SegmentAnalysisExplanation.make(
+                            status: segmentStatus?.status,
+                            code: segmentStatus?.code,
+                            upstream: segmentStatus?.upstream)
+                        : nil,
+                    recovery: recoveryRow,
+                    serverSegmentID: serverSegmentID
                 )
             }
         case .voiceNote(let d):
@@ -1150,7 +1165,9 @@ struct SegmentDescriptor: Identifiable {
     let language: String?
     let audioURL: URL?
     /// Server-side processing status: "processed" / "failed" /
-    /// "pending_analysis" / "unknown" (server returned 404, so the
+    /// "pending_analysis" / "transcribing" (a recovery attempt runs; also
+    /// shown from the tap until the server confirms) / "unknown" (server
+    /// returned 404, so the
     /// in-memory status was lost). `nil` while the lookup is in flight
     /// or doesn't apply (note detail).
     let serverStatus: String?
@@ -1158,6 +1175,13 @@ struct SegmentDescriptor: Identifiable {
     /// its server `code`. `nil` for every other segment and for ones without
     /// a code, which keep the plain pill.
     var analysisExplanation: SegmentAnalysisExplanation? = nil
+    /// The recovery copy and button of a `failed` segment the server can
+    /// transcribe again, or of one being transcribed. Replaces
+    /// `analysisExplanation`; nil for every other row and for an older server.
+    var recovery: SegmentRecoveryPresentation? = nil
+    /// The server's id for the segment ("s02"), which the recovery request
+    /// names. nil where the row has no server segment (notes, no manifest).
+    var serverSegmentID: String? = nil
     /// Audio length when it's known without decoding — notes carry
     /// `duration_seconds` in their metadata. `nil` for walkthrough
     /// segments, which the row loads lazily from the file instead.
@@ -1167,6 +1191,8 @@ struct SegmentDescriptor: Identifiable {
 private struct SegmentRow: View {
     let descriptor: SegmentDescriptor
     let player: SegmentPlayer
+    /// The recovery button was tapped; carries the server segment id.
+    let onRecover: (String) -> Void
 
     @State private var duration: TimeInterval?
 
@@ -1224,6 +1250,20 @@ private struct SegmentRow: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                    if let recovery = descriptor.recovery {
+                        Text(recovery.body)
+                            .font(Theme.font.caption)
+                            .foregroundStyle(recovery.tone == .failure
+                                ? Theme.color.status.destructive
+                                : Theme.color.text.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let reason = recovery.reason {
+                            Text(reason)
+                                .font(Theme.font.caption)
+                                .foregroundStyle(Theme.color.text.subdued)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
 
                 Spacer(minLength: Theme.spacing.xs)
@@ -1244,6 +1284,10 @@ private struct SegmentRow: View {
                     .lineLimit(2)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            if let recovery = descriptor.recovery, let segmentID = descriptor.serverSegmentID {
+                recoveryControls(recovery, segmentID: segmentID)
             }
         }
         .task(id: descriptor.audioURL?.path) {
@@ -1269,6 +1313,27 @@ private struct SegmentRow: View {
         .accessibilityLabel(isPlaying ? Text("Pause") : Text("Play"))
     }
 
+    /// The full-width primary "Erneut transkribieren" and the note under it
+    /// (PROTO-1 option B). A disabled button keeps its place and says why.
+    @ViewBuilder
+    private func recoveryControls(_ recovery: SegmentRecoveryPresentation, segmentID: String) -> some View {
+        if let button = recovery.button {
+            VStack(spacing: Theme.spacing.xxs) {
+                Button { onRecover(segmentID) } label: { Text(button.title) }
+                    .buttonStyle(.dsPrimary(size: .md, fullWidth: true))
+                    .disabled(!button.isEnabled)
+                    .opacity(button.isEnabled ? 1 : 0.4)
+                if let note = recovery.note {
+                    Text(note)
+                        .font(Theme.font.caption)
+                        .foregroundStyle(Theme.color.text.subdued)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
     private func statusPill(for status: String) -> some View {
         // English keys → German via the string catalog (previously
         // hardcoded German, which leaked into English mode).
@@ -1288,6 +1353,10 @@ private struct SegmentRow: View {
             label = String(localized: "Failed")
             bg = Theme.color.tint.destructive10
             fg = Theme.color.status.destructive
+        case "transcribing":
+            label = String(localized: "Transcribing…")
+            bg = Theme.color.tint.link10
+            fg = Theme.color.text.link
         default:
             label = String(localized: "Unknown")
             bg = Theme.color.bg.containerInset

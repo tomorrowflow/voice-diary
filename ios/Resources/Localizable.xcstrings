@@ -4052,6 +4052,89 @@
           }
         }
       }
+    },
+    "Another recording of this session is being transcribed." : {
+      "comment" : "Verlauf: why a failed segment cannot be retried while a sibling is transcribing (SegmentRecoveryPresentation).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Eine andere Aufnahme dieser Sitzung wird gerade transkribiert."
+          }
+        }
+      }
+    },
+    "Retry transcription" : {
+      "comment" : "Verlauf: button on a failed segment (SegmentRecoveryPresentation).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Erneut transkribieren"
+          }
+        }
+      }
+    },
+    "The recording is being transcribed again." : {
+      "comment" : "Verlauf: body of a segment whose recovery attempt is running (SegmentRecoveryPresentation).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Aufnahme wird erneut transkribiert."
+          }
+        }
+      }
+    },
+    "The recording is no longer on the server." : {
+      "comment" : "Verlauf: body of a failed segment whose audio is gone, no action (SegmentRecoveryPresentation).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Die Aufnahme ist nicht mehr auf dem Server."
+          }
+        }
+      }
+    },
+    "Transcribing…" : {
+      "comment" : "Verlauf: status pill while a failed segment is transcribed again.",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Wird transkribiert…"
+          }
+        }
+      }
+    },
+    "Transcription failed. The recording is safely stored on the server." : {
+      "comment" : "Verlauf: body of a recoverable failed segment (SegmentRecoveryPresentation).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Transkription fehlgeschlagen. Die Aufnahme ist auf dem Server gesichert."
+          }
+        }
+      }
+    },
+    "Whisper isn't reachable right now." : {
+      "comment" : "Verlauf: why the retry button is disabled while Whisper is not ok or its health is unknown (SegmentRecoveryPresentation).",
+      "extractionState" : "manual",
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Whisper ist gerade nicht erreichbar."
+          }
+        }
+      }
     }
   },
   "version" : "1.1"

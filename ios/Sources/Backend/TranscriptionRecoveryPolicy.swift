@@ -35,6 +35,14 @@ public enum WhisperHealth: Equatable, Sendable {
         default: self = .unknown
         }
     }
+
+    /// The `whisper` entry of a `/health` body (`upstream.whisper`). A
+    /// missing body, an unreadable one or an absent entry is `.unknown`.
+    init(healthData: Data?) {
+        struct Body: Decodable { let upstream: [String: String]? }
+        let upstream = healthData.flatMap { try? JSONDecoder().decode(Body.self, from: $0) }?.upstream
+        self.init(upstreamState: upstream?["whisper"])
+    }
 }
 
 /// What the screen shows for a failed segment's "Erneut transkribieren".
