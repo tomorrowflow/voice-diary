@@ -1823,8 +1823,8 @@ private struct RecordingDatePickerSheet: View {
 
     private var monthGrid: some View {
         let cells = pickerCalendar.monthCells(for: visibleMonth)
-        let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
-        return LazyVGrid(columns: columns, spacing: 4) {
+        let columns = Array(repeating: GridItem(.flexible(), spacing: Theme.spacing.xxs), count: 7)
+        return LazyVGrid(columns: columns, spacing: Theme.spacing.xxs) {
             ForEach(cells.indices, id: \.self) { i in
                 if let day = cells[i] {
                     dayCell(day)
@@ -1847,7 +1847,7 @@ private struct RecordingDatePickerSheet: View {
             selectedDate = day
             isPresented = false
         } label: {
-            VStack(spacing: 2) {
+            VStack(spacing: Theme.spacing.xxxs) {
                 Text("\(calendar.component(.day, from: day))")
                     .font(Theme.font.callout.weight(isSelected ? .semibold : .regular))
                     .foregroundStyle(
