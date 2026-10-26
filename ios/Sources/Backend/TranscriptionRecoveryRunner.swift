@@ -171,6 +171,9 @@ public actor TranscriptionRecoveryRunner {
         return true
     }
 
+    /// Whether the last lifecycle call it accepted was an appearance. For tests.
+    var isVisible: Bool { visible }
+
     /// Waits for the refresh loop, if one is running. For tests.
     func settled() async {
         await followTask?.value
