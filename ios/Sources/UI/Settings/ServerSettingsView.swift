@@ -342,12 +342,12 @@ public struct ServerSettingsView: View {
     }
 
     private func applyStatusSideEffects(_ status: Reachability.Status) {
-        switch status {
-        case .authInvalid:
+        switch ServerStatusError(status: status) {
+        case .authentication:
             lastError = String(localized: "The server rejected the token (401). It doesn’t match the token configured on the server — paste it again and tap Save.")
         case .down(let reason):
             lastError = reason
-        case .ok, .degraded, .unknown:
+        case nil:
             lastError = nil
         }
     }
