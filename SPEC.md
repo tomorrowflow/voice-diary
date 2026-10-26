@@ -971,6 +971,16 @@ body). One request is one attempt; nothing starts one on its own.
   has no `transcribing` segment and is resumed as above. A session whose run is active in the
   running process is skipped. A session that cannot be settled (the database cannot be read) is
   logged and left as it is for the next start, without stopping the others or app startup.
+- *Orphan transcripts (FTR-06).* In the same startup pass, once the interrupted recoveries are
+  settled and before the sweep lists its candidates, every transcript row that no segment references
+  is deleted: a row named for a persisted session's segment (file name `{session_id}::{segment}.m4a`)
+  whose id is no segment's `transcript_id`, left by an ingest or a recovery whose process died
+  before it linked the row. Each deleted id and the count are logged. A transcript that any segment
+  references is never touched, a pass with no orphans changes nothing, and transcripts that belong
+  to no session (the review UI, a manual upload) are never deleted. A session is checked under its
+  in-flight claim: one that is busy, or still has a `transcribing` segment because it could not be
+  settled, keeps its rows until the next start. A row that cannot be deleted is logged and the
+  others still are. The pass changes no segment and never calls Whisper.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
 Voxtral, and Blindfold when the analysis route is `blindfold`) is down, slow or answers with an error, the server reports it in one shape. `detail` stays

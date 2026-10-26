@@ -23,7 +23,9 @@ import db
 import session_ingest
 from models import SegmentResult
 from tests.session_helpers import fresh_ingest, segment_row, stage_bundle, stub_transcripts
-from tests.test_session_recovery import SESSION, World, _failed, _manifest, _pending, _processed
+from tests.test_session_recovery import (
+    SESSION, World, _failed, _latched_correction, _manifest, _pending, _processed,
+)
 
 OTHER = "2026-07-01T14:00:00+02:00"
 
@@ -107,6 +109,52 @@ def test_a_transcribing_segment_without_a_saved_transcript_fails_as_interrupted_
 
     status = asyncio.run(restarted.status(SESSION))
     assert status.segments[0].recoverable is True
+
+
+def test_a_reset_all_data_that_failed_partway_leaves_a_segment_settled_at_the_next_start(
+    monkeypatch, tmp_path,
+):
+    """Reset All Data stops the running recovery, then its database step fails
+    and nothing is cleared: the segment stays `transcribing` with no attempt.
+    After the restart it fails as interrupted, exactly as for any other
+    interruption: its audio untouched, Whisper never asked again."""
+    started, release, correct = _latched_correction()
+    world = World(
+        monkeypatch, tmp_path, [_failed("s01")], state="failed", correct=correct,
+    )
+    audio = world.audio("s01").read_bytes()
+
+    async def broken_reset() -> None:
+        raise RuntimeError("database went away")
+
+    async def run() -> int:
+        await world.ingest.recover(SESSION, "s01")
+        await asyncio.wait_for(started.wait(), 1)
+        monkeypatch.setattr(db, "reset_all_data", broken_reset)
+        try:
+            await asyncio.wait_for(world.ingest.reset_all_data(), 1)
+        except RuntimeError:
+            pass
+        release.set()
+        await world.ingest.settled()
+        return len(world.pipeline.transcribe_calls)
+
+    calls_before_restart = asyncio.run(run())
+
+    assert world.ingests.rows[SESSION]["segments"][0]["status"] == "transcribing"
+    restarted = _restart(monkeypatch, world)
+
+    asyncio.run(restarted.sweep())
+
+    state, (segment,) = _stored(world)
+    assert state == "failed"
+    assert (segment.status, segment.code, segment.upstream, segment.transcript_id) == (
+        "failed", "recovery_interrupted", None, None,
+    )
+    assert world.audio("s01").read_bytes() == audio
+    assert len(world.pipeline.transcribe_calls) == calls_before_restart
+    assert world.narrative.runs == []
+    assert asyncio.run(restarted.status(SESSION)).segments[0].recoverable is True
 
 
 def test_a_transcript_row_without_entities_is_not_a_saved_transcript(monkeypatch, tmp_path):

@@ -214,11 +214,18 @@ def fresh_ingest(
     monkeypatch.setattr(session_ingest, "_default", ingest)
     # No test reaches the database: a reset only clears the tables `db` owns.
     monkeypatch.setattr(db, "reset_all_data", _no_database_reset)
+    if not getattr(db.list_transcripts, "keeps_pipeline_table", False):
+        # Over a restart, the `SegmentPipeline` table stays.
+        monkeypatch.setattr(db, "list_transcripts", _no_database_transcripts)
     return ingest
 
 
 async def _no_database_reset() -> None:
     return None
+
+
+async def _no_database_transcripts(status=None) -> list[dict]:
+    return []
 
 
 class FakeSessionIngests:
@@ -461,6 +468,13 @@ class SegmentPipeline:
                 name: row_id for name, row_id in self.transcript_rows.items() if row_id not in ids
             }
 
+        async def list_transcripts(status=None):
+            return [
+                {"id": row_id, "filename": name} for name, row_id in self.transcript_rows.items()
+            ]
+
+        list_transcripts.keeps_pipeline_table = True
+        monkeypatch.setattr(db, "list_transcripts", list_transcripts)
         monkeypatch.setattr(db, "delete_transcripts", delete_transcripts)
         monkeypatch.setattr(db, "save_recovered_transcript", save_recovered_transcript)
         monkeypatch.setattr(db, "find_saved_transcript", find_saved_transcript)

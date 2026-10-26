@@ -14,8 +14,9 @@ is `SessionIngest`:
   on its own, `settled()` waiting for it;
 * **sweep** — `sweep()` first settles the recoveries a restart interrupted
   (FTR-03: a saved transcript makes the segment `pending_analysis`, none makes
-  it `failed` as `recovery_interrupted`; Whisper is never called), then
-  retries every stranded session once after a restart;
+  it `failed` as `recovery_interrupted`; Whisper is never called), removes the
+  session transcripts no segment references (FTR-06), then retries every
+  stranded session once after a restart;
 * **status** — `status()` reads a session's status;
 * **date coordination** — `narrative_date()` is the one-writer-at-a-time hold
   on a date's diary document, taken by every narrative writer here and by the
@@ -1110,6 +1111,88 @@ class SessionIngest:
         finally:
             await self._end(session_id)
 
+    # -- orphan transcripts ------------------------------------------------
+
+    async def remove_orphan_transcripts(self) -> None:
+        """Delete the transcript rows of session segments that no segment
+        references (FTR-06, SPEC §10.6.1): what an ingest or a recovery saved
+        before its process died and before the segment was linked to it. Logs
+        each deleted id and the count; a pass with no orphans changes nothing.
+
+        Only a row named for a persisted session's segment
+        (`{session_id}::{segment}.m4a`) can be an orphan: transcripts the
+        review UI or a manual upload created belong to no session and are
+        never touched. A session is looked at under its in-flight claim, so a
+        run that is saving a transcript meanwhile is never raced; a busy
+        session is skipped, and so is one that still has a `transcribing`
+        segment (the reconciliation could not settle it, its saved row may be
+        the one to link next startup). A failing delete or session is logged,
+        the others still run. Never raises, and runs after
+        `settle_interrupted_recoveries`.
+        """
+        try:
+            sessions = await self.repository.list_sessions()
+            transcripts = await db.list_transcripts()
+        except Exception:  # noqa: BLE001 — best-effort, never blocks startup
+            logger.exception("startup recovery reconciliation: failed to list transcripts")
+            return
+        removed = 0
+        for session in sessions:
+            prefix = f"{session.session_id}::"
+            candidates = [t for t in transcripts if t["filename"].startswith(prefix)]
+            if not candidates:
+                continue
+            try:
+                removed += await self._remove_orphans_of_session(session.session_id, candidates)
+            except Exception as exc:  # noqa: BLE001 — one session must not stop the rest
+                logger.warning(
+                    "startup recovery reconciliation: session %s orphan transcripts "
+                    "could not be removed: %s", session.session_id, exc,
+                )
+        if removed:
+            logger.info("startup recovery reconciliation: removed %d orphan transcript(s)", removed)
+
+    async def _remove_orphans_of_session(self, session_id: str, candidates: list[dict]) -> int:
+        """The number of rows removed from `candidates`, the session's
+        transcript rows as listed before its claim was taken."""
+        if not await self._try_begin(session_id):
+            logger.info(
+                "startup recovery reconciliation: session %s busy, orphan transcripts kept",
+                session_id,
+            )
+            return 0
+        try:
+            stored = await self.repository.get(session_id)
+            if stored is None:
+                return 0
+            if any(s.status == "transcribing" for s in stored.segments):
+                logger.info(
+                    "startup recovery reconciliation: session %s not settled, "
+                    "orphan transcripts kept", session_id,
+                )
+                return 0
+            referenced = {s.transcript_id for s in stored.segments}
+            removed = 0
+            for transcript in candidates:
+                if transcript["id"] in referenced:
+                    continue
+                try:
+                    await db.delete_transcripts([transcript["id"]])
+                except Exception as exc:  # noqa: BLE001 — one row must not stop the rest
+                    logger.warning(
+                        "startup recovery reconciliation: orphan transcript %s could not be "
+                        "removed: %s", transcript["id"], exc,
+                    )
+                    continue
+                removed += 1
+                logger.info(
+                    "startup recovery reconciliation: removed orphan transcript %s (%s)",
+                    transcript["id"], transcript["filename"],
+                )
+            return removed
+        finally:
+            await self._end(session_id)
+
     # -- startup sweep -----------------------------------------------------
 
     async def sweep(self) -> None:
@@ -1117,7 +1200,9 @@ class SessionIngest:
 
         First settles the recoveries a restart interrupted
         (`settle_interrupted_recoveries`, FTR-03), so the sweep never sees a
-        `transcribing` segment and never calls Whisper for one.
+        `transcribing` segment and never calls Whisper for one, then removes
+        the session transcripts no segment references
+        (`remove_orphan_transcripts`, FTR-06).
 
         Retries every non-`done` session with a `pending_analysis` segment
         (legacy `done` rows that still have one are first corrected to
@@ -1131,6 +1216,7 @@ class SessionIngest:
         start.
         """
         await self.settle_interrupted_recoveries()
+        await self.remove_orphan_transcripts()
 
         try:
             corrected = await self.repository.correct_legacy_done_sessions()
