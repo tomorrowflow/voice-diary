@@ -4,7 +4,8 @@ import Testing
 
 // The calendar event card's "09:00 – 09:30" line. The rule is optional
 // dates in, text out, with an explicit time zone; these tests pin it with
-// synthetic dates so they don't depend on the device's zone.
+// synthetic dates and explicit zones. Only the last test uses the device's
+// default zone.
 
 @Suite("CalendarEventTimeRange")
 struct CalendarEventTimeRangeTests {
@@ -88,16 +89,20 @@ struct CalendarEventTimeRangeTests {
         #expect(Self.text(Self.winter(22, 30), Self.winter(23, 30), Self.berlin) == "23:30 – 00:30")
     }
 
-    @Test("production zone matches the card's former formatter")
+    @Test("default zone matches the card's former formatter")
     func matchesFormerFormatter() {
-        // The formatter the card used before extraction, at the default zone.
+        // The formatter the card used before extraction, at the default
+        // zone. Depends on the host zone by design; the other tests don't.
         let former = DateFormatter()
         former.locale = Locale(identifier: "de_DE")
         former.dateFormat = "HH:mm"
-        let starts: [TimeInterval] = [0, 1_768_435_200, 1_782_892_800, 1_790_000_000]
-        for seconds in starts {
-            let start = Date(timeIntervalSince1970: seconds + 45_900)
-            let end = start.addingTimeInterval(3_660)
+        // Epoch, a winter day, a summer day and an autumn day.
+        let days: [TimeInterval] = [0, 1_768_435_200, 1_782_864_000, 1_790_000_000]
+        let twelveFortyFive: TimeInterval = 12 * 3600 + 45 * 60
+        let oneHourOneMinute: TimeInterval = 3600 + 60
+        for day in days {
+            let start = Date(timeIntervalSince1970: day + twelveFortyFive)
+            let end = start.addingTimeInterval(oneHourOneMinute)
             let expected = "\(former.string(from: start)) – \(former.string(from: end))"
             #expect(Self.text(start, end, .current) == expected)
         }

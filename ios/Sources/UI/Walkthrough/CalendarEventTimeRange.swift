@@ -9,6 +9,7 @@ enum CalendarEventTimeRange {
     /// Overnight and reversed ranges render as given.
     static func text(start: Date?, end: Date?, timeZone: TimeZone) -> String {
         guard let start, let end else { return "" }
+        // Built per call because the zone is an input; a card shows one range.
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "de_DE")
         formatter.timeZone = timeZone
