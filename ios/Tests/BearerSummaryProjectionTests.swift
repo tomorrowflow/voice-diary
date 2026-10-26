@@ -43,7 +43,7 @@ struct BearerSummaryProjectionTests {
     @Test("an emoji is one Character, including a multi-scalar sequence")
     func emoji() {
         #expect(BearerSummaryProjection("ab🙂cd🔑") == .present(count: 6, suffix: "🙂cd🔑"))
-        // Family emoji: seven scalars joined by ZWJ, one Character.
+        // Family emoji: five scalars joined by ZWJ, one Character.
         #expect(BearerSummaryProjection("k👨‍👩‍👧x") == .present(count: 3, suffix: "k👨‍👩‍👧x"))
         #expect(BearerSummaryProjection("a🇩🇪b🇫🇷c") == .present(count: 5, suffix: "🇩🇪b🇫🇷c"))
     }
