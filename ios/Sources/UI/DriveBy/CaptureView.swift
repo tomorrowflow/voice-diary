@@ -173,7 +173,7 @@ public struct CaptureView: View {
                     .font(.system(size: 48))
                     .foregroundStyle(Theme.color.text.primary)
             }
-            VStack(spacing: 8) {
+            VStack(spacing: Theme.spacing.xs) {
                 Text("Quick capture")
                     .font(Theme.font.title2)
                     .foregroundStyle(Theme.color.text.primary)
