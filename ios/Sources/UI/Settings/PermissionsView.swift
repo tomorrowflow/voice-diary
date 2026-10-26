@@ -82,36 +82,15 @@ public struct PermissionsView: View {
 
     // MARK: - Card
 
-    /// What the button will actually do when tapped — labels and the
-    /// disabled state derive from this, so the UI can never claim to
-    /// "request access" when the system has already cached an answer.
-    private enum ActionState: Equatable {
-        /// First-time ask. Tapping triggers the system dialog.
-        case canRequest
-        /// Already granted. Button is disabled with a confirming label.
-        case alreadyGranted
-        /// Denied or restricted. Button deep-links to iOS Settings,
-        /// because that's the only path back to "granted".
-        case openSettings
+    private var micActionState: PermissionActionState {
+        PermissionActionState(microphone: micStatus)
     }
 
-    private var micActionState: ActionState {
-        switch micStatus {
-        case .granted:     return .alreadyGranted
-        case .denied:      return .openSettings
-        default:           return .canRequest
-        }
+    private var speechActionState: PermissionActionState {
+        PermissionActionState(speech: speechStatus)
     }
 
-    private var speechActionState: ActionState {
-        switch speechStatus {
-        case .authorized:           return .alreadyGranted
-        case .denied, .restricted:  return .openSettings
-        default:                    return .canRequest
-        }
-    }
-
-    private func actionLabel(for state: ActionState) -> String {
+    private func actionLabel(for state: PermissionActionState) -> String {
         switch state {
         case .canRequest:     return String(localized: "Request access")
         case .alreadyGranted: return String(localized: "Already granted")
@@ -119,7 +98,7 @@ public struct PermissionsView: View {
         }
     }
 
-    private func actionIcon(for state: ActionState) -> String {
+    private func actionIcon(for state: PermissionActionState) -> String {
         switch state {
         case .canRequest:     return "checkmark.shield"
         case .alreadyGranted: return "checkmark.circle.fill"
@@ -130,7 +109,7 @@ public struct PermissionsView: View {
     /// Concrete `DSButtonStyle` per state. The disabled `dsPrimary`
     /// already greys itself when `.disabled(true)`, so the
     /// `alreadyGranted` button stays primary-styled but un-tappable.
-    private func buttonStyle(for state: ActionState) -> DSButtonStyle {
+    private func buttonStyle(for state: PermissionActionState) -> DSButtonStyle {
         switch state {
         case .canRequest:     return DSButtonStyle(variant: .primary, size: .md, fullWidth: true)
         case .alreadyGranted: return DSButtonStyle(variant: .secondary, size: .md, fullWidth: true)
@@ -139,19 +118,11 @@ public struct PermissionsView: View {
     }
 
     private func micAction() {
-        switch micActionState {
-        case .canRequest:     requestMic()
-        case .alreadyGranted: break
-        case .openSettings:   openSystemSettings()
-        }
+        micActionState.perform(request: requestMic, openSettings: openSystemSettings)
     }
 
     private func speechAction() {
-        switch speechActionState {
-        case .canRequest:     requestSpeech()
-        case .alreadyGranted: break
-        case .openSettings:   openSystemSettings()
-        }
+        speechActionState.perform(request: requestSpeech, openSettings: openSystemSettings)
     }
 
     @ViewBuilder
@@ -162,7 +133,7 @@ public struct PermissionsView: View {
         statusColor: Color,
         description: String,
         actionLabel: String,
-        actionState: ActionState,
+        actionState: PermissionActionState,
         isBusy: Bool,
         action: @escaping () -> Void
     ) -> some View {
@@ -204,7 +175,7 @@ public struct PermissionsView: View {
                 }
             }
             .buttonStyle(buttonStyle(for: actionState))
-            .disabled(isBusy || actionState == .alreadyGranted)
+            .disabled(actionState.isDisabled(isBusy: isBusy))
         }
         .padding(Theme.spacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
