@@ -141,15 +141,13 @@ public final class DiagnosticsCollector: NSObject, @unchecked Sendable {
     /// Build a single shareable text bundle for AirDrop/Mail/Save to Files.
     /// Includes payload JSON + log window, prefixed with a small header.
     public func shareBundleText(for report: Report) -> String {
-        var out = "Voice Diary diagnostic report\n"
-        out += "id: \(report.id)\n"
-        out += "captured: \(ISO8601DateFormatter().string(from: report.timestamp))\n"
-        out += "summary: \(report.summary)\n"
-        out += "----- MetricKit payload -----\n"
-        out += (readPayloadJSON(for: report) ?? "(unavailable)") + "\n"
-        out += "----- Log window -----\n"
-        out += (readLog(for: report) ?? "(no log snapshot)") + "\n"
-        return out
+        DiagnosticShareBundle.text(
+            id: report.id,
+            timestamp: report.timestamp,
+            summary: report.summary,
+            payloadText: readPayloadJSON(for: report),
+            logText: readLog(for: report)
+        )
     }
 
     /// Live tail of the app's own subsystem entries for the last N hours,
