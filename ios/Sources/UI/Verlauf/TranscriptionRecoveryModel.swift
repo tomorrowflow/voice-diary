@@ -29,7 +29,7 @@ final class TranscriptionRecoveryModel {
     /// The reads of the latest appearance; cancelled when the screen is left.
     @ObservationIgnored private var appearance: Task<Void, Never>?
     @ObservationIgnored private var lifecycleOrder = 0
-    @ObservationIgnored private let runner: TranscriptionRecoveryRunner
+    @ObservationIgnored let runner: TranscriptionRecoveryRunner
 
     init(
         sessionID: String,

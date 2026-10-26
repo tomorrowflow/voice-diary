@@ -72,6 +72,9 @@ struct TranscriptionRecoveryModelTests {
         model.setVisible(true)
         await waitUntil { await server.reads == 1 }
         model.setVisible(false)
+        // The leave reaches the runner in its own task; answering before it
+        // lands would test an appearance that finished on screen instead.
+        await waitUntil { await !model.runner.isVisible }
         await server.release()
         try? await Task.sleep(for: .milliseconds(100))
 
