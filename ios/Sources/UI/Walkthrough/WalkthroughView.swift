@@ -1234,7 +1234,7 @@ private struct EventRow: View {
                 Text(timeStart)
                     .font(Theme.font.caption.monospacedDigit())
                     .foregroundStyle(Theme.color.text.primary)
-                Text(durationLabel)
+                Text(CalendarEventDurationText.label(minutes: event.durationMinutes))
                     .font(Theme.font.caption2.monospacedDigit())
                     .foregroundStyle(Theme.color.text.subdued)
             }
@@ -1295,14 +1295,6 @@ private struct EventRow: View {
     private var timeStart: String {
         guard let s = event.startDate else { return "—" }
         return Self.hhmm.string(from: s)
-    }
-
-    private var durationLabel: String {
-        let m = event.durationMinutes
-        if m <= 0 { return "" }
-        if m < 60 { return "\(m) min" }
-        if m % 60 == 0 { return "\(m / 60) h" }
-        return String(format: "%d h %02d", m / 60, m % 60)
     }
 }
 
