@@ -543,18 +543,8 @@ private struct EventCard: View {
         }
     }
 
-    // HH:mm renders identical digits across locales, so this formatter is
-    // built once and reused instead of reallocated per event card.
-    private static let timeFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "de_DE")
-        f.dateFormat = "HH:mm"
-        return f
-    }()
-
     private func timeRange(_ ev: ServerCalendarEvent) -> String {
-        guard let start = ev.startDate, let end = ev.endDate else { return "" }
-        return "\(Self.timeFormatter.string(from: start)) – \(Self.timeFormatter.string(from: end))"
+        CalendarEventTimeRange.text(start: ev.startDate, end: ev.endDate, timeZone: .current)
     }
 }
 
