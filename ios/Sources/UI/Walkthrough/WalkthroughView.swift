@@ -1240,7 +1240,7 @@ private struct EventRow: View {
                     .foregroundStyle(Theme.color.text.primary)
                     .lineLimit(2)
                 if event.attendeeCount > 0 {
-                    HStack(spacing: 4) {
+                    HStack(spacing: Theme.spacing.xxs) {
                         Image(systemName: "person.2")
                             .font(.caption2)
                         Text(event.attendeeCount == 1
