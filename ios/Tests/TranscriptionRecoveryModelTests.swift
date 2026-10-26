@@ -73,9 +73,11 @@ struct TranscriptionRecoveryModelTests {
         await waitUntil { await server.reads == 1 }
         model.setVisible(false)
         await server.release()
-        await waitUntil { model.state.status != nil }
         try? await Task.sleep(for: .milliseconds(100))
 
+        // The leave bumps the runner's read epoch (FTR-04), so the answer
+        // that arrives off screen is dropped and the return reads again.
+        #expect(model.state.status == nil)
         #expect(await server.sleeps == 0)
         #expect(await server.reads == 1)
     }
