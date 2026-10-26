@@ -473,7 +473,7 @@ private struct EventCard: View {
             // Both items use icons + short labels and never overflow,
             // so they fit comfortably on one row.
             HStack(spacing: Theme.spacing.sm) {
-                HStack(spacing: 4) {
+                HStack(spacing: Theme.spacing.xxs) {
                     Image(systemName: "person.2")
                         .font(.system(size: 12))
                     // Two flat keys instead of stringsdict plurals so
@@ -489,7 +489,7 @@ private struct EventCard: View {
 
                 Spacer(minLength: Theme.spacing.xs)
 
-                HStack(spacing: 4) {
+                HStack(spacing: Theme.spacing.xxs) {
                     Circle()
                         .fill(rsvpColor)
                         .frame(width: 7, height: 7)
