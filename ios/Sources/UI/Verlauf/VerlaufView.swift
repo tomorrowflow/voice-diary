@@ -1250,20 +1250,6 @@ private struct SegmentRow: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    if let recovery = descriptor.recovery {
-                        Text(recovery.body)
-                            .font(Theme.font.caption)
-                            .foregroundStyle(recovery.tone == .failure
-                                ? Theme.color.status.destructive
-                                : Theme.color.text.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        if let reason = recovery.reason {
-                            Text(reason)
-                                .font(Theme.font.caption)
-                                .foregroundStyle(Theme.color.text.subdued)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
                 }
 
                 Spacer(minLength: Theme.spacing.xs)
@@ -1286,8 +1272,8 @@ private struct SegmentRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            if let recovery = descriptor.recovery, let segmentID = descriptor.serverSegmentID {
-                recoveryControls(recovery, segmentID: segmentID)
+            if let recovery = descriptor.recovery {
+                recoveryContent(recovery)
             }
         }
         .task(id: descriptor.audioURL?.path) {
@@ -1313,12 +1299,25 @@ private struct SegmentRow: View {
         .accessibilityLabel(isPlaying ? Text("Pause") : Text("Play"))
     }
 
-    /// The full-width primary "Erneut transkribieren" and the note under it
-    /// (PROTO-1 option B). A disabled button keeps its place and says why.
-    @ViewBuilder
-    private func recoveryControls(_ recovery: SegmentRecoveryPresentation, segmentID: String) -> some View {
-        if let button = recovery.button {
-            VStack(spacing: Theme.spacing.xxs) {
+    /// PROTO-1 option B under the row's header: the body across the full row
+    /// width, the latest failure reason, the full-width primary "Erneut
+    /// transkribieren" and the note under it. A disabled button keeps its
+    /// place and says why.
+    private func recoveryContent(_ recovery: SegmentRecoveryPresentation) -> some View {
+        VStack(alignment: .leading, spacing: Theme.spacing.xs) {
+            Text(recovery.body)
+                .font(Theme.font.caption)
+                .foregroundStyle(recovery.tone == .failure
+                    ? Theme.color.status.destructive
+                    : Theme.color.text.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let reason = recovery.reason {
+                Text(reason)
+                    .font(Theme.font.caption)
+                    .foregroundStyle(Theme.color.text.subdued)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let button = recovery.button, let segmentID = descriptor.serverSegmentID {
                 Button { onRecover(segmentID) } label: { Text(button.title) }
                     .buttonStyle(.dsPrimary(size: .md, fullWidth: true))
                     .disabled(!button.isEnabled)
@@ -1328,10 +1327,12 @@ private struct SegmentRow: View {
                         .font(Theme.font.caption)
                         .foregroundStyle(Theme.color.text.subdued)
                         .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func statusPill(for status: String) -> some View {

@@ -27,10 +27,19 @@ Scenarios (a route takes a comma-separated list: request n gets the n-th, the la
                        upstream `blindfold` instead of `whisper_timeout` (BAR-06)
     pending            (session status only; ok elsewhere) 200, segments s01 and s02 `pending_analysis` instead of
                        failed: s01 `blindfold_unavailable` upstream `blindfold`, s02 without a code (UFH-09)
+    recoverable        (session status only; ok elsewhere) 200, s01 processed, s02 failed `whisper_timeout`
+                       with `recoverable: true` (FTR-05, the retry action)
+    recovering         (session status only; ok elsewhere) 200, s01 processed, s02 `transcribing`
+    sibling            (session status only; ok elsewhere) 200, s01 `transcribing`, s02 failed and recoverable
+    audio-gone         (session status only; ok elsewhere) 200, s02 failed with `recoverable: false`
     slow               the retryable 503 after a delay (default 15 s)
     slow-ok            the 200 after a delay (default 15 s)
 
 `name:seconds` overrides the delay of `slow` / `slow-ok` (and adds one to any other scenario).
+
+`POST /api/sessions/<id>/segments/<segment>/retry-transcription` (bearer, no body) answers 202 with the
+`recovering` status and switches the session status route to `recovering`, so a tap in the app shows
+the in-flight row on the following status reads. It is the only route that changes another route.
 """
 
 from __future__ import annotations
@@ -69,7 +78,11 @@ FAILURES: dict[str, tuple[int, str, str, bool, str | None]] = {
     "engine-error": (502, "msgraph_engine_error", "msgraph", True, None),
     "slow": (503, "msgraph_unavailable", "msgraph", True, None),
 }
-SCENARIOS = ("ok", "slow-ok", "unhealthy", "blindfold", "pending", *FAILURES)
+# Scenarios that only change the session status body; every other route answers them like `ok`.
+RECOVERY_SCENARIOS = ("recoverable", "recovering", "sibling", "audio-gone")
+STATUS_ONLY = ("blindfold", "pending", *RECOVERY_SCENARIOS)
+SCENARIOS = ("ok", "slow-ok", "unhealthy", *STATUS_ONLY, *FAILURES)
+RETRY_TRANSCRIPTION = re.compile(r"/api/sessions/[^/]+/segments/[^/]+/retry-transcription")
 # `/health` scenario `unhealthy`: Whisper (essential) down, so the overall status is `down`
 # (SPEC 10.7), plus Ollama and Voxtral down and Graph not bootstrapped. LightRAG stays ok.
 UNHEALTHY_UPSTREAM = {"postgres": "ok", "qdrant": "ok", "whisper": "down", "lightrag": "ok",
@@ -144,6 +157,29 @@ def session_status_body(failed_code: str = "whisper_timeout", failed_upstream: s
             ]}
 
 
+def recovery_status_body(scenario: str) -> dict:
+    """The status of a two-segment session whose second segment failed transcription (FTR-05).
+
+    `recoverable` is the new flag on failed segments (SPEC 10.5); `transcribing` the new status.
+    """
+    def segment(segment_id: str, status: str, **extra: object) -> dict:
+        return {"segment_id": segment_id, "status": status,
+                "transcript_id": 3 if status == "processed" else None,
+                "error": None, "code": None, "upstream": None, **extra}
+
+    failed = {"error": "whisper read timed out", "code": "whisper_timeout", "upstream": "whisper"}
+    first = segment("s01", "transcribing" if scenario == "sibling" else "processed")
+    second = {
+        "recoverable": segment("s02", "failed", recoverable=True, **failed),
+        "recovering": segment("s02", "transcribing"),
+        "sibling": segment("s02", "failed", recoverable=True, **failed),
+        "audio-gone": segment("s02", "failed", recoverable=False, **failed),
+    }[scenario]
+    state = "processing" if "transcribing" in (first["status"], second["status"]) else "partial"
+    return {"session_id": "stub", "received_at": "2026-10-24T18:05:00+02:00", "state": state,
+            "segments": [first, second]}
+
+
 def ok_body(route: str, query: dict[str, list[str]]) -> dict:
     if route == "/health":
         return {"status": "ok", "upstream": {"postgres": "ok", "whisper": "ok", "msgraph": "fixture"}}
@@ -206,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt: str, *args: object) -> None:
-        sys.stderr.write(f"{time.strftime('%H:%M:%S')} {self.address_string()} {fmt % args}\n")
+        sys.stderr.write(f"{time.strftime('%H:%M:%S')} {self.address_string()}:{self.client_address[1]} {fmt % args}\n")
         sys.stderr.flush()
 
     def send_json(self, status: int, body: dict, headers: dict[str, str] | None = None) -> None:
@@ -251,7 +287,10 @@ class Handler(BaseHTTPRequestHandler):
         if name == "pending" and route == SESSION_STATUS:
             self.send_json(200, session_status_body("blindfold_unavailable", "blindfold", "pending_analysis"))
             return
-        if name in ("ok", "slow-ok", "unhealthy", "blindfold", "pending"):  # the last three only mean something on one route
+        if name in RECOVERY_SCENARIOS and route == SESSION_STATUS:
+            self.send_json(200, recovery_status_body(name))
+            return
+        if name in ("ok", "slow-ok", "unhealthy", *STATUS_ONLY):  # the last ones only mean something on one route
             self.send_json(200, ok_body(route, parse_qs(parts.query)))
             return
         if route == "/health" and name in HEALTH_MSGRAPH:
@@ -268,7 +307,16 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def do_POST(self) -> None:  # noqa: N802
-        if urlsplit(self.path).path != CONTROL_PATH:
+        path = urlsplit(self.path).path
+        if RETRY_TRANSCRIPTION.fullmatch(path):
+            auth = self.headers.get("Authorization", "")
+            if not auth.startswith("Bearer ") or not auth[7:].strip():
+                self.send_json(401, {"detail": "missing_bearer_token"})
+                return
+            self.server.state.set_route(SESSION_STATUS, [("recovering", 0.0)])
+            self.send_json(202, recovery_status_body("recovering"))
+            return
+        if path != CONTROL_PATH:
             self.send_json(404, {"detail": "Not Found"})
             return
         length = int(self.headers.get("Content-Length") or 0)
@@ -370,6 +418,33 @@ def check(port: int) -> int:
                and [s.get("code") for s in segments] == ["blindfold_unavailable", None, None]
                and segments[0].get("upstream") == "blindfold",
                f"HTTP {status} {json.dumps(body)[:200]}")
+        expected = {
+            "recoverable": (["processed", "failed"], [None, True]),
+            "recovering": (["processed", "transcribing"], [None, None]),
+            "sibling": (["transcribing", "failed"], [None, True]),
+            "audio-gone": (["processed", "failed"], [None, False]),
+        }
+        for scenario, (statuses, recoverable) in expected.items():
+            set_route(port, f"{SESSION_STATUS}={scenario}")
+            status, _, body, _ = request(port, "GET", "/api/sessions/stub/status", bearer="check")
+            segments = body.get("segments", [])
+            report(f"session status [{scenario}]",
+                   status == 200 and [s.get("status") for s in segments] == statuses
+                   and [s.get("recoverable") for s in segments] == recoverable,
+                   f"HTTP {status} {json.dumps(body)[:200]}")
+        retry = "/api/sessions/stub/segments/s02/retry-transcription"
+        status, _, body, _ = request(port, "POST", retry, data=b"")
+        report("retry-transcription without bearer",
+               status == 401 and body.get("detail") == "missing_bearer_token", f"HTTP {status} {json.dumps(body)}")
+        set_route(port, f"{SESSION_STATUS}=recoverable")
+        status, _, body, _ = request(port, "POST", retry, data=b"", bearer="check")
+        report("retry-transcription",
+               status == 202 and [s.get("status") for s in body.get("segments", [])] == ["processed", "transcribing"],
+               f"HTTP {status} {json.dumps(body)[:200]}")
+        status, _, body, _ = request(port, "GET", "/api/sessions/stub/status", bearer="check")
+        report("session status after retry-transcription",
+               [s.get("status") for s in body.get("segments", [])] == ["processed", "transcribing"],
+               json.dumps(body)[:200])
         set_route(port, "/health=unhealthy")
         status, _, body, _ = request(port, "GET", "/health")
         report("/health [unhealthy]",
