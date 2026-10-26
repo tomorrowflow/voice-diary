@@ -95,16 +95,56 @@ struct TranscriptionRecoveryModelTests {
         #expect(await server.reads >= 2)
     }
 
-    @Test("a refused health read leaves Whisper unknown, which counts as not ok")
-    func healthUnknownWithoutAnswer() async {
+    @Test("the Whisper entry of the health answer reaches the rows' action")
+    func healthReachesTheAction() async {
+        let server = SlowServer()
+        let model = makeModel(server)
+        await server.release()
+
+        model.setVisible(true)
+        await waitUntil { model.whisper == .ok }
+
+        #expect(model.whisper == .ok)
+    }
+
+    @Test("a health read cancelled by leaving the screen keeps the last answer")
+    func cancelledHealthReadChangesNothing() async {
+        let server = SlowServer()
+        let health = HealthScript()
         let model = TranscriptionRecoveryModel(
             sessionID: session,
             deps: .init(retry: { _, _ in transcribing() }, status: { _ in nil }, sleep: { _ in }),
-            readHealth: { nil })
+            readHealth: { await health.next() })
+        await server.release()
 
         model.setVisible(true)
+        await waitUntil { model.whisper == .ok }
+        model.setVisible(false)
+        model.setVisible(true)
+        await waitUntil { await health.reads == 2 }
+        model.setVisible(false)   // cancels the second read, which then answers nothing
+        await health.finishSecondRead()
         try? await Task.sleep(for: .milliseconds(50))
 
-        #expect(model.whisper == .unknown)
+        #expect(model.whisper == .ok)
+    }
+}
+
+/// `/health` answers ok once, then holds the next read until released and
+/// answers nothing (a cancelled or failed read).
+private actor HealthScript {
+    private(set) var reads = 0
+    private var held: CheckedContinuation<Void, Never>?
+
+    func next() async -> Data? {
+        reads += 1
+        if reads == 1 { return Data(#"{"upstream":{"whisper":"ok"}}"#.utf8) }
+        await withCheckedContinuation { held = $0 }
+        return nil
+    }
+
+    func finishSecondRead() {
+        held?.resume()
+        held = nil
     }
 }
