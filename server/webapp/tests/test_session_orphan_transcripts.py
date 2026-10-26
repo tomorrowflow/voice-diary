@@ -123,18 +123,45 @@ def test_a_transcript_that_is_not_a_sessions_segment_is_never_removed(monkeypatc
     """The review UI and the manual upload create transcripts no segment will
     ever reference; only a session's own segment rows can be orphans."""
     world = World(monkeypatch, tmp_path, [_processed("s01", 5)], state="done")
-    world.pipeline.transcript_rows.update({
-        _name("s01"): 5,
-        "diary-2026-06-30.txt": 40,
-        _name("s01", "a-session-with-no-row"): 41,
-    })
+    world.pipeline.transcript_rows.update({_name("s01"): 5, "diary-2026-06-30.txt": 40})
     calls = _delete_calls(monkeypatch)
     restarted = _restart(monkeypatch, world)
 
     asyncio.run(restarted.sweep())
 
     assert calls == []
-    assert len(world.pipeline.transcript_rows) == 3
+    assert world.pipeline.transcript_rows == {_name("s01"): 5, "diary-2026-06-30.txt": 40}
+
+
+def test_a_transcript_a_different_session_references_is_kept(monkeypatch, tmp_path):
+    """The reference set is every session's: a row named for one session that
+    another session's segment is linked to is not an orphan."""
+    world = World(monkeypatch, tmp_path, [_failed("s01")], state="failed")
+    stage_bundle(monkeypatch, tmp_path, OTHER, _manifest(OTHER, ["s01"]))
+    world.ingests.add(OTHER, "done", [_processed("s01", 7)])
+    world.pipeline.transcript_rows[_name("s01")] = 7
+    stub_transcripts(monkeypatch, [7])
+    calls = _delete_calls(monkeypatch)
+    restarted = _restart(monkeypatch, world)
+
+    asyncio.run(restarted.sweep())
+
+    assert calls == []
+    assert world.pipeline.transcript_rows == {_name("s01"): 7}
+
+
+def test_an_orphan_of_a_session_whose_row_is_gone_is_removed(monkeypatch, tmp_path):
+    """An ingest that died, or a session forgotten, can leave a segment's
+    transcript with no session row at all; no segment can reference it."""
+    world = World(monkeypatch, tmp_path, [_processed("s01", 5)], state="done")
+    world.pipeline.transcript_rows.update(
+        {_name("s01"): 5, _name("s01", "a-session-with-no-row"): 41}
+    )
+    restarted = _restart(monkeypatch, world)
+
+    asyncio.run(restarted.sweep())
+
+    assert world.pipeline.transcript_rows == {_name("s01"): 5}
 
 
 def test_the_transcript_an_interrupted_recovery_saved_is_settled_first_and_kept(

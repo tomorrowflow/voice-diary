@@ -973,13 +973,14 @@ body). One request is one attempt; nothing starts one on its own.
   logged and left as it is for the next start, without stopping the others or app startup.
 - *Orphan transcripts (FTR-06).* In the same startup pass, once the interrupted recoveries are
   settled and before the sweep lists its candidates, every transcript row that no segment references
-  is deleted: a row named for a persisted session's segment (file name `{session_id}::{segment}.m4a`)
-  whose id is no segment's `transcript_id`, left by an ingest or a recovery whose process died
-  before it linked the row. Each deleted id and the count are logged. A transcript that any segment
-  references is never touched, a pass with no orphans changes nothing, and transcripts that belong
-  to no session (the review UI, a manual upload) are never deleted. A session is checked under its
-  in-flight claim: one that is busy, or still has a `transcribing` segment because it could not be
-  settled, keeps its rows until the next start. A row that cannot be deleted is logged and the
+  is deleted: a row named for a session's segment (file name `{session_id}::{segment}.m4a`) whose
+  id is no segment's `transcript_id` in any session, left by an ingest or a recovery whose process
+  died before it linked the row, or whose session no longer exists. Each deleted id and the count
+  are logged. A transcript that any segment of any session references is never touched, a pass
+  with no orphans changes nothing, and transcripts that belong to no session (the review UI, a
+  manual upload) are never deleted. A persisted session is checked under its in-flight claim: one
+  that is busy, or still has a `transcribing` segment because it could not be settled, keeps its
+  rows until the next start. A row that cannot be deleted is logged and the
   others still are. The pass changes no segment and never calls Whisper.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
