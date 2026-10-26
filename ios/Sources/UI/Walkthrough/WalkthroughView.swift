@@ -1366,7 +1366,7 @@ private struct NoteReviewCard: View {
                             .font(Theme.font.caption2.weight(.medium))
                             .foregroundStyle(Theme.color.status.warning)
                             .padding(.horizontal, Theme.spacing.sm)
-                            .padding(.vertical, 4)
+                            .padding(.vertical, Theme.spacing.xxs)
                             .background(
                                 Capsule().fill(Theme.color.status.warning.opacity(0.10))
                             )
