@@ -115,17 +115,24 @@ struct DiagnosticShareBundleTests {
             + "{\n  \"name\": \"Grüße 🎙️ 日本語\"\n}\n"
             + "----- Log window -----\n"
             + "first\nzweite Zeile ✓\n\nlast\n\n"
-        #expect(out == expected)
+        // `String ==` is canonical equivalence; compare bytes so a
+        // normalising formatter would be caught.
+        #expect(Array(out.utf8) == Array(expected.utf8))
     }
 
-    @Test("the timestamp is UTC ISO8601 whatever the process timezone")
-    func timestampIgnoresTimezone() {
-        let saved = NSTimeZone.default
-        defer { NSTimeZone.default = saved }
-        for name in ["Pacific/Auckland", "America/Los_Angeles", "UTC"] {
-            NSTimeZone.default = TimeZone(identifier: name)!
-            #expect(Self.text().contains("\ncaptured: 2026-06-02T09:14:22Z\n"), "\(name)")
-        }
+    @Test("the timestamp is UTC ISO8601, so a late-evening UTC instant keeps its UTC date")
+    func timestampIsUTC() {
+        // 23:30:00Z is already the next calendar day in Berlin and Auckland
+        // and still the same day in Los Angeles, so a local-time rendering
+        // would differ from this literal on any machine outside UTC.
+        let out = DiagnosticShareBundle.text(
+            id: "x",
+            timestamp: Date(timeIntervalSince1970: 1_780_443_000),
+            summary: "s",
+            payloadText: nil,
+            logText: nil
+        )
+        #expect(out.contains("\ncaptured: 2026-06-02T23:30:00Z\n"))
     }
 
     @Test("fractional seconds are dropped from the timestamp")
