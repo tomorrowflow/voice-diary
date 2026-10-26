@@ -252,7 +252,7 @@ public struct ServerSettingsView: View {
             }
 
             if let explanation {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                     Text(explanation.title)
                         .font(Theme.font.caption.weight(.medium))
                         .foregroundStyle(Theme.color.text.primary)
