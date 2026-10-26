@@ -112,9 +112,10 @@ public actor TranscriptionRecoveryRunner {
     private var submitting = false
     /// An unknown outcome whose status read has not succeeded yet.
     private var readPending = false
-    /// Bumped when a request goes out and again when it is answered. A status
-    /// read that began under an older epoch may predate the request, so its
-    /// answer is dropped instead of overwriting what the request returned.
+    /// Bumped when a request goes out, when it is answered and when the screen
+    /// is left. A status read that began under an older epoch may predate
+    /// what the runner knows now, so its answer is dropped instead of
+    /// overwriting it.
     private var readEpoch = 0
     private var followTask: Task<Void, Never>?
     private var followGeneration = 0
@@ -158,6 +159,9 @@ public actor TranscriptionRecoveryRunner {
         followTask?.cancel()
         followTask = nil
         followGeneration += 1
+        // A poll still on the wire is about to be superseded by the read on
+        // return; its late answer must not overwrite that one.
+        readEpoch += 1
     }
 
     private func accept(_ order: Int?) -> Bool {
@@ -233,8 +237,11 @@ public actor TranscriptionRecoveryRunner {
         if current != .transcribing { state.attemptSegmentID = nil }
     }
 
-    /// A status read is never a retry. A failed read changes nothing.
+    /// A status read is never a retry. A failed read changes nothing. Off
+    /// screen nothing is read: an outcome that is still unknown when the
+    /// screen is left is settled by the read in `screenAppeared()`.
     private func read() async {
+        guard visible else { return }
         let epoch = readEpoch
         do {
             let answer = try await deps.status(sessionID)

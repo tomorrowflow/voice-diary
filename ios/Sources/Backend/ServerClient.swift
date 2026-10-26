@@ -277,7 +277,10 @@ public actor ServerClient {
     /// error, such as a timeout or a lost connection, leaves the outcome
     /// unknown.
     public func retryTranscription(sessionID: String, segmentID: String) async throws -> SessionStatusResponse {
-        let (url, token) = try sessionEndpoint(sessionID, "segments", segmentID, "retry-transcription")
+        let escapedSegment = segmentID.addingPercentEncoding(
+            withAllowedCharacters: Self.pathSegmentAllowed
+        ) ?? segmentID
+        let (url, token) = try sessionEndpoint(sessionID, "segments/\(escapedSegment)/retry-transcription")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -286,19 +289,26 @@ public actor ServerClient {
         return try Self.decode(SessionStatusResponse.self, from: data)
     }
 
+    private static let pathSegmentAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+
     /// The longest any request may run; also `timeoutIntervalForResource`.
     static let longRequestTimeout: TimeInterval = 600
 
-    /// `/api/sessions/{id}/{parts…}`. Each part is percent-encoded exactly
-    /// once by `appending(component:)` (an ISO8601 session id contains ':'),
-    /// so the server decodes the path to the id the phone sent. Encoding a
-    /// part first and then appending it would encode the '%' again, and the
-    /// server would look up a session that does not exist.
-    private func sessionEndpoint(_ sessionID: String, _ parts: String...) throws -> (URL, String) {
+    private func sessionEndpoint(_ sessionID: String, _ action: String) throws -> (URL, String) {
+        // Path-encode the session id once; ISO8601 timestamps contain ':'.
+        // `URL.appending(path:)` would encode the '%' of an escaped id again,
+        // so the encoded path is set on the components instead.
+        let escaped = sessionID.addingPercentEncoding(
+            withAllowedCharacters: Self.pathSegmentAllowed
+        ) ?? sessionID
         let (base, token) = try config()
-        let url = ([sessionID] + parts).reduce(base.appending(path: "/api/sessions")) {
-            $0.appending(component: $1)
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw ServerClientError.notConfigured
         }
+        var prefix = components.percentEncodedPath
+        while prefix.hasSuffix("/") { prefix.removeLast() }
+        components.percentEncodedPath = "\(prefix)/api/sessions/\(escaped)/\(action)"
+        guard let url = components.url else { throw ServerClientError.notConfigured }
         return (url, token)
     }
 
