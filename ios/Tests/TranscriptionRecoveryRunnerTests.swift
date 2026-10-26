@@ -372,6 +372,7 @@ struct TranscriptionRecoveryRunnerTests {
         await runner.screenAppeared()
         await waitUntil { await ticker.sleeping == 1 }
         await runner.screenLeft()
+        await waitUntil { await ticker.sleeping == 0 }   // the cancelled sleep ended
         await runner.screenAppeared()
         await waitUntil { await ticker.sleeping == 1 }
 
@@ -381,6 +382,21 @@ struct TranscriptionRecoveryRunnerTests {
 
         #expect(await runner.state.attemptSegmentID == nil)
         #expect(await server.retries.count == 1)
+        await runner.screenLeft()
+    }
+
+    @Test("a lifecycle call that arrives after a newer one is dropped")
+    func lateLifecycleCallIsDropped() async {
+        let server = FakeServer()
+        await server.scriptReads([.success(twoFailed("failed"))])
+        let runner = makeRunner(server)
+
+        await runner.screenLeft(order: 2)
+        await runner.screenAppeared(order: 1)
+
+        #expect(await server.reads == 0)
+        await runner.screenAppeared(order: 3)
+        #expect(await server.reads == 1)
         await runner.screenLeft()
     }
 

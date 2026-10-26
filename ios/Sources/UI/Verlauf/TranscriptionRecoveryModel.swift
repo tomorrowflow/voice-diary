@@ -26,7 +26,9 @@ final class TranscriptionRecoveryModel {
     @ObservationIgnored private let updates: AsyncStream<TranscriptionRecoveryRunner.State>.Continuation
     @ObservationIgnored private var updateStream: AsyncStream<TranscriptionRecoveryRunner.State>?
     @ObservationIgnored private var consumer: Task<Void, Never>?
-    @ObservationIgnored private var lifecycle: Task<Void, Never>?
+    /// The reads of the latest appearance; cancelled when the screen is left.
+    @ObservationIgnored private var appearance: Task<Void, Never>?
+    @ObservationIgnored private var lifecycleOrder = 0
     @ObservationIgnored private let runner: TranscriptionRecoveryRunner
 
     init(
@@ -45,29 +47,35 @@ final class TranscriptionRecoveryModel {
     deinit {
         updates.finish()
         consumer?.cancel()
-        lifecycle?.cancel()
+        appearance?.cancel()
     }
 
     /// The screen appeared or the app came back to the foreground (`true`),
     /// or the screen was left or the app went to the background (`false`).
-    /// Calls run one after the other so a quick leave cannot overtake the
-    /// appearance before it.
+    ///
+    /// A leave must take effect at once, even while the appearance before it
+    /// still waits for its reads, so the calls do not queue behind each
+    /// other. They are numbered here, in call order, and the runner drops one
+    /// that arrives after a newer one; leaving also cancels the reads the
+    /// appearance still has out.
     func setVisible(_ visible: Bool) {
         startConsuming()
-        if visible { statusRequested = true }
-        let previous = lifecycle
+        lifecycleOrder += 1
+        let order = lifecycleOrder
         let runner = runner
-        lifecycle = Task { [weak self] in
-            await previous?.value
-            if visible {
-                // Health and status are independent reads; a slow one must
-                // not hold the other back.
-                async let health: Void? = self?.refreshHealth()
-                await runner.screenAppeared()
-                await health
-            } else {
-                await runner.screenLeft()
-            }
+        appearance?.cancel()
+        appearance = nil
+        guard visible else {
+            Task { await runner.screenLeft(order: order) }
+            return
+        }
+        statusRequested = true
+        appearance = Task { [weak self] in
+            // Health and status are independent reads; a slow one must not
+            // hold the other back.
+            async let health: Void? = self?.refreshHealth()
+            await runner.screenAppeared(order: order)
+            await health
         }
     }
 
@@ -82,7 +90,10 @@ final class TranscriptionRecoveryModel {
     }
 
     private func refreshHealth() async {
-        whisper = WhisperHealth(healthData: await readHealth())
+        let data = await readHealth()
+        // A read cancelled by leaving the screen says nothing about Whisper.
+        guard !Task.isCancelled else { return }
+        whisper = WhisperHealth(healthData: data)
     }
 
     /// Applies runner states in the order the runner published them. An
