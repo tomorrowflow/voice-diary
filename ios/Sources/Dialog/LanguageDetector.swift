@@ -31,6 +31,14 @@ public enum LanguageDetector {
         recognizer.processString(trimmed)
 
         let hypotheses = recognizer.languageHypotheses(withMaximum: 2)
+        return acceptedCode(from: hypotheses, minConfidence: minConfidence)
+    }
+
+    /// The acceptance rule: take the maximum hypothesis first, then require it to be a language
+    /// we have a voice for and to reach `minConfidence` (equal is enough). A supported runner-up
+    /// never rescues an unsupported or weak maximum. Ties keep `Dictionary.max` behavior; there
+    /// is deliberately no sort or tie-breaker.
+    static func acceptedCode(from hypotheses: [NLLanguage: Double], minConfidence: Double) -> String? {
         guard let best = hypotheses.max(by: { $0.value < $1.value }),
               supported.contains(best.key),
               best.value >= minConfidence
