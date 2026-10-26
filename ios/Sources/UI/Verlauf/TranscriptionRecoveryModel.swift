@@ -108,7 +108,9 @@ final class TranscriptionRecoveryModel {
                 guard let self else { return }
                 let attemptEnded = self.state.attemptSegmentID != nil && next.attemptSegmentID == nil
                 self.state = next
-                if attemptEnded { await self.refreshHealth() }
+                // Its own task: a slow `/health` must not hold back the
+                // runner states that follow.
+                if attemptEnded { Task { await self.refreshHealth() } }
             }
         }
     }
