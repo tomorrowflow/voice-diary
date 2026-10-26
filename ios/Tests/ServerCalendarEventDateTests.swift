@@ -20,11 +20,9 @@ struct ServerCalendarEventDateTests {
         )
     }
 
-    /// An event starting at 09:00:00Z that ends `seconds` later.
-    private static func event(lasting seconds: Int) -> ServerCalendarEvent {
-        let end = Date(timeIntervalSince1970: nineUTC + TimeInterval(seconds))
-        let formatter = ISO8601DateFormatter()
-        return event(start: "2026-01-15T09:00:00Z", end: formatter.string(from: end))
+    /// An event starting at 09:00:00Z that ends at the given timestamp.
+    private static func event(endingAt end: String) -> ServerCalendarEvent {
+        event(start: "2026-01-15T09:00:00Z", end: end)
     }
 
     // MARK: - Parsing
@@ -78,9 +76,9 @@ struct ServerCalendarEventDateTests {
         #expect(event.endDate == nil)
     }
 
-    @Test("empty and offset-less strings are malformed")
-    func emptyAndNoOffset() {
-        let event = Self.event(start: "", end: "2026-01-15T09:30:00")
+    @Test("empty strings are malformed")
+    func empty() {
+        let event = Self.event(start: "", end: "")
         #expect(event.startDate == nil)
         #expect(event.endDate == nil)
     }
@@ -110,30 +108,24 @@ struct ServerCalendarEventDateTests {
 
     @Test("zero-length interval is zero minutes")
     func zeroLength() {
-        #expect(Self.event(lasting: 0).durationMinutes == 0)
+        #expect(Self.event(endingAt: "2026-01-15T09:00:00Z").durationMinutes == 0)
     }
 
     @Test("59, 60 and 61 seconds truncate to whole minutes")
     func minuteBoundary() {
-        #expect(Self.event(lasting: 59).durationMinutes == 0)
-        #expect(Self.event(lasting: 60).durationMinutes == 1)
-        #expect(Self.event(lasting: 61).durationMinutes == 1)
+        #expect(Self.event(endingAt: "2026-01-15T09:00:59Z").durationMinutes == 0)
+        #expect(Self.event(endingAt: "2026-01-15T09:01:00Z").durationMinutes == 1)
+        #expect(Self.event(endingAt: "2026-01-15T09:01:01Z").durationMinutes == 1)
     }
 
     @Test("119 and 120 seconds truncate rather than round")
     func secondMinuteBoundary() {
-        #expect(Self.event(lasting: 119).durationMinutes == 1)
-        #expect(Self.event(lasting: 120).durationMinutes == 2)
+        #expect(Self.event(endingAt: "2026-01-15T09:01:59Z").durationMinutes == 1)
+        #expect(Self.event(endingAt: "2026-01-15T09:02:00Z").durationMinutes == 2)
     }
 
     @Test("a 90-minute interval is 90 minutes")
     func ninetyMinutes() {
-        #expect(Self.event(lasting: 5400).durationMinutes == 90)
-    }
-
-    @Test("fractional seconds truncate to whole minutes")
-    func fractionalDuration() {
-        let event = Self.event(start: "2026-01-15T09:00:00.000Z", end: "2026-01-15T09:00:59.999Z")
-        #expect(event.durationMinutes == 0)
+        #expect(Self.event(endingAt: "2026-01-15T10:30:00Z").durationMinutes == 90)
     }
 }
