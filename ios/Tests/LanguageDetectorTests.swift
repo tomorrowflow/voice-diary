@@ -10,8 +10,8 @@ struct LanguageDetectorTests {
 
     private typealias Hypotheses = [NLLanguage: Double]
 
-    /// The expression `detect` used inline before the extraction, kept here verbatim as the
-    /// oracle the seam must keep matching.
+    /// The expression `detect` used inline before the extraction, with `supported` and
+    /// `code(for:)` inlined, as the oracle the seam must keep matching.
     private func original(_ hypotheses: Hypotheses, minConfidence: Double) -> String? {
         guard let best = hypotheses.max(by: { $0.value < $1.value }),
               [NLLanguage.german, .english].contains(best.key),
