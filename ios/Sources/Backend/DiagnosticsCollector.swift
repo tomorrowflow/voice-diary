@@ -115,16 +115,8 @@ public final class DiagnosticsCollector: NSObject, @unchecked Sendable {
 
     /// Pretty-print the JSON payload for the detail view.
     public func readPayloadJSON(for report: Report) -> String? {
-        guard let data = try? Data(contentsOf: report.payloadURL),
-              let obj = try? JSONSerialization.jsonObject(with: data),
-              let pretty = try? JSONSerialization.data(
-                withJSONObject: obj,
-                options: [.prettyPrinted, .sortedKeys]
-              ) else {
-            return (try? Data(contentsOf: report.payloadURL))
-                .flatMap { String(data: $0, encoding: .utf8) }
-        }
-        return String(data: pretty, encoding: .utf8)
+        guard let data = try? Data(contentsOf: report.payloadURL) else { return nil }
+        return DiagnosticPayloadText.prettyPrinted(fromJSON: data)
     }
 
     public func delete(_ report: Report) {
