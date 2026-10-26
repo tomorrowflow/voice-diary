@@ -37,6 +37,8 @@ private func http(_ status: Int, _ detail: String, retryAfter: TimeInterval? = n
 private actor FakeServer {
     private(set) var retries: [String] = []
     private(set) var reads = 0
+    /// Reads whose answer has been handed back; a held read is not counted yet.
+    private(set) var answeredReads = 0
     private(set) var sleeps: [TimeInterval] = []
     private var retryScript: [Result<Response, any Error>]
     private var readScript: [Result<Response?, any Error>] = [.success(nil)]
@@ -88,6 +90,7 @@ private actor FakeServer {
             await readStarted.open()
             await readHold.wait()
         }
+        answeredReads += 1
         return try result.get()
     }
 
@@ -239,6 +242,36 @@ struct TranscriptionRecoveryRunnerTests {
         await runner.screenLeft()
     }
 
+    @Test("a polling read cancelled by leaving the screen cannot overwrite the status read on return")
+    func readCancelledByLeavingDoesNotOverwriteReturn() async {
+        let server = FakeServer()
+        await server.scriptReads([
+            .success(twoFailed("transcribing")),     // the screen appears
+            .success(twoFailed("transcribing")),     // the poll that is still in flight when it is left
+            .success(twoFailed("pending_analysis")), // the read on return
+        ])
+        let ticker = Ticker()
+        let runner = makeRunner(server, ticker: ticker)
+        await runner.screenAppeared()
+        await waitUntil { await ticker.sleeping == 1 }
+
+        let pollStarted = RecoveryGate()
+        let pollRelease = RecoveryGate()
+        await server.holdNextRead(started: pollStarted, until: pollRelease)
+        await ticker.tick()
+        await pollStarted.wait()
+        await runner.screenLeft()
+        await runner.screenAppeared()
+        await pollRelease.open()
+        await waitUntil { await server.answeredReads == 3 }
+        for _ in 0..<20 { await Task.yield() }  // let the released read reach the runner
+        await runner.screenLeft()
+
+        let state = await runner.state
+        #expect(state.status?.segments[1].state == .pendingAnalysis)
+        #expect(await server.retries.isEmpty)
+    }
+
     @Test("a tap while the attempt is still being followed does nothing")
     func tapWhileFollowing() async {
         let server = FakeServer(retry: [.success(twoFailed("transcribing"))])
@@ -372,6 +405,7 @@ struct TranscriptionRecoveryRunnerTests {
         await runner.screenAppeared()
         await waitUntil { await ticker.sleeping == 1 }
         await runner.screenLeft()
+        await waitUntil { await ticker.sleeping == 0 }   // the cancelled sleep ended, not mistaken for the next
         await runner.screenAppeared()
         await waitUntil { await ticker.sleeping == 1 }
 
