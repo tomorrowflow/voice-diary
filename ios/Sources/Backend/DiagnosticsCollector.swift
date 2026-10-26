@@ -87,7 +87,7 @@ public final class DiagnosticsCollector: NSObject, @unchecked Sendable {
         var reports: [Report] = []
         for (stem, urls) in byStem {
             guard let payloadURL = urls.json else { continue }
-            let timestamp = Self.timestamp(fromStem: stem)
+            let timestamp = DiagnosticFilenameTimestamp.date(fromStem: stem)
                 ?? (try? payloadURL.resourceValues(forKeys: [.contentModificationDateKey])
                     .contentModificationDate)
                 ?? Date(timeIntervalSince1970: 0)
@@ -168,7 +168,7 @@ public final class DiagnosticsCollector: NSObject, @unchecked Sendable {
         let json = payload.jsonRepresentation()
         let begin = payload.timeStampBegin
         let end = payload.timeStampEnd
-        let stem = Self.stem(from: end)
+        let stem = DiagnosticFilenameTimestamp.stem(from: end)
 
         guard let dir = try? Self.crashesDir() else {
             Log.app.error("DiagnosticsCollector: crashes dir unavailable")
@@ -215,24 +215,6 @@ public final class DiagnosticsCollector: NSObject, @unchecked Sendable {
         return root
     }
 
-    private static let stemFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.calendar = Calendar(identifier: .gregorian)
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(secondsFromGMT: 0)
-        // Colons are illegal in filenames on some FS; use dashes.
-        f.dateFormat = "yyyy-MM-dd'T'HH-mm-ss'Z'"
-        return f
-    }()
-
-    private static func stem(from date: Date) -> String {
-        stemFormatter.string(from: date)
-    }
-
-    private static func timestamp(fromStem stem: String) -> Date? {
-        stemFormatter.date(from: stem)
-    }
-
     static func summarize(payloadAt url: URL) -> String {
         guard let data = try? Data(contentsOf: url) else {
             return DiagnosticPayloadSummary.fallback
@@ -265,8 +247,8 @@ public final class DiagnosticsCollector: NSObject, @unchecked Sendable {
         guard byStem.count > keep else { return }
         // Sort stems by timestamp (parsed from stem, fall back to mtime).
         let sortedStems = byStem.keys.sorted { a, b in
-            let ta = timestamp(fromStem: a) ?? Date.distantPast
-            let tb = timestamp(fromStem: b) ?? Date.distantPast
+            let ta = DiagnosticFilenameTimestamp.date(fromStem: a) ?? Date.distantPast
+            let tb = DiagnosticFilenameTimestamp.date(fromStem: b) ?? Date.distantPast
             return ta > tb
         }
         for stem in sortedStems.dropFirst(keep) {
