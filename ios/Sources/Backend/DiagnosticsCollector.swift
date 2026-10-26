@@ -113,7 +113,8 @@ public final class DiagnosticsCollector: NSObject, @unchecked Sendable {
         return text
     }
 
-    /// Pretty-print the JSON payload for the detail view.
+    /// Pretty-print the JSON payload for the detail view. Falls back to
+    /// the file's raw text when it isn't JSON; nil when unreadable.
     public func readPayloadJSON(for report: Report) -> String? {
         guard let data = try? Data(contentsOf: report.payloadURL) else { return nil }
         return DiagnosticPayloadText.prettyPrinted(fromJSON: data)

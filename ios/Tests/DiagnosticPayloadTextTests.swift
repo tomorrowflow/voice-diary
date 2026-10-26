@@ -24,12 +24,10 @@ struct DiagnosticPayloadTextTests {
 
     @Test("nested object keys are sorted at every level")
     func sortsNestedKeys() {
-        let json = #"{"z": {"y": 1, "x": {"d": true, "c": null}}, "a": []}"#
+        let json = #"{"z": {"y": 1, "x": {"d": true, "c": null}}, "a": 0}"#
         #expect(Self.text(json) == """
         {
-          "a" : [
-
-          ],
+          "a" : 0,
           "z" : {
             "x" : {
               "c" : null,
@@ -83,6 +81,12 @@ struct DiagnosticPayloadTextTests {
         #expect(DiagnosticPayloadText.prettyPrinted(fromJSON: Data([0x7B, 0xC3, 0x28])) == nil)
     }
 
+    @Test("an invalid UTF-8 byte inside a JSON string gives nil")
+    func invalidUTF8InsideJSON() {
+        let bytes = Data([0x7B, 0x22, 0x61, 0x22, 0x3A, 0x22, 0xFF, 0x22, 0x7D])
+        #expect(DiagnosticPayloadText.prettyPrinted(fromJSON: bytes) == nil)
+    }
+
     @Test("non-ASCII text survives pretty printing")
     func unicode() {
         #expect(Self.text(#"{"k": "Grüße ✓"}"#) == """
@@ -110,12 +114,16 @@ struct DiagnosticsCollectorReadPayloadTests {
             .appending(path: "DiagnosticsCollectorReadPayloadTests-\(UUID().uuidString).json")
     }
 
+    private static func readPayload(containing contents: String) throws -> String? {
+        let url = tempURL()
+        try Data(contents.utf8).write(to: url)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return DiagnosticsCollector.shared.readPayloadJSON(for: report(at: url))
+    }
+
     @Test("a stored payload file is read and pretty printed")
     func readsFile() throws {
-        let url = Self.tempURL()
-        try Data(#"{"b": 1, "a": 2}"#.utf8).write(to: url)
-        defer { try? FileManager.default.removeItem(at: url) }
-        #expect(DiagnosticsCollector.shared.readPayloadJSON(for: Self.report(at: url)) == """
+        #expect(try Self.readPayload(containing: #"{"b": 1, "a": 2}"#) == """
         {
           "a" : 2,
           "b" : 1
@@ -125,10 +133,7 @@ struct DiagnosticsCollectorReadPayloadTests {
 
     @Test("a stored file that isn't JSON is returned unchanged")
     func rawFile() throws {
-        let url = Self.tempURL()
-        try Data("not json".utf8).write(to: url)
-        defer { try? FileManager.default.removeItem(at: url) }
-        #expect(DiagnosticsCollector.shared.readPayloadJSON(for: Self.report(at: url)) == "not json")
+        #expect(try Self.readPayload(containing: "not json") == "not json")
     }
 
     @Test("a missing file gives nil")
