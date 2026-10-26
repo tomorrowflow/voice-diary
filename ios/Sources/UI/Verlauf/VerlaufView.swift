@@ -1355,7 +1355,7 @@ private struct SegmentRow: View {
             bg = Theme.color.tint.destructive10
             fg = Theme.color.status.destructive
         case "transcribing":
-            label = String(localized: "Transcribing…")
+            label = SegmentRecoveryPresentation.transcribingPillLabel()
             bg = Theme.color.tint.link10
             fg = Theme.color.text.link
         default:

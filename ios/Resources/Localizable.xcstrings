@@ -4102,7 +4102,8 @@
       }
     },
     "Transcribing…" : {
-      "comment" : "Verlauf: status pill while a failed segment is transcribed again.",
+      "comment" : "Verlauf: status pill while a failed segment is transcribed again (SegmentRecoveryPresentation).",
+      "extractionState" : "manual",
       "localizations" : {
         "de" : {
           "stringUnit" : {

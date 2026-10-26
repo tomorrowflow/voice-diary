@@ -151,6 +151,21 @@ struct SegmentRecoveryPresentationTests {
     }
 }
 
+@Suite("Transcribing pill label")
+struct TranscribingPillLabelTests {
+    @Test("German and English labels from the string catalog")
+    func labels() {
+        #expect(SegmentRecoveryPresentation.transcribingPillLabel(language: .de) == "Wird transkribiert…")
+        #expect(SegmentRecoveryPresentation.transcribingPillLabel(language: .en) == "Transcribing…")
+    }
+
+    @Test("with no language it resolves through Bundle.main, which the app's language override swaps")
+    func followsTheAppLanguage() {
+        #expect(SegmentRecoveryPresentation.transcribingPillLabel()
+                == Bundle.main.localizedString(forKey: "Transcribing…", value: "Transcribing…", table: nil))
+    }
+}
+
 @Suite("WhisperHealth from /health")
 struct WhisperHealthParsingTests {
     private func health(_ json: String) -> WhisperHealth {

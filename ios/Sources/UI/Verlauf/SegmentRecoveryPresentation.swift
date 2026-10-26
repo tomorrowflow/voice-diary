@@ -76,6 +76,15 @@ struct SegmentRecoveryPresentation: Equatable {
         }
     }
 
+    /// The status pill of a segment being transcribed again. Looked up with
+    /// `FailureCatalog.text`, like the rest of this copy, because that goes
+    /// through `Bundle.main.localizedString`, which the app's language
+    /// setting swaps; `String(localized:)` would keep the system language
+    /// when the app is forced to German on an English phone.
+    static func transcribingPillLabel(language: OpenerLanguage? = nil) -> String {
+        FailureCatalog.text("Transcribing…", language)
+    }
+
     private static func transcribing(_ text: (String) -> String) -> SegmentRecoveryPresentation {
         SegmentRecoveryPresentation(
             isTranscribing: true, body: text("The recording is being transcribed again."),
