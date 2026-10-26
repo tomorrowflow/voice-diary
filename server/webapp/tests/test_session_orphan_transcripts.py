@@ -164,6 +164,53 @@ def test_an_orphan_of_a_session_whose_row_is_gone_is_removed(monkeypatch, tmp_pa
     assert world.pipeline.transcript_rows == {_name("s01"): 5}
 
 
+def test_a_session_that_comes_back_while_its_orphans_are_removed_keeps_the_row_it_links(
+    monkeypatch, tmp_path,
+):
+    """The session's id is uploaded again after the pass listed the sessions:
+    the new run saves its segment over the old row, keeping its id, so the row
+    is referenced by the time the pass reaches it."""
+    ghost = "a-session-with-no-row"
+    world = World(monkeypatch, tmp_path, [_processed("s01", 5)], state="done")
+    world.pipeline.transcript_rows.update({_name("s01"): 5, _name("s01", ghost): 41})
+    calls = _delete_calls(monkeypatch)
+    restarted = _restart(monkeypatch, world)
+    listing = restarted.repository.list_sessions
+    listings = []
+
+    async def list_then_upload_again():
+        sessions = await listing()
+        listings.append(sessions)
+        if len(listings) == 2:  # the orphan pass's listing, after the settling pass's
+            world.ingests.add(ghost, "done", [_processed("s01", 41)])
+        return sessions
+
+    monkeypatch.setattr(restarted.repository, "list_sessions", list_then_upload_again)
+
+    asyncio.run(restarted.sweep())
+
+    assert calls == []
+    assert world.pipeline.transcript_rows[_name("s01", ghost)] == 41
+
+
+def test_the_orphans_of_a_session_whose_row_is_gone_are_kept_while_its_run_is_active(
+    monkeypatch, tmp_path,
+):
+    ghost = "a-session-with-no-row"
+    world = World(monkeypatch, tmp_path, [_processed("s01", 5)], state="done")
+    world.pipeline.transcript_rows.update({_name("s01"): 5, _name("s01", ghost): 41})
+    calls = _delete_calls(monkeypatch)
+    restarted = _restart(monkeypatch, world)
+
+    async def run():
+        assert await restarted._try_begin(ghost)  # an upload that has the claim, not its row yet
+        await restarted.sweep()
+
+    asyncio.run(run())
+
+    assert calls == []
+
+
 def test_the_transcript_an_interrupted_recovery_saved_is_settled_first_and_kept(
     monkeypatch, tmp_path,
 ):

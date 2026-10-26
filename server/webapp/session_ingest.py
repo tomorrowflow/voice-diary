@@ -95,6 +95,7 @@ from segment_ingest import (
     SegmentOperation,
     attendees_to_canonical_names,
     transcript_filename,
+    transcript_filename_session,
 )
 from session_repository import PostgresSessionIngests, SessionIngestRepository
 
@@ -1125,9 +1126,9 @@ class SessionIngest:
         never touched. A row is referenced when any session's segment holds
         its id, whichever session the row is named for. A row named for a
         session that has no row any more is an orphan too, since no segment can
-        reference it. A persisted session is looked at under its in-flight
-        claim, so a run that is saving a transcript meanwhile is never raced;
-        a busy session is skipped, and so is one that still has a
+        reference it. Each session is looked at under its in-flight claim, so
+        a run that is saving a transcript meanwhile is never raced; a busy
+        session is skipped, and so is one that still has a
         `transcribing` segment (the reconciliation could not settle it, its
         saved row may be the one to link next startup). A failing delete or
         session is logged, the others still run. Never raises, and runs after
@@ -1145,23 +1146,19 @@ class SessionIngest:
             s.transcript_id for session in sessions for s in session.segments
             if s.transcript_id is not None
         }
-        persisted = {session.session_id for session in sessions}
         by_session: dict[str, list[dict]] = {}
         for transcript in transcripts:
-            owner = _segment_transcript_session(transcript["filename"])
-            if owner is not None and transcript["id"] not in referenced:
-                by_session.setdefault(owner, []).append(transcript)
+            session_id = transcript_filename_session(transcript["filename"])
+            if session_id is not None and transcript["id"] not in referenced:
+                by_session.setdefault(session_id, []).append(transcript)
         removed = 0
-        for owner, candidates in by_session.items():
+        for session_id, candidates in by_session.items():
             try:
-                if owner in persisted:
-                    removed += await self._remove_orphans_of_session(owner, candidates, referenced)
-                else:
-                    removed += await _delete_orphans(candidates)
+                removed += await self._remove_orphans_of_session(session_id, candidates, referenced)
             except Exception as exc:  # noqa: BLE001 — one session must not stop the rest
                 logger.warning(
                     "startup recovery reconciliation: session %s orphan transcripts "
-                    "could not be removed: %s", owner, exc,
+                    "could not be removed: %s", session_id, exc,
                 )
         if removed:
             logger.info("startup recovery reconciliation: removed %d orphan transcript(s)", removed)
@@ -1169,9 +1166,12 @@ class SessionIngest:
     async def _remove_orphans_of_session(
         self, session_id: str, candidates: list[dict], referenced: set[int]
     ) -> int:
-        """The number of rows removed from `candidates`, the session's
-        unreferenced transcript rows as listed before its claim was taken and
-        re-checked against what the session holds now."""
+        """The number of rows removed from `candidates`, the unreferenced
+        transcript rows named for this session as listed before its claim was
+        taken (`referenced` is every session's at that time), checked again
+        under the claim against the session's row as it is now. The session may
+        have no row: then nothing can reference its rows, unless an upload of
+        the same id began meanwhile, which holds the claim or has its row."""
         if not await self._try_begin(session_id):
             logger.info(
                 "startup recovery reconciliation: session %s busy, orphan transcripts kept",
@@ -1180,16 +1180,16 @@ class SessionIngest:
             return 0
         try:
             stored = await self.repository.get(session_id)
-            if stored is None:
-                return 0
-            if any(s.status == "transcribing" for s in stored.segments):
-                logger.info(
-                    "startup recovery reconciliation: session %s not settled, "
-                    "orphan transcripts kept", session_id,
-                )
-                return 0
-            current = referenced | {s.transcript_id for s in stored.segments}
-            return await _delete_orphans([t for t in candidates if t["id"] not in current])
+            referenced_now = set(referenced)
+            if stored is not None:
+                if any(s.status == "transcribing" for s in stored.segments):
+                    logger.info(
+                        "startup recovery reconciliation: session %s not settled, "
+                        "orphan transcripts kept", session_id,
+                    )
+                    return 0
+                referenced_now.update(s.transcript_id for s in stored.segments)
+            return await _delete_orphans([t for t in candidates if t["id"] not in referenced_now])
         finally:
             await self._end(session_id)
 
@@ -1301,14 +1301,6 @@ def _failed_result(segment_id: str, exc: BaseException) -> SegmentResult:
         segment_id=segment_id, status="failed", error=str(exc),
         **upstream_failure.failure_fields(exc),
     )
-
-
-def _segment_transcript_session(filename: str) -> str | None:
-    """The session a transcript row is named for, when its file name is a
-    session segment's (`segment_ingest.transcript_filename`); None for any
-    other transcript."""
-    session_id, separator, segment = filename.partition("::")
-    return session_id if session_id and separator and segment else None
 
 
 async def _delete_orphans(orphans: list[dict]) -> int:

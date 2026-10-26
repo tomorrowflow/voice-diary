@@ -978,10 +978,11 @@ body). One request is one attempt; nothing starts one on its own.
   died before it linked the row, or whose session no longer exists. Each deleted id and the count
   are logged. A transcript that any segment of any session references is never touched, a pass
   with no orphans changes nothing, and transcripts that belong to no session (the review UI, a
-  manual upload) are never deleted. A persisted session is checked under its in-flight claim: one
-  that is busy, or still has a `transcribing` segment because it could not be settled, keeps its
-  rows until the next start. A row that cannot be deleted is logged and the
-  others still are. The pass changes no segment and never calls Whisper.
+  manual upload) are never deleted; a file name counts as a session segment's when it has the
+  `{session_id}::{segment}` shape, so a user-chosen name of that shape would count too. Each
+  session is checked under its in-flight claim: one that is busy, or still has a `transcribing`
+  segment because it could not be settled, keeps its rows until the next start. A row that cannot
+  be deleted is logged and the others still are. The pass changes no segment and never calls Whisper.
 
 **Upstream failure contract.** When an upstream (Whisper, Ollama, LightRAG, Microsoft Graph,
 Voxtral, and Blindfold when the analysis route is `blindfold`) is down, slow or answers with an error, the server reports it in one shape. `detail` stays
