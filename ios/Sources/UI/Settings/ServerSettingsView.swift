@@ -356,10 +356,12 @@ public struct ServerSettingsView: View {
     /// sanity-check it against `server/.env` without ever seeing the
     /// full secret.
     private var bearerSummary: String {
-        let stored = KeychainStore.read(.bearerToken) ?? ""
-        if stored.isEmpty { return String(localized: "(empty)") }
-        let suffix = String(stored.suffix(4))
-        return "len=\(stored.count) · …\(suffix)"
+        switch BearerSummaryProjection(KeychainStore.read(.bearerToken) ?? "") {
+        case .empty:
+            return String(localized: "(empty)")
+        case .present(let count, let suffix):
+            return "len=\(count) · …\(suffix)"
+        }
     }
 
     // MARK: - Status mapping
