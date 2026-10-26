@@ -242,6 +242,38 @@ struct TranscriptionRecoveryRunnerTests {
         await runner.screenLeft()
     }
 
+    @Test("an unknown outcome that arrives after the screen was left reads nothing until it returns",
+          arguments: [URLError.Code.timedOut, .networkConnectionLost, .cancelled])
+    func ambiguousAfterLeavingReadsOnReturn(code: URLError.Code) async {
+        let server = FakeServer(retry: [.failure(URLError(code))])
+        await server.scriptReads([.success(twoFailed("failed"))])
+        let runner = makeRunner(server)
+        await runner.screenAppeared()
+        let reads = await server.reads
+        await server.scriptReads([.success(twoFailed("pending_analysis"))])
+        let started = RecoveryGate()
+        let release = RecoveryGate()
+        await server.holdNextRetry(started: started, until: release)
+
+        let tap = Task { await runner.start(segmentID: "s02") }
+        await started.wait()
+        await runner.screenLeft()
+        await release.open()
+        await tap.value
+
+        // Off screen: no status request, the outcome stays unknown, no resubmit.
+        #expect(await server.reads == reads)
+        #expect(await runner.state.attemptSegmentID == "s02")
+        #expect(await server.retries == ["\(session)/s02"])
+
+        await runner.screenAppeared()
+        await runner.settled()
+        #expect(await server.reads == reads + 1)
+        #expect(await runner.state.attemptSegmentID == nil)
+        #expect(await runner.state.status?.segments[1].state == .pendingAnalysis)
+        #expect(await server.retries == ["\(session)/s02"])
+    }
+
     @Test("a polling read cancelled by leaving the screen cannot overwrite the status read on return")
     func readCancelledByLeavingDoesNotOverwriteReturn() async {
         let server = FakeServer()
@@ -483,8 +515,9 @@ struct TranscriptionRecoveryRunnerTests {
           arguments: ["pending_analysis", "processed"])
     func ambiguousThenSucceeded(status: String) async {
         let server = FakeServer(retry: [.failure(URLError(.timedOut))])
-        await server.scriptReads([.success(twoFailed(status))])
+        await server.scriptReads([.success(twoFailed("failed")), .success(twoFailed(status))])
         let runner = makeRunner(server)
+        await runner.screenAppeared()
 
         await runner.start(segmentID: "s02")
         await runner.settled()
@@ -544,11 +577,11 @@ struct TranscriptionRecoveryRunnerTests {
     @Test("a 202 that cannot be decoded is an unknown outcome too, settled when the screen is next visible")
     func undecodable202() async {
         let server = FakeServer(retry: [.failure(ServerClientError.decodingFailed("bad"))])
-        await server.scriptReads([.success(twoFailed("transcribing")), .success(twoFailed("processed"))])
+        await server.scriptReads([.success(twoFailed("processed"))])
         let runner = makeRunner(server)
 
         await runner.start(segmentID: "s02")
-        #expect(await server.reads == 1)
+        #expect(await server.reads == 0)   // the screen is not visible: nothing is read
         #expect(await runner.state.attemptSegmentID == "s02")
         await runner.screenAppeared()
         await runner.settled()
@@ -633,14 +666,15 @@ struct TranscriptionRecoveryRunnerTests {
     @Test("409 segment_not_failed reads the status instead of resubmitting")
     func segmentNotFailed() async {
         let server = FakeServer(retry: [.failure(http(409, "segment_not_failed"))])
-        await server.scriptReads([.success(twoFailed("processed"))])
+        await server.scriptReads([.success(twoFailed("failed")), .success(twoFailed("processed"))])
         let runner = makeRunner(server)
+        await runner.screenAppeared()
 
         await runner.start(segmentID: "s02")
         await runner.settled()
 
         #expect(await server.retries.count == 1)
-        #expect(await server.reads == 1)
+        #expect(await server.reads == 2)
         #expect(await runner.state.attemptSegmentID == nil)
         #expect(await runner.state.status?.segments[1].state == .processed)
     }

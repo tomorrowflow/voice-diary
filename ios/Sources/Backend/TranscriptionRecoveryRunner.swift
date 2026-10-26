@@ -219,8 +219,11 @@ public actor TranscriptionRecoveryRunner {
         if current != .transcribing { state.attemptSegmentID = nil }
     }
 
-    /// A status read is never a retry. A failed read changes nothing.
+    /// A status read is never a retry. A failed read changes nothing. Off
+    /// screen nothing is read: an outcome that is still unknown when the
+    /// screen is left is settled by the read in `screenAppeared()`.
     private func read() async {
+        guard visible else { return }
         let epoch = readEpoch
         do {
             let answer = try await deps.status(sessionID)
