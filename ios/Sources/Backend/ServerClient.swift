@@ -51,14 +51,20 @@ public actor ServerClient {
     public static let shared = ServerClient()
 
     private let session: URLSession
+    private let credentials: @Sendable () throws -> (URL, String)
 
     public init() {
         self.init(session: Self.makeSession())
     }
 
-    /// Test seam: lets tests inject a session backed by a `URLProtocol` stub.
-    init(session: URLSession) {
+    /// Test seam: lets tests inject a session backed by a `URLProtocol` stub
+    /// and the server URL and token to use instead of the Keychain's.
+    init(
+        session: URLSession,
+        credentials: @escaping @Sendable () throws -> (URL, String) = ServerClient.keychainCredentials
+    ) {
         self.session = session
+        self.credentials = credentials
     }
 
     private static func makeSession() -> URLSession {
@@ -81,6 +87,10 @@ public actor ServerClient {
     }
 
     private func config() throws -> (URL, String) {
+        try credentials()
+    }
+
+    private static func keychainCredentials() throws -> (URL, String) {
         guard let urlString = KeychainStore.read(.serverURL),
               let url = URL(string: urlString),
               let token = KeychainStore.read(.bearerToken),
@@ -259,6 +269,28 @@ public actor ServerClient {
         return try Self.decode(SessionStatusResponse.self, from: data)
     }
 
+    /// Asks the server to transcribe one `failed` segment again from its
+    /// retained audio (FTR-02, ADR 0005, 0007). The route answers `202` at
+    /// once and runs the attempt in the background, so the default timeout
+    /// applies; the outcome is read with `sessionStatus`. Throws `.http` for
+    /// the request errors (see `TranscriptionRecoveryRefusal`); any other
+    /// error, such as a timeout or a lost connection, leaves the outcome
+    /// unknown.
+    public func retryTranscription(sessionID: String, segmentID: String) async throws -> SessionStatusResponse {
+        let escapedSegment = segmentID.addingPercentEncoding(
+            withAllowedCharacters: Self.pathSegmentAllowed
+        ) ?? segmentID
+        let (url, token) = try sessionEndpoint(sessionID, "segments/\(escapedSegment)/retry-transcription")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: req)
+        try Self.assertOK(response: response, body: data)
+        return try Self.decode(SessionStatusResponse.self, from: data)
+    }
+
+    private static let pathSegmentAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
+
     /// The longest any request may run; also `timeoutIntervalForResource`.
     static let longRequestTimeout: TimeInterval = 600
 
@@ -270,15 +302,17 @@ public actor ServerClient {
         return try endpoint("/api/sessions/\(escaped)/\(action)")
     }
 
-    public struct SessionStatusResponse: Codable, Sendable {
+    public struct SessionStatusResponse: Codable, Sendable, Equatable {
         public let session_id: String
         public let received_at: String
         public let state: String         // "processing" | "done" | "failed" | "partial"
         public let segments: [SegmentStatus]
 
-        public struct SegmentStatus: Codable, Sendable {
+        public struct SegmentStatus: Codable, Sendable, Equatable {
             public let segment_id: String
-            public let status: String    // "processed" | "failed" | "pending_analysis"
+            /// "processed" | "failed" | "pending_analysis" | "transcribing";
+            /// read it through `state`, which maps anything else to `.unknown`.
+            public let status: String
             public let transcript_id: Int?
             public let error: String?
             /// Failure contract fields (SPEC §10.5); set on `failed` and on
@@ -287,6 +321,30 @@ public actor ServerClient {
             /// without them.
             public let code: String?
             public let upstream: String?
+            /// Set on `failed` segments only: `true` while the manifest
+            /// entry and the retained audio exist (ADR 0007). nil on other
+            /// segments and on servers without it, which means no action.
+            public let recoverable: Bool?
+
+            public init(
+                segment_id: String,
+                status: String,
+                transcript_id: Int?,
+                error: String?,
+                code: String?,
+                upstream: String?,
+                recoverable: Bool? = nil
+            ) {
+                self.segment_id = segment_id
+                self.status = status
+                self.transcript_id = transcript_id
+                self.error = error
+                self.code = code
+                self.upstream = upstream
+                self.recoverable = recoverable
+            }
+
+            public var state: SegmentState { SegmentState(serverStatus: status) }
         }
     }
 
