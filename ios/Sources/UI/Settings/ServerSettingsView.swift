@@ -209,7 +209,7 @@ public struct ServerSettingsView: View {
             }
 
             ForEach(impactLines) { line in
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                     Text(verbatim: line.name)
                         .font(Theme.font.body.weight(.medium))
                         .foregroundStyle(Theme.color.text.primary)
