@@ -638,7 +638,7 @@ struct VerlaufDetailView: View {
             label = "SEED-ID"
             value = d.note.id
         }
-        return VStack(alignment: .leading, spacing: 4) {
+        return VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
             Text(label)
                 .font(Theme.font.monoCaption)
                 .foregroundStyle(Theme.color.text.subdued)
@@ -1023,7 +1023,7 @@ private struct StatTile: View {
     let model: Model
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(spacing: Theme.spacing.xxs) {
             Text(model.value)
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(Theme.color.text.primary)
