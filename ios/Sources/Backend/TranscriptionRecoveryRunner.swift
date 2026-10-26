@@ -105,6 +105,8 @@ public actor TranscriptionRecoveryRunner {
         didSet { if state != oldValue { onChange(state) } }
     }
     private var visible = false
+    /// The newest numbered lifecycle call applied; see `screenAppeared(order:)`.
+    private var lastLifecycleOrder = 0
     /// The request is on the wire; a status read meanwhile must not end the
     /// attempt, because the server may not have accepted it yet.
     private var submitting = false
@@ -135,15 +137,24 @@ public actor TranscriptionRecoveryRunner {
     /// The screen became visible: reconcile with the server and, if a
     /// segment is still `transcribing`, keep refreshing. Never sends a
     /// recovery request.
-    func screenAppeared() async {
+    ///
+    /// `order` numbers the screen's lifecycle calls. The screen issues them
+    /// from separate tasks, which can reach the actor out of order; a call
+    /// older than one already applied is dropped, so a late appearance cannot
+    /// undo a leave. nil always applies.
+    func screenAppeared(order: Int? = nil) async {
+        guard accept(order) else { return }
         visible = true
+        // The read can take as long as the network does; a leave meanwhile
+        // runs at once and `startFollowingIfNeeded` then sees it.
         await read()
         startFollowingIfNeeded()
     }
 
     /// The screen was left: stop refreshing. An attempt already accepted
     /// keeps running on the server; `screenAppeared()` finds its outcome.
-    func screenLeft() {
+    func screenLeft(order: Int? = nil) {
+        guard accept(order) else { return }
         visible = false
         followTask?.cancel()
         followTask = nil
@@ -151,6 +162,13 @@ public actor TranscriptionRecoveryRunner {
         // A poll still on the wire is about to be superseded by the read on
         // return; its late answer must not overwrite that one.
         readEpoch += 1
+    }
+
+    private func accept(_ order: Int?) -> Bool {
+        guard let order else { return true }
+        guard order > lastLifecycleOrder else { return false }
+        lastLifecycleOrder = order
+        return true
     }
 
     /// Waits for the refresh loop, if one is running. For tests.
