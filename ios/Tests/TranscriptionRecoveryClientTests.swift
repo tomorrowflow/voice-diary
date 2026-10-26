@@ -88,12 +88,46 @@ struct TranscriptionRecoveryClientTests {
         let request = try #require(RecoveryStubProtocol.requests.first)
         #expect(RecoveryStubProtocol.requests.count == 1)
         #expect(request.httpMethod == "POST")
-        // The session id is an ISO timestamp; the client percent-encodes its colons.
-        #expect(request.url?.path == "/api/sessions/2026-10-24T18%3A00%3A00+02%3A00/segments/s02/retry-transcription")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
         #expect(status.state == "processing")
         #expect(status.segments.map(\.state) == [.processed, .transcribing])
         #expect(status.segments[1].transcript_id == nil)
+    }
+
+    // The session id is an ISO timestamp. The server looks the session up by
+    // the id as the phone sent it in the manifest, after decoding the path
+    // once. A percent-encoded id that is encoded again (`%253A`) decodes to
+    // `18%3A00` and finds no session, so every route would answer 404.
+    @Test("every session route decodes to the session id, never encoded twice")
+    func sessionIDIsEncodedOnce() async throws {
+        let client = makeClient()
+        RecoveryStubProtocol.body = acceptedBody
+
+        _ = try await client.retryTranscription(sessionID: sessionID, segmentID: "s02")
+        _ = try await client.sessionStatus(sessionID: sessionID)
+        _ = try await client.retryAnalysis(sessionID: sessionID)
+
+        let urls = RecoveryStubProtocol.requests.compactMap(\.url)
+        let wire = urls.compactMap { URLComponents(url: $0, resolvingAgainstBaseURL: false)?.percentEncodedPath }
+        #expect(wire.count == 3)
+        #expect(wire.allSatisfy { !$0.contains("%25") })
+        #expect(urls.map(\.path) == [
+            "/api/sessions/2026-10-24T18:00:00+02:00/segments/s02/retry-transcription",
+            "/api/sessions/2026-10-24T18:00:00+02:00/status",
+            "/api/sessions/2026-10-24T18:00:00+02:00/retry-analysis",
+        ])
+    }
+
+    @Test("a segment id with a slash stays one path component")
+    func segmentIDWithSlash() async throws {
+        let client = makeClient()
+        RecoveryStubProtocol.body = acceptedBody
+
+        _ = try await client.retryTranscription(sessionID: sessionID, segmentID: "s/02")
+
+        let url = try #require(RecoveryStubProtocol.requests.first?.url)
+        let wire = URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath
+        #expect(wire?.hasSuffix("/segments/s%2F02/retry-transcription") == true)
     }
 
     // --- the request errors ---------------------------------------------

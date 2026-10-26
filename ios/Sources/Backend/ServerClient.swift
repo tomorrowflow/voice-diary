@@ -277,10 +277,7 @@ public actor ServerClient {
     /// error, such as a timeout or a lost connection, leaves the outcome
     /// unknown.
     public func retryTranscription(sessionID: String, segmentID: String) async throws -> SessionStatusResponse {
-        let escapedSegment = segmentID.addingPercentEncoding(
-            withAllowedCharacters: Self.pathSegmentAllowed
-        ) ?? segmentID
-        let (url, token) = try sessionEndpoint(sessionID, "segments/\(escapedSegment)/retry-transcription")
+        let (url, token) = try sessionEndpoint(sessionID, "segments", segmentID, "retry-transcription")
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -289,17 +286,20 @@ public actor ServerClient {
         return try Self.decode(SessionStatusResponse.self, from: data)
     }
 
-    private static let pathSegmentAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/"))
-
     /// The longest any request may run; also `timeoutIntervalForResource`.
     static let longRequestTimeout: TimeInterval = 600
 
-    private func sessionEndpoint(_ sessionID: String, _ action: String) throws -> (URL, String) {
-        // Path-encode the session id; ISO8601 timestamps contain ':'.
-        let escaped = sessionID.addingPercentEncoding(
-            withAllowedCharacters: .urlPathAllowed
-        ) ?? sessionID
-        return try endpoint("/api/sessions/\(escaped)/\(action)")
+    /// `/api/sessions/{id}/{parts…}`. Each part is percent-encoded exactly
+    /// once by `appending(component:)` (an ISO8601 session id contains ':'),
+    /// so the server decodes the path to the id the phone sent. Encoding a
+    /// part first and then appending it would encode the '%' again, and the
+    /// server would look up a session that does not exist.
+    private func sessionEndpoint(_ sessionID: String, _ parts: String...) throws -> (URL, String) {
+        let (base, token) = try config()
+        let url = ([sessionID] + parts).reduce(base.appending(path: "/api/sessions")) {
+            $0.appending(component: $1)
+        }
+        return (url, token)
     }
 
     public struct SessionStatusResponse: Codable, Sendable, Equatable {
