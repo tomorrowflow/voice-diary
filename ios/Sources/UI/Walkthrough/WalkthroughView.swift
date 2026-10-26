@@ -1018,7 +1018,7 @@ private struct DiagnosisSummary: View {
                     .foregroundStyle(Theme.color.status.destructive)
                     .frame(width: 28)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
                     Text(diagnosis.title)
                         .font(Theme.font.callout.weight(.semibold))
                         .foregroundStyle(Theme.color.text.primary)
@@ -1036,7 +1036,7 @@ private struct DiagnosisSummary: View {
                 Button {
                     detailExpanded.toggle()
                 } label: {
-                    HStack(spacing: 4) {
+                    HStack(spacing: Theme.spacing.xxs) {
                         Image(systemName: detailExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
                         Text(detailExpanded ? "Hide technical details" : "Technical details")
