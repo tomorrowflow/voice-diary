@@ -295,11 +295,21 @@ public actor ServerClient {
     static let longRequestTimeout: TimeInterval = 600
 
     private func sessionEndpoint(_ sessionID: String, _ action: String) throws -> (URL, String) {
-        // Path-encode the session id; ISO8601 timestamps contain ':'.
+        // Path-encode the session id once; ISO8601 timestamps contain ':'.
+        // `URL.appending(path:)` would encode the '%' of an escaped id again,
+        // so the encoded path is set on the components instead.
         let escaped = sessionID.addingPercentEncoding(
-            withAllowedCharacters: .urlPathAllowed
+            withAllowedCharacters: Self.pathSegmentAllowed
         ) ?? sessionID
-        return try endpoint("/api/sessions/\(escaped)/\(action)")
+        let (base, token) = try config()
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw ServerClientError.notConfigured
+        }
+        var prefix = components.percentEncodedPath
+        while prefix.hasSuffix("/") { prefix.removeLast() }
+        components.percentEncodedPath = "\(prefix)/api/sessions/\(escaped)/\(action)"
+        guard let url = components.url else { throw ServerClientError.notConfigured }
+        return (url, token)
     }
 
     public struct SessionStatusResponse: Codable, Sendable, Equatable {

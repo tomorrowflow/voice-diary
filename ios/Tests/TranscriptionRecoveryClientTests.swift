@@ -88,8 +88,9 @@ struct TranscriptionRecoveryClientTests {
         let request = try #require(RecoveryStubProtocol.requests.first)
         #expect(RecoveryStubProtocol.requests.count == 1)
         #expect(request.httpMethod == "POST")
-        // The session id is an ISO timestamp; the client percent-encodes its colons.
-        #expect(request.url?.path == "/api/sessions/2026-10-24T18%3A00%3A00+02%3A00/segments/s02/retry-transcription")
+        // The id is an ISO timestamp. On the wire it must be encoded once: the
+        // server decodes the path once, so a second encoding names no session.
+        #expect(request.url?.path == "/api/sessions/\(sessionID)/segments/s02/retry-transcription")
         #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer tok")
         #expect(status.state == "processing")
         #expect(status.segments.map(\.state) == [.processed, .transcribing])
@@ -179,6 +180,26 @@ struct TranscriptionRecoveryClientTests {
         #expect(status.segments.map(\.state) == [.failed, .failed, .transcribing])
         #expect(status.segments.map(\.recoverable) == [true, false, nil])
         #expect(status.segments[0].code == "whisper_timeout")
+    }
+
+    @Test("the session id is percent-encoded once in the status and recovery paths")
+    func sessionIDEncodedOnce() async throws {
+        let client = makeClient()
+        RecoveryStubProtocol.status = 200
+        RecoveryStubProtocol.body = acceptedBody
+        _ = try await client.sessionStatus(sessionID: sessionID)
+        RecoveryStubProtocol.status = 202
+        _ = try await client.retryTranscription(sessionID: sessionID, segmentID: "s/02")
+
+        // `path` decodes once: a double encoding would still show '%3A' here.
+        let paths = RecoveryStubProtocol.requests.compactMap { $0.url?.path(percentEncoded: false) }
+        #expect(paths == [
+            "/api/sessions/\(sessionID)/status",
+            "/api/sessions/\(sessionID)/segments/s/02/retry-transcription",
+        ])
+        // A '/' in a segment id stays inside its path component.
+        let encoded = try #require(RecoveryStubProtocol.requests.last?.url?.path(percentEncoded: true))
+        #expect(encoded.hasSuffix("/segments/s%2F02/retry-transcription"))
     }
 
     @Test("a status from an older server has no recoverable flag and no transcribing")

@@ -37,6 +37,8 @@ private func http(_ status: Int, _ detail: String, retryAfter: TimeInterval? = n
 private actor FakeServer {
     private(set) var retries: [String] = []
     private(set) var reads = 0
+    /// Reads whose answer has been handed back; a held read is not counted yet.
+    private(set) var answeredReads = 0
     private(set) var sleeps: [TimeInterval] = []
     private var retryScript: [Result<Response, any Error>]
     private var readScript: [Result<Response?, any Error>] = [.success(nil)]
@@ -88,6 +90,7 @@ private actor FakeServer {
             await readStarted.open()
             await readHold.wait()
         }
+        answeredReads += 1
         return try result.get()
     }
 
@@ -239,6 +242,68 @@ struct TranscriptionRecoveryRunnerTests {
         await runner.screenLeft()
     }
 
+    @Test("an unknown outcome that arrives after the screen was left reads nothing until it returns",
+          arguments: [URLError.Code.timedOut, .networkConnectionLost, .cancelled])
+    func ambiguousAfterLeavingReadsOnReturn(code: URLError.Code) async {
+        let server = FakeServer(retry: [.failure(URLError(code))])
+        await server.scriptReads([.success(twoFailed("failed"))])
+        let runner = makeRunner(server)
+        await runner.screenAppeared()
+        let reads = await server.reads
+        await server.scriptReads([.success(twoFailed("pending_analysis"))])
+        let started = RecoveryGate()
+        let release = RecoveryGate()
+        await server.holdNextRetry(started: started, until: release)
+
+        let tap = Task { await runner.start(segmentID: "s02") }
+        await started.wait()
+        await runner.screenLeft()
+        await release.open()
+        await tap.value
+
+        // Off screen: no status request, the outcome stays unknown, no resubmit.
+        #expect(await server.reads == reads)
+        #expect(await runner.state.attemptSegmentID == "s02")
+        #expect(await server.retries == ["\(session)/s02"])
+
+        await runner.screenAppeared()
+        await runner.settled()
+        #expect(await server.reads == reads + 1)
+        #expect(await runner.state.attemptSegmentID == nil)
+        #expect(await runner.state.status?.segments[1].state == .pendingAnalysis)
+        #expect(await server.retries == ["\(session)/s02"])
+    }
+
+    @Test("a polling read cancelled by leaving the screen cannot overwrite the status read on return")
+    func readCancelledByLeavingDoesNotOverwriteReturn() async {
+        let server = FakeServer()
+        await server.scriptReads([
+            .success(twoFailed("transcribing")),     // the screen appears
+            .success(twoFailed("transcribing")),     // the poll that is still in flight when it is left
+            .success(twoFailed("pending_analysis")), // the read on return
+        ])
+        let ticker = Ticker()
+        let runner = makeRunner(server, ticker: ticker)
+        await runner.screenAppeared()
+        await waitUntil { await ticker.sleeping == 1 }
+
+        let pollStarted = RecoveryGate()
+        let pollRelease = RecoveryGate()
+        await server.holdNextRead(started: pollStarted, until: pollRelease)
+        await ticker.tick()
+        await pollStarted.wait()
+        await runner.screenLeft()
+        await runner.screenAppeared()
+        await pollRelease.open()
+        await waitUntil { await server.answeredReads == 3 }
+        for _ in 0..<20 { await Task.yield() }  // let the released read reach the runner
+        await runner.screenLeft()
+
+        let state = await runner.state
+        #expect(state.status?.segments[1].state == .pendingAnalysis)
+        #expect(await server.retries.isEmpty)
+    }
+
     @Test("a tap while the attempt is still being followed does nothing")
     func tapWhileFollowing() async {
         let server = FakeServer(retry: [.success(twoFailed("transcribing"))])
@@ -372,6 +437,7 @@ struct TranscriptionRecoveryRunnerTests {
         await runner.screenAppeared()
         await waitUntil { await ticker.sleeping == 1 }
         await runner.screenLeft()
+        await waitUntil { await ticker.sleeping == 0 }   // the cancelled sleep ended, not mistaken for the next
         await runner.screenAppeared()
         await waitUntil { await ticker.sleeping == 1 }
 
@@ -449,8 +515,9 @@ struct TranscriptionRecoveryRunnerTests {
           arguments: ["pending_analysis", "processed"])
     func ambiguousThenSucceeded(status: String) async {
         let server = FakeServer(retry: [.failure(URLError(.timedOut))])
-        await server.scriptReads([.success(twoFailed(status))])
+        await server.scriptReads([.success(twoFailed("failed")), .success(twoFailed(status))])
         let runner = makeRunner(server)
+        await runner.screenAppeared()
 
         await runner.start(segmentID: "s02")
         await runner.settled()
@@ -510,11 +577,11 @@ struct TranscriptionRecoveryRunnerTests {
     @Test("a 202 that cannot be decoded is an unknown outcome too, settled when the screen is next visible")
     func undecodable202() async {
         let server = FakeServer(retry: [.failure(ServerClientError.decodingFailed("bad"))])
-        await server.scriptReads([.success(twoFailed("transcribing")), .success(twoFailed("processed"))])
+        await server.scriptReads([.success(twoFailed("processed"))])
         let runner = makeRunner(server)
 
         await runner.start(segmentID: "s02")
-        #expect(await server.reads == 1)
+        #expect(await server.reads == 0)   // the screen is not visible: nothing is read
         #expect(await runner.state.attemptSegmentID == "s02")
         await runner.screenAppeared()
         await runner.settled()
@@ -599,14 +666,15 @@ struct TranscriptionRecoveryRunnerTests {
     @Test("409 segment_not_failed reads the status instead of resubmitting")
     func segmentNotFailed() async {
         let server = FakeServer(retry: [.failure(http(409, "segment_not_failed"))])
-        await server.scriptReads([.success(twoFailed("processed"))])
+        await server.scriptReads([.success(twoFailed("failed")), .success(twoFailed("processed"))])
         let runner = makeRunner(server)
+        await runner.screenAppeared()
 
         await runner.start(segmentID: "s02")
         await runner.settled()
 
         #expect(await server.retries.count == 1)
-        #expect(await server.reads == 1)
+        #expect(await server.reads == 2)
         #expect(await runner.state.attemptSegmentID == nil)
         #expect(await runner.state.status?.segments[1].state == .processed)
     }
