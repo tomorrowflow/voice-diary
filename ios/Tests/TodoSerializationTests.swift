@@ -4,12 +4,12 @@ import Testing
 
 // `Todo` and `TodoRejected` are nested in `Manifest.todos_detected`,
 // `todos_implicit_confirmed` and `todos_implicit_rejected` (SPEC §10.3) and
-// mirror the server's todo models (`server/webapp/models.py`). They use the
-// synthesized Codable conformance, so the Swift property names are the wire
-// keys and nil optionals are left out of the encoded JSON. `due` is an opaque
-// string: the app never parses it. These tests pin the initializer defaults and
-// decode fixed JSON written independently of the encoder, then encode and
-// inspect the resulting keys and values.
+// feed the server's todo models (`server/webapp/models.py`), which ignore the
+// app-only `source_quote`. They use the synthesized Codable conformance, so the
+// Swift property names are the wire keys and nil optionals are left out of the
+// encoded JSON. `due` is an opaque string: the app never parses it. These tests
+// pin the initializer defaults and decode fixed JSON written independently of
+// the encoder, then encode and inspect the resulting keys and values.
 
 @Suite("TodoSerialization")
 struct TodoSerializationTests {
@@ -18,7 +18,7 @@ struct TodoSerializationTests {
           "text": "Jörg wegen der Größe anrufen – 🎁 besorgen",
           "type": "implicit",
           "due": "morgen nach dem Standup",
-          "status": "Erledigt",
+          "status": "Abgeschlossen",
           "source_segment_id": "s02",
           "source_quote": "ruf bitte Jörg an, wegen der Größe „L“"
         }
@@ -81,7 +81,7 @@ struct TodoSerializationTests {
         #expect(todo.text == "Jörg wegen der Größe anrufen – 🎁 besorgen")
         #expect(todo.type == "implicit")
         #expect(todo.due == "morgen nach dem Standup")
-        #expect(todo.status == "Erledigt")
+        #expect(todo.status == "Abgeschlossen")
         #expect(todo.source_segment_id == "s02")
         #expect(todo.source_quote == "ruf bitte Jörg an, wegen der Größe „L“")
     }
@@ -92,7 +92,7 @@ struct TodoSerializationTests {
             text: "Jörg wegen der Größe anrufen – 🎁 besorgen",
             type: "implicit",
             due: "morgen nach dem Standup",
-            status: "Erledigt",
+            status: "Abgeschlossen",
             source_segment_id: "s02",
             source_quote: "ruf bitte Jörg an, wegen der Größe „L“"
         )
@@ -105,7 +105,7 @@ struct TodoSerializationTests {
         #expect(object["text"] as? String == "Jörg wegen der Größe anrufen – 🎁 besorgen")
         #expect(object["type"] as? String == "implicit")
         #expect(object["due"] as? String == "morgen nach dem Standup")
-        #expect(object["status"] as? String == "Erledigt")
+        #expect(object["status"] as? String == "Abgeschlossen")
         #expect(object["source_segment_id"] as? String == "s02")
         #expect(object["source_quote"] as? String == "ruf bitte Jörg an, wegen der Größe „L“")
     }
@@ -120,14 +120,33 @@ struct TodoSerializationTests {
         #expect(object["status"] as? String == "Offen")
     }
 
-    @Test("Todo keeps due as an opaque string through a round trip")
-    func todoDueStaysOpaque() throws {
-        for due in ["2026-04-28", "2026-04-28T09:00:00+02:00", "next Friday", ""] {
-            let data = try JSONEncoder().encode(Todo(text: "t", due: due))
-            let decoded = try JSONDecoder().decode(Todo.self, from: data)
+    @Test(
+        "Todo keeps due as an opaque string through a round trip",
+        arguments: ["2026-04-28", "2026-04-28T09:00:00+02:00", "next Friday", ""]
+    )
+    func todoDueStaysOpaque(due: String) throws {
+        let data = try JSONEncoder().encode(Todo(text: "Müll rausbringen", due: due))
+        let decoded = try JSONDecoder().decode(Todo.self, from: data)
 
-            #expect(decoded.due == due)
-        }
+        #expect(decoded.due == due)
+    }
+
+    @Test("Todo text and quote keep their exact Unicode scalars")
+    func todoKeepsUnicodeScalars() throws {
+        // Swift `==` treats precomposed and decomposed forms as equal, so
+        // compare scalars. The JSON escapes spell a decomposed "ö" (o + U+0308).
+        let json = #"{"text": "Jörg", "type": "explicit", "status": "Offen", "#
+            + #""source_quote": "Jörg 🎁"}"#
+        let text = Array("Jo\u{0308}rg".unicodeScalars)
+        let quote = Array("Jo\u{0308}rg 🎁".unicodeScalars)
+
+        let todo = try JSONDecoder().decode(Todo.self, from: Data(json.utf8))
+        let object = try Self.encodedObject(todo)
+
+        #expect(Array(todo.text.unicodeScalars) == text)
+        #expect(Array(try #require(todo.source_quote).unicodeScalars) == quote)
+        #expect(Array(try #require(object["text"] as? String).unicodeScalars) == text)
+        #expect(Array(try #require(object["source_quote"] as? String).unicodeScalars) == quote)
     }
 
     @Test("TodoRejected decodes with and without source_segment_id")
@@ -137,15 +156,15 @@ struct TodoSerializationTests {
         let noSource = #"{"text": "Steuer prüfen", "type": "implicit"}"#
 
         let decoder = JSONDecoder()
-        let first = try decoder.decode(TodoRejected.self, from: Data(withSource.utf8))
-        let second = try decoder.decode(TodoRejected.self, from: Data(nullSource.utf8))
-        let third = try decoder.decode(TodoRejected.self, from: Data(noSource.utf8))
+        let attributed = try decoder.decode(TodoRejected.self, from: Data(withSource.utf8))
+        let nulled = try decoder.decode(TodoRejected.self, from: Data(nullSource.utf8))
+        let absent = try decoder.decode(TodoRejected.self, from: Data(noSource.utf8))
 
-        #expect(first.text == "Steuer prüfen")
-        #expect(first.type == "implicit")
-        #expect(first.source_segment_id == "s03")
-        #expect(second.source_segment_id == nil)
-        #expect(third.source_segment_id == nil)
+        #expect(attributed.text == "Steuer prüfen")
+        #expect(attributed.type == "implicit")
+        #expect(attributed.source_segment_id == "s03")
+        #expect(nulled.source_segment_id == nil)
+        #expect(absent.source_segment_id == nil)
     }
 
     @Test("TodoRejected encodes its implicit type and attribution")
