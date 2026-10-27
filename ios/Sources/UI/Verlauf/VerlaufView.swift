@@ -557,7 +557,7 @@ struct VerlaufDetailView: View {
             }
 
             if let diaryDate {
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                     Text("Diary entry:")
                         .font(Theme.font.caption)
                         .foregroundStyle(Theme.color.text.subdued)
