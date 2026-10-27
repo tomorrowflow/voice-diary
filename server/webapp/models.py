@@ -20,7 +20,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_valid
 
 TodoStatus = Literal["Offen", "InArbeit", "Abgeschlossen", "Blockiert"]
 TodoType = Literal["explicit", "implicit"]
-SegmentType = Literal["calendar_event", "drive_by", "free_reflection", "empty_block"]
+SegmentType = Literal[
+    "calendar_event", "drive_by", "free_reflection", "empty_block", "general_section"
+]
 RsvpStatus = Literal[
     "accepted", "tentative", "declined", "not_responded", "organizer", "none"
 ]
@@ -137,11 +139,22 @@ class EmptyBlockSegment(SegmentBase):
     time_range: TimeRange
 
 
+class GeneralSectionSegment(SegmentBase):
+    """A user-defined walkthrough section (SPEC §10.4). `section_id` is the
+    app's stable id, not necessarily a UUID."""
+
+    segment_type: Literal["general_section"] = "general_section"
+    section_id: str
+    title: str
+    prompt_text: str
+
+
 Segment = Annotated[
     CalendarEventSegment
     | DriveBySegment
     | FreeReflectionSegment
-    | EmptyBlockSegment,
+    | EmptyBlockSegment
+    | GeneralSectionSegment,
     Field(discriminator="segment_type"),
 ]
 

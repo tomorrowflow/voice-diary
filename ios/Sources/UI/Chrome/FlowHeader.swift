@@ -49,7 +49,7 @@ public struct FlowHeader: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .center, spacing: Theme.spacing.sm) {
                 if hasProgress {
-                    HStack(spacing: 6) {
+                    HStack(spacing: Theme.spacing.progressGap) {
                         ForEach(0 ..< total, id: \.self) { i in
                             Capsule(style: .continuous)
                                 .fill(i < current

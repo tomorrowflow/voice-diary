@@ -15,4 +15,10 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.xxs == DSSpacing.spacing_r1)
         #expect(Theme.spacing.xxs == 4)
     }
+
+    @Test("progressGap aliases the 6-point design-system step")
+    func progressGapIsSixPoints() {
+        #expect(Theme.spacing.progressGap == DSSpacing.spacing_r1_5)
+        #expect(Theme.spacing.progressGap == 6)
+    }
 }
