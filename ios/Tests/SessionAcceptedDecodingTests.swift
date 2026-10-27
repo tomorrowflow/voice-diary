@@ -8,14 +8,16 @@ import Testing
 // `SegmentResult` models (`server/webapp/models.py`) and SPEC §10.5. They use
 // the synthesized Codable conformance, so the Swift property names are the
 // wire keys; `transcript_id` and `error` are the only optional fields, and
-// `status` is a free string. These tests decode fixed JSON shaped like the
-// server's response to pin those keys and failure modes.
+// `status` is a free string. The SPEC §10.5 envelope example leaves out
+// `segments`, but the server model always sends it (empty by default), so the
+// app requires it. These tests decode fixed JSON shaped like the server's
+// response to pin those keys and failure modes.
 
 @Suite("SessionAcceptedDecoding")
 struct SessionAcceptedDecodingTests {
     /// Mixed segment statuses, deliberately not in `segment_id` order. The
-    /// first segment carries the extra `code` / `upstream` keys the server
-    /// sends on failed segments; the iOS models ignore them.
+    /// first segment carries the extra `code`, `upstream` and `recoverable`
+    /// keys the server sends on failed segments; the iOS models ignore them.
     private static let mixedResponse = """
         {
           "status": "accepted",
@@ -25,7 +27,7 @@ struct SessionAcceptedDecodingTests {
           "segments": [
             {"segment_id": "s03", "status": "failed", "transcript_id": null,
              "error": "whisper read timed out", "code": "whisper_timeout",
-             "upstream": "whisper"},
+             "upstream": "whisper", "recoverable": true},
             {"segment_id": "s01", "status": "processed", "transcript_id": 4021,
              "error": null},
             {"segment_id": "s02", "status": "pending_analysis", "transcript_id": 4022},
@@ -50,6 +52,10 @@ struct SessionAcceptedDecodingTests {
 
     private static func decode(_ json: String) throws -> SessionAccepted {
         try JSONDecoder().decode(SessionAccepted.self, from: Data(json.utf8))
+    }
+
+    private static func decode(_ object: [String: Any]) throws -> SessionAccepted {
+        try JSONDecoder().decode(SessionAccepted.self, from: data(object))
     }
 
     private static func data(_ object: [String: Any]) throws -> Data {
@@ -126,9 +132,8 @@ struct SessionAcceptedDecodingTests {
 
     @Test("empty segments decode to an empty list")
     func emptySegments() throws {
-        let accepted = try JSONDecoder().decode(
-            SessionAccepted.self,
-            from: Self.data(Self.replacing("segments", with: [Any](), in: Self.envelopeObject))
+        let accepted = try Self.decode(
+            Self.replacing("segments", with: [Any](), in: Self.envelopeObject)
         )
 
         #expect(accepted.segments.isEmpty)
@@ -171,21 +176,17 @@ struct SessionAcceptedDecodingTests {
 
     @Test("an unknown status stays a plain string")
     func unknownStatusStaysString() throws {
-        let accepted = try JSONDecoder().decode(
-            SessionAccepted.self,
-            from: Self.data(Self.envelope(
-                segment: ["segment_id": "s01", "status": "archived_by_a_newer_server"]
-            ))
-        )
+        let accepted = try Self.decode(Self.envelope(
+            segment: ["segment_id": "s01", "status": "archived_by_a_newer_server"]
+        ))
 
         #expect(accepted.segments.first?.status == "archived_by_a_newer_server")
     }
 
     @Test("an unknown envelope status stays a plain string")
     func unknownEnvelopeStatusStaysString() throws {
-        let accepted = try JSONDecoder().decode(
-            SessionAccepted.self,
-            from: Self.data(Self.replacing("status", with: "queued", in: Self.envelopeObject))
+        let accepted = try Self.decode(
+            Self.replacing("status", with: "queued", in: Self.envelopeObject)
         )
 
         #expect(accepted.status == "queued")
