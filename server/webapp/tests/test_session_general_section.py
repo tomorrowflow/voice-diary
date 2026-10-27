@@ -2,8 +2,8 @@
 user-defined walkthrough section the iOS app already sends. It must be
 accepted by manifest parsing and the session routes, keep its section context
 through the stored bundle (reload, retry-analysis, transcription recovery) and
-reach the day narrative as a header, while the user's transcript stays exactly
-what was spoken.
+reach the day narrative as a title header, while the user's transcript stays
+exactly what was spoken and the prompt stays out of the narrative input.
 
 Driven through the routes with the shared fakes from `session_helpers`. Run
 inside the webapp container, see DEVELOPMENT.md §7.4.
@@ -43,7 +43,7 @@ from tests.session_helpers import (
 SECTION_ID = "5f0c2a52-7d58-4b8c-9c1e-0d6f4a3a9b11"
 TITLE = "Abendreflexion"
 PROMPT = "Was hat dich heute am meisten beschäftigt?"
-HEADER = f"## Abschnitt: {TITLE}\nFrage: {PROMPT}"
+HEADER = f"## Abschnitt: {TITLE}"
 
 
 def _general_segment(segment_id: str = "s01", **overrides) -> dict:
@@ -166,7 +166,7 @@ def test_post_session_accepts_a_general_section_and_processes_its_audio(monkeypa
     assert len(stage.runs) == 1
 
 
-def test_the_narrative_input_carries_the_section_but_the_transcript_does_not(monkeypatch, tmp_path):
+def test_the_narrative_input_carries_the_section_title_but_not_the_prompt(monkeypatch, tmp_path):
     session_id = "sess-gs-context"
     manifest = _manifest(session_id, _drive_by("s01"), _general_segment("s02"))
     _, pipeline, stage = _stubs(monkeypatch, tmp_path, session_id)
@@ -178,10 +178,10 @@ def test_the_narrative_input_carries_the_section_but_the_transcript_does_not(mon
         "## Notiz unterwegs\n\nhallo welt\n\n"
         f"{HEADER}\n\nhallo welt"
     )
-    # The spoken text is what was transcribed, corrected and stored.
+    # The spoken text is what was transcribed and corrected; the prompt is an
+    # AI prompt and is not part of the narrative input either.
     assert [c["raw_text"] for c in pipeline.correct_calls] == ["hallo welt", "hallo welt"]
-    assert all(PROMPT not in text for _, text, _ in pipeline.saved_entities)
-    assert all(PROMPT not in row[0] for row in pipeline.recovered_values.values())
+    assert PROMPT not in stage.runs[0]["text"]
 
 
 @pytest.mark.parametrize("field", ["section_id", "title", "prompt_text"])
@@ -267,4 +267,4 @@ def test_retry_transcription_recovers_a_failed_general_section(monkeypatch, tmp_
     assert response.status_code == 202
     assert [c["filename"] for c in pipeline.transcribe_calls] == [f"{session_id}::s01.m4a"]
     assert stage.runs[0]["text"].startswith(HEADER)
-    assert all(PROMPT not in text for _, text, _ in pipeline.saved_entities)
+    assert PROMPT not in stage.runs[0]["text"]

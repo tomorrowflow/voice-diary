@@ -1652,9 +1652,10 @@ def _segment_header(segment: Segment) -> str:
     if isinstance(segment, EmptyBlockSegment):
         return f"## Zeitblock {segment.time_range.start}–{segment.time_range.end}"
     if isinstance(segment, GeneralSectionSegment):
-        title = " ".join(segment.title.split())
-        prompt = " ".join(segment.prompt_text.split())
-        return f"## Abschnitt: {title}\nFrage: {prompt}"
+        # The title only: the prompt is an AI prompt and stays out of the
+        # narrative input (CODING_STANDARDS hard rule 8); it is kept in the
+        # stored manifest.
+        return f"## Abschnitt: {' '.join(segment.title.split())}"
     return f"## Abschnitt {segment.segment_id}"
 
 

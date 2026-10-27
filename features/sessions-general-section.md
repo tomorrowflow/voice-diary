@@ -5,8 +5,8 @@ Source: `server/webapp/models.py` (`GeneralSectionSegment`), `server/webapp/rout
 `server/webapp/session_ingest.py` (`load_manifest`, `_segment_header`). Contract: SPEC §10.4 and
 §10.6.1. A `general_section` segment (the user-defined walkthrough section: `section_id`, `title`,
 `prompt_text` plus the usual segment fields) is accepted by the manifest and goes through the same
-segment pipeline as every other type; its title and prompt reach the day narrative as a header, never
-the transcript.
+segment pipeline as every other type; its title reaches the day narrative as a header; the prompt stays
+out of the transcript and the narrative input.
 
 The verify stack has no Whisper, Ollama or LightRAG, so what is driven here is what a stack without
 them can reach: the manifest is validated before the Whisper preflight, so an accepted manifest shows
