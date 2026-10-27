@@ -21,10 +21,7 @@ struct CalendarEventSegmentWireTests {
         "segment_type", "segment_id", "calendar_ref", "audio_file", "transcript",
         "language", "todos_detected", "linked_seed_ids",
     ]
-    private static let requiredKeys = [
-        "segment_id", "calendar_ref", "audio_file", "transcript", "language",
-        "todos_detected", "linked_seed_ids",
-    ]
+    private static let requiredKeys = outerKeys.subtracting(["segment_type"]).sorted()
     private static let arrayKeys = ["todos_detected", "linked_seed_ids"]
 
     private static let fullJSON = """
@@ -44,7 +41,7 @@ struct CalendarEventSegmentWireTests {
       "language": "en-GB",
       "todos_detected": [
         {"text": "Send the deck", "type": "explicit", "due": "2026-04-30",
-         "status": "Offen", "source_segment_id": "seg-c4", "source_quote": "send the deck"},
+         "status": "Offen", "source_segment_id": "seg-origin-1", "source_quote": "send the deck"},
         {"text": "Book the room", "type": "implicit", "status": "Erledigt"},
         {"text": "Ping Ana", "type": "explicit", "due": null, "status": "Offen"}
       ],
@@ -66,7 +63,7 @@ struct CalendarEventSegmentWireTests {
         todos_detected: [
             Todo(
                 text: "Send the deck", type: "explicit", due: "2026-04-30", status: "Offen",
-                source_segment_id: "seg-c4", source_quote: "send the deck"
+                source_segment_id: "seg-origin-1", source_quote: "send the deck"
             ),
             Todo(text: "Book the room", type: "implicit", status: "Erledigt"),
             Todo(text: "Ping Ana", type: "explicit", status: "Offen"),
@@ -76,12 +73,30 @@ struct CalendarEventSegmentWireTests {
 
     private static func data(_ json: String) -> Data { Data(json.utf8) }
 
+    private static func fullJSONObject() throws -> [String: Any] {
+        try #require(try JSONSerialization.jsonObject(with: data(fullJSON)) as? [String: Any])
+    }
+
     private static func fullJSONData(without key: String) throws -> Data {
-        var object = try #require(
-            try JSONSerialization.jsonObject(with: data(fullJSON)) as? [String: Any]
-        )
+        var object = try fullJSONObject()
         object[key] = nil
         return try JSONSerialization.data(withJSONObject: object)
+    }
+
+    /// Asserts `segment` holds the `fullJSON` values, with the todos and seed ids in order.
+    private static func expectFullFields(
+        _ segment: CalendarEventSegment, sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        #expect(segment.segment_id == "seg-c4", sourceLocation: sourceLocation)
+        #expect(segment.calendar_ref.graph_event_id == "AAMkAD-cal-4=", sourceLocation: sourceLocation)
+        #expect(segment.audio_file == "segments/c4.m4a", sourceLocation: sourceLocation)
+        #expect(segment.transcript == "We agreed to ship on Friday.", sourceLocation: sourceLocation)
+        #expect(segment.language == "en-GB", sourceLocation: sourceLocation)
+        #expect(
+            segment.todos_detected.map(\.text) == ["Send the deck", "Book the room", "Ping Ana"],
+            sourceLocation: sourceLocation
+        )
+        #expect(segment.linked_seed_ids == ["seed-9", "seed-2", "seed-5"], sourceLocation: sourceLocation)
     }
 
     private static func wireObject(_ value: some Encodable) throws -> [String: Any] {
@@ -110,27 +125,18 @@ struct CalendarEventSegmentWireTests {
             CalendarEventSegment.self, from: Self.data(Self.fullJSON)
         )
 
-        #expect(segment.segment_type == "calendar_event")
-        #expect(segment.segment_id == "seg-c4")
-        #expect(segment.calendar_ref.graph_event_id == "AAMkAD-cal-4=")
+        Self.expectFullFields(segment)
         #expect(segment.calendar_ref.title == "Quarterly review")
-        #expect(segment.audio_file == "segments/c4.m4a")
-        #expect(segment.transcript == "We agreed to ship on Friday.")
-        #expect(segment.language == "en-GB")
-        #expect(segment.todos_detected.map(\.text) == ["Send the deck", "Book the room", "Ping Ana"])
         #expect(segment.todos_detected.map(\.type) == ["explicit", "implicit", "explicit"])
         #expect(segment.todos_detected.map(\.due) == ["2026-04-30", nil, nil])
         #expect(segment.todos_detected.map(\.status) == ["Offen", "Erledigt", "Offen"])
-        #expect(segment.todos_detected.map(\.source_segment_id) == ["seg-c4", nil, nil])
+        #expect(segment.todos_detected.map(\.source_segment_id) == ["seg-origin-1", nil, nil])
         #expect(segment.todos_detected.map(\.source_quote) == ["send the deck", nil, nil])
-        #expect(segment.linked_seed_ids == ["seed-9", "seed-2", "seed-5"])
     }
 
     @Test("decodes empty todos_detected and linked_seed_ids as empty arrays")
     func decodesEmptyArrays() throws {
-        var object = try #require(
-            try JSONSerialization.jsonObject(with: Self.data(Self.fullJSON)) as? [String: Any]
-        )
+        var object = try Self.fullJSONObject()
         object["todos_detected"] = [Any]()
         object["linked_seed_ids"] = [Any]()
 
@@ -202,18 +208,19 @@ struct CalendarEventSegmentWireTests {
 
     @Test("a Unicode transcript and a custom language encode verbatim")
     func unicodeTranscriptAndLanguageEncode() throws {
+        let expected = "Wir treffen uns „später“ 🌙 – 感謝\nZeile \"zwei\""
         let segment = CalendarEventSegment(
             segment_id: "seg-c6",
             calendar_ref: CalendarRef(graph_event_id: "g6", title: "t", start: "s", end: "e"),
             audio_file: "segments/c6.m4a",
-            transcript: "Wir treffen uns „später“ 🌙 – 感謝\nZeile \"zwei\"",
+            transcript: expected,
             language: "de-CH"
         )
 
         let object = try Self.wireObject(segment)
 
         let transcript = try #require(object["transcript"] as? String)
-        #expect(Array(transcript.utf8) == Array("Wir treffen uns „später“ 🌙 – 感謝\nZeile \"zwei\"".utf8))
+        #expect(Array(transcript.utf8) == Array(expected.utf8))
         #expect(object["language"] as? String == "de-CH")
     }
 
@@ -232,13 +239,7 @@ struct CalendarEventSegmentWireTests {
             Issue.record("calendar_event should decode to .calendarEvent, got \(decoded)")
             return
         }
-        #expect(payload.segment_id == "seg-c4")
-        #expect(payload.calendar_ref.graph_event_id == "AAMkAD-cal-4=")
-        #expect(payload.audio_file == "segments/c4.m4a")
-        #expect(payload.transcript == "We agreed to ship on Friday.")
-        #expect(payload.language == "en-GB")
-        #expect(payload.todos_detected.map(\.text) == ["Send the deck", "Book the room", "Ping Ana"])
-        #expect(payload.linked_seed_ids == ["seed-9", "seed-2", "seed-5"])
+        Self.expectFullFields(payload)
         #expect(decoded.segmentID == "seg-c4")
         #expect(decoded.audioFile == "segments/c4.m4a")
     }
