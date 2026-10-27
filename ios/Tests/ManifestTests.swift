@@ -112,9 +112,11 @@ struct CalendarRefTests {
         rsvp_status: "tentative"
     )
 
+    private static let defaulted = CalendarRef(graph_event_id: "id", title: "t", start: "s", end: "e")
+
     private static func encode(_ ref: CalendarRef) throws -> String {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        encoder.outputFormatting = [.sortedKeys]
         return try #require(String(data: encoder.encode(ref), encoding: .utf8))
     }
 
@@ -122,19 +124,39 @@ struct CalendarRefTests {
         try JSONDecoder().decode(CalendarRef.self, from: Data(json.utf8))
     }
 
+    /// `minimalJSON` with raw JSON fragments swapped in for the two fields under test.
+    private static func json(attendees: String = "[]", rsvp: String = #""accepted""#) -> String {
+        #"{"attendees":\#(attendees),"end":"e","graph_event_id":"id","rsvp_status":\#(rsvp),"start":"s","title":"t"}"#
+    }
+
+    /// The top-level wire key a failed decode of `json` points at. Records an issue
+    /// and returns nil when decoding succeeds or fails with something else.
+    private static func failingKey(of json: String) throws -> String? {
+        do {
+            _ = try decode(json)
+            Issue.record("expected decoding to fail")
+            return nil
+        } catch DecodingError.keyNotFound(let key, _) {
+            return key.stringValue
+        } catch DecodingError.typeMismatch(_, let context) {
+            return context.codingPath.first?.stringValue
+        } catch DecodingError.valueNotFound(_, let context) {
+            return context.codingPath.first?.stringValue
+        } catch {
+            Issue.record("expected a keyNotFound, typeMismatch or valueNotFound error, got \(error)")
+            return nil
+        }
+    }
+
     @Test("initializer defaults to no attendees and an accepted RSVP")
     func initializerDefaults() {
-        let ref = CalendarRef(graph_event_id: "id", title: "t", start: "s", end: "e")
-
-        #expect(ref.attendees.isEmpty)
-        #expect(ref.rsvp_status == "accepted")
+        #expect(Self.defaulted.attendees.isEmpty)
+        #expect(Self.defaulted.rsvp_status == "accepted")
     }
 
     @Test("defaulted reference encodes an empty attendees array and accepted")
     func defaultedEncoding() throws {
-        let ref = CalendarRef(graph_event_id: "id", title: "t", start: "s", end: "e")
-
-        #expect(try Self.encode(ref) == Self.minimalJSON)
+        #expect(try Self.encode(Self.defaulted) == Self.minimalJSON)
     }
 
     @Test("populated reference encodes all six fields under their wire keys")
@@ -147,15 +169,15 @@ struct CalendarRefTests {
         let decoded = try Self.decode(Self.populatedJSON)
 
         #expect(decoded.graph_event_id == "AAMkAD-test=")
-        #expect(decoded.title == "Büro-Sync ☕ 日本")
+        #expect(Array(decoded.title.utf8) == Array("Büro-Sync ☕ 日本".utf8))
         #expect(decoded.start == "2026-04-27T10:00:00+02:00")
         #expect(decoded.end == "2026-04-27T11:30:00+02:00")
         #expect(decoded.attendees == ["sabine@example.com", "jörg.müller@example.com", "ana@example.org"])
         #expect(decoded.rsvp_status == "tentative")
     }
 
-    @Test("minimal JSON decodes to the initializer defaults")
-    func decodesMinimalJSON() throws {
+    @Test("explicit empty attendees and accepted decode as given")
+    func decodesExplicitEmptyValues() throws {
         let decoded = try Self.decode(Self.minimalJSON)
 
         #expect(decoded.attendees.isEmpty)
@@ -171,12 +193,12 @@ struct CalendarRefTests {
 
     @Test("start, end and rsvp_status are opaque strings, kept verbatim")
     func opaqueStringsPreserved() throws {
-        let json = #"{"attendees":[],"end":"later","graph_event_id":"id","rsvp_status":"Maybe!","start":"soon","title":""}"#
+        let json = #"{"attendees":[],"end":" later ","graph_event_id":"id","rsvp_status":"Maybe!","start":"","title":""}"#
 
         let decoded = try Self.decode(json)
 
-        #expect(decoded.start == "soon")
-        #expect(decoded.end == "later")
+        #expect(decoded.start.isEmpty)
+        #expect(decoded.end == " later ")
         #expect(decoded.rsvp_status == "Maybe!")
         #expect(decoded.title.isEmpty)
         #expect(try Self.encode(decoded) == json)
@@ -184,42 +206,32 @@ struct CalendarRefTests {
 
     @Test("attendees and rsvp_status are required, not filled from the initializer default")
     func missingFieldRejected() throws {
-        let fields: [(key: String, json: String)] = [
+        let cases: [(key: String, json: String)] = [
             ("attendees", #"{"end":"e","graph_event_id":"id","rsvp_status":"accepted","start":"s","title":"t"}"#),
             ("rsvp_status", #"{"attendees":[],"end":"e","graph_event_id":"id","start":"s","title":"t"}"#),
         ]
 
-        for (key, json) in fields {
-            do {
-                _ = try Self.decode(json)
-                Issue.record("expected decoding to fail without \(key)")
-            } catch DecodingError.keyNotFound(let missing, _) {
-                #expect(missing.stringValue == key)
-            } catch {
-                Issue.record("expected keyNotFound for \(key), got \(error)")
-            }
+        for (key, json) in cases {
+            #expect(try Self.failingKey(of: json) == key, "decoding without \(key)")
         }
     }
 
     @Test("attendees and rsvp_status reject null and wrong-typed values")
     func wrongTypeRejected() throws {
-        let fields: [(label: String, json: String)] = [
-            ("attendees null", #"{"attendees":null,"end":"e","graph_event_id":"id","rsvp_status":"accepted","start":"s","title":"t"}"#),
-            ("attendees string", #"{"attendees":"a@example.com","end":"e","graph_event_id":"id","rsvp_status":"accepted","start":"s","title":"t"}"#),
-            ("attendees number element", #"{"attendees":["a@example.com",7],"end":"e","graph_event_id":"id","rsvp_status":"accepted","start":"s","title":"t"}"#),
-            ("rsvp_status null", #"{"attendees":[],"end":"e","graph_event_id":"id","rsvp_status":null,"start":"s","title":"t"}"#),
-            ("rsvp_status number", #"{"attendees":[],"end":"e","graph_event_id":"id","rsvp_status":1,"start":"s","title":"t"}"#),
+        let cases: [(key: String, json: String)] = [
+            ("attendees", Self.json(attendees: "null")),
+            ("attendees", Self.json(attendees: #""a@example.com""#)),
+            ("attendees", Self.json(attendees: #"["a@example.com",7]"#)),
+            ("attendees", Self.json(attendees: #"["a@example.com",null]"#)),
+            ("attendees", Self.json(attendees: #"{"0":"a@example.com"}"#)),
+            ("rsvp_status", Self.json(rsvp: "null")),
+            ("rsvp_status", Self.json(rsvp: "1")),
+            ("rsvp_status", Self.json(rsvp: "true")),
+            ("rsvp_status", Self.json(rsvp: #"["accepted"]"#)),
         ]
 
-        for (label, json) in fields {
-            do {
-                _ = try Self.decode(json)
-                Issue.record("expected decoding to fail for \(label)")
-            } catch is DecodingError {
-                continue
-            } catch {
-                Issue.record("expected DecodingError for \(label), got \(error)")
-            }
+        for (key, json) in cases {
+            #expect(try Self.failingKey(of: json) == key, "decoding \(json)")
         }
     }
 }
