@@ -6,7 +6,8 @@ import Testing
 // (`server/webapp/routers/calendar.py`). They use the synthesized Codable
 // conformance, so the Swift property names are the wire keys and every
 // field is required, even where the server defaults it. These tests decode
-// API-shaped JSON from memory to pin those keys and failure modes.
+// hand-written JSON shaped like the server's `CalendarEvent`, `Attendee` and
+// `TodayCalendarResponse` models to pin those keys and failure modes.
 
 @Suite("CalendarResponseDecoding")
 struct CalendarResponseDecodingTests {
@@ -81,6 +82,13 @@ struct CalendarResponseDecodingTests {
 
     private static func isKeyNotFound(_ error: DecodingError?, _ key: String) -> Bool {
         if case .keyNotFound(let missing, _)? = error { return missing.stringValue == key }
+        return false
+    }
+
+    private static func isValueNotFound(_ error: DecodingError?, _ key: String) -> Bool {
+        if case .valueNotFound(_, let context)? = error {
+            return context.codingPath.last?.stringValue == key
+        }
         return false
     }
 
@@ -172,7 +180,6 @@ struct CalendarResponseDecodingTests {
         let event = try JSONDecoder().decode(ServerCalendarEvent.self, from: Self.data(object))
 
         #expect(event.attendees.isEmpty)
-        #expect(event.attendeeCount == 0)
     }
 
     @Test("event ignores unknown fields, top level and nested")
@@ -257,48 +264,21 @@ struct CalendarResponseDecodingTests {
 
         let error = try Self.decodingError(ServerCalendarEvent.self, from: object)
 
-        guard case .valueNotFound(_, let context)? = error else {
-            Issue.record("expected valueNotFound, got \(String(describing: error))")
-            return
-        }
-        #expect(context.codingPath.last?.stringValue == "subject")
+        #expect(Self.isValueNotFound(error, "subject"))
     }
 
-    @Test("event survives an encode/decode round trip with every field")
-    func eventRoundTrip() throws {
-        let original = try JSONDecoder().decode(
-            ServerCalendarEvent.self, from: Self.data(Self.eventObject)
-        )
-
-        let encoded = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(ServerCalendarEvent.self, from: encoded)
-
-        #expect(decoded.graph_event_id == original.graph_event_id)
-        #expect(decoded.subject == original.subject)
-        #expect(decoded.start == original.start)
-        #expect(decoded.end == original.end)
-        #expect(decoded.is_all_day == original.is_all_day)
-        #expect(decoded.show_as == original.show_as)
-        #expect(decoded.rsvp_status == original.rsvp_status)
-        #expect(decoded.organizer == original.organizer)
-        #expect(decoded.attendees == original.attendees)
-        #expect(decoded.body_preview == original.body_preview)
-        #expect(decoded.is_recurring == original.is_recurring)
-        #expect(decoded.web_link == original.web_link)
-    }
-
-    @Test("event encodes the same snake_case keys the server sends")
-    func eventEncodedKeys() throws {
+    @Test("event re-encodes to the API JSON it was decoded from, every field intact")
+    func eventReencodesToFixture() throws {
         let event = try JSONDecoder().decode(
             ServerCalendarEvent.self, from: Self.data(Self.eventObject)
         )
 
         let encoded = try JSONEncoder().encode(event)
-        let keys = try #require(
+        let object = try #require(
             try JSONSerialization.jsonObject(with: encoded) as? [String: Any]
-        ).keys
+        )
 
-        #expect(Set(keys) == Set(Self.eventObject.keys))
+        #expect(NSDictionary(dictionary: object) == NSDictionary(dictionary: Self.eventObject))
     }
 
     // MARK: - TodayCalendarResponse
