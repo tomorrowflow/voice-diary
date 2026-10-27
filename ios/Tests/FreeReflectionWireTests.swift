@@ -68,7 +68,6 @@ struct FreeReflectionWireTests {
             FreeReflectionSegment.self, from: Data(Self.populated.utf8)
         )
 
-        #expect(reflection.segment_type == "free_reflection")
         #expect(reflection.segment_id == "s07")
         #expect(reflection.captured_at == "2026-04-24T19:42:00+02:00")
         #expect(reflection.audio_file == "segments/s07.m4a")
@@ -105,15 +104,20 @@ struct FreeReflectionWireTests {
     }
 
     @Test(
-        "Decoding rejects JSON missing segment_id or audio_file",
+        "Decoding rejects JSON missing a required key, naming that key",
         arguments: [
-            #"{"audio_file": "a.m4a", "transcript": "", "language": "de-DE"}"#,
-            #"{"segment_id": "s07", "transcript": "", "language": "de-DE"}"#,
+            (#"{"audio_file": "a.m4a", "transcript": "", "language": "de-DE"}"#, "segment_id"),
+            (#"{"segment_id": "s07", "transcript": "", "language": "de-DE"}"#, "audio_file"),
+            (#"{"segment_id": "s07", "audio_file": "a.m4a", "language": "de-DE"}"#, "transcript"),
+            (#"{"segment_id": "s07", "audio_file": "a.m4a", "transcript": ""}"#, "language"),
         ]
     )
-    func decodingRequiresIdentityKeys(json: String) {
-        #expect(throws: DecodingError.self) {
+    func decodingRequiresMissingKey(json: String, missingKey: String) {
+        #expect {
             try JSONDecoder().decode(FreeReflectionSegment.self, from: Data(json.utf8))
+        } throws: { error in
+            guard case DecodingError.keyNotFound(let key, _) = error else { return false }
+            return key.stringValue == missingKey
         }
     }
 
@@ -172,14 +176,25 @@ struct FreeReflectionWireTests {
             Issue.record("expected .freeReflection")
             return
         }
-        #expect(reflection.segment_type == "free_reflection")
         #expect(reflection.segment_id == "s07")
         #expect(reflection.captured_at == "2026-04-24T19:42:00+02:00")
         #expect(reflection.audio_file == "segments/s07.m4a")
         #expect(reflection.transcript == "Der Tag war „lang“ 🌙")
         #expect(reflection.language == "en-US")
-        #expect(decoded.segmentID == "s07")
-        #expect(decoded.audioFile == "segments/s07.m4a")
+    }
+
+    @Test(
+        "A decoded nil captured_at stays omitted when re-encoded through Segment",
+        arguments: [absentCapturedAt, nullCapturedAt]
+    )
+    func nilCapturedAtStaysOmittedThroughSegment(json: String) throws {
+        let segment = try JSONDecoder().decode(Segment.self, from: Data(json.utf8))
+
+        let object = try Self.encodedObject(segment)
+
+        #expect(object["captured_at"] == nil)
+        #expect(object["segment_type"] as? String == "free_reflection")
+        #expect(object["segment_id"] as? String == "s07")
     }
 
     @Test("Segment decodes the populated fixture to a free reflection")
