@@ -1429,7 +1429,7 @@ private struct NoteRow: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(isPlaying ? Text("Pause") : Text("Play"))
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                     Text(timeText)
                         .font(Theme.font.body.weight(.medium))
                         .foregroundStyle(Theme.color.text.primary)
