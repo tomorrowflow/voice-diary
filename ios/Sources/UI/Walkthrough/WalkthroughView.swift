@@ -1335,7 +1335,7 @@ private struct NoteReviewCard: View {
                 // scrubber once this note is the active file.
                 HStack(alignment: .center, spacing: Theme.spacing.sm) {
                     playButton(note: note)
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                         Text(timeText(note.captured_at))
                             .font(Theme.font.body.weight(.medium))
                             .foregroundStyle(Theme.color.text.primary)
