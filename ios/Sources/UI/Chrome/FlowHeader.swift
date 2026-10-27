@@ -71,7 +71,7 @@ public struct FlowHeader: View {
                     .accessibilityLabel(Text("Close"))
                 }
             }
-            .frame(height: 32)
+            .frame(height: Theme.spacing.xxl)
             .padding(.horizontal, Theme.spacing.md)
             .padding(.top, Theme.spacing.sm)
 
