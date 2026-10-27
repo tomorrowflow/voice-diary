@@ -26,6 +26,16 @@ struct VoiceNoteSegmentWireTests {
         """
     }
 
+    private static let populatedNote = VoiceNoteSegment(
+        segment_id: "n01",
+        captured_at: "2026-04-24T09:15:00+02:00",
+        audio_file: "segments/n01.m4a",
+        transcript: "Der Tag war „lang“ 🌙",
+        language: "en-US",
+        linked_calendar_event_id: "evt-42",
+        seed_id: "seed-7"
+    )
+
     private static func decode(_ json: String) throws -> VoiceNoteSegment {
         try JSONDecoder().decode(VoiceNoteSegment.self, from: Data(json.utf8))
     }
@@ -101,18 +111,21 @@ struct VoiceNoteSegmentWireTests {
         #expect(note.language == "de-DE")
     }
 
-    @Test("captured_at stays an opaque string, whatever its shape")
-    func capturedAtIsOpaque() throws {
+    @Test(
+        "captured_at stays an opaque string, whatever its shape",
+        arguments: ["not a date", "", "2026-04-24", "2026-04-24T07:15:00.123Z", "2026-04-24 09:15"]
+    )
+    func capturedAtIsOpaque(capturedAt: String) throws {
         let json = """
-            {"segment_id": "n01", "captured_at": "not a date", "audio_file": "a.m4a",
+            {"segment_id": "n01", "captured_at": "\(capturedAt)", "audio_file": "a.m4a",
              "transcript": "", "language": "de-DE"}
             """
 
         let note = try Self.decode(json)
         let object = try Self.encodedObject(note)
 
-        #expect(note.captured_at == "not a date")
-        #expect(object["captured_at"] as? String == "not a date")
+        #expect(note.captured_at == capturedAt)
+        #expect(object["captured_at"] as? String == capturedAt)
     }
 
     @Test(
@@ -149,17 +162,7 @@ struct VoiceNoteSegmentWireTests {
 
     @Test("Encodes exact drive_by keys with a Unicode transcript, custom language and both links")
     func encodesPopulatedFields() throws {
-        let object = try Self.encodedObject(
-            VoiceNoteSegment(
-                segment_id: "n01",
-                captured_at: "2026-04-24T09:15:00+02:00",
-                audio_file: "segments/n01.m4a",
-                transcript: "Der Tag war „lang“ 🌙",
-                language: "en-US",
-                linked_calendar_event_id: "evt-42",
-                seed_id: "seed-7"
-            )
-        )
+        let object = try Self.encodedObject(Self.populatedNote)
 
         #expect(
             Set(object.keys) == [
@@ -218,17 +221,7 @@ struct VoiceNoteSegmentWireTests {
 
     @Test("A fully populated note round-trips through Segment with every field intact")
     func roundTripsThroughSegment() throws {
-        let original = VoiceNoteSegment(
-            segment_id: "n01",
-            captured_at: "2026-04-24T09:15:00+02:00",
-            audio_file: "segments/n01.m4a",
-            transcript: "Der Tag war „lang“ 🌙",
-            language: "en-US",
-            linked_calendar_event_id: "evt-42",
-            seed_id: "seed-7"
-        )
-
-        let data = try JSONEncoder().encode(Segment.voiceNote(original))
+        let data = try JSONEncoder().encode(Segment.voiceNote(Self.populatedNote))
         let decoded = try JSONDecoder().decode(Segment.self, from: data)
 
         guard case .voiceNote(let note) = decoded else {
