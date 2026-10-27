@@ -1072,7 +1072,7 @@ struct PlaybackScrubber: View {
         let fraction = min(max(positionFraction, 0), 1)
         let displayTime = duration > 0 ? fraction * duration : 0
 
-        VStack(spacing: 6) {
+        VStack(spacing: Theme.spacing.playbackGap) {
             GeometryReader { geo in
                 let usable = max(geo.size.width - knob, 1)
                 ZStack(alignment: .leading) {
