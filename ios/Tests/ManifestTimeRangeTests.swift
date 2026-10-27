@@ -24,14 +24,12 @@ struct ManifestTimeRangeTests {
         return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
-    private static func decodingError(_ json: String) -> DecodingError? {
+    private static func decodingError(_ json: String) throws -> DecodingError? {
         do {
             _ = try decode(json)
             return nil
         } catch let error as DecodingError {
             return error
-        } catch {
-            return nil
         }
     }
 
@@ -133,9 +131,9 @@ struct ManifestTimeRangeTests {
     // MARK: - Decode failures
 
     @Test("a missing start or end fails with keyNotFound", arguments: ["start", "end"])
-    func missingFieldFails(key: String) {
+    func missingFieldFails(key: String) throws {
         let other = key == "start" ? "end" : "start"
-        let error = Self.decodingError(#"{"\#(other)": "2026-04-27T13:00:00+02:00"}"#)
+        let error = try Self.decodingError(#"{"\#(other)": "2026-04-27T13:00:00+02:00"}"#)
 
         guard case .keyNotFound(let missing, _)? = error else {
             Issue.record("expected keyNotFound for \(key), got \(String(describing: error))")
@@ -145,14 +143,14 @@ struct ManifestTimeRangeTests {
     }
 
     @Test("an empty object fails")
-    func emptyObjectFails() {
-        #expect(Self.decodingError("{}") != nil)
+    func emptyObjectFails() throws {
+        #expect(try Self.decodingError("{}") != nil)
     }
 
     @Test("a null start or end fails with valueNotFound", arguments: ["start", "end"])
-    func nullFieldFails(key: String) {
+    func nullFieldFails(key: String) throws {
         let other = key == "start" ? "end" : "start"
-        let error = Self.decodingError(
+        let error = try Self.decodingError(
             #"{"\#(key)": null, "\#(other)": "2026-04-27T13:00:00+02:00"}"#
         )
 
@@ -168,9 +166,9 @@ struct ManifestTimeRangeTests {
         arguments: ["start", "end"],
         ["42", "1.5", "true", "[]", #"["2026-04-27T13:00:00+02:00"]"#, "{}"]
     )
-    func nonStringFieldFails(key: String, value: String) {
+    func nonStringFieldFails(key: String, value: String) throws {
         let other = key == "start" ? "end" : "start"
-        let error = Self.decodingError(
+        let error = try Self.decodingError(
             #"{"\#(key)": \#(value), "\#(other)": "2026-04-27T13:00:00+02:00"}"#
         )
 
