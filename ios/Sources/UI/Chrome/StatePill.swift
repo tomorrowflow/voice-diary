@@ -27,7 +27,7 @@ public struct StatePill: View {
                 .foregroundStyle(textColor)
         }
         .padding(.horizontal, Theme.spacing.sm)
-        .padding(.vertical, 4)
+        .padding(.vertical, Theme.spacing.xxs)
         .background(
             Capsule(style: .continuous).fill(bgColor)
         )
