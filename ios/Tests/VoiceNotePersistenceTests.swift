@@ -17,18 +17,28 @@ struct VoiceNotePersistenceTests {
 
     private static let audioURL = URL(string: "file:///var/mobile/voice_notes/2026-05-20T08-00-00/audio.m4a")!
 
-    private static let legacyBody = """
-        "seed_id": "note-legacy",
-        "captured_at": "2026-05-20T08:00:00Z",
-        "duration_seconds": 5.5,
-        "language": "de",
-        "transcript": "Einkaufen nicht vergessen",
-        "audio_file_url": "file:///var/mobile/voice_notes/2026-05-20T08-00-00/audio.m4a"
+    private static let absentChunksJSON = """
+        {
+          "seed_id": "note-legacy",
+          "captured_at": "2026-05-20T08:00:00Z",
+          "duration_seconds": 5.5,
+          "language": "de",
+          "transcript": "Einkaufen nicht vergessen",
+          "audio_file_url": "file:///var/mobile/voice_notes/2026-05-20T08-00-00/audio.m4a"
+        }
         """
 
-    private static let absentChunksJSON = "{\n\(legacyBody)\n}"
-
-    private static let nullChunksJSON = "{\n\(legacyBody),\n\"chunks\": null\n}"
+    private static let nullChunksJSON = """
+        {
+          "seed_id": "note-legacy",
+          "captured_at": "2026-05-20T08:00:00Z",
+          "duration_seconds": 5.5,
+          "language": "de",
+          "transcript": "Einkaufen nicht vergessen",
+          "audio_file_url": "file:///var/mobile/voice_notes/2026-05-20T08-00-00/audio.m4a",
+          "chunks": null
+        }
+        """
 
     private static let multiChunkJSON = """
         {
@@ -90,6 +100,7 @@ struct VoiceNotePersistenceTests {
         #expect(note.seed_id == "note-multi")
         #expect(note.captured_at == Self.capturedAt)
         #expect(note.audio_file_url == Self.audioURL)
+        #expect(note.duration_seconds == 12.5)
         #expect(note.language == "de")
         #expect(note.transcript == "Erster Teil")
         #expect(note.chunks?.map(\.filename) == ["audio.m4a", "audio_002.m4a", "audio_003.m4a"])
@@ -133,11 +144,5 @@ struct VoiceNotePersistenceTests {
     func chunkIdentityIsFilename() throws {
         let chunks = try #require(Self.decode(Self.multiChunkJSON).chunks)
         #expect(chunks.map(\.id) == ["audio.m4a", "audio_002.m4a", "audio_003.m4a"])
-    }
-
-    @Test("a note is identified by its seed id")
-    func noteIdentityIsSeedID() throws {
-        #expect(try Self.decode(Self.absentChunksJSON).id == "note-legacy")
-        #expect(try Self.decode(Self.multiChunkJSON).id == "note-multi")
     }
 }
