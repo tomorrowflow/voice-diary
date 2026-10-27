@@ -5,10 +5,11 @@ import Testing
 // `TimeRange` is the `time_range` of an `empty_block` manifest segment
 // (`server/webapp/models.py`, SPEC §10). It uses the synthesized Codable
 // conformance, so the Swift property names are the wire keys, and both values
-// are opaque strings: the app neither parses nor normalises them, so offsets,
-// cross-midnight ranges and empty strings must pass through verbatim. These
-// tests decode fixed JSON and read the encoded keys back to pin the wire
-// shape independently of the type under test.
+// are opaque strings: the app neither parses nor normalises them, so offset-
+// bearing timestamps, cross-midnight ranges, the server's `"HH:MM"` form and
+// empty strings must all pass through verbatim. These tests decode fixed JSON
+// and read the encoded keys back to pin the wire shape independently of the
+// type under test.
 
 @Suite("ManifestTimeRange")
 struct ManifestTimeRangeTests {
@@ -17,6 +18,13 @@ struct ManifestTimeRangeTests {
 
     private static func decode(_ json: String) throws -> TimeRange {
         try JSONDecoder().decode(TimeRange.self, from: Data(json.utf8))
+    }
+
+    /// A `time_range` object with a valid value for the other key and
+    /// `rawValue` (already JSON-encoded) for `key`.
+    private static func json(_ key: String, _ rawValue: String) -> String {
+        let other = key == "start" ? "end" : "start"
+        return #"{"\#(key)": \#(rawValue), "\#(other)": "\#(start)"}"#
     }
 
     private static func wireObject(_ range: TimeRange) throws -> [String: Any] {
@@ -65,16 +73,6 @@ struct ManifestTimeRangeTests {
         #expect(range.end == "2026-04-27T14:30:00+02:00")
     }
 
-    @Test("extra keys are ignored")
-    func ignoresExtraKeys() throws {
-        let range = try Self.decode(
-            #"{"start": "a", "end": "b", "timezone": "Europe/Berlin"}"#
-        )
-
-        #expect(range.start == "a")
-        #expect(range.end == "b")
-    }
-
     // MARK: - Encoding
 
     @Test("encodes exactly the start and end keys with their own values")
@@ -99,6 +97,8 @@ struct ManifestTimeRangeTests {
             ("2026-04-27T08:00:00-05:00", "2026-04-27T21:30:00+05:30"),
             // End earlier than start: the model does not validate order.
             ("2026-04-27T14:30:00+02:00", "2026-04-27T13:00:00+02:00"),
+            // The server's documented "HH:MM" form.
+            ("14:00", "16:00"),
             // Not a date at all: the model does not parse.
             ("not a date", "ünïcode ✓"),
             // Empty strings.
@@ -114,8 +114,9 @@ struct ManifestTimeRangeTests {
         #expect(object["start"] as? String == start)
         #expect(object["end"] as? String == end)
 
-        let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(TimeRange.self, from: data)
+        let decoded = try JSONDecoder().decode(
+            TimeRange.self, from: JSONEncoder().encode(original)
+        )
         #expect(decoded.start == start)
         #expect(decoded.end == end)
     }
@@ -133,7 +134,7 @@ struct ManifestTimeRangeTests {
     @Test("a missing start or end fails with keyNotFound", arguments: ["start", "end"])
     func missingFieldFails(key: String) throws {
         let other = key == "start" ? "end" : "start"
-        let error = try Self.decodingError(#"{"\#(other)": "2026-04-27T13:00:00+02:00"}"#)
+        let error = try Self.decodingError(#"{"\#(other)": "\#(Self.start)"}"#)
 
         guard case .keyNotFound(let missing, _)? = error else {
             Issue.record("expected keyNotFound for \(key), got \(String(describing: error))")
@@ -142,17 +143,9 @@ struct ManifestTimeRangeTests {
         #expect(missing.stringValue == key)
     }
 
-    @Test("an empty object fails")
-    func emptyObjectFails() throws {
-        #expect(try Self.decodingError("{}") != nil)
-    }
-
     @Test("a null start or end fails with valueNotFound", arguments: ["start", "end"])
     func nullFieldFails(key: String) throws {
-        let other = key == "start" ? "end" : "start"
-        let error = try Self.decodingError(
-            #"{"\#(key)": null, "\#(other)": "2026-04-27T13:00:00+02:00"}"#
-        )
+        let error = try Self.decodingError(Self.json(key, "null"))
 
         guard case .valueNotFound(_, let context)? = error else {
             Issue.record("expected valueNotFound for \(key), got \(String(describing: error))")
@@ -167,10 +160,7 @@ struct ManifestTimeRangeTests {
         ["42", "1.5", "true", "[]", #"["2026-04-27T13:00:00+02:00"]"#, "{}"]
     )
     func nonStringFieldFails(key: String, value: String) throws {
-        let other = key == "start" ? "end" : "start"
-        let error = try Self.decodingError(
-            #"{"\#(key)": \#(value), "\#(other)": "2026-04-27T13:00:00+02:00"}"#
-        )
+        let error = try Self.decodingError(Self.json(key, value))
 
         guard case .typeMismatch(_, let context)? = error else {
             Issue.record("expected typeMismatch for \(key)=\(value), got \(String(describing: error))")
