@@ -1220,7 +1220,7 @@ private struct EventRow: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: Theme.spacing.sm) {
-            VStack(alignment: .trailing, spacing: 2) {
+            VStack(alignment: .trailing, spacing: Theme.spacing.xxxs) {
                 Text(timeStart)
                     .font(Theme.font.caption.monospacedDigit())
                     .foregroundStyle(Theme.color.text.primary)
@@ -1234,7 +1234,7 @@ private struct EventRow: View {
                 .fill(barColor)
                 .frame(width: 3)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                 Text(event.subject.isEmpty ? String(localized: "(no title)") : event.subject)
                     .font(Theme.font.callout.weight(.medium))
                     .foregroundStyle(Theme.color.text.primary)
