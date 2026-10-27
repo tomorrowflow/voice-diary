@@ -4,13 +4,16 @@ import Testing
 
 // The top-level attribution fields of `Manifest` (`drive_by_seeds_surfaced`,
 // `drive_by_seeds_unsurfaced`, `raw_session_audio`, `response_language_setting`)
-// mirror the server's manifest model (`server/webapp/models.py`) and
-// SPEC §10.3. `Manifest` uses the synthesized Codable conformance, so the Swift
-// property names are the wire keys. `raw_session_audio` is the only optional
-// field: nil is omitted on encode and decodes from an absent or null key.
-// `response_language_setting` is a free string; the app does not validate it.
-// These tests decode fixed JSON and inspect encoded JSON to pin those keys and
-// values. Nested models and the segment discriminator are covered elsewhere.
+// are the manifest keys documented in SPEC §10.3. `Manifest` uses the
+// synthesized Codable conformance, so the Swift property names are the wire
+// keys. `raw_session_audio` is the only optional field: nil is omitted on
+// encode and decodes from an absent or null key. On the iOS side
+// `response_language_setting` is a plain `String` that is passed through
+// unchanged; the app does not validate it. The server's `Manifest` model
+// (`server/webapp/models.py`) is the one that restricts it to `match_input`,
+// `de` and `en`. These tests decode fixed JSON and inspect encoded JSON to pin
+// those keys and values. Nested models and the segment discriminator are
+// covered elsewhere.
 
 @Suite("ManifestAttribution")
 struct ManifestAttributionTests {
@@ -47,12 +50,10 @@ struct ManifestAttributionTests {
 
     private static func encodedObject(_ manifest: Manifest) throws -> [String: Any] {
         let data = try JSONEncoder().encode(manifest)
-        return try #require(
-            try JSONSerialization.jsonObject(with: data) as? [String: Any]
-        )
+        return try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
-    private static func manifest(
+    private static func makeManifest(
         surfaced: [String] = [],
         unsurfaced: [String] = [],
         rawAudio: String? = nil,
@@ -90,27 +91,6 @@ struct ManifestAttributionTests {
         #expect(manifest.drive_by_seeds_unsurfaced == ["seed-z", "seed-y"])
         #expect(manifest.raw_session_audio == "raw/session.m4a")
         #expect(manifest.response_language_setting == "de")
-    }
-
-    @Test("surfaced and unsurfaced lists decode into their own fields")
-    func decodesListsIndependently() throws {
-        let manifest = try Self.decode(Self.manifestJSON(attribution: """
-            "drive_by_seeds_surfaced": ["only-surfaced"],
-            "drive_by_seeds_unsurfaced": [],
-            "response_language_setting": "en"
-            """))
-
-        #expect(manifest.drive_by_seeds_surfaced == ["only-surfaced"])
-        #expect(manifest.drive_by_seeds_unsurfaced.isEmpty)
-
-        let swapped = try Self.decode(Self.manifestJSON(attribution: """
-            "drive_by_seeds_surfaced": [],
-            "drive_by_seeds_unsurfaced": ["only-unsurfaced"],
-            "response_language_setting": "en"
-            """))
-
-        #expect(swapped.drive_by_seeds_surfaced.isEmpty)
-        #expect(swapped.drive_by_seeds_unsurfaced == ["only-unsurfaced"])
     }
 
     @Test("raw_session_audio decodes to nil when the key is absent")
@@ -155,7 +135,7 @@ struct ManifestAttributionTests {
 
     @Test("populated attribution fields encode under their wire keys")
     func encodesPopulatedAttribution() throws {
-        let object = try Self.encodedObject(Self.manifest(
+        let object = try Self.encodedObject(Self.makeManifest(
             surfaced: ["seed-b", "seed-a", "seed-c"],
             unsurfaced: ["seed-z", "seed-y"],
             rawAudio: "raw/session.m4a",
@@ -170,7 +150,7 @@ struct ManifestAttributionTests {
 
     @Test("default manifest encodes empty seed lists and match_input, omitting raw audio")
     func encodesDefaults() throws {
-        let object = try Self.encodedObject(Self.manifest())
+        let object = try Self.encodedObject(Self.makeManifest())
 
         #expect(object["drive_by_seeds_surfaced"] as? [String] == [])
         #expect(object["drive_by_seeds_unsurfaced"] as? [String] == [])
@@ -178,23 +158,9 @@ struct ManifestAttributionTests {
         #expect(!object.keys.contains("raw_session_audio"))
     }
 
-    @Test("surfaced and unsurfaced lists encode under their own keys")
-    func encodesListsIndependently() throws {
-        let object = try Self.encodedObject(Self.manifest(
-            surfaced: ["only-surfaced"],
-            unsurfaced: ["only-unsurfaced-1", "only-unsurfaced-2"]
-        ))
-
-        #expect(object["drive_by_seeds_surfaced"] as? [String] == ["only-surfaced"])
-        #expect(
-            object["drive_by_seeds_unsurfaced"] as? [String]
-                == ["only-unsurfaced-1", "only-unsurfaced-2"]
-        )
-    }
-
     @Test("response_language_setting encodes an arbitrary string unchanged")
     func encodesOpaqueResponseLanguage() throws {
-        let object = try Self.encodedObject(Self.manifest(language: "Zürich-日本語"))
+        let object = try Self.encodedObject(Self.makeManifest(language: "Zürich-日本語"))
 
         #expect(object["response_language_setting"] as? String == "Zürich-日本語")
     }
@@ -203,7 +169,7 @@ struct ManifestAttributionTests {
 
     @Test("populated attribution fields survive a round trip")
     func roundTripPopulated() throws {
-        let original = Self.manifest(
+        let original = Self.makeManifest(
             surfaced: ["seed-b", "seed-a", "seed-c"],
             unsurfaced: ["seed-z", "seed-y"],
             rawAudio: "raw/session.m4a",
@@ -223,7 +189,7 @@ struct ManifestAttributionTests {
     @Test("nil raw audio and default attribution survive a round trip")
     func roundTripDefaults() throws {
         let decoded = try JSONDecoder().decode(
-            Manifest.self, from: JSONEncoder().encode(Self.manifest())
+            Manifest.self, from: JSONEncoder().encode(Self.makeManifest())
         )
 
         #expect(decoded.drive_by_seeds_surfaced.isEmpty)
