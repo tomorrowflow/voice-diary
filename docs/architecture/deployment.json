@@ -61,6 +61,7 @@
   "evidence": [
     {"id":"phone","file":"DEVELOPMENT.md","line":36},
     {"id":"webapp","file":"server/docker-compose.yml","line":2},
+    {"id":"webapp","file":"server/webapp/Dockerfile","line":1,"note":"image built from ./webapp (compose line 3); python:3.11-slim, CMD uvicorn :8000"},
     {
       "id": "phone>webapp",
       "file": "server/docker-compose.yml",
