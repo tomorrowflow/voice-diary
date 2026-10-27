@@ -16,7 +16,8 @@ import Testing
 
 @Suite("GeneralSectionSegmentWire")
 struct GeneralSectionSegmentWireTests {
-    private static let requiredContextKeys = ["section_id", "title", "prompt_text"]
+    private static let contextKeys = ["section_id", "title", "prompt_text"]
+    private static let requiredKeys = contextKeys + ["segment_id", "audio_file"]
 
     private static let fullJSON = """
     {
@@ -31,7 +32,7 @@ struct GeneralSectionSegmentWireTests {
     }
     """
 
-    private static let defaultsJSON = """
+    private static let defaultValuesJSON = """
     {
       "segment_type": "general_section",
       "segment_id": "seg-g2",
@@ -44,10 +45,16 @@ struct GeneralSectionSegmentWireTests {
     }
     """
 
+    /// The values in `fullJSON`.
+    private static let fullSegment = GeneralSectionSegment(
+        segment_id: "seg-g1", section_id: "sec-7", title: "Gratitude",
+        prompt_text: "What went well today?", audio_file: "segments/g1.m4a",
+        transcript: "The walk was lovely.", language: "en-GB"
+    )
+
     private static func data(_ json: String) -> Data { Data(json.utf8) }
 
-    /// `fullJSON` without `key`.
-    private static func fullJSON(without key: String) throws -> Data {
+    private static func fullJSONData(without key: String) throws -> Data {
         var object = try #require(
             try JSONSerialization.jsonObject(with: data(fullJSON)) as? [String: Any]
         )
@@ -60,6 +67,33 @@ struct GeneralSectionSegmentWireTests {
         return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
     }
 
+    /// The `keyNotFound` key from decoding `json` as `type`, or nil if decoding
+    /// succeeds or fails differently.
+    private static func missingKey<T: Decodable>(decoding type: T.Type, from json: Data) -> String? {
+        do {
+            _ = try JSONDecoder().decode(type, from: json)
+            return nil
+        } catch DecodingError.keyNotFound(let key, _) {
+            return key.stringValue
+        } catch {
+            return nil
+        }
+    }
+
+    /// Asserts `segment` holds the `fullJSON` values.
+    private static func expectFullFields(
+        _ segment: GeneralSectionSegment, sourceLocation: SourceLocation = #_sourceLocation
+    ) {
+        #expect(segment.segment_type == "general_section", sourceLocation: sourceLocation)
+        #expect(segment.segment_id == "seg-g1", sourceLocation: sourceLocation)
+        #expect(segment.section_id == "sec-7", sourceLocation: sourceLocation)
+        #expect(segment.title == "Gratitude", sourceLocation: sourceLocation)
+        #expect(segment.prompt_text == "What went well today?", sourceLocation: sourceLocation)
+        #expect(segment.audio_file == "segments/g1.m4a", sourceLocation: sourceLocation)
+        #expect(segment.transcript == "The walk was lovely.", sourceLocation: sourceLocation)
+        #expect(segment.language == "en-GB", sourceLocation: sourceLocation)
+    }
+
     // MARK: - Decoding
 
     @Test("decodes every field from fixed JSON")
@@ -68,75 +102,58 @@ struct GeneralSectionSegmentWireTests {
             GeneralSectionSegment.self, from: Self.data(Self.fullJSON)
         )
 
-        #expect(segment.segment_type == "general_section")
-        #expect(segment.segment_id == "seg-g1")
-        #expect(segment.section_id == "sec-7")
-        #expect(segment.title == "Gratitude")
-        #expect(segment.prompt_text == "What went well today?")
-        #expect(segment.audio_file == "segments/g1.m4a")
-        #expect(segment.transcript == "The walk was lovely.")
-        #expect(segment.language == "en-GB")
+        Self.expectFullFields(segment)
     }
 
-    @Test("decodes an empty transcript and the default language from fixed JSON")
-    func decodesDefaultValues() throws {
+    @Test("decodes an empty transcript and a de-DE language as written")
+    func decodesEmptyTranscriptAndDefaultLanguage() throws {
         let segment = try JSONDecoder().decode(
-            GeneralSectionSegment.self, from: Self.data(Self.defaultsJSON)
+            GeneralSectionSegment.self, from: Self.data(Self.defaultValuesJSON)
         )
 
         #expect(segment.transcript == "")
         #expect(segment.language == "de-DE")
     }
 
-    @Test("the initializer defaults the transcript to empty and the language to de-DE")
-    func initializerDefaultsEncode() throws {
-        let segment = GeneralSectionSegment(
-            segment_id: "seg-g2", section_id: "sec-8", title: "Health",
-            prompt_text: "How did you sleep?", audio_file: "segments/g2.m4a"
-        )
+    @Test("decodes Unicode text byte for byte, without normalising")
+    func decodesUnicodeVerbatim() throws {
+        // `u` + combining diaeresis is canonically equal to `ü` but is
+        // different bytes; `String ==` cannot tell them apart, so compare UTF-8.
+        let json = #"""
+        {"segment_type": "general_section", "segment_id": "seg⁠ü",
+         "section_id": "Abschnitt 🌙", "title": "ü – 感謝",
+         "prompt_text": "Wofür?\nZeile \"zwei\"", "audio_file": "ü.m4a",
+         "transcript": "", "language": "de-DE"}
+        """#
 
-        #expect(segment.transcript == "")
-        #expect(segment.language == "de-DE")
+        let segment = try JSONDecoder().decode(GeneralSectionSegment.self, from: Self.data(json))
 
-        let object = try Self.wireObject(segment)
-        #expect(object["transcript"] as? String == "")
-        #expect(object["language"] as? String == "de-DE")
+        #expect(Array(segment.segment_id.utf8) == Array("seg\u{2060}ü".utf8))
+        #expect(Array(segment.section_id.utf8) == Array("Abschnitt 🌙".utf8))
+        #expect(Array(segment.title.utf8) == Array("u\u{0308} – 感謝".utf8))
+        #expect(Array(segment.prompt_text.utf8) == Array("Wofür?\nZeile \"zwei\"".utf8))
+        #expect(Array(segment.audio_file.utf8) == Array("ü.m4a".utf8))
     }
 
-    @Test("a missing required field is rejected", arguments: requiredContextKeys + ["segment_id", "audio_file"])
+    @Test("a missing required field fails with keyNotFound", arguments: requiredKeys)
     func missingRequiredFieldFails(key: String) throws {
-        let json = try Self.fullJSON(without: key)
+        let json = try Self.fullJSONData(without: key)
 
-        let error = try #require(throws: DecodingError.self) {
-            try JSONDecoder().decode(GeneralSectionSegment.self, from: json)
-        }
-        guard case .keyNotFound(let missing, _) = error else {
-            Issue.record("expected keyNotFound for \(key), got \(error)")
-            return
-        }
-        #expect(missing.stringValue == key)
+        #expect(Self.missingKey(decoding: GeneralSectionSegment.self, from: json) == key)
     }
 
-    @Test("a missing required context field also rejects the whole Segment", arguments: requiredContextKeys)
+    @Test("a missing section context field also rejects the whole Segment", arguments: contextKeys)
     func missingContextFieldRejectsSegment(key: String) throws {
-        let json = try Self.fullJSON(without: key)
+        let json = try Self.fullJSONData(without: key)
 
-        #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode(Segment.self, from: json)
-        }
+        #expect(Self.missingKey(decoding: Segment.self, from: json) == key)
     }
 
     // MARK: - Encoding
 
     @Test("encodes exactly the wire fields with their own values")
     func encodesWireFields() throws {
-        let segment = GeneralSectionSegment(
-            segment_id: "seg-g1", section_id: "sec-7", title: "Gratitude",
-            prompt_text: "What went well today?", audio_file: "segments/g1.m4a",
-            transcript: "The walk was lovely.", language: "en-GB"
-        )
-
-        let object = try Self.wireObject(segment)
+        let object = try Self.wireObject(Self.fullSegment)
 
         #expect(Set(object.keys) == [
             "segment_type", "segment_id", "section_id", "title", "prompt_text",
@@ -152,14 +169,30 @@ struct GeneralSectionSegmentWireTests {
         #expect(object["language"] as? String == "en-GB")
     }
 
+    @Test("the initializer defaults the transcript to empty and the language to de-DE")
+    func initializerDefaultsEncode() throws {
+        let segment = GeneralSectionSegment(
+            segment_id: "seg-g2", section_id: "sec-8", title: "Health",
+            prompt_text: "How did you sleep?", audio_file: "segments/g2.m4a"
+        )
+
+        let object = try Self.wireObject(segment)
+
+        #expect(segment.transcript == "")
+        #expect(segment.language == "de-DE")
+        #expect(object.count == 8)
+        #expect(object["transcript"] as? String == "")
+        #expect(object["language"] as? String == "de-DE")
+    }
+
     // MARK: - Round trips
 
-    @Test("opaque ids and text, including Unicode, survive a round trip unchanged")
+    @Test("opaque ids and text, including Unicode, survive a round trip byte for byte")
     func opaqueTextRoundTrips() throws {
         let original = GeneralSectionSegment(
             segment_id: " seg/ü·1 ",
             section_id: "Abschnitt 🌙/ß  (neu)",
-            title: "Dankbarkeit – 感謝 ✨",
+            title: "Dankbarkeit – 感謝 ✨ u\u{0308}",
             prompt_text: "Wofür bist du heute dankbar?\nWhat about \"quotes\" and \\ slashes?",
             audio_file: "segments/ü 1.m4a",
             transcript: "Ich bin dankbar für den Spaziergang. 🙏",
@@ -170,43 +203,42 @@ struct GeneralSectionSegmentWireTests {
             GeneralSectionSegment.self, from: JSONEncoder().encode(original)
         )
 
-        #expect(decoded.segment_id == original.segment_id)
-        #expect(decoded.section_id == original.section_id)
-        #expect(decoded.title == original.title)
-        #expect(decoded.prompt_text == original.prompt_text)
-        #expect(decoded.audio_file == original.audio_file)
-        #expect(decoded.transcript == original.transcript)
+        #expect(Array(decoded.segment_id.utf8) == Array(original.segment_id.utf8))
+        #expect(Array(decoded.section_id.utf8) == Array(original.section_id.utf8))
+        #expect(Array(decoded.title.utf8) == Array(original.title.utf8))
+        #expect(Array(decoded.prompt_text.utf8) == Array(original.prompt_text.utf8))
+        #expect(Array(decoded.audio_file.utf8) == Array(original.audio_file.utf8))
+        #expect(Array(decoded.transcript.utf8) == Array(original.transcript.utf8))
         #expect(decoded.language == original.language)
     }
 
-    @Test("empty context strings are not validated")
-    func emptyContextStringsPassThrough() throws {
+    @Test("empty ids and text are not validated")
+    func emptyStringsPassThrough() throws {
         let original = GeneralSectionSegment(
             segment_id: "", section_id: "", title: "", prompt_text: "", audio_file: ""
         )
 
         let object = try Self.wireObject(original)
-        for key in Self.requiredContextKeys + ["segment_id", "audio_file"] {
-            #expect(object[key] as? String == "", "\(key)")
+        for key in Self.requiredKeys {
+            #expect(object[key] as? String == "", "\(key) should encode as empty")
         }
 
         let decoded = try JSONDecoder().decode(
             GeneralSectionSegment.self, from: JSONEncoder().encode(original)
         )
+        #expect(decoded.segment_id == "")
         #expect(decoded.section_id == "")
         #expect(decoded.title == "")
         #expect(decoded.prompt_text == "")
+        #expect(decoded.audio_file == "")
     }
 
     @Test("a Segment round trip keeps every field and the general_section discriminator")
     func segmentRoundTrip() throws {
-        let segment = Segment.generalSection(GeneralSectionSegment(
-            segment_id: "seg-g1", section_id: "sec-7", title: "Gratitude",
-            prompt_text: "What went well today?", audio_file: "segments/g1.m4a",
-            transcript: "The walk was lovely.", language: "en-GB"
-        ))
+        let segment = Segment.generalSection(Self.fullSegment)
 
         let object = try Self.wireObject(segment)
+        #expect(object.count == 8)
         #expect(object["segment_type"] as? String == "general_section")
 
         let decoded = try JSONDecoder().decode(Segment.self, from: JSONEncoder().encode(segment))
@@ -214,13 +246,9 @@ struct GeneralSectionSegmentWireTests {
             Issue.record("general_section should decode to .generalSection, got \(decoded)")
             return
         }
+        Self.expectFullFields(payload)
         #expect(decoded.segmentID == "seg-g1")
         #expect(decoded.audioFile == "segments/g1.m4a")
-        #expect(payload.section_id == "sec-7")
-        #expect(payload.title == "Gratitude")
-        #expect(payload.prompt_text == "What went well today?")
-        #expect(payload.transcript == "The walk was lovely.")
-        #expect(payload.language == "en-GB")
     }
 
     @Test("fixed JSON decoded as a Segment reaches the general_section case with all fields")
@@ -231,12 +259,6 @@ struct GeneralSectionSegmentWireTests {
             Issue.record("general_section should decode to .generalSection, got \(decoded)")
             return
         }
-        #expect(payload.segment_id == "seg-g1")
-        #expect(payload.section_id == "sec-7")
-        #expect(payload.title == "Gratitude")
-        #expect(payload.prompt_text == "What went well today?")
-        #expect(payload.audio_file == "segments/g1.m4a")
-        #expect(payload.transcript == "The walk was lovely.")
-        #expect(payload.language == "en-GB")
+        Self.expectFullFields(payload)
     }
 }
