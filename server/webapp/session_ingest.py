@@ -81,6 +81,7 @@ from models import (
     DriveBySegment,
     EmptyBlockSegment,
     FreeReflectionSegment,
+    GeneralSectionSegment,
     Manifest,
     Segment,
     SegmentResult,
@@ -1650,6 +1651,11 @@ def _segment_header(segment: Segment) -> str:
         return f"## Freie Reflexion{(' um ' + time_str) if time_str else ''}"
     if isinstance(segment, EmptyBlockSegment):
         return f"## Zeitblock {segment.time_range.start}–{segment.time_range.end}"
+    if isinstance(segment, GeneralSectionSegment):
+        # The title only: the prompt is an AI prompt and stays out of the
+        # narrative input (CODING_STANDARDS hard rule 8); it is kept in the
+        # stored manifest.
+        return f"## Abschnitt: {' '.join(segment.title.split())}"
     return f"## Abschnitt {segment.segment_id}"
 
 

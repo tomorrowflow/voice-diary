@@ -716,7 +716,7 @@ All `audio_file` fields in the manifest reference these part names as relative p
 | `drive_by` | Ad-hoc thought captured during the day. `captured_at` required. May be linked to an event via `linked_calendar_event_id`. Also written by the drive-by walkthrough section when surfacing existing seeds (one segment per seed, populated from the on-disk metadata). |
 | `free_reflection` | Unanchored reflection captured during the drive-by section's listening phase or in response to an empty-calendar day. |
 | `empty_block` | Reflection prompted by an empty block in the schedule. `time_range` required. |
-| `general_section` | User-defined opener (§6 / §12). Required fields: `section_id` (stable UUID), `title`, `prompt_text` (the TTS line), plus the usual `audio_file` / `transcript` / `language`. |
+| `general_section` | User-defined opener (§6 / §12). Required fields: `section_id` (stable UUID), `title`, `prompt_text` (the TTS line), plus the usual `audio_file` / `transcript` / `language`. The server accepts it (a manifest missing any of the three is refused with `422 manifest_invalid` before anything is stored; `section_id` is the app's stable id, sent as a UUID but not validated as one) and processes its audio like every other segment — upload, resume, analysis retry and transcription recovery. All three fields are kept in the stored manifest; the day narrative gets the segment's `title` as its header (`## Abschnitt: <title>`) above the transcript. `prompt_text` is an AI prompt (`ai_prompts[]`, §10.3) and is never added to the transcript or the narrative input. |
 
 Manifest-level fields tied to the drive-by section:
 
@@ -1411,7 +1411,7 @@ Parked for now, listed for continuity:
 
 ## 17. Glossary
 
-- **Segment** — a chunk of user audio+transcript tagged with a type (calendar_event / drive_by / free_reflection / empty_block).
+- **Segment** — a chunk of user audio+transcript tagged with a type (calendar_event / drive_by / free_reflection / empty_block / general_section).
 - **Drive-by seed** — a drive-by capture from earlier in the day, pending surfacing in the evening walkthrough.
 - **Briefing** — the opening summary the AI speaks at the start of an evening session.
 - **Walkthrough** — the chronological traversal of the day's calendar events.
