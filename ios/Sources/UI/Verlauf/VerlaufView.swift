@@ -1221,7 +1221,7 @@ private struct SegmentRow: View {
             HStack(alignment: .top, spacing: Theme.spacing.sm) {
                 playButton
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                     Text(descriptor.title)
                         .font(Theme.font.body.weight(.medium))
                         .foregroundStyle(Theme.color.text.primary)
