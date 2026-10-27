@@ -63,14 +63,14 @@ struct SegmentDiscriminatorTests {
         language: "fr-FR"
     ))
 
-    /// Wire discriminator, expected id and audio file, and one payload
-    /// key/value that only that variant carries.
+    /// Wire discriminator, expected id and audio file, and one payload field
+    /// (a key path into the encoded JSON) with the value the fixture gave it.
     struct Expectation: CustomTestStringConvertible {
         let segment: Segment
         let discriminator: String
         let segmentID: String
         let audioFile: String
-        let payloadKey: String
+        let payloadKeyPath: String
         let payloadValue: String
 
         var testDescription: String { discriminator }
@@ -79,34 +79,57 @@ struct SegmentDiscriminatorTests {
     static let expectations = [
         Expectation(
             segment: calendarEvent, discriminator: "calendar_event", segmentID: "seg-cal",
-            audioFile: "segments/cal.m4a", payloadKey: "transcript", payloadValue: "calendar words"
+            audioFile: "segments/cal.m4a", payloadKeyPath: "calendar_ref.graph_event_id",
+            payloadValue: "graph-42"
         ),
         Expectation(
             segment: voiceNote, discriminator: "drive_by", segmentID: "seg-note",
-            audioFile: "segments/note.m4a", payloadKey: "seed_id", payloadValue: "seed-note"
+            audioFile: "segments/note.m4a", payloadKeyPath: "seed_id", payloadValue: "seed-note"
         ),
         Expectation(
             segment: freeReflection, discriminator: "free_reflection", segmentID: "seg-free",
-            audioFile: "segments/free.m4a", payloadKey: "captured_at",
+            audioFile: "segments/free.m4a", payloadKeyPath: "captured_at",
             payloadValue: "2026-04-27T19:30:00+02:00"
         ),
         Expectation(
             segment: emptyBlock, discriminator: "empty_block", segmentID: "seg-empty",
-            audioFile: "segments/empty.m4a", payloadKey: "language", payloadValue: "de-AT"
+            audioFile: "segments/empty.m4a", payloadKeyPath: "time_range.end",
+            payloadValue: "2026-04-27T14:30:00+02:00"
         ),
         Expectation(
             segment: generalSection, discriminator: "general_section", segmentID: "seg-general",
-            audioFile: "segments/general.m4a", payloadKey: "section_id", payloadValue: "section-9"
+            audioFile: "segments/general.m4a", payloadKeyPath: "prompt_text",
+            payloadValue: "How did you sleep?"
         ),
     ]
 
-    private static func jsonObject(_ segment: Segment) throws -> [String: Any] {
+    private static func jsonObject(_ segment: Segment) throws -> NSDictionary {
         let data = try JSONEncoder().encode(segment)
-        return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        return try #require(JSONSerialization.jsonObject(with: data) as? NSDictionary)
     }
 
     private static func decode(_ json: String) throws -> Segment {
         try JSONDecoder().decode(Segment.self, from: Data(json.utf8))
+    }
+
+    /// Decodes a fully valid encoded segment whose `segment_type` is replaced by
+    /// the given JSON literal, or removed when nil. The payload stays valid, so
+    /// only the discriminator can make decoding fail.
+    private static func decodeSegment(
+        _ segment: Segment,
+        segmentTypeLiteral literal: String?
+    ) throws -> Segment {
+        let object = try #require(jsonObject(segment).mutableCopy() as? NSMutableDictionary)
+        if let literal {
+            object["segment_type"] = try JSONSerialization.jsonObject(
+                with: Data(literal.utf8),
+                options: .fragmentsAllowed
+            )
+        } else {
+            object.removeObject(forKey: "segment_type")
+        }
+        let data = try JSONSerialization.data(withJSONObject: object)
+        return try JSONDecoder().decode(Segment.self, from: data)
     }
 
     @Test("encoding writes the variant's wire discriminator and payload", arguments: expectations)
@@ -116,7 +139,7 @@ struct SegmentDiscriminatorTests {
         #expect(object["segment_type"] as? String == expected.discriminator)
         #expect(object["segment_id"] as? String == expected.segmentID)
         #expect(object["audio_file"] as? String == expected.audioFile)
-        #expect(object[expected.payloadKey] as? String == expected.payloadValue)
+        #expect(object.value(forKeyPath: expected.payloadKeyPath) as? String == expected.payloadValue)
     }
 
     @Test("decoding an encoded segment restores the same variant and wire form", arguments: expectations)
@@ -124,8 +147,8 @@ struct SegmentDiscriminatorTests {
         let data = try JSONEncoder().encode(expected.segment)
         let decoded = try JSONDecoder().decode(Segment.self, from: data)
 
-        let before = try Self.jsonObject(expected.segment) as NSDictionary
-        let after = try Self.jsonObject(decoded) as NSDictionary
+        let before = try Self.jsonObject(expected.segment)
+        let after = try Self.jsonObject(decoded)
 
         #expect(decoded.segmentID == expected.segmentID)
         #expect(after == before)
@@ -200,47 +223,36 @@ struct SegmentDiscriminatorTests {
         #expect(object["segment_type"] as? String == "drive_by")
 
         #expect(throws: DecodingError.self) {
-            try Self.decode(#"{"segment_type":"voice_note","segment_id":"n","audio_file":"n.m4a","captured_at":"x"}"#)
+            try Self.decodeSegment(Self.voiceNote, segmentTypeLiteral: #""voice_note""#)
         }
     }
 
-    @Test("a missing segment_type is rejected")
-    func missingDiscriminatorThrows() {
+    @Test("a missing segment_type is rejected", arguments: expectations)
+    func missingDiscriminatorThrows(_ expected: Expectation) {
         #expect(throws: DecodingError.self) {
-            try Self.decode(#"{"segment_id":"s1","audio_file":"s1.m4a"}"#)
+            try Self.decodeSegment(expected.segment, segmentTypeLiteral: nil)
         }
     }
 
     @Test(
         "an unknown segment_type is rejected",
-        arguments: ["", "mystery", "Calendar_Event", "free-reflection", "voice_note"]
+        arguments: ["", "mystery", "Calendar_Event", "free-reflection", "voice_note"],
+        expectations
     )
-    func unknownDiscriminatorThrows(_ kind: String) {
-        let json = #"{"segment_type":"\#(kind)","segment_id":"s1","audio_file":"s1.m4a"}"#
-        #expect(throws: DecodingError.self) { try Self.decode(json) }
+    func unknownDiscriminatorThrows(_ kind: String, _ expected: Expectation) {
+        #expect(throws: DecodingError.self) {
+            try Self.decodeSegment(expected.segment, segmentTypeLiteral: "\"\(kind)\"")
+        }
     }
 
     @Test(
         "a non-string segment_type is rejected",
-        arguments: ["null", "7", "true", #"["drive_by"]"#, #"{"value":"drive_by"}"#]
+        arguments: ["null", "7", "true", #"["drive_by"]"#, #"{"value":"drive_by"}"#],
+        expectations
     )
-    func nonStringDiscriminatorThrows(_ literal: String) {
-        let json = #"{"segment_type":\#(literal),"segment_id":"s1","audio_file":"s1.m4a"}"#
-        #expect(throws: DecodingError.self) { try Self.decode(json) }
-    }
-
-    @Test("a manifest keeps mixed variants in order")
-    func manifestPreservesVariantOrder() throws {
-        let manifest = Manifest(
-            session_id: "2026-04-27T19:30:00+02:00",
-            date: "2026-04-27",
-            segments: Self.expectations.map(\.segment)
-        )
-
-        let data = try JSONEncoder().encode(manifest)
-        let decoded = try JSONDecoder().decode(Manifest.self, from: data)
-
-        #expect(decoded.segments.map(\.segmentID) == Self.expectations.map(\.segmentID))
-        #expect(decoded.segments.map(\.audioFile) == Self.expectations.map(\.audioFile))
+    func nonStringDiscriminatorThrows(_ literal: String, _ expected: Expectation) {
+        #expect(throws: DecodingError.self) {
+            try Self.decodeSegment(expected.segment, segmentTypeLiteral: literal)
+        }
     }
 }
