@@ -82,9 +82,25 @@ struct AiPromptSerializationTests {
     @Test("decodes JSON unicode escapes in text")
     func decodesEscapedUnicode() throws {
         let prompt = try Self.decode(
-            #"{"at": "a", "role": "r", "text": "Grüße 😀"}"#
+            "{\"at\": \"a\", \"role\": \"r\", \"text\": \"Gr\\u00fc\\u00dfe \\ud83d\\ude00\"}"
         )
         #expect(prompt.text == "Grüße 😀")
+    }
+
+    @Test("keys the app does not model are ignored on decode and absent on encode")
+    func ignoresUnknownKeys() throws {
+        // The server model allows extra keys, and SPEC §10.3 shows some on
+        // `enrichment_query`; the app has no property for them.
+        let prompt = try Self.decode("""
+            {"at": "a", "segment_id": "s01", "role": "enrichment_query",
+             "wake_word_matched": "hey voice diary", "query": "was hat Tobias geschrieben",
+             "intent": "email_lookup"}
+            """)
+        #expect(prompt.role == "enrichment_query")
+        #expect(prompt.segment_id == "s01")
+        #expect(prompt.text == nil)
+        let object = try Self.encodedObject(prompt)
+        #expect(Set(object.keys) == ["at", "segment_id", "role"])
     }
 
     @Test("at and role are opaque strings: any value is kept as is")
