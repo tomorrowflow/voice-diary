@@ -177,7 +177,7 @@ private struct VerlaufRow: View {
                     .foregroundStyle(iconFg)
             }
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                 Text(title)
                     .font(Theme.font.body.weight(.medium))
                     .foregroundStyle(Theme.color.text.primary)
