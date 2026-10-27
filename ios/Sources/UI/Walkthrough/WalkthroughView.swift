@@ -664,7 +664,7 @@ private struct UpstreamNoticeBanner: View {
             HStack(alignment: .top, spacing: Theme.spacing.sm) {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(Theme.color.status.warning)
-                    .padding(.top, 2)
+                    .padding(.top, Theme.spacing.xxxs)
                 Text(message)
                     .font(Theme.font.caption)
                     .foregroundStyle(Theme.color.text.primary)
