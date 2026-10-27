@@ -2,10 +2,10 @@ import Foundation
 import Testing
 @testable import VoiceDiary
 
-// `Todo` is nested in `Manifest.todos_detected` and `todos_implicit_confirmed`
-// (SPEC §10.3) and feeds the server's todo models (`server/webapp/models.py`),
-// which ignore the app-only `source_quote`. `TodoRejected` has its own suite in
-// `TodoRejectedWireTests`. It uses the synthesized Codable conformance, so the
+// `Todo` and `TodoRejected` are nested in `Manifest.todos_detected`,
+// `todos_implicit_confirmed` and `todos_implicit_rejected` (SPEC §10.3) and
+// feed the server's todo models (`server/webapp/models.py`), which ignore the
+// app-only `source_quote`. They use the synthesized Codable conformance, so the
 // Swift property names are the wire keys and nil optionals are left out of the
 // encoded JSON. `due` is an opaque string: the app never parses it. These tests
 // pin the initializer defaults and decode fixed JSON written independently of
@@ -48,6 +48,15 @@ struct TodoSerializationTests {
         #expect(todo.due == nil)
         #expect(todo.source_segment_id == nil)
         #expect(todo.source_quote == nil)
+    }
+
+    @Test("TodoRejected initializer defaults to the implicit type without attribution")
+    func todoRejectedInitializerDefaults() {
+        let rejected = TodoRejected(text: "Steuer prüfen")
+
+        #expect(rejected.text == "Steuer prüfen")
+        #expect(rejected.type == "implicit")
+        #expect(rejected.source_segment_id == nil)
     }
 
     @Test(
@@ -138,5 +147,38 @@ struct TodoSerializationTests {
         #expect(Array(try #require(todo.source_quote).unicodeScalars) == quote)
         #expect(Array(try #require(object["text"] as? String).unicodeScalars) == text)
         #expect(Array(try #require(object["source_quote"] as? String).unicodeScalars) == quote)
+    }
+
+    @Test("TodoRejected decodes with and without source_segment_id")
+    func todoRejectedDecoding() throws {
+        let withSource = #"{"text": "Steuer prüfen", "type": "implicit", "source_segment_id": "s03"}"#
+        let nullSource = #"{"text": "Steuer prüfen", "type": "implicit", "source_segment_id": null}"#
+        let noSource = #"{"text": "Steuer prüfen", "type": "implicit"}"#
+
+        let decoder = JSONDecoder()
+        let attributed = try decoder.decode(TodoRejected.self, from: Data(withSource.utf8))
+        let nulled = try decoder.decode(TodoRejected.self, from: Data(nullSource.utf8))
+        let absent = try decoder.decode(TodoRejected.self, from: Data(noSource.utf8))
+
+        #expect(attributed.text == "Steuer prüfen")
+        #expect(attributed.type == "implicit")
+        #expect(attributed.source_segment_id == "s03")
+        #expect(nulled.source_segment_id == nil)
+        #expect(absent.source_segment_id == nil)
+    }
+
+    @Test("TodoRejected encodes its implicit type and attribution")
+    func todoRejectedEncoding() throws {
+        let attributed = try Self.encodedObject(
+            TodoRejected(text: "Steuer prüfen – „bald“ 📮", source_segment_id: "s03")
+        )
+        let bare = try Self.encodedObject(TodoRejected(text: "Steuer prüfen"))
+
+        #expect(Set(attributed.keys) == ["text", "type", "source_segment_id"])
+        #expect(attributed["text"] as? String == "Steuer prüfen – „bald“ 📮")
+        #expect(attributed["type"] as? String == "implicit")
+        #expect(attributed["source_segment_id"] as? String == "s03")
+        #expect(Set(bare.keys) == ["text", "type"])
+        #expect(bare["type"] as? String == "implicit")
     }
 }

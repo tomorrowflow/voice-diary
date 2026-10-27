@@ -72,14 +72,16 @@ struct TodoRejectedWireTests {
     @Test(
         "Decoding rejects JSON missing a required key",
         arguments: [
-            #"{"type": "implicit", "source_segment_id": "s03"}"#,
-            #"{"text": "Steuer prüfen", "source_segment_id": "s03"}"#,
-            #"{"source_segment_id": "s03"}"#,
+            (#"{"type": "implicit", "source_segment_id": "s03"}"#, "text"),
+            (#"{"text": "Steuer prüfen", "source_segment_id": "s03"}"#, "type"),
         ]
     )
-    func decodingRequiresTextAndType(json: String) {
-        #expect(throws: DecodingError.self) {
+    func decodingRequiresTextAndType(json: String, missingKey: String) {
+        #expect {
             try JSONDecoder().decode(TodoRejected.self, from: Data(json.utf8))
+        } throws: { error in
+            guard case DecodingError.keyNotFound(let key, _) = error else { return false }
+            return key.stringValue == missingKey
         }
     }
 
