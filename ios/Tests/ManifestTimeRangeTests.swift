@@ -3,20 +3,24 @@ import Testing
 @testable import VoiceDiary
 
 // `TimeRange` is the `time_range` of an `empty_block` manifest segment. The
-// contract is SPEC §10 and `server/webapp/models.py`: an object with exactly
-// two string keys, `start` and `end`, both `"HH:MM"` (SPEC example:
-// `{"start": "14:00", "end": "16:00"}`). The Swift model uses the synthesized
-// Codable conformance, so the property names are the wire keys.
+// server documents it as an object with two string keys, `start` and `end`,
+// both `"HH:MM"`: SPEC §10 shows `{"start": "14:00", "end": "16:00"}` and
+// `server/webapp/models.py` annotates both fields `# "HH:MM"`. The server
+// declares them as plain `str`, so the format is the documented convention,
+// not something it enforces. The Swift model uses the synthesized Codable
+// conformance, so the property names are the wire keys.
 //
-// The contract tests below use `"HH:MM"` values and decode fixed JSON, then
-// read the encoded keys back with `JSONSerialization`, so they pin the wire
-// shape independently of the type under test.
+// The contract tests below use `"HH:MM"` values. The fixed-JSON decode tests
+// and the encoding test (which reads the encoded keys back with
+// `JSONSerialization`) pin the wire shape independently of the type under
+// test; the initializer and round-trip tests check that boundaries are not
+// swapped.
 //
-// Extra keys differ by side and are not tested here: the server model is
-// `extra="forbid"` and rejects unknown keys in the manifest it receives,
-// while Swift's synthesized decoder ignores them. The encoder only ever
-// writes `start` and `end`, so what the app sends satisfies the server's
-// policy.
+// Extra keys differ by side and are not tested here: the server's
+// `TimeRange` is `extra="forbid"` and rejects unknown keys inside
+// `time_range`, while `Manifest` and the segment models ignore unknown keys.
+// Swift's synthesized decoder ignores them everywhere. The encoder only ever
+// writes `start` and `end`, so what the app sends satisfies the server.
 //
 // The Swift type declares both values as plain `String`, with no parsing or
 // validation. The characterization tests at the end record that current
@@ -25,8 +29,9 @@ import Testing
 
 @Suite("ManifestTimeRange")
 struct ManifestTimeRangeTests {
-    private static let start = "14:00"
-    private static let end = "16:00"
+    /// The valid value `json(_:_:)` and the missing-field test put in the key
+    /// they leave alone.
+    private static let validValue = "14:00"
 
     private static func decode(_ json: String) throws -> TimeRange {
         try JSONDecoder().decode(TimeRange.self, from: Data(json.utf8))
@@ -35,8 +40,11 @@ struct ManifestTimeRangeTests {
     /// A `time_range` object with a valid value for the other key and
     /// `rawValue` (already JSON-encoded) for `key`.
     private static func json(_ key: String, _ rawValue: String) -> String {
-        let other = key == "start" ? "end" : "start"
-        return #"{"\#(key)": \#(rawValue), "\#(other)": "\#(start)"}"#
+        #"{"\#(key)": \#(rawValue), "\#(otherKey(key))": "\#(validValue)"}"#
+    }
+
+    private static func otherKey(_ key: String) -> String {
+        key == "start" ? "end" : "start"
     }
 
     private static func wireObject(_ range: TimeRange) throws -> [String: Any] {
@@ -102,8 +110,9 @@ struct ManifestTimeRangeTests {
 
     @Test("a missing start or end fails with keyNotFound", arguments: ["start", "end"])
     func missingFieldFails(key: String) throws {
-        let other = key == "start" ? "end" : "start"
-        let error = try Self.decodingError(#"{"\#(other)": "\#(Self.start)"}"#)
+        let error = try Self.decodingError(
+            #"{"\#(Self.otherKey(key))": "\#(Self.validValue)"}"#
+        )
 
         guard case .keyNotFound(let missing, _)? = error else {
             Issue.record("expected keyNotFound for \(key), got \(String(describing: error))")
