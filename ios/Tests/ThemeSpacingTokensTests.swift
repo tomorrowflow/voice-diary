@@ -21,4 +21,10 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.progressGap == DSSpacing.spacing_r1_5)
         #expect(Theme.spacing.progressGap == 6)
     }
+
+    @Test("recordingLegendGap aliases the 6-point design-system step")
+    func recordingLegendGapIsSixPoints() {
+        #expect(Theme.spacing.recordingLegendGap == DSSpacing.spacing_r1_5)
+        #expect(Theme.spacing.recordingLegendGap == 6)
+    }
 }
