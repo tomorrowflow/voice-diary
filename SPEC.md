@@ -716,7 +716,7 @@ All `audio_file` fields in the manifest reference these part names as relative p
 | `drive_by` | Ad-hoc thought captured during the day. `captured_at` required. May be linked to an event via `linked_calendar_event_id`. Also written by the drive-by walkthrough section when surfacing existing seeds (one segment per seed, populated from the on-disk metadata). |
 | `free_reflection` | Unanchored reflection captured during the drive-by section's listening phase or in response to an empty-calendar day. |
 | `empty_block` | Reflection prompted by an empty block in the schedule. `time_range` required. |
-| `general_section` | User-defined opener (§6 / §12). Required fields: `section_id` (stable UUID), `title`, `prompt_text` (the TTS line), plus the usual `audio_file` / `transcript` / `language`. |
+| `general_section` | User-defined opener (§6 / §12). Required fields: `section_id` (stable UUID), `title`, `prompt_text` (the TTS line), plus the usual `audio_file` / `transcript` / `language`. The server accepts it (a manifest missing any of the three is refused with `422 manifest_invalid` before anything is stored; `section_id` is any string, not only a UUID) and processes its audio like every other segment — upload, resume, analysis retry and transcription recovery. `title` and `prompt_text` are kept in the stored manifest and given to the day narrative as a header (`## Abschnitt: <title>` and `Frage: <prompt_text>`) above the segment's transcript; the prompt is never added to the transcript itself. |
 
 Manifest-level fields tied to the drive-by section:
 

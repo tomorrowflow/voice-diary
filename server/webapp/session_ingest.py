@@ -81,6 +81,7 @@ from models import (
     DriveBySegment,
     EmptyBlockSegment,
     FreeReflectionSegment,
+    GeneralSectionSegment,
     Manifest,
     Segment,
     SegmentResult,
@@ -1650,6 +1651,10 @@ def _segment_header(segment: Segment) -> str:
         return f"## Freie Reflexion{(' um ' + time_str) if time_str else ''}"
     if isinstance(segment, EmptyBlockSegment):
         return f"## Zeitblock {segment.time_range.start}–{segment.time_range.end}"
+    if isinstance(segment, GeneralSectionSegment):
+        title = " ".join(segment.title.split())
+        prompt = " ".join(segment.prompt_text.split())
+        return f"## Abschnitt: {title}\nFrage: {prompt}"
     return f"## Abschnitt {segment.segment_id}"
 
 

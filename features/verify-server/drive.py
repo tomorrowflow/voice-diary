@@ -6,6 +6,7 @@ verify stack's network and talks to the real webapp at $BASE_URL.
     python /drive.py session-upload-whisper-down <session_id>
     python /drive.py session-status <session_id> legacy|coded
     python /drive.py segment-retry-transcription <session_id>
+    python /drive.py session-general-section <session_id>
     python /drive.py session-interrupted-recovery <session_id> saved|unsaved
     python /drive.py document-ingest-refusals
     python /drive.py document-ingest-outdated <doc_id>
@@ -121,15 +122,16 @@ def sessions_dates():
     check("bad date_from -> 400 invalid_date_from", status == 400 and body.get("detail") == "invalid_date_from")
 
 
-def _session_bundle(session_id):
-    """A minimal one-segment iOS session bundle as multipart/form-data."""
+def _session_bundle(session_id, segment=None):
+    """A minimal one-segment iOS session bundle as multipart/form-data; the
+    segment is a `drive_by` one unless `segment` (a manifest entry) is given."""
     manifest = {
         "session_id": session_id,
         "date": "2026-07-01",
         "device": "iPhone17,2",
         "app_version": "1.0",
         "audio_codec": {"codec": "aac-lc", "sample_rate": 16000, "channels": 1, "bitrate": 64000},
-        "segments": [{
+        "segments": [segment or {
             "segment_id": "s01",
             "segment_type": "drive_by",
             "audio_file": "segments/s01.m4a",
@@ -228,6 +230,50 @@ def segment_retry_transcription(session_id):
           and segments["s03"].get("recoverable") is False)
 
 
+def session_general_section(session_id):
+    """The `general_section` segment variant (SPEC §10.4) against the real routes of a
+    stack without Whisper: upload validation, then the stored bundle of the seeded
+    `ftr07-general` session. The manifest is validated before the Whisper preflight, so an
+    accepted manifest shows as that preflight's 503 and a refused one as a 422."""
+    general = {
+        "segment_id": "s01",
+        "segment_type": "general_section",
+        "section_id": "5f0c2a52-7d58-4b8c-9c1e-0d6f4a3a9b11",
+        "title": "Abendreflexion",
+        "prompt_text": "Was hat dich heute am meisten beschäftigt?",
+        "audio_file": "segments/s01.m4a",
+        "transcript": "",
+        "language": "de-DE",
+    }
+    whisper_down = {"detail": "whisper_unavailable", "code": "whisper_unavailable",
+                    "upstream": "whisper", "retryable": True}
+
+    status, body = call("POST", "/api/sessions", auth=False, multipart=_session_bundle(session_id, general))
+    check("upload without bearer -> 401", status == 401)
+    status, body = call("POST", "/api/sessions", auth=True, multipart=_session_bundle(session_id, general))
+    check("valid general_section manifest is accepted: reaches the Whisper preflight -> 503 failure contract",
+          status == 503 and body == whisper_down)
+    status, body = call("GET", f"/api/sessions/{session_id}/status", auth=True)
+    check("nothing persisted by the refused upload -> 404 session_not_found",
+          status == 404 and body.get("detail") == "session_not_found")
+    for field in ("section_id", "title", "prompt_text"):
+        incomplete = {k: v for k, v in general.items() if k != field}
+        status, body = call("POST", "/api/sessions", auth=True, multipart=_session_bundle(session_id, incomplete))
+        check(f"general_section without {field} -> 422 manifest_invalid before any side effect",
+              status == 422 and str(body.get("detail", "")).startswith("manifest_invalid")
+              and field in str(body.get("detail")))
+
+    stored = "ftr07-general"
+    status, body = call("GET", f"/api/sessions/{stored}/status", auth=True)
+    check("seeded general_section session status -> 200, s01 failed",
+          status == 200 and [s["status"] for s in body.get("segments", [])] == ["failed"])
+    check("stored bundle reloads: s01 is recoverable (its manifest entry and audio are found)",
+          body.get("segments", [{}])[0].get("recoverable") is True)
+    status, body = call("POST", f"/api/sessions/{stored}/segments/s01/retry-transcription", auth=True)
+    check("explicit transcription recovery passes its checks, then Whisper is down -> 503 failure contract",
+          status == 503 and body == whisper_down)
+
+
 def session_interrupted_recovery(session_id, expect):
     """Read back a session whose recovery a webapp restart interrupted (seeded
     `transcribing`, then settled at startup). expect = saved (its transcript was
@@ -306,6 +352,7 @@ COMMANDS = {
     "session-upload-whisper-down": (session_upload_whisper_down, 1),
     "session-status": (session_status, 2),
     "segment-retry-transcription": (segment_retry_transcription, 1),
+    "session-general-section": (session_general_section, 1),
     "session-interrupted-recovery": (session_interrupted_recovery, 2),
     "document-ingest-refusals": (document_ingest_refusals, 0),
     "document-ingest-outdated": (document_ingest_outdated, 1),
