@@ -116,7 +116,6 @@ public enum Theme {
         public let xxl:  CGFloat = DSSpacing.spacing_r8   // 32
         public let xxxl: CGFloat = DSSpacing.spacing_r10  // 40
 
-        // Aliases for named gaps that sit between the t-shirt steps.
         public let progressGap: CGFloat = DSSpacing.spacing_r1_5 // 6
     }
 
