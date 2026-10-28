@@ -118,6 +118,9 @@ public enum Theme {
         public let xxxl: CGFloat = DSSpacing.spacing_r10  // 40
 
         public let progressGap: CGFloat = DSSpacing.spacing_r1_5 // 6
+
+        /// Diameter of the idle Quick capture microphone disc.
+        public let captureMicDiscSize: CGFloat = 120
     }
 
     public struct RadiusTokens: Sendable {
