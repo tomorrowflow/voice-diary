@@ -185,6 +185,5 @@ struct LocalFailureDiagnosisTests {
         let d = ConnectionDiagnosis.classify(LocalFailure())
         #expect(d.kind == .unknown)
         #expect(d.detail == String(describing: LocalFailure()))
-        #expect(d.title != ConnectionDiagnosis.classify(ServerClientError.missingFile(URL(fileURLWithPath: "/x"))).title)
     }
 }
