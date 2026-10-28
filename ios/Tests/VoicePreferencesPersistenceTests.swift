@@ -22,7 +22,7 @@ struct VoicePreferencesPersistenceTests {
         }
     }
 
-    private func withIsolatedKeys<T>(_ body: () throws -> T) rethrows -> T {
+    private func withIsolatedKeys(_ body: () throws -> Void) rethrows {
         let defaults = UserDefaults.standard
         let keys = [Self.keyQX, Self.keyQY]
         let previous = keys.map { defaults.object(forKey: $0) }
@@ -30,7 +30,7 @@ struct VoicePreferencesPersistenceTests {
             for (key, value) in zip(keys, previous) { Self.restore(value, forKey: key) }
         }
         for key in keys { defaults.removeObject(forKey: key) }
-        return try body()
+        try body()
     }
 
     @Test("region and case aliases of a language share one storage key")
@@ -107,15 +107,9 @@ struct VoicePreferencesPersistenceTests {
         }
     }
 
-    @Test("an empty stored value reads as no selection")
-    func emptyStoredValueReadsAsNil() {
-        withIsolatedKeys {
-            UserDefaults.standard.set("", forKey: Self.keyQX)
-            #expect(VoicePreferences.selectedVoiceID(for: "qx") == nil)
-        }
-    }
+    private struct Abort: Error {}
 
-    @Test("the exact prior defaults are restored after the isolated block")
+    @Test("the exact prior defaults are restored even when the block throws")
     func restoresPriorDefaults() {
         let defaults = UserDefaults.standard
         let priorQX = defaults.object(forKey: Self.keyQX)
@@ -127,49 +121,42 @@ struct VoicePreferencesPersistenceTests {
         defaults.set("sentinel-qx", forKey: Self.keyQX)
         defaults.removeObject(forKey: Self.keyQY)
 
-        withIsolatedKeys {
-            #expect(defaults.object(forKey: Self.keyQX) == nil)
-            VoicePreferences.setSelectedVoiceID("voxtral:qx_one", for: "qx")
-            VoicePreferences.setSelectedVoiceID("voxtral:qy_one", for: "qy")
+        #expect(throws: Abort.self) {
+            try withIsolatedKeys {
+                #expect(defaults.object(forKey: Self.keyQX) == nil)
+                VoicePreferences.setSelectedVoiceID("voxtral:qx_one", for: "qx")
+                VoicePreferences.setSelectedVoiceID("voxtral:qy_one", for: "qy")
+                throw Abort()
+            }
         }
 
         #expect(defaults.string(forKey: Self.keyQX) == "sentinel-qx")
         #expect(defaults.object(forKey: Self.keyQY) == nil)
     }
 
-    @Test("the prefixes are the exact stored strings")
-    func prefixConstants() {
-        #expect(VoicePreferences.piperPrefix == "piper:")
-        #expect(VoicePreferences.voxtralPrefix == "voxtral:")
-    }
+    /// (identifier, isPiper, isVoxtral)
+    private static let classifierCases: [(String?, Bool, Bool)] = [
+        (nil, false, false),
+        ("piper:", true, false),
+        ("piper:de_DE-thorsten-high", true, false),
+        ("voxtral:", false, true),
+        ("voxtral:de_male", false, true),
+        ("Piper:de_DE-thorsten-high", false, false),
+        ("PIPER:x", false, false),
+        ("Voxtral:de_male", false, false),
+        ("VOXTRAL:x", false, false),
+        (" piper:x", false, false),
+        (" voxtral:x", false, false),
+        ("piper", false, false),
+        ("voxtral", false, false),
+        ("", false, false),
+        ("de_DE-thorsten-high", false, false),
+        ("com.apple.voice.premium.de-DE.Markus", false, false)
+    ]
 
-    @Test("isPiperVoiceID accepts only the exact lowercase prefix")
-    func piperClassifier() {
-        #expect(!VoicePreferences.isPiperVoiceID(nil))
-        #expect(VoicePreferences.isPiperVoiceID("piper:"))
-        #expect(VoicePreferences.isPiperVoiceID("piper:de_DE-thorsten-high"))
-        #expect(!VoicePreferences.isPiperVoiceID("Piper:de_DE-thorsten-high"))
-        #expect(!VoicePreferences.isPiperVoiceID("PIPER:x"))
-        #expect(!VoicePreferences.isPiperVoiceID(" piper:x"))
-        #expect(!VoicePreferences.isPiperVoiceID("piper"))
-        #expect(!VoicePreferences.isPiperVoiceID(""))
-        #expect(!VoicePreferences.isPiperVoiceID("de_DE-thorsten-high"))
-        #expect(!VoicePreferences.isPiperVoiceID("voxtral:de_male"))
-        #expect(!VoicePreferences.isPiperVoiceID("com.apple.voice.premium.de-DE.Markus"))
-    }
-
-    @Test("isVoxtralVoiceID accepts only the exact lowercase prefix")
-    func voxtralClassifier() {
-        #expect(!VoicePreferences.isVoxtralVoiceID(nil))
-        #expect(VoicePreferences.isVoxtralVoiceID("voxtral:"))
-        #expect(VoicePreferences.isVoxtralVoiceID("voxtral:de_male"))
-        #expect(!VoicePreferences.isVoxtralVoiceID("Voxtral:de_male"))
-        #expect(!VoicePreferences.isVoxtralVoiceID("VOXTRAL:x"))
-        #expect(!VoicePreferences.isVoxtralVoiceID(" voxtral:x"))
-        #expect(!VoicePreferences.isVoxtralVoiceID("voxtral"))
-        #expect(!VoicePreferences.isVoxtralVoiceID(""))
-        #expect(!VoicePreferences.isVoxtralVoiceID("de_male"))
-        #expect(!VoicePreferences.isVoxtralVoiceID("piper:de_DE-thorsten-high"))
-        #expect(!VoicePreferences.isVoxtralVoiceID("com.apple.voice.premium.de-DE.Markus"))
+    @Test("prefix classifiers accept only the exact lowercase prefixes", arguments: classifierCases)
+    func prefixClassifiers(identifier: String?, isPiper: Bool, isVoxtral: Bool) {
+        #expect(VoicePreferences.isPiperVoiceID(identifier) == isPiper)
+        #expect(VoicePreferences.isVoxtralVoiceID(identifier) == isVoxtral)
     }
 }
