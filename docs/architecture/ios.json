@@ -55,6 +55,12 @@
     {"id":"walk>client","file":"ios/Sources/Dialog/EnrichmentService.swift","line":84},
     {"id":"store>client","file":"ios/Sources/Backend/SessionUploader.swift","line":153},
     {"id":"client>server","file":"ios/Sources/Backend/ServerClient.swift","line":157},
-    {"id":"tts>server","file":"ios/Sources/TTS/VoxtralTTSClient.swift","line":64}
+    {"id":"tts>server","file":"ios/Sources/TTS/VoxtralTTSClient.swift","line":64},
+    {
+      "id": "server",
+      "file": "server/webapp/main.py",
+      "line": 119,
+      "note": "FastAPI app; sessions_router at line 141, tts_router at line 143"
+    }
   ]
 }
