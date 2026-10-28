@@ -15,7 +15,7 @@ private func http(_ status: Int, _ detail: String) -> ServerClientError {
     .http(status: status, detail: detail, failure: UpstreamFailure())
 }
 
-private let pendingError ="analysis_pending: ollama_unavailable: connection refused"
+private let pendingError = "analysis_pending: ollama_unavailable: connection refused"
 private let healthy = ["ollama": "ok", "lightrag": "ok", "whisper": "ok", "voxtral": "down"]
 
 @Suite("RetryAnalysisPolicy")
