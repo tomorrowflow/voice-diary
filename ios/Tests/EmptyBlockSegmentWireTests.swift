@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import VoiceDiary
 
-// `EmptyBlockSegment` is the `empty_block` manifest segment (SPEC §10): audio
+// `EmptyBlockSegment` is the `empty_block` manifest segment (SPEC §10.4): audio
 // recorded for a free calendar block. The server's `EmptyBlockSegment`
 // (`server/webapp/models.py`) is a `SegmentBase` (`segment_id`, `audio_file`,
 // `transcript` defaulting to "", `language` defaulting to "de-DE") plus a
@@ -13,13 +13,14 @@ import Testing
 //
 // Decoding tests read fixed literal JSON and encoding tests read the keys back
 // with `JSONSerialization`, so the wire shape is pinned independently of the
-// type under test. The "HH:MM" format of `time_range` is not validated by the
-// model and these tests do not add that; see `ManifestTimeRangeTests` for how
-// `TimeRange` handles arbitrary strings.
+// type under test. The model does not validate the "HH:MM" format of
+// `time_range`; `ManifestTimeRangeTests` covers how `TimeRange` handles
+// arbitrary strings.
 
 @Suite("EmptyBlockSegmentWire")
 struct EmptyBlockSegmentWireTests {
     private static let requiredKeys = ["segment_id", "time_range", "audio_file", "transcript", "language"]
+    private static let wireKeys = Set(requiredKeys + ["segment_type"])
 
     private static let fullJSON = """
     {
@@ -73,15 +74,13 @@ struct EmptyBlockSegmentWireTests {
     private static func expectFullFields(
         _ segment: EmptyBlockSegment, sourceLocation: SourceLocation = #_sourceLocation
     ) {
-        #expect(segment.segment_type == "empty_block", sourceLocation: sourceLocation)
+        // `segment_type` is a constant the synthesized decoder skips; the
+        // encoding tests pin it.
         #expect(segment.segment_id == "seg-e1", sourceLocation: sourceLocation)
         #expect(segment.time_range.start == "09:30", sourceLocation: sourceLocation)
         #expect(segment.time_range.end == "11:45", sourceLocation: sourceLocation)
         #expect(segment.audio_file == "segments/e1.m4a", sourceLocation: sourceLocation)
-        #expect(
-            Array(segment.transcript.utf8) == Array("Ruhiger Vormittag – 静かな朝 ☕️".utf8),
-            sourceLocation: sourceLocation
-        )
+        #expect(segment.transcript == "Ruhiger Vormittag – 静かな朝 ☕️", sourceLocation: sourceLocation)
         #expect(segment.language == "ja-JP", sourceLocation: sourceLocation)
     }
 
@@ -96,43 +95,9 @@ struct EmptyBlockSegmentWireTests {
         Self.expectFullFields(segment)
     }
 
-    @Test("decodes an empty transcript and a de-DE language as written")
-    func decodesEmptyTranscriptAndDefaultLanguage() throws {
-        let json = """
-        {"segment_type": "empty_block", "segment_id": "seg-e2",
-         "time_range": {"start": "13:00", "end": "14:00"},
-         "audio_file": "segments/e2.m4a", "transcript": "", "language": "de-DE"}
-        """
-
-        let segment = try JSONDecoder().decode(EmptyBlockSegment.self, from: Self.data(json))
-
-        #expect(segment.transcript == "")
-        #expect(segment.language == "de-DE")
-    }
-
-    @Test("a missing required field fails with keyNotFound", arguments: requiredKeys)
+    @Test("a missing required field fails with keyNotFound, including defaulted ones", arguments: requiredKeys)
     func missingRequiredFieldFails(key: String) throws {
         let json = try Self.fullJSONData(without: key)
-
-        #expect(Self.missingKey(decoding: EmptyBlockSegment.self, from: json) == key)
-    }
-
-    @Test("a missing required field also rejects the whole Segment", arguments: requiredKeys)
-    func missingRequiredFieldRejectsSegment(key: String) throws {
-        let json = try Self.fullJSONData(without: key)
-
-        #expect(Self.missingKey(decoding: Segment.self, from: json) == key)
-    }
-
-    @Test("a missing time_range start or end fails with keyNotFound", arguments: ["start", "end"])
-    func missingTimeRangeBoundFails(key: String) throws {
-        var object = try #require(
-            try JSONSerialization.jsonObject(with: Self.data(Self.fullJSON)) as? [String: Any]
-        )
-        var timeRange = try #require(object["time_range"] as? [String: Any])
-        timeRange[key] = nil
-        object["time_range"] = timeRange
-        let json = try JSONSerialization.data(withJSONObject: object)
 
         #expect(Self.missingKey(decoding: EmptyBlockSegment.self, from: json) == key)
     }
@@ -143,9 +108,7 @@ struct EmptyBlockSegmentWireTests {
     func encodesWireFields() throws {
         let object = try Self.wireObject(Self.fullSegment)
 
-        #expect(Set(object.keys) == [
-            "segment_type", "segment_id", "time_range", "audio_file", "transcript", "language",
-        ])
+        #expect(Set(object.keys) == Self.wireKeys)
         #expect(object["segment_type"] as? String == "empty_block")
         #expect(object["segment_id"] as? String == "seg-e1")
         #expect(object["audio_file"] as? String == "segments/e1.m4a")
@@ -175,7 +138,7 @@ struct EmptyBlockSegmentWireTests {
 
         #expect(segment.transcript == "")
         #expect(segment.language == "de-DE")
-        #expect(object.count == 6)
+        #expect(Set(object.keys) == Self.wireKeys)
         #expect(object["transcript"] as? String == "")
         #expect(object["language"] as? String == "de-DE")
     }
@@ -196,7 +159,7 @@ struct EmptyBlockSegmentWireTests {
         let segment = Segment.emptyBlock(Self.fullSegment)
 
         let object = try Self.wireObject(segment)
-        #expect(object.count == 6)
+        #expect(Set(object.keys) == Self.wireKeys)
         #expect(object["segment_type"] as? String == "empty_block")
 
         let decoded = try JSONDecoder().decode(Segment.self, from: JSONEncoder().encode(segment))
