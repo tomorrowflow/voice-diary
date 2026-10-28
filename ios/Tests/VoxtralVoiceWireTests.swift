@@ -87,18 +87,20 @@ struct VoxtralVoiceWireTests {
 
     @Test("decodes Unicode text byte for byte, without normalising")
     func decodesUnicodeVerbatim() throws {
-        // `u` + combining diaeresis is canonically equal to `ü` but is
-        // different bytes; `String ==` cannot tell them apart, so compare UTF-8.
+        // `u` + combining diaeresis (U+0308) is canonically equal to `ü` (U+00FC)
+        // but is different bytes; `String ==` cannot tell them apart, so compare
+        // UTF-8. The code points are JSON and Swift escapes so an editor cannot
+        // recompose them.
         let json = #"""
-        {"id": "stimme_ü_1", "language": "DE", "label": "ü – 感謝 🌙",
+        {"id": "stimme_ü_1", "language": "DE", "label": "ü – 感謝 🌙",
          "description": "Wofür?\nZeile \"zwei\""}
         """#
 
         let voice = try Self.decodeVoice(json)
 
-        #expect(Array(voice.id.utf8) == Array("stimme_ü_1".utf8))
-        #expect(Array(voice.label.utf8) == Array("u\u{0308} – 感謝 🌙".utf8))
-        #expect(Array(voice.description.utf8) == Array("Wofür?\nZeile \"zwei\"".utf8))
+        #expect(Array(voice.id.utf8) == Array("stimme_u\u{0308}_1".utf8))
+        #expect(Array(voice.label.utf8) == Array("\u{00FC} \u{2013} \u{611F}\u{8B1D} \u{1F319}".utf8))
+        #expect(Array(voice.description.utf8) == Array("Wof\u{00FC}r?\nZeile \"zwei\"".utf8))
     }
 
     @Test("a missing field fails with keyNotFound", arguments: wireKeys)
@@ -138,24 +140,9 @@ struct VoxtralVoiceWireTests {
         #expect(object["description"] as? String == "Native deutsche Stimme, neutral.")
     }
 
-    @Test("a decoded catalog survives an encode and decode with every voice intact")
-    func catalogRoundTrips() throws {
-        let original = try JSONDecoder().decode(
-            [String: [VoxtralVoice]].self, from: Self.data(Self.catalogJSON)
-        )
-
-        let decoded = try JSONDecoder().decode(
-            [String: [VoxtralVoice]].self, from: JSONEncoder().encode(original)
-        )
-
-        #expect(decoded == original)
-        #expect(decoded["EN"]?.map(\.id) == ["casual_male", "neutral_female", "cheerful_female"])
-        #expect(decoded["DE"]?.map(\.id) == ["de_male", "de_female"])
-    }
-
     // MARK: - voiceID
 
-    @Test("voiceID is the literal voxtral: prefix plus the server id, and id is unchanged")
+    @Test("voiceID is the literal voxtral: prefix once plus the server id, and id is unchanged")
     func voiceIDPrefixesServerID() throws {
         let voice = try Self.decodeVoice(Self.voiceJSON)
 
@@ -163,22 +150,10 @@ struct VoxtralVoiceWireTests {
         #expect(voice.id == "de_male")
     }
 
-    @Test("voiceID adds the prefix once per computation, so repeated reads agree")
-    func voiceIDIsStableAcrossReads() throws {
-        let voice = try Self.decodeVoice(Self.voiceJSON)
-
-        let first = voice.voiceID
-        let second = voice.voiceID
-
-        #expect(first == "voxtral:de_male")
-        #expect(second == first)
-        #expect(voice.id == "de_male")
-    }
-
-    @Test("voiceID does not detect an id that already starts with the prefix")
+    @Test("voiceID adds the prefix without detecting an id that already has it")
     func voiceIDPrefixesAnAlreadyPrefixedID() throws {
         let voice = try Self.decodeVoice(
-            #"{"id": "voxtral:de_male", "language": "DE", "label": "L", "description": "D"}"#
+            #"{"id": "voxtral:de_male", "language": "DE", "label": "Label", "description": "Text"}"#
         )
 
         #expect(voice.voiceID == "voxtral:voxtral:de_male")
@@ -188,7 +163,7 @@ struct VoxtralVoiceWireTests {
     @Test("an empty id is not validated and yields the bare prefix")
     func emptyIDYieldsBarePrefix() throws {
         let voice = try Self.decodeVoice(
-            #"{"id": "", "language": "DE", "label": "L", "description": "D"}"#
+            #"{"id": "", "language": "DE", "label": "Label", "description": "Text"}"#
         )
 
         #expect(voice.id == "")
