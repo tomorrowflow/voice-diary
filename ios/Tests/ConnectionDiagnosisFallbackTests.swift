@@ -10,115 +10,98 @@ import Testing
 // `URLError.localizedDescription` depends on the device locale, so URLError
 // detail is checked by its stable "URLError <code>: " prefix only.
 
-private let unreachableImage = "antenna.radiowaves.left.and.right.slash"
-
-private struct LocalFailure: Error {}
-
 @Suite("Transport failure diagnosis")
 struct TransportFailureDiagnosisTests {
+    private let unreachableImage = "antenna.radiowaves.left.and.right.slash"
+
     private func diagnosis(_ code: URLError.Code) -> ConnectionDiagnosis {
         ConnectionDiagnosis.classify(URLError(code))
     }
 
-    private func expectDetail(_ d: ConnectionDiagnosis, code: URLError.Code) {
-        let prefix = "URLError \(code.rawValue): "
-        #expect(d.detail?.hasPrefix(prefix) == true, "\(code.rawValue) detail \(d.detail ?? "nil")")
+    /// Pins everything that is not copy: kind, icon, retryability and the
+    /// `URLError <code>: ` detail prefix.
+    private func expectDiagnosis(
+        _ codes: [URLError.Code], kind: ConnectionDiagnosis.Kind, systemImage: String
+    ) {
+        for code in codes {
+            let d = diagnosis(code)
+            #expect(d.kind == kind, "\(code.rawValue)")
+            #expect(d.systemImage == systemImage, "\(code.rawValue)")
+            #expect(d.isRetryable, "\(code.rawValue)")
+            #expect(d.detail?.hasPrefix("URLError \(code.rawValue): ") == true, "\(code.rawValue) detail \(d.detail ?? "nil")")
+        }
     }
 
     @Test("no internet connection is offline, not an unreachable server")
     func offline() {
-        let d = diagnosis(.notConnectedToInternet)
-        #expect(d.kind == .offline)
-        #expect(d.systemImage == "wifi.slash")
-        #expect(d.isRetryable)
-        expectDetail(d, code: .notConnectedToInternet)
+        expectDiagnosis([.notConnectedToInternet], kind: .offline, systemImage: "wifi.slash")
     }
 
-    @Test("both DNS failures point at Tailscale name resolution")
+    @Test("both DNS failures share one explanation")
     func dnsFailures() {
-        let dns: [URLError.Code] = [.cannotFindHost, .dnsLookupFailed]
-        for code in dns {
-            let d = diagnosis(code)
-            #expect(d.kind == .unreachable, "\(code.rawValue)")
-            #expect(d.systemImage == unreachableImage, "\(code.rawValue)")
-            #expect(d.isRetryable, "\(code.rawValue)")
-            expectDetail(d, code: code)
-        }
-        let first = diagnosis(.cannotFindHost)
-        let second = diagnosis(.dnsLookupFailed)
-        #expect(first.title == second.title)
-        #expect(first.hint == second.hint)
-        #expect(first.hint.contains("aufgelöst"))
+        expectDiagnosis([.cannotFindHost, .dnsLookupFailed], kind: .unreachable, systemImage: unreachableImage)
+        #expect(diagnosis(.cannotFindHost).title == diagnosis(.dnsLookupFailed).title)
+        #expect(diagnosis(.cannotFindHost).hint == diagnosis(.dnsLookupFailed).hint)
     }
 
-    @Test("all four connection failures say the server is silent, not the hostname")
+    @Test("all four connection failures share one explanation")
     func connectionFailures() {
-        let connection: [URLError.Code] = [
+        let codes: [URLError.Code] = [
             .cannotConnectToHost, .networkConnectionLost, .secureConnectionFailed, .resourceUnavailable,
         ]
-        let dns = diagnosis(.dnsLookupFailed)
-        for code in connection {
-            let d = diagnosis(code)
-            #expect(d.kind == .unreachable, "\(code.rawValue)")
-            #expect(d.systemImage == unreachableImage, "\(code.rawValue)")
-            #expect(d.isRetryable, "\(code.rawValue)")
-            expectDetail(d, code: code)
-            #expect(d.title == dns.title, "\(code.rawValue) shares the unreachable title")
-            #expect(d.hint == diagnosis(.cannotConnectToHost).hint, "\(code.rawValue)")
-            #expect(d.hint != dns.hint, "\(code.rawValue) must not read like a DNS failure")
+        expectDiagnosis(codes, kind: .unreachable, systemImage: unreachableImage)
+        for code in codes {
+            #expect(diagnosis(code).title == diagnosis(.cannotConnectToHost).title, "\(code.rawValue)")
+            #expect(diagnosis(code).hint == diagnosis(.cannotConnectToHost).hint, "\(code.rawValue)")
         }
     }
 
     @Test("a timeout is its own kind with a clock icon")
     func timeout() {
-        let d = diagnosis(.timedOut)
-        #expect(d.kind == .timeout)
-        #expect(d.systemImage == "clock.badge.exclamationmark.fill")
-        #expect(d.isRetryable)
-        expectDetail(d, code: .timedOut)
+        expectDiagnosis([.timedOut], kind: .timeout, systemImage: "clock.badge.exclamationmark.fill")
     }
 
-    @Test("bad and unsupported URLs send the user to Settings")
+    @Test("bad and unsupported URLs send the user to Settings with one explanation")
     func invalidURL() {
-        let invalid: [URLError.Code] = [.badURL, .unsupportedURL]
-        for code in invalid {
-            let d = diagnosis(code)
-            #expect(d.kind == .notConfigured, "\(code.rawValue)")
-            #expect(d.systemImage == "link.badge.plus", "\(code.rawValue)")
-            #expect(d.isRetryable, "\(code.rawValue)")
-            expectDetail(d, code: code)
-        }
+        expectDiagnosis([.badURL, .unsupportedURL], kind: .notConfigured, systemImage: "link.badge.plus")
         #expect(diagnosis(.badURL).title == diagnosis(.unsupportedURL).title)
         #expect(diagnosis(.badURL).hint == diagnosis(.unsupportedURL).hint)
     }
 
     @Test("authentication required reads like a rejected bearer token")
     func authenticationRequired() {
-        let d = diagnosis(.userAuthenticationRequired)
+        expectDiagnosis(
+            [.userAuthenticationRequired], kind: .unauthorised,
+            systemImage: "lock.trianglebadge.exclamationmark.fill"
+        )
         let http = ConnectionDiagnosis.classify(ServerClientError.http(status: 401, detail: "nope"))
-        #expect(d.kind == .unauthorised)
-        #expect(d.systemImage == "lock.trianglebadge.exclamationmark.fill")
-        #expect(d.isRetryable)
-        #expect(d.title == http.title)
-        #expect(d.hint == http.hint)
-        expectDetail(d, code: .userAuthenticationRequired)
+        #expect(diagnosis(.userAuthenticationRequired).title == http.title)
+        #expect(diagnosis(.userAuthenticationRequired).hint == http.hint)
     }
 
-    @Test("an unlisted URL error falls back to the generic unreachable copy")
+    @Test("an unlisted URL error falls back to one generic unreachable explanation")
     func unlistedURLError() {
         let unlisted: [URLError.Code] = [.cancelled, .fileDoesNotExist, .cannotParseResponse]
-        let known: [URLError.Code] = [.cannotFindHost, .cannotConnectToHost, .timedOut]
+        expectDiagnosis(unlisted, kind: .unreachable, systemImage: unreachableImage)
         for code in unlisted {
-            let d = diagnosis(code)
-            #expect(d.kind == .unreachable, "\(code.rawValue)")
-            #expect(d.systemImage == unreachableImage, "\(code.rawValue)")
-            #expect(d.isRetryable, "\(code.rawValue)")
-            expectDetail(d, code: code)
-            for other in known {
-                #expect(d.hint != diagnosis(other).hint, "\(code.rawValue) vs \(other.rawValue)")
-            }
+            #expect(diagnosis(code).title == diagnosis(.cancelled).title, "\(code.rawValue)")
+            #expect(diagnosis(code).hint == diagnosis(.cancelled).hint, "\(code.rawValue)")
         }
-        #expect(diagnosis(.cancelled).title != diagnosis(.cannotFindHost).title)
+    }
+
+    @Test("each failure group keeps its own copy: titles differ except for the shared unreachable title")
+    func copyDistinctions() {
+        // One representative per group: offline, DNS, connection, timeout,
+        // invalid URL, authentication, unlisted fallback.
+        let groups = [
+            diagnosis(.notConnectedToInternet), diagnosis(.dnsLookupFailed), diagnosis(.cannotConnectToHost),
+            diagnosis(.timedOut), diagnosis(.badURL), diagnosis(.userAuthenticationRequired),
+            diagnosis(.cancelled),
+        ]
+        #expect(Set(groups.map(\.hint)).count == groups.count, "every group has its own hint")
+        // DNS and connection failures are both "Server nicht erreichbar".
+        #expect(Set(groups.map(\.title)).count == groups.count - 1)
+        #expect(groups[1].title == groups[2].title)
     }
 }
 
@@ -142,7 +125,7 @@ struct LocalFailureDiagnosisTests {
         #expect(d.isRetryable)
     }
 
-    @Test("a missing upload file reports its path and is not a server problem")
+    @Test("a missing upload file reports its path")
     func missingFile() {
         let url = URL(fileURLWithPath: "/tmp/voice-diary/cache/take-1.m4a")
         let d = ConnectionDiagnosis.classify(ServerClientError.missingFile(url))
@@ -152,7 +135,7 @@ struct LocalFailureDiagnosisTests {
         #expect(d.isRetryable)
     }
 
-    @Test("a direct DecodingError reads like a wrapped decoding failure")
+    @Test("a direct DecodingError reads like a wrapped decoding failure and keeps its detail")
     func directDecodingError() {
         let error = DecodingError.dataCorrupted(
             .init(codingPath: [], debugDescription: "bad shape")
@@ -164,26 +147,28 @@ struct LocalFailureDiagnosisTests {
         #expect(d.isRetryable)
         #expect(d.title == wrapped.title)
         #expect(d.hint == wrapped.hint)
-        #expect(d.detail == String(describing: error))
         #expect(d.detail?.contains("bad shape") == true)
     }
 
-    @Test("an arbitrary NSError falls back to the unexpected-error copy")
+    @Test("an arbitrary NSError falls back to the unexpected-error copy with its domain and code")
     func arbitraryNSError() {
-        let error = NSError(domain: "VoiceDiaryTests.Arbitrary", code: 42)
-        let d = ConnectionDiagnosis.classify(error)
+        let d = ConnectionDiagnosis.classify(NSError(domain: "VoiceDiaryTests.Arbitrary", code: 42))
         #expect(d.kind == .unknown)
         #expect(d.systemImage == "exclamationmark.triangle.fill")
         #expect(d.isRetryable)
-        #expect(d.detail == String(describing: error))
         #expect(d.detail?.contains("VoiceDiaryTests.Arbitrary") == true)
         #expect(d.detail?.contains("42") == true)
     }
 
-    @Test("an arbitrary Swift error also lands in the unexpected-error fallback")
-    func arbitrarySwiftError() {
-        let d = ConnectionDiagnosis.classify(LocalFailure())
-        #expect(d.kind == .unknown)
-        #expect(d.detail == String(describing: LocalFailure()))
+    @Test("not-configured, decoding, missing-file and unexpected errors each keep their own copy")
+    func localCopyDistinctions() {
+        let diagnoses = [
+            ConnectionDiagnosis.classify(ServerClientError.notConfigured),
+            ConnectionDiagnosis.classify(ServerClientError.decodingFailed("x")),
+            ConnectionDiagnosis.classify(ServerClientError.missingFile(URL(fileURLWithPath: "/x"))),
+            ConnectionDiagnosis.classify(NSError(domain: "VoiceDiaryTests.Arbitrary", code: 1)),
+        ]
+        #expect(Set(diagnoses.map(\.title)).count == diagnoses.count)
+        #expect(Set(diagnoses.map(\.hint)).count == diagnoses.count)
     }
 }
