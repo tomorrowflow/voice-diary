@@ -21,4 +21,9 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.progressGap == DSSpacing.spacing_r1_5)
         #expect(Theme.spacing.progressGap == 6)
     }
+
+    @Test("captureBottomReserve keeps the 200-point quick-capture scroll reserve")
+    func captureBottomReserveIsTwoHundredPoints() {
+        #expect(Theme.spacing.captureBottomReserve == 200)
+    }
 }
