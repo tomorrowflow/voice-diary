@@ -161,8 +161,6 @@ struct VoxtralVoiceWireTests {
 
         #expect(voice.voiceID == "voxtral:de_male")
         #expect(voice.id == "de_male")
-        #expect(voice.voiceID.hasPrefix("voxtral:"))
-        #expect(voice.voiceID.dropFirst("voxtral:".count) == "de_male")
     }
 
     @Test("voiceID adds the prefix once per computation, so repeated reads agree")
