@@ -119,8 +119,7 @@ public enum Theme {
 
         public let progressGap: CGFloat = DSSpacing.spacing_r1_5 // 6
 
-        /// Scroll-content bottom inset that keeps quick-capture content clear of the sticky button stack.
-        public let captureBottomReserve: CGFloat = 200
+        public let captureBottomReserve: CGFloat = 200 // quick-capture scroll bottom inset
     }
 
     public struct RadiusTokens: Sendable {
