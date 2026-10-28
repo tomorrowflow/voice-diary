@@ -119,8 +119,7 @@ public enum Theme {
 
         public let progressGap: CGFloat = DSSpacing.spacing_r1_5 // 6
 
-        /// Diameter of the idle Quick capture microphone disc.
-        public let captureMicDiscSize: CGFloat = 120
+        public let captureMicDiscSize: CGFloat = 120 // quick-capture idle microphone disc diameter
         public let captureBottomReserve: CGFloat = 200 // quick-capture scroll bottom inset
     }
 
