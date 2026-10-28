@@ -53,7 +53,7 @@ public struct CaptureView: View {
                         }
                     }
                     .padding(.horizontal, Theme.spacing.md)
-                    .padding(.bottom, 200) // reserve room for the sticky button
+                    .padding(.bottom, Theme.spacing.captureBottomReserve) // reserve room for the sticky button
                 }
             }
 

@@ -26,4 +26,9 @@ struct ThemeSpacingTokensTests {
     func captureMicDiscSizeIsOneHundredTwentyPoints() {
         #expect(Theme.spacing.captureMicDiscSize == 120)
     }
+
+    @Test("captureBottomReserve keeps the 200-point quick-capture scroll reserve")
+    func captureBottomReserveIsTwoHundredPoints() {
+        #expect(Theme.spacing.captureBottomReserve == 200)
+    }
 }

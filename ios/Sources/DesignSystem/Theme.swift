@@ -121,6 +121,7 @@ public enum Theme {
 
         /// Diameter of the idle Quick capture microphone disc.
         public let captureMicDiscSize: CGFloat = 120
+        public let captureBottomReserve: CGFloat = 200 // quick-capture scroll bottom inset
     }
 
     public struct RadiusTokens: Sendable {
