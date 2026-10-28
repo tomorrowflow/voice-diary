@@ -119,8 +119,7 @@ public enum Theme {
 
         public let progressGap: CGFloat = DSSpacing.spacing_r1_5 // 6
 
-        /// Shared idle/recording slot height on Quick capture.
-        public let captureContentHeight: CGFloat = 360
+        public let captureContentHeight: CGFloat = 360 // quick-capture idle/recording slot
     }
 
     public struct RadiusTokens: Sendable {
