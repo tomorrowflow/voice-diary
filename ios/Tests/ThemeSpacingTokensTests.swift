@@ -22,6 +22,12 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.progressGap == 6)
     }
 
+    @Test("dateNavigatorGap aliases the 6-point design-system step")
+    func dateNavigatorGapIsSixPoints() {
+        #expect(Theme.spacing.dateNavigatorGap == DSSpacing.spacing_r1_5)
+        #expect(Theme.spacing.dateNavigatorGap == 6)
+    }
+
     @Test("recordedBadgeGap aliases the 6-point design-system step")
     func recordedBadgeGapIsSixPoints() {
         #expect(Theme.spacing.recordedBadgeGap == DSSpacing.spacing_r1_5)
@@ -31,5 +37,10 @@ struct ThemeSpacingTokensTests {
     @Test("captureBottomReserve keeps the 200-point quick-capture scroll reserve")
     func captureBottomReserveIsTwoHundredPoints() {
         #expect(Theme.spacing.captureBottomReserve == 200)
+    }
+
+    @Test("captureContentHeight is the 360-point quick-capture slot")
+    func captureContentHeightIs360() {
+        #expect(Theme.spacing.captureContentHeight == 360)
     }
 }
