@@ -118,6 +118,7 @@ public enum Theme {
         public let xxxl: CGFloat = DSSpacing.spacing_r10  // 40
 
         public let progressGap: CGFloat = DSSpacing.spacing_r1_5 // 6
+        public let dateNavigatorGap: CGFloat = DSSpacing.spacing_r1_5 // 6
     }
 
     public struct RadiusTokens: Sendable {

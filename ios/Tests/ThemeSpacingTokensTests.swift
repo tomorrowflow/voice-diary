@@ -21,4 +21,10 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.progressGap == DSSpacing.spacing_r1_5)
         #expect(Theme.spacing.progressGap == 6)
     }
+
+    @Test("dateNavigatorGap aliases the 6-point design-system step")
+    func dateNavigatorGapIsSixPoints() {
+        #expect(Theme.spacing.dateNavigatorGap == DSSpacing.spacing_r1_5)
+        #expect(Theme.spacing.dateNavigatorGap == 6)
+    }
 }
