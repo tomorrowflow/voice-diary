@@ -21,4 +21,9 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.progressGap == DSSpacing.spacing_r1_5)
         #expect(Theme.spacing.progressGap == 6)
     }
+
+    @Test("captureContentHeight is the 360-point quick-capture slot")
+    func captureContentHeightIs360() {
+        #expect(Theme.spacing.captureContentHeight == 360)
+    }
 }

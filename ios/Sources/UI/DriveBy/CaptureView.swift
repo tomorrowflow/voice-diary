@@ -32,7 +32,7 @@ public struct CaptureView: View {
                                 idleBody
                             }
                         }
-                        .frame(height: 360)
+                        .frame(height: Theme.spacing.captureContentHeight)
 
                         // The "Lade Sprachmodell…" banner is gone — the
                         // CTA below carries the load state via its
