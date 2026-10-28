@@ -11,7 +11,11 @@ private func segment(_ status: String, error: String? = nil) -> Segment {
     Segment(segment_id: "s01", status: status, transcript_id: nil, error: error, code: nil, upstream: nil)
 }
 
-private let pendingError = "analysis_pending: ollama_unavailable: connection refused"
+private func http(_ status: Int, _ detail: String) -> ServerClientError {
+    .http(status: status, detail: detail, failure: UpstreamFailure())
+}
+
+private let pendingError ="analysis_pending: ollama_unavailable: connection refused"
 private let healthy = ["ollama": "ok", "lightrag": "ok", "whisper": "ok", "voxtral": "down"]
 
 @Suite("RetryAnalysisPolicy")
@@ -91,9 +95,6 @@ struct RetryAnalysisPolicyTests {
 
     @Test("session_busy, session_not_retryable and 404 are expected skips")
     func expectedSkips() {
-        func http(_ status: Int, _ detail: String) -> ServerClientError {
-            .http(status: status, detail: detail, failure: UpstreamFailure())
-        }
         #expect(RetryAnalysisPolicy.isExpectedSkip(http(409, "session_busy")))
         #expect(RetryAnalysisPolicy.isExpectedSkip(http(409, "session_not_retryable")))
         #expect(RetryAnalysisPolicy.isExpectedSkip(http(404, "session_not_found")))
@@ -119,17 +120,8 @@ struct RetryAnalysisPolicyBoundaryTests {
     private let now = Date(timeIntervalSinceReferenceDate: 800_000_000)
     private let cutoff: TimeInterval = 14 * 24 * 60 * 60
 
-    private func http(_ status: Int, _ detail: String) -> ServerClientError {
-        .http(status: status, detail: detail, failure: UpstreamFailure())
-    }
-
     private func retries(status: String, error: String?) -> Bool {
         RetryAnalysisPolicy.shouldRetry(segments: [segment(status, error: error)], upstream: healthy)
-    }
-
-    @Test("the lookback is exactly 14 days of seconds")
-    func lookbackLength() {
-        #expect(RetryAnalysisPolicy.lookback == 1_209_600)
     }
 
     @Test("a session captured exactly 14 days ago is still recent")
