@@ -791,7 +791,7 @@ private struct StartCard: View {
             chevronButton(systemName: "chevron.left", direction: -1, enabled: true)
 
             Button { showPicker.toggle() } label: {
-                HStack(spacing: 6) {
+                HStack(spacing: Theme.spacing.dateNavigatorGap) {
                     Image(systemName: "calendar")
                         .font(.system(size: 14, weight: .medium))
                     Text(Self.dateLabel(selectedDate))
