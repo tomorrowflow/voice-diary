@@ -120,6 +120,7 @@ public enum Theme {
         public let progressGap: CGFloat = DSSpacing.spacing_r1_5 // 6
 
         public let captureBottomReserve: CGFloat = 200 // quick-capture scroll bottom inset
+        public let captureContentHeight: CGFloat = 360 // quick-capture idle/recording slot
     }
 
     public struct RadiusTokens: Sendable {

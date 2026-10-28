@@ -26,4 +26,9 @@ struct ThemeSpacingTokensTests {
     func captureBottomReserveIsTwoHundredPoints() {
         #expect(Theme.spacing.captureBottomReserve == 200)
     }
+
+    @Test("captureContentHeight is the 360-point quick-capture slot")
+    func captureContentHeightIs360() {
+        #expect(Theme.spacing.captureContentHeight == 360)
+    }
 }
