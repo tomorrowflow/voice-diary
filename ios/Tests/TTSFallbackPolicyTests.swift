@@ -27,67 +27,50 @@ struct TTSFallbackPolicyTests {
 
     private static let languages = ["de-DE", "en", "xx-unknown"]
 
+    private static func decide(
+        error: any Error = SampleError.rejected,
+        language: String,
+        stemFor: @escaping @Sendable (String) -> String?
+    ) -> FallbackDecision {
+        TTSFallbackPolicy.decide(
+            error: error,
+            language: language,
+            preferences: TTSFallbackPolicy.Preferences(preferredPiperStem: stemFor))
+    }
+
     @Test("a supplied Piper stem is returned exactly", arguments: languages)
     func returnsSuppliedStem(language: String) {
-        let preferences = TTSFallbackPolicy.Preferences(preferredPiperStem: { _ in "voice-Stem_01" })
-
-        let decision = TTSFallbackPolicy.decide(
-            error: SampleError.rejected, language: language, preferences: preferences)
+        let decision = Self.decide(language: language) { _ in "voice-Stem_01" }
 
         #expect(decision == .usePiper(stem: "voice-Stem_01"))
     }
 
     @Test("a nil stem selects Apple", arguments: languages)
     func nilStemSelectsApple(language: String) {
-        let preferences = TTSFallbackPolicy.Preferences(preferredPiperStem: { _ in nil })
-
-        let decision = TTSFallbackPolicy.decide(
-            error: SampleError.rejected, language: language, preferences: preferences)
+        let decision = Self.decide(language: language) { _ in nil }
 
         #expect(decision == .useApple)
     }
 
     @Test("the language reaches preferences unchanged when a stem is found", arguments: languages)
     func forwardsLanguageToStem(language: String) {
-        let preferences = TTSFallbackPolicy.Preferences(preferredPiperStem: { "stem<\($0)>" })
-
-        let decision = TTSFallbackPolicy.decide(
-            error: SampleError.rejected, language: language, preferences: preferences)
+        let decision = Self.decide(language: language) { "stem<\($0)>" }
 
         #expect(decision == .usePiper(stem: "stem<\(language)>"))
     }
 
     @Test("the language reaches preferences unchanged when no stem is found", arguments: languages)
-    func forwardsLanguageWhenNoStem(language: String) {
+    func forwardsLanguageToNilStemLookup(language: String) {
         // Only the exact language yields nil; any altered value would
         // produce a Piper stem instead.
-        let preferences = TTSFallbackPolicy.Preferences(preferredPiperStem: { $0 == language ? nil : "altered" })
-
-        let decision = TTSFallbackPolicy.decide(
-            error: SampleError.rejected, language: language, preferences: preferences)
+        let decision = Self.decide(language: language) { $0 == language ? nil : "altered" }
 
         #expect(decision == .useApple)
     }
 
-    @Test("a stem is chosen per language, not shared across languages")
-    func stemFollowsLanguage() {
-        let preferences = TTSFallbackPolicy.Preferences(preferredPiperStem: { language in
-            language == "de-DE" ? "de_DE-thorsten-medium" : nil
-        })
-
-        #expect(TTSFallbackPolicy.decide(error: SampleError.rejected, language: "de-DE", preferences: preferences)
-            == .usePiper(stem: "de_DE-thorsten-medium"))
-        #expect(TTSFallbackPolicy.decide(error: SampleError.rejected, language: "en", preferences: preferences)
-            == .useApple)
-        #expect(TTSFallbackPolicy.decide(error: SampleError.rejected, language: "xx-unknown", preferences: preferences)
-            == .useApple)
-    }
-
     @Test("the error does not change a Piper decision", arguments: errors)
     func errorIgnoredWithStem(name: String, error: any Error) {
-        let preferences = TTSFallbackPolicy.Preferences(preferredPiperStem: { _ in "en_US-lessac-medium" })
-
-        let decision = TTSFallbackPolicy.decide(error: error, language: "en", preferences: preferences)
+        let decision = Self.decide(error: error, language: "en") { _ in "en_US-lessac-medium" }
 
         #expect(decision == .usePiper(stem: "en_US-lessac-medium"), "\(name)")
         #expect(decision != .giveUp, "\(name)")
@@ -95,9 +78,7 @@ struct TTSFallbackPolicyTests {
 
     @Test("the error does not change an Apple decision", arguments: errors)
     func errorIgnoredWithoutStem(name: String, error: any Error) {
-        let preferences = TTSFallbackPolicy.Preferences(preferredPiperStem: { _ in nil })
-
-        let decision = TTSFallbackPolicy.decide(error: error, language: "de-DE", preferences: preferences)
+        let decision = Self.decide(error: error, language: "de-DE") { _ in nil }
 
         #expect(decision == .useApple, "\(name)")
         #expect(decision != .giveUp, "\(name)")
