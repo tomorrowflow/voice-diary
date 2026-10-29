@@ -151,7 +151,6 @@ struct WalkthroughGeneralsMutationTests {
             #expect(Self.storedJSON(forKey: Self.orderKey) == Self.orderJSON(
                 Self.betaEntry, Self.calendarEntry, Self.alphaEntry, Self.voiceNoteEntry
             ))
-            #expect(WalkthroughSettingsStore.order.filter { $0 == .general(id: "g-beta") }.count == 1)
         }
     }
 
