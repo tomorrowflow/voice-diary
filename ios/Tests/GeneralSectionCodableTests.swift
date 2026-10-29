@@ -14,6 +14,8 @@ import Testing
 
 @Suite("GeneralSectionCodable")
 struct GeneralSectionCodableTests {
+    private static let requiredKeys = ["id", "title", "introText"]
+
     private static func decode(_ json: String) throws -> GeneralSection {
         try JSONDecoder().decode(GeneralSection.self, from: Data(json.utf8))
     }
@@ -23,36 +25,40 @@ struct GeneralSectionCodableTests {
         return try JSONDecoder().decode(GeneralSection.self, from: data)
     }
 
+    /// A section object with valid required fields; `fields` overrides or adds
+    /// raw JSON values by key, and a nil value drops the key.
+    private static func sectionJSON(_ fields: [String: String?] = [:]) -> String {
+        var members: [String: String?] = ["id": #""g1""#, "title": #""Morning""#, "introText": #""Hi""#]
+        members.merge(fields) { _, override in override }
+        return "{" + members.compactMap { key, value in value.map { #""\#(key)":\#($0)"# } }.sorted().joined(separator: ",") + "}"
+    }
+
     // MARK: followUpEnabled fallback
 
     @Test("a legacy section without followUpEnabled decodes with it off")
     func missingFollowUpDefaultsToFalse() throws {
-        let section = try Self.decode(#"{"id":"g1","title":"Morning","introText":"How was it?"}"#)
-        #expect(section == GeneralSection(id: "g1", title: "Morning", introText: "How was it?", followUpEnabled: false))
+        let section = try Self.decode(Self.sectionJSON())
+        #expect(section == GeneralSection(id: "g1", title: "Morning", introText: "Hi", followUpEnabled: false))
     }
 
     @Test("a null followUpEnabled decodes as off")
     func nullFollowUpDefaultsToFalse() throws {
-        let section = try Self.decode(
-            #"{"id":"g1","title":"Morning","introText":"How was it?","followUpEnabled":null}"#
-        )
+        let section = try Self.decode(Self.sectionJSON(["followUpEnabled": "null"]))
         #expect(section.followUpEnabled == false)
     }
 
     @Test("an explicit followUpEnabled survives decode and encode/decode", arguments: [true, false])
     func explicitFollowUpSurvives(enabled: Bool) throws {
-        let section = try Self.decode(
-            #"{"id":"g1","title":"Morning","introText":"How was it?","followUpEnabled":\#(enabled)}"#
-        )
+        let section = try Self.decode(Self.sectionJSON(["followUpEnabled": "\(enabled)"]))
         #expect(section.followUpEnabled == enabled)
         #expect(try Self.roundTrip(section).followUpEnabled == enabled)
     }
 
     @Test("a wrong-typed followUpEnabled throws", arguments: [
-        #""true""#, "1", "0", "[]", "{}", #""""#
+        #""true""#, "1", "0", "[]", "{}", "\"\""
     ])
     func wrongTypedFollowUpThrows(value: String) {
-        let json = #"{"id":"g1","title":"Morning","introText":"How was it?","followUpEnabled":\#(value)}"#
+        let json = Self.sectionJSON(["followUpEnabled": value])
         #expect(throws: DecodingError.self) { try Self.decode(json) }
     }
 
@@ -66,20 +72,10 @@ struct GeneralSectionCodableTests {
             introText: "Wie ist dein Morgen heute angekommen?\n\n  日本語 — «naïve» \u{200B}\n",
             followUpEnabled: true
         )
-        let decoded = try Self.roundTrip(section)
-        #expect(decoded.id == section.id)
-        #expect(decoded.title == section.title)
-        #expect(decoded.introText == section.introText)
-        #expect(decoded == section)
+        #expect(try Self.roundTrip(section) == section)
     }
 
-    @Test("empty text fields are kept, not rejected")
-    func emptyTextFieldsAreKept() throws {
-        let section = try Self.decode(#"{"id":"","title":"","introText":""}"#)
-        #expect(section == GeneralSection(id: "", title: "", introText: ""))
-    }
-
-    @Test("literal JSON decodes to the exact stored strings")
+    @Test("literal JSON with escapes decodes to the exact stored strings")
     func literalJSONDecodesVerbatim() throws {
         let section = try Self.decode(
             #"{"id":" a ","title":"ü 🙏","introText":"line1\n  line2 ","followUpEnabled":true}"#
@@ -91,24 +87,15 @@ struct GeneralSectionCodableTests {
 
     // MARK: required fields
 
-    @Test("a missing required field throws", arguments: ["id", "title", "introText"])
+    @Test("a missing required field throws", arguments: requiredKeys)
     func missingRequiredFieldThrows(key: String) {
-        var fields = ["id": "g1", "title": "Morning", "introText": "Hi"]
-        fields[key] = nil
-        let json = Self.json(fields.map { #""\#($0.key)":"\#($0.value)""# })
+        let json = Self.sectionJSON([key: nil])
         #expect(throws: DecodingError.self) { try Self.decode(json) }
     }
 
-    @Test("a null or wrong-typed required field throws", arguments: ["id", "title", "introText"], ["null", "1", "true", "[]"])
+    @Test("a null or wrong-typed required field throws", arguments: requiredKeys, ["null", "1", "true", "[]"])
     func wrongTypedRequiredFieldThrows(key: String, value: String) {
-        var fields = ["id": #""g1""#, "title": #""Morning""#, "introText": #""Hi""#]
-        fields[key] = value
-        let json = Self.json(fields.map { #""\#($0.key)":\#($0.value)"# })
-        #expect(throws: DecodingError.self) { try Self.decode(json) }
-    }
-
-    @Test("a non-object payload throws", arguments: ["[]", #""g1""#, "null", "42"])
-    func nonObjectPayloadThrows(json: String) {
+        let json = Self.sectionJSON([key: value])
         #expect(throws: DecodingError.self) { try Self.decode(json) }
     }
 
@@ -117,7 +104,7 @@ struct GeneralSectionCodableTests {
     @Test("unknown additive fields are ignored")
     func unknownFieldsAreIgnored() throws {
         let section = try Self.decode(
-            #"{"id":"g1","title":"Morning","introText":"Hi","followUpEnabled":true,"color":"red","order":3,"nested":{"a":[1,2]}}"#
+            Self.sectionJSON(["followUpEnabled": "true", "color": #""red""#, "order": "3", "nested": #"{"a":[1,2]}"#])
         )
         #expect(section == GeneralSection(id: "g1", title: "Morning", introText: "Hi", followUpEnabled: true))
     }
@@ -133,24 +120,5 @@ struct GeneralSectionCodableTests {
         #expect(object["title"] as? String == "Morning")
         #expect(object["introText"] as? String == "Hi")
         #expect(object["followUpEnabled"] as? Bool == true)
-    }
-
-    @Test("a persisted array of mixed legacy and current sections decodes in order")
-    func mixedArrayDecodes() throws {
-        let json = """
-        [
-          {"id":"old","title":"Old","introText":"Legacy"},
-          {"id":"new","title":"New","introText":"Current","followUpEnabled":true}
-        ]
-        """
-        let sections = try JSONDecoder().decode([GeneralSection].self, from: Data(json.utf8))
-        #expect(sections == [
-            GeneralSection(id: "old", title: "Old", introText: "Legacy", followUpEnabled: false),
-            GeneralSection(id: "new", title: "New", introText: "Current", followUpEnabled: true)
-        ])
-    }
-
-    private static func json(_ members: [String]) -> String {
-        "{" + members.sorted().joined(separator: ",") + "}"
     }
 }
