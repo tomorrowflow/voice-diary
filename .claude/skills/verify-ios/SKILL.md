@@ -431,16 +431,37 @@ xcrun simctl ui vd-verify-ios appearance light
 ```
 
 Full-size screenshots are 1206 × 2622 px. **Never open the original.** Make a downscaled copy
-next to it and open the copy:
+next to it and open the copy. How depends on who runs this skill:
 
-```bash
-sips -Z 1200 features/evidence/ios-<run>/<state>-light.png --out features/evidence/ios-<run>/<state>-light-small.png
-```
+- A Claude Code session downscales with `sips -Z 1200 ... --out <state>-light-small.png` and
+  opens both copies with the Read tool:
 
-**Open both copies** (Read tool) and write down what each shows: which tab is selected, which
-text, which button is filled, which alert, and whether dark mode really changed the colors. A
-file that exists is not proof; a wrong state (blank launch screen, stale alert, crash dialog)
-means the step failed. Commit the original full-size images, not the `-small` copies.
+  ```bash
+  sips -Z 1200 features/evidence/ios-<run>/<state>-light.png --out features/evidence/ios-<run>/<state>-light-small.png
+  ```
+
+- The Workboard verifier (Code Mode, no Read tool) downscales to a JPEG no wider than 800 px,
+  base64-encodes it, and returns it from its `exec` script as an image block, both copies in
+  one script:
+
+  ```bash
+  sips -Z 800 -s format jpeg -s formatOptions 65 features/evidence/ios-<run>/<state>-light.png --out features/evidence/ios-<run>/<state>-light-small.jpg
+  ```
+
+  ```javascript
+  // inside exec: run the sips and base64 commands through the node exec tool, then
+  return image("data:image/jpeg;base64," + lightBase64);
+  ```
+
+  It then records what it saw in the `visual` part of its `workboard-verification` block,
+  one entry per screenshot (`path`, `shows`, `looks_right|problem`) and an overall visual
+  verdict. That visual check is operator-run: it never makes the verification `fail` or
+  `error`. A session that cannot show itself an image records `not_checked`, not `error`.
+
+**Open both copies** and write down what each shows: which tab is selected, which text, which
+button is filled, which alert, and whether dark mode really changed the colors. A file that
+exists is not proof; a wrong state (blank launch screen, stale alert, crash dialog) means the
+step failed. Commit the original full-size images, not the `-small` copies.
 
 The app log (os.Logger) can be read with `xcrun simctl spawn vd-verify-ios log show --last 5m
 --predicate 'process == "VoiceDiary"' --style compact`; it is noisy (CoreML, network), so
