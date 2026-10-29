@@ -264,9 +264,11 @@ Behaviour:
 Composition:
   - Idle: a single tap target — large pill button "Aufnahme starten",
     plus a one-line helper explaining the Action Button shortcut.
-  - Recording: a status-destructive recording dot + state pill, the
-    upward-counting timer in Geist Mono 36pt, a primary "Stopp" CTA,
-    a hint "Sage \"hey voice diary\" für Frage" in text-subdued.
+  - Recording: a status-destructive recording dot, the upward-counting
+    timer in Geist Mono 36pt, a primary "Stopp" CTA, a hint
+    "Sage \"hey voice diary\" für Frage" in text-subdued. No in-app
+    state pill: the state indicator lives in the Dynamic Island via the
+    Live Activity.
 
 Constraints:
   - This is the only screen where the recording state can dominate.
