@@ -16,6 +16,12 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.xxs == 4)
     }
 
+    @Test("xs stays the 8-point design-system step (StatePill dot size)")
+    func xsIsEightPoints() {
+        #expect(Theme.spacing.xs == DSSpacing.spacing_r2)
+        #expect(Theme.spacing.xs == 8)
+    }
+
     @Test("progressGap aliases the 6-point design-system step")
     func progressGapIsSixPoints() {
         #expect(Theme.spacing.progressGap == DSSpacing.spacing_r1_5)

@@ -17,7 +17,7 @@ public struct StatePill: View {
         HStack(spacing: 6) {
             Circle()
                 .fill(dotColor)
-                .frame(width: 8, height: 8)
+                .frame(width: Theme.spacing.xs, height: Theme.spacing.xs)
                 .opacity(pulsing ? 0.45 : 1.0)
                 .animation(pulsing
                     ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
