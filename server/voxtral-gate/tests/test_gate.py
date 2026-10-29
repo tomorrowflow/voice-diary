@@ -257,6 +257,29 @@ async def test_maybe_sleep_keeps_the_cache_when_the_engine_is_unreachable(
     assert g.status()["sleeps"] == 1
 
 
+async def test_maybe_sleep_does_not_sleep_under_a_request_admitted_during_the_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
+    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
+    engine = FakeEngine(sleeping=False)
+    g = _gate(engine)
+    await g.bootstrap()
+    engine.sleeping = False
+
+    def admit_during_probe(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/is_sleeping":
+            g.note_start()
+        return engine.handler(request)
+
+    g._client = httpx.AsyncClient(transport=httpx.MockTransport(admit_during_probe))
+
+    await g.maybe_sleep()
+
+    assert engine.calls.count("/sleep") == 1  # the startup sleep only
+    assert g.status()["asleep"] is False
+
+
 async def test_maybe_sleep_is_a_noop_when_sleep_unsupported() -> None:
     engine = FakeEngine(supports_sleep=False)
     g = _gate(engine)

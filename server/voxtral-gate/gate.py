@@ -209,7 +209,7 @@ class EngineGate:
                 return
             if self._asleep:
                 await self._resync_asleep()
-                if self._asleep:
+                if self._asleep or self._inflight > 0:
                     return
             if time.monotonic() - self._last_activity < IDLE_SECONDS:
                 return
