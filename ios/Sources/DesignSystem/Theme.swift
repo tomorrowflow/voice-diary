@@ -121,6 +121,7 @@ public enum Theme {
         public let dateNavigatorGap: CGFloat = DSSpacing.spacing_r1_5 // 6
         public let recordedBadgeGap: CGFloat = DSSpacing.spacing_r1_5 // 6
         public let recordingLegendGap: CGFloat = DSSpacing.spacing_r1_5 // 6
+        public let statePillGap: CGFloat = DSSpacing.spacing_r1_5 // 6
 
         public let captureMicDiscSize: CGFloat = 120 // quick-capture idle microphone disc diameter
         public let captureBottomReserve: CGFloat = 200 // quick-capture scroll bottom inset

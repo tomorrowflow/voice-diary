@@ -45,6 +45,12 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.recordingLegendGap == 6)
     }
 
+    @Test("statePillGap aliases the 6-point design-system step")
+    func statePillGapIsSixPoints() {
+        #expect(Theme.spacing.statePillGap == DSSpacing.spacing_r1_5)
+        #expect(Theme.spacing.statePillGap == 6)
+    }
+
     @Test("captureBottomReserve keeps the 200-point quick-capture scroll reserve")
     func captureBottomReserveIsTwoHundredPoints() {
         #expect(Theme.spacing.captureBottomReserve == 200)
