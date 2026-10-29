@@ -852,7 +852,7 @@ private struct StartCard: View {
     fileprivate var recordedBadge: some View {
         VStack(alignment: .leading, spacing: Theme.spacing.xxs) {
             if coordinator.recordedDates.contains(Self.isoDay(selectedDate)) {
-                HStack(spacing: 6) {
+                HStack(spacing: Theme.spacing.recordedBadgeGap) {
                     Circle()
                         .fill(Theme.color.status.success)
                         .frame(width: 8, height: 8)
@@ -862,7 +862,7 @@ private struct StartCard: View {
                 }
             }
             if coordinator.unfinishedSessionURL != nil {
-                HStack(spacing: 6) {
+                HStack(spacing: Theme.spacing.recordedBadgeGap) {
                     Circle()
                         .fill(Theme.color.status.warning)
                         .frame(width: 8, height: 8)
