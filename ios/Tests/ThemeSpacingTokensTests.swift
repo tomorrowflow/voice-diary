@@ -22,6 +22,11 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.progressGap == 6)
     }
 
+    @Test("captureMicDiscSize is the 120-point quick-capture disc")
+    func captureMicDiscSizeIsOneHundredTwentyPoints() {
+        #expect(Theme.spacing.captureMicDiscSize == 120)
+    }
+
     @Test("dateNavigatorGap aliases the 6-point design-system step")
     func dateNavigatorGapIsSixPoints() {
         #expect(Theme.spacing.dateNavigatorGap == DSSpacing.spacing_r1_5)

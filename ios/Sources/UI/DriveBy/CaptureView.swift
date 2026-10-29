@@ -168,7 +168,8 @@ public struct CaptureView: View {
             ZStack {
                 Circle()
                     .fill(Theme.color.bg.containerInset)
-                    .frame(width: 120, height: 120)
+                    .frame(width: Theme.spacing.captureMicDiscSize,
+                           height: Theme.spacing.captureMicDiscSize)
                 Image(systemName: "mic.fill")
                     .font(.system(size: 48))
                     .foregroundStyle(Theme.color.text.primary)
