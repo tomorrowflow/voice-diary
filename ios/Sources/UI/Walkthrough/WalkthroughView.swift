@@ -1860,7 +1860,7 @@ private struct RecordingDatePickerSheet: View {
 
     private var legend: some View {
         HStack(spacing: Theme.spacing.sm) {
-            HStack(spacing: 6) {
+            HStack(spacing: Theme.spacing.recordingLegendGap) {
                 Circle().fill(Theme.color.status.success).frame(width: 6, height: 6)
                 Text("Recording exists")
                     .font(Theme.font.caption)
