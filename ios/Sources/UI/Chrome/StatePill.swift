@@ -14,7 +14,7 @@ public struct StatePill: View {
     public init(kind: Kind) { self.kind = kind }
 
     public var body: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: Theme.spacing.statePillGap) {
             Circle()
                 .fill(dotColor)
                 .frame(width: 8, height: 8)
