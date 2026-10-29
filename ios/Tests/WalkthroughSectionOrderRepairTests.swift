@@ -8,7 +8,10 @@ import Testing
 /// objects afterwards (removing a key when it was originally absent). No
 /// defaults domain is ever reset. Generals are seeded as raw JSON and the
 /// mutation workflows (`saveGenerals`, `upsertGeneral`, `deleteGeneral`) are
-/// never called; only `saveOrder` and the `order` read are exercised.
+/// never called; only `saveOrder` and the `order` read are exercised. The
+/// suite is compiled for the simulator only, so a device's real preferences
+/// are never touched.
+#if targetEnvironment(simulator)
 @Suite("WalkthroughSettingsStore section-order repair", .serialized)
 struct WalkthroughSectionOrderRepairTests {
 
@@ -20,8 +23,10 @@ struct WalkthroughSectionOrderRepairTests {
 
     private static let calendar = WalkthroughSection.calendarEvents
     private static let voice = WalkthroughSection.voiceNote
-    private static let morning = WalkthroughSection.general(id: "general-morning")
-    private static let evening = WalkthroughSection.general(id: "general-evening")
+    private static let morningID = "general-morning"
+    private static let eveningID = "general-evening"
+    private static let morning = WalkthroughSection.general(id: morningID)
+    private static let evening = WalkthroughSection.general(id: eveningID)
 
     private static func restore(_ value: Any?, forKey key: String) {
         if let value {
@@ -44,7 +49,8 @@ struct WalkthroughSectionOrderRepairTests {
     }
 
     /// Synthetic general sections written as raw JSON, never through
-    /// `saveGenerals`.
+    /// `saveGenerals`. The field names are spelled out on purpose: they pin
+    /// the stored shape.
     private static func seedGenerals(ids: [String]) {
         let json = "[" + ids.map {
             #"{"followUpEnabled":false,"id":"\#($0)","introText":"intro \#($0)","title":"title \#($0)"}"#
@@ -70,7 +76,7 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("stored generals without a stored order do not enter the default plan")
     func generalsWithoutOrderStayOut() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
+            Self.seedGenerals(ids: [Self.morningID])
 
             #expect(WalkthroughSettingsStore.order == [Self.calendar, Self.voice])
         }
@@ -78,21 +84,10 @@ struct WalkthroughSectionOrderRepairTests {
 
     // MARK: repair
 
-    @Test("a saved order round-trips unchanged when every reference is valid")
-    func validOrderRoundTrips() {
-        withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning", "general-evening"])
-            let saved = [Self.morning, Self.voice, Self.evening, Self.calendar]
-            WalkthroughSettingsStore.saveOrder(saved)
-
-            #expect(WalkthroughSettingsStore.order == saved)
-        }
-    }
-
     @Test("general references without a stored body are dropped")
     func orphanGeneralsAreDropped() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
+            Self.seedGenerals(ids: [Self.morningID])
             WalkthroughSettingsStore.saveOrder([Self.evening, Self.calendar, Self.morning, Self.voice])
 
             #expect(WalkthroughSettingsStore.order == [Self.calendar, Self.morning, Self.voice])
@@ -102,7 +97,7 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("valid general order and the first system-block order are preserved")
     func validOrderIsPreserved() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning", "general-evening"])
+            Self.seedGenerals(ids: [Self.morningID, Self.eveningID])
             let saved = [Self.voice, Self.evening, Self.calendar, Self.morning]
             WalkthroughSettingsStore.saveOrder(saved)
 
@@ -113,7 +108,7 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("a duplicate calendar block is collapsed to its first position")
     func duplicateCalendarCollapses() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
+            Self.seedGenerals(ids: [Self.morningID])
             WalkthroughSettingsStore.saveOrder([Self.calendar, Self.morning, Self.calendar, Self.voice])
 
             #expect(WalkthroughSettingsStore.order == [Self.calendar, Self.morning, Self.voice])
@@ -123,7 +118,7 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("a duplicate voice note block is collapsed to its first position")
     func duplicateVoiceNoteCollapses() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
+            Self.seedGenerals(ids: [Self.morningID])
             WalkthroughSettingsStore.saveOrder([Self.voice, Self.morning, Self.voice, Self.calendar])
 
             #expect(WalkthroughSettingsStore.order == [Self.voice, Self.morning, Self.calendar])
@@ -133,7 +128,7 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("both system blocks are deduplicated independently in one plan")
     func duplicatesOfBothBlocksCollapseIndependently() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
+            Self.seedGenerals(ids: [Self.morningID])
             WalkthroughSettingsStore.saveOrder([
                 Self.voice, Self.calendar, Self.voice, Self.morning, Self.calendar, Self.calendar, Self.voice
             ])
@@ -145,7 +140,7 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("missing system blocks are appended in default order")
     func missingSystemBlocksAreAppended() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
+            Self.seedGenerals(ids: [Self.morningID])
 
             WalkthroughSettingsStore.saveOrder([])
             #expect(WalkthroughSettingsStore.order == [Self.calendar, Self.voice])
@@ -166,7 +161,7 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("repeated fresh reads of a repaired plan return the same sequence")
     func repeatedReadsAreStable() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
+            Self.seedGenerals(ids: [Self.morningID])
             WalkthroughSettingsStore.saveOrder([Self.evening, Self.voice, Self.voice, Self.morning])
             let expected = [Self.voice, Self.morning, Self.calendar]
 
@@ -190,7 +185,7 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("repair on read leaves the raw stored bytes of both keys untouched")
     func readDoesNotRewriteStoredBytes() throws {
         try withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
+            Self.seedGenerals(ids: [Self.morningID])
             WalkthroughSettingsStore.saveOrder([Self.evening, Self.voice, Self.voice, Self.morning])
             let orderBefore = try #require(Self.rawBytes(Self.orderKey))
             let generalsBefore = try #require(Self.rawBytes(Self.generalsKey))
@@ -219,8 +214,8 @@ struct WalkthroughSectionOrderRepairTests {
     @Test("unreadable order data returns the current default plan")
     func unreadableOrderReturnsDefault() {
         withIsolatedKeys {
-            Self.seedGenerals(ids: ["general-morning"])
-            let unreadable: [Any] = [
+            Self.seedGenerals(ids: [Self.morningID])
+            let corruptOrders: [Any] = [
                 Data("not json".utf8),
                 Data(#"{"kind":"calendar_events"}"#.utf8),
                 Data(#"[{"kind":"calendar_events"},{"kind":"mystery"}]"#.utf8),
@@ -228,7 +223,7 @@ struct WalkthroughSectionOrderRepairTests {
                 "not a data object"
             ]
 
-            for value in unreadable {
+            for value in corruptOrders {
                 UserDefaults.standard.set(value, forKey: Self.orderKey)
                 #expect(WalkthroughSettingsStore.order == [Self.calendar, Self.voice], "stored \(value)")
             }
@@ -239,14 +234,14 @@ struct WalkthroughSectionOrderRepairTests {
     func unreadableGeneralsLeaveNoGeneralReferences() {
         withIsolatedKeys {
             WalkthroughSettingsStore.saveOrder([Self.morning, Self.voice, Self.evening, Self.calendar])
-            let unreadable: [Any] = [
+            let corruptGenerals: [Any] = [
                 Data("not json".utf8),
                 Data(#"[{"id":"general-morning"}]"#.utf8),
                 Data(#"{"id":"general-morning"}"#.utf8),
                 "not a data object"
             ]
 
-            for value in unreadable {
+            for value in corruptGenerals {
                 UserDefaults.standard.set(value, forKey: Self.generalsKey)
                 #expect(WalkthroughSettingsStore.generals.isEmpty, "stored \(value)")
                 #expect(WalkthroughSettingsStore.order == [Self.voice, Self.calendar], "stored \(value)")
@@ -273,7 +268,7 @@ struct WalkthroughSectionOrderRepairTests {
                 for key in Self.keys {
                     #expect(defaults.object(forKey: key) == nil, sourceLocation: sourceLocation)
                 }
-                Self.seedGenerals(ids: ["general-morning"])
+                Self.seedGenerals(ids: [Self.morningID])
                 WalkthroughSettingsStore.saveOrder([Self.morning])
                 if throwing { throw Abort() }
             }
@@ -310,3 +305,4 @@ struct WalkthroughSectionOrderRepairTests {
         }
     }
 }
+#endif
