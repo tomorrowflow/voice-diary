@@ -83,51 +83,42 @@ struct LockScreenPreferencesPersistenceTests {
 
     private struct Abort: Error {}
 
-    @Test("the exact prior object is restored on the normal and throwing paths")
-    func restoresPriorObject() {
+    /// Plants `prior` under the key, runs a block that overwrites it, and
+    /// checks the exact prior object (or its absence) is back afterwards.
+    private func expectRestored(prior: Any?, throwing: Bool, sourceLocation: SourceLocation = #_sourceLocation) {
         let defaults = UserDefaults.standard
         let outer = defaults.object(forKey: Self.key)
         defer { Self.restore(outer, forKey: Self.key) }
+        Self.restore(prior, forKey: Self.key)
 
-        // A prior explicit true survives a block that writes false.
-        defaults.set(true, forKey: Self.key)
-        withIsolatedKey {
-            #expect(defaults.object(forKey: Self.key) == nil)
-            LockScreenPreferences.setShowWhenPaused(false)
-        }
-        #expect(defaults.object(forKey: Self.key) as? Bool == true)
-
-        // A prior explicit false stays an explicit false, not an absent key.
-        defaults.set(false, forKey: Self.key)
-        withIsolatedKey {
-            LockScreenPreferences.setShowWhenPaused(true)
-        }
-        #expect(defaults.object(forKey: Self.key) as? Bool == false)
-
-        // A prior absent key is removed again.
-        defaults.removeObject(forKey: Self.key)
-        withIsolatedKey {
-            LockScreenPreferences.setShowWhenPaused(true)
-        }
-        #expect(defaults.object(forKey: Self.key) == nil)
-
-        // The same holds when the block throws.
-        defaults.set(true, forKey: Self.key)
-        #expect(throws: Abort.self) {
+        do {
             try withIsolatedKey {
-                LockScreenPreferences.setShowWhenPaused(false)
-                throw Abort()
+                #expect(defaults.object(forKey: Self.key) == nil, sourceLocation: sourceLocation)
+                LockScreenPreferences.setShowWhenPaused(prior as? Bool != true)
+                if throwing { throw Abort() }
             }
+        } catch is Abort {
+            #expect(throwing, sourceLocation: sourceLocation)
+        } catch {
+            Issue.record(error, sourceLocation: sourceLocation)
         }
-        #expect(defaults.object(forKey: Self.key) as? Bool == true)
 
-        defaults.removeObject(forKey: Self.key)
-        #expect(throws: Abort.self) {
-            try withIsolatedKey {
-                LockScreenPreferences.setShowWhenPaused(true)
-                throw Abort()
-            }
+        let restored = defaults.object(forKey: Self.key)
+        if let prior {
+            #expect((restored as? NSObject)?.isEqual(prior) == true, "prior \(prior)", sourceLocation: sourceLocation)
+        } else {
+            #expect(restored == nil, sourceLocation: sourceLocation)
         }
-        #expect(defaults.object(forKey: Self.key) == nil)
+    }
+
+    @Test("the exact prior object is restored on the normal and throwing paths")
+    func restoresPriorObject() {
+        // true and false stay explicit values, absent stays absent, and a
+        // non-Bool object is not normalised into a Bool.
+        let priors: [Any?] = [true, false, nil, "sentinel"]
+        for prior in priors {
+            expectRestored(prior: prior, throwing: false)
+            expectRestored(prior: prior, throwing: true)
+        }
     }
 }
