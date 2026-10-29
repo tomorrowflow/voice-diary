@@ -63,7 +63,7 @@ private struct OrderRow: View {
         HStack(spacing: Theme.spacing.sm) {
             Image(systemName: iconName)
                 .foregroundStyle(Theme.color.text.secondary)
-                .frame(width: 24)
+                .frame(width: Theme.spacing.xl)
             VStack(alignment: .leading, spacing: Theme.spacing.xxxs) {
                 Text(title)
                     .font(Theme.font.body.weight(.medium))
