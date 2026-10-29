@@ -191,23 +191,44 @@ class EngineGate:
             logger.info("woke engine in %.2fs", time.monotonic() - started)
 
     async def maybe_sleep(self) -> None:
-        """Idle-loop tick. No-ops unless the engine is awake, unused, and
-        past the idle window."""
-        if not self._sleep_supported or self._asleep is not False:
+        """Idle-loop tick. Sleeps the engine once it is awake, unused, and
+        past the idle window. A cached `asleep` is re-read from the engine
+        first: the engine can restart (and come back awake) without the gate
+        seeing it."""
+        if not self._sleep_supported or self._asleep is None:
             return
         if self._inflight > 0:
             return
-        if time.monotonic() - self._last_activity < IDLE_SECONDS:
+        if self._asleep is False and time.monotonic() - self._last_activity < IDLE_SECONDS:
             return
 
         async with self._lock:
             # Re-check under the lock: a request may have arrived while we
             # waited for it.
-            if self._asleep is not False or self._inflight > 0:
+            if self._asleep is None or self._inflight > 0:
                 return
+            if self._asleep:
+                await self._resync_asleep()
+                if self._asleep:
+                    return
             if time.monotonic() - self._last_activity < IDLE_SECONDS:
                 return
             await self._sleep_now(reason="idle")
+
+    async def _resync_asleep(self) -> None:
+        """Replace a cached `asleep=True` with what the engine reports. An
+        unreachable or erroring engine (mid-restart) proves nothing, so the
+        cache stays."""
+        try:
+            resp = await self._client.get(f"{ENGINE_URL}/is_sleeping", timeout=5.0)
+            resp.raise_for_status()
+            asleep = bool(resp.json().get("is_sleeping", False))
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning("is_sleeping re-check failed: %s", exc)
+            return
+        if not asleep:
+            logger.warning("engine is awake but the gate thought it asleep (restart?)")
+            self._asleep = False
 
     async def _sleep_now(self, *, reason: str) -> None:
         started = time.monotonic()
