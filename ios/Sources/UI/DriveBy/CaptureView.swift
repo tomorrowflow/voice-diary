@@ -171,7 +171,7 @@ public struct CaptureView: View {
                     .frame(width: Theme.spacing.captureMicDiscSize,
                            height: Theme.spacing.captureMicDiscSize)
                 Image(systemName: "mic.fill")
-                    .font(.system(size: 48))
+                    .font(Theme.font.captureMicGlyph)
                     .foregroundStyle(Theme.color.text.primary)
             }
             VStack(spacing: Theme.spacing.xs) {
