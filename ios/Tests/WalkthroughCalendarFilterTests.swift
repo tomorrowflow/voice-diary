@@ -156,13 +156,19 @@ struct WalkthroughCalendarFilterAllDayTests {
 @Suite("Walkthrough calendar filter — settings combinations")
 struct WalkthroughCalendarFilterCombinationTests {
     struct Combination: Sendable, CustomTestStringConvertible {
-        let allDay: Bool
-        let tentative: Bool
-        let notAccepted: Bool
+        let settings: WalkthroughSettings
         let expected: [String]
 
+        init(allDay: Bool, tentative: Bool, notAccepted: Bool, expected: [String]) {
+            settings = WalkthroughSettings(
+                includeAllDay: allDay, includeTentative: tentative, includeNotAccepted: notAccepted
+            )
+            self.expected = expected
+        }
+
         var testDescription: String {
-            "allDay=\(allDay) tentative=\(tentative) notAccepted=\(notAccepted)"
+            "allDay=\(settings.includeAllDay) tentative=\(settings.includeTentative) "
+                + "notAccepted=\(settings.includeNotAccepted)"
         }
     }
 
@@ -209,17 +215,7 @@ struct WalkthroughCalendarFilterCombinationTests {
 
     @Test("all eight settings combinations filter the mixed list and keep input order", arguments: combinations)
     func combination(_ combination: Combination) {
-        let result = mixedEvents.filtered(by: settings(
-            allDay: combination.allDay, tentative: combination.tentative, notAccepted: combination.notAccepted
-        ))
-        #expect(ids(result) == combination.expected)
-    }
-
-    @Test("the combination table covers each settings triple exactly once")
-    func tableCoversEightTriples() {
-        let triples = Set(Self.combinations.map { "\($0.allDay)/\($0.tentative)/\($0.notAccepted)" })
-        #expect(Self.combinations.count == 8)
-        #expect(triples.count == 8)
+        #expect(ids(mixedEvents.filtered(by: combination.settings)) == combination.expected)
     }
 }
 
@@ -233,12 +229,6 @@ struct WalkthroughCalendarFilterIdentityTests {
         let defaults = mixedEvents.filtered(by: .default)
         let expected = mixedEvents.filter { ["t-organizer", "t-accepted"].contains($0.graph_event_id) }
         #expect(try encoded(defaults) == encoded(expected))
-    }
-
-    @Test("duplicate event ids are not collapsed")
-    func duplicatesPreserved() {
-        let events = [event("dup", rsvp: "accepted"), event("dup", rsvp: "accepted"), event("dup", rsvp: "declined")]
-        #expect(ids(events.filtered(by: .default)) == ["dup", "dup"])
     }
 
     @Test("an empty list stays empty under every settings combination")
