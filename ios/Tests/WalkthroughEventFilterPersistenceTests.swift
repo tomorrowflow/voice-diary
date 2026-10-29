@@ -1,3 +1,6 @@
+// Compiled for the simulator only: on a device these tests would overwrite
+// the owner's real walkthrough preferences.
+#if targetEnvironment(simulator)
 import Foundation
 import Testing
 @testable import VoiceDiary
@@ -217,3 +220,4 @@ struct WalkthroughEventFilterPersistenceTests {
         }
     }
 }
+#endif
