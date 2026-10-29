@@ -28,6 +28,12 @@ struct ThemeSpacingTokensTests {
         #expect(Theme.spacing.dateNavigatorGap == 6)
     }
 
+    @Test("recordedBadgeGap aliases the 6-point design-system step")
+    func recordedBadgeGapIsSixPoints() {
+        #expect(Theme.spacing.recordedBadgeGap == DSSpacing.spacing_r1_5)
+        #expect(Theme.spacing.recordedBadgeGap == 6)
+    }
+
     @Test("recordingLegendGap aliases the 6-point design-system step")
     func recordingLegendGapIsSixPoints() {
         #expect(Theme.spacing.recordingLegendGap == DSSpacing.spacing_r1_5)
