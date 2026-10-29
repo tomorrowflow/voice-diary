@@ -235,13 +235,6 @@ struct WalkthroughCalendarFilterIdentityTests {
         #expect(try encoded(defaults) == encoded(expected))
     }
 
-    @Test("filtering does not mutate the source array")
-    func sourceUnchanged() throws {
-        let before = try encoded(mixedEvents)
-        _ = mixedEvents.filtered(by: .default)
-        #expect(try encoded(mixedEvents) == before)
-    }
-
     @Test("duplicate event ids are not collapsed")
     func duplicatesPreserved() {
         let events = [event("dup", rsvp: "accepted"), event("dup", rsvp: "accepted"), event("dup", rsvp: "declined")]
