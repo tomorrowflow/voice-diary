@@ -148,7 +148,6 @@ struct WalkthroughGeneralsMutationTests {
             WalkthroughSettingsStore.upsertGeneral(edited)
 
             #expect(WalkthroughSettingsStore.generals == [Self.alpha, edited, Self.gamma])
-            #expect(WalkthroughSettingsStore.generals.count == 3)
             #expect(Self.storedJSON(forKey: Self.orderKey) == Self.orderJSON(
                 Self.betaEntry, Self.calendarEntry, Self.alphaEntry, Self.voiceNoteEntry
             ))
