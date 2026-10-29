@@ -161,6 +161,9 @@ public enum Theme {
         public var monoBody:    Font { .custom(Self.monoFamily, size: DSFontSize.ios_body, relativeTo: .body) }
         public var monoCallout: Font { .custom(Self.monoFamily, size: DSFontSize.ios_callout, relativeTo: .callout) }
         public var monoCaption: Font { .custom(Self.monoFamily, size: DSFontSize.ios_caption1, relativeTo: .caption) }
+
+        // Quick-capture idle microphone glyph: fixed 48-pt system font, no Dynamic Type scaling.
+        public var captureMicGlyph: Font { .system(size: 48) }
     }
 
     // ---------- Motion -------------------------------------------------
