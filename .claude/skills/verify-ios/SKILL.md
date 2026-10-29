@@ -440,17 +440,17 @@ next to it and open the copy. How depends on who runs this skill:
   sips -Z 1200 features/evidence/ios-<run>/<state>-light.png --out features/evidence/ios-<run>/<state>-light-small.png
   ```
 
-- The Workboard verifier (Code Mode, no Read tool) downscales to a JPEG no wider than 800 px,
-  base64-encodes it, and returns it from its `exec` script as an image block, both copies in
-  one script:
+- The Workboard verifier (Code Mode, no Read tool) downscales each copy to a JPEG no wider
+  than 800 px, base64-encodes it, and calls Code Mode's `image()` helper on it inside one
+  `exec` script, which adds the picture to its context:
 
   ```bash
   sips -Z 800 -s format jpeg -s formatOptions 65 features/evidence/ios-<run>/<state>-light.png --out features/evidence/ios-<run>/<state>-light-small.jpg
   ```
 
   ```javascript
-  // inside exec: run the sips and base64 commands through the node exec tool, then
-  return image("data:image/jpeg;base64," + lightBase64);
+  // inside exec, per copy: run sips and `base64 -i <copy>.jpg` through the node exec tool, then
+  image("data:image/jpeg;base64," + base64Output);
   ```
 
   It then records what it saw in the `visual` part of its `workboard-verification` block,
