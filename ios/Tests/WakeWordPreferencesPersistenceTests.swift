@@ -90,37 +90,24 @@ struct WakeWordPreferencesPersistenceTests {
         let outer = defaults.object(forKey: Self.key)
         defer { Self.restore(outer, forKey: Self.key) }
 
-        // Originally present: the sentinel comes back after a normal run.
-        defaults.set(false, forKey: Self.key)
-        withIsolatedKey {
-            #expect(defaults.object(forKey: Self.key) == nil)
-            WakeWordPreferences.setEnabled(true)
-        }
-        #expect(defaults.object(forKey: Self.key) as? Bool == false)
+        // `nil` is the originally-absent case: the key must be removed again.
+        for prior in [false, true, nil] as [Bool?] {
+            let written = prior.map { !$0 } ?? false
 
-        // Originally present: the sentinel comes back after a throw.
-        #expect(throws: Abort.self) {
-            try withIsolatedKey {
-                WakeWordPreferences.setEnabled(true)
-                throw Abort()
+            Self.restore(prior, forKey: Self.key)
+            withIsolatedKey {
+                #expect(defaults.object(forKey: Self.key) == nil)
+                WakeWordPreferences.setEnabled(written)
             }
-        }
-        #expect(defaults.object(forKey: Self.key) as? Bool == false)
+            #expect(defaults.object(forKey: Self.key) as? Bool == prior, "normal path, prior \(String(describing: prior))")
 
-        // Originally absent: the key is removed again after a normal run.
-        defaults.removeObject(forKey: Self.key)
-        withIsolatedKey {
-            WakeWordPreferences.setEnabled(false)
-        }
-        #expect(defaults.object(forKey: Self.key) == nil)
-
-        // Originally absent: the key is removed again after a throw.
-        #expect(throws: Abort.self) {
-            try withIsolatedKey {
-                WakeWordPreferences.setEnabled(false)
-                throw Abort()
+            #expect(throws: Abort.self) {
+                try withIsolatedKey {
+                    WakeWordPreferences.setEnabled(written)
+                    throw Abort()
+                }
             }
+            #expect(defaults.object(forKey: Self.key) as? Bool == prior, "throwing path, prior \(String(describing: prior))")
         }
-        #expect(defaults.object(forKey: Self.key) == nil)
     }
 }
