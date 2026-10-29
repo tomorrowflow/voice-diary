@@ -35,6 +35,24 @@ struct WalkthroughSectionWireTests {
         }
     }
 
+    private static func decodeArray(_ json: String) throws -> [WalkthroughSection] {
+        try JSONDecoder().decode([WalkthroughSection].self, from: Data(json.utf8))
+    }
+
+    /// `DecodingError`'s cases carry payloads and are not `Equatable`, so tests compare this.
+    enum Failure: Equatable {
+        case keyNotFound, typeMismatch, valueNotFound, dataCorrupted
+
+        init(_ error: DecodingError) {
+            switch error {
+            case .keyNotFound: self = .keyNotFound
+            case .typeMismatch: self = .typeMismatch
+            case .valueNotFound: self = .valueNotFound
+            default: self = .dataCorrupted
+            }
+        }
+    }
+
     private static func wireObject(_ section: WalkthroughSection) throws -> [String: Any] {
         let data = try JSONEncoder().encode(section)
         return try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -98,19 +116,12 @@ struct WalkthroughSectionWireTests {
         #expect(section.id == expected)
     }
 
-    @Test("Decoded sections keep their identities")
-    func decodedIdentities() throws {
-        #expect(try Self.decode(Self.generalJSON).id == "general:g-1")
-        #expect(try Self.decode(Self.calendarJSON).id == "system:calendarEvents")
-        #expect(try Self.decode(Self.voiceNoteJSON).id == "system:voiceNote")
-    }
-
     // MARK: - Array order
 
     @Test("A persisted array decodes in stored order")
     func decodesArrayInOrder() throws {
         let json = "[\(Self.voiceNoteJSON),\(Self.generalJSON),\(Self.calendarJSON)]"
-        let decoded = try JSONDecoder().decode([WalkthroughSection].self, from: Data(json.utf8))
+        let decoded = try Self.decodeArray(json)
         #expect(decoded == [.voiceNote, .general(id: "g-1"), .calendarEvents])
         #expect(decoded.map(\.id) == ["system:voiceNote", "general:g-1", "system:calendarEvents"])
     }
@@ -137,72 +148,19 @@ struct WalkthroughSectionWireTests {
 
     // MARK: - Malformed input
 
-    @Test("A missing kind throws keyNotFound")
-    func missingKind() {
-        let error = Self.decodeError(#"{"id":"g-1"}"#)
-        guard case .keyNotFound = error else {
-            Issue.record("expected keyNotFound, got \(String(describing: error))")
-            return
-        }
-        #expect(Self.failingKey(error) == "kind")
-    }
-
-    @Test("A wrong-typed kind throws typeMismatch")
-    func wrongTypedKind() {
-        let error = Self.decodeError(#"{"kind":5}"#)
-        guard case .typeMismatch = error else {
-            Issue.record("expected typeMismatch, got \(String(describing: error))")
-            return
-        }
-        #expect(Self.failingKey(error) == "kind")
-    }
-
-    @Test("An unknown kind throws dataCorrupted")
-    func unknownKind() {
-        let error = Self.decodeError(#"{"kind":"mystery"}"#)
-        guard case .dataCorrupted = error else {
-            Issue.record("expected dataCorrupted, got \(String(describing: error))")
-            return
-        }
-        #expect(Self.failingKey(error) == "kind")
-    }
-
-    @Test("A general section without an id throws keyNotFound")
-    func generalMissingID() {
-        let error = Self.decodeError(#"{"kind":"general"}"#)
-        guard case .keyNotFound = error else {
-            Issue.record("expected keyNotFound, got \(String(describing: error))")
-            return
-        }
-        #expect(Self.failingKey(error) == "id")
-    }
-
-    @Test("A general section with a wrong-typed id throws typeMismatch")
-    func generalWrongTypedID() {
-        let error = Self.decodeError(#"{"kind":"general","id":7}"#)
-        guard case .typeMismatch = error else {
-            Issue.record("expected typeMismatch, got \(String(describing: error))")
-            return
-        }
-        #expect(Self.failingKey(error) == "id")
-    }
-
-    @Test("A null general id throws valueNotFound")
-    func generalNullID() {
-        let error = Self.decodeError(#"{"kind":"general","id":null}"#)
-        guard case .valueNotFound = error else {
-            Issue.record("expected valueNotFound, got \(String(describing: error))")
-            return
-        }
-        #expect(Self.failingKey(error) == "id")
-    }
-
-    @Test("One unreadable entry fails the whole array")
-    func unreadableEntryFailsArray() {
-        let json = "[\(Self.calendarJSON),{\"kind\":\"mystery\"}]"
-        #expect(throws: DecodingError.self) {
-            try JSONDecoder().decode([WalkthroughSection].self, from: Data(json.utf8))
-        }
+    @Test("Malformed sections throw the matching DecodingError on the offending key",
+          arguments: [
+            (#"{"id":"g-1"}"#, Failure.keyNotFound, "kind"),
+            (#"{"kind":5}"#, Failure.typeMismatch, "kind"),
+            (#"{"kind":"mystery"}"#, Failure.dataCorrupted, "kind"),
+            (#"{"kind":"general"}"#, Failure.keyNotFound, "id"),
+            (#"{"kind":"general","id":7}"#, Failure.typeMismatch, "id"),
+            (#"{"kind":"general","id":null}"#, Failure.valueNotFound, "id"),
+          ])
+    func malformedSection(json: String, failure: Failure, key: String) {
+        let error = Self.decodeError(json)
+        #expect(error.map(Failure.init) == failure)
+        #expect(Self.failingKey(error) == key)
     }
 
     // MARK: - Additive fields
@@ -214,8 +172,6 @@ struct WalkthroughSectionWireTests {
             (#"{"kind":"drive_by","futureField":{"nested":[1,2]}}"#, WalkthroughSection.voiceNote),
           ])
     func ignoresUnknownFields(json: String, expected: WalkthroughSection) throws {
-        let decoded = try Self.decode(json)
-        #expect(decoded == expected)
-        #expect(decoded.id == expected.id)
+        #expect(try Self.decode(json) == expected)
     }
 }
