@@ -80,7 +80,7 @@ public enum Theme {
     }
 
     /// Pre-mixed semantic tints (state-coloured at 6/10/20% opacity).
-    /// Used by `event-row`, `state-pill`, the `qbadge` voice quality badges,
+    /// Used by `event-row`, the `qbadge` voice quality badges,
     /// and any "filled chip" pattern that needs a transparent state colour.
     public struct TintColors: Sendable {
         public let link6:         Color = DSColor.color_tint_link_6

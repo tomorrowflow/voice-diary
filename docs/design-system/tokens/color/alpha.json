@@ -36,7 +36,7 @@
       "yellow-5":   { "value": "rgba(247,144,9,0.05)",   "type": "color" },
       "yellow-10":  { "value": "rgba(247,144,9,0.10)",   "type": "color" },
 
-      "comment-state-tints": "Semantic state-coloured tints used by event-row, state-pill, badge.premium/enhanced. Pre-mixed against the brand palette. 6%/20% are the event-row fill/stroke ramps from DESIGN.md.",
+      "comment-state-tints": "Semantic state-coloured tints used by event-row, badge.premium/enhanced. Pre-mixed against the brand palette. 6%/20% are the event-row fill/stroke ramps from DESIGN.md.",
       "link-6":          { "value": "rgba(21,112,239,0.06)", "type": "color" },
       "link-10":         { "value": "rgba(21,112,239,0.10)", "type": "color" },
       "link-20":         { "value": "rgba(21,112,239,0.20)", "type": "color" },
