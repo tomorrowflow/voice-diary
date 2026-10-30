@@ -181,6 +181,105 @@ async def test_maybe_sleep_never_sleeps_under_an_inflight_request(
     assert engine.sleeping is True
 
 
+async def test_maybe_sleep_resleeps_an_engine_that_restarted_awake(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BUG-118: the engine container restarts without the gate noticing and
+    comes back awake while the gate still caches `asleep`. The idle tick must
+    read the engine, not the cache, or the 20 GB is held forever."""
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
+    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
+    engine = FakeEngine(sleeping=False)
+    g = _gate(engine)
+    await g.bootstrap()
+    assert g.status()["asleep"] is True
+
+    engine.sleeping = False  # restarted: weights back on the GPU
+
+    await g.maybe_sleep()
+
+    assert engine.sleeping is True
+    assert g.status()["asleep"] is True
+    assert g.status()["sleeps"] == 2
+    assert g.status()["wakes"] == 0
+
+
+async def test_maybe_sleep_records_a_restarted_engine_but_waits_for_the_idle_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
+    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 300.0)
+    engine = FakeEngine(sleeping=False)
+    g = _gate(engine)
+    await g.bootstrap()
+    engine.sleeping = False
+
+    await g.maybe_sleep()
+
+    assert g.status()["asleep"] is False
+    assert engine.calls.count("/sleep") == 1  # the startup sleep only
+
+
+async def test_maybe_sleep_leaves_a_still_sleeping_engine_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
+    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
+    engine = FakeEngine(sleeping=False)
+    g = _gate(engine)
+    await g.bootstrap()
+
+    await g.maybe_sleep()
+
+    assert engine.calls.count("/sleep") == 1
+    assert g.status()["asleep"] is True
+    assert g.status()["sleeps"] == 1
+
+
+async def test_maybe_sleep_keeps_the_cache_when_the_engine_is_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mid-restart the engine refuses connections; that is no evidence either way."""
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
+    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
+    engine = FakeEngine(sleeping=False)
+    g = _gate(engine)
+    await g.bootstrap()
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("engine restarting", request=request)
+
+    g._client = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+
+    await g.maybe_sleep()
+
+    assert g.status()["asleep"] is True
+    assert g.status()["sleeps"] == 1
+
+
+async def test_maybe_sleep_does_not_sleep_under_a_request_admitted_during_the_recheck(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gate_mod, "SLEEP_ON_START", True)
+    monkeypatch.setattr(gate_mod, "IDLE_SECONDS", 0.0)
+    engine = FakeEngine(sleeping=False)
+    g = _gate(engine)
+    await g.bootstrap()
+    engine.sleeping = False
+
+    def admit_during_probe(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/is_sleeping":
+            g.note_start()
+        return engine.handler(request)
+
+    g._client = httpx.AsyncClient(transport=httpx.MockTransport(admit_during_probe))
+
+    await g.maybe_sleep()
+
+    assert engine.calls.count("/sleep") == 1  # the startup sleep only
+    assert g.status()["asleep"] is False
+
+
 async def test_maybe_sleep_is_a_noop_when_sleep_unsupported() -> None:
     engine = FakeEngine(supports_sleep=False)
     g = _gate(engine)
