@@ -19,6 +19,7 @@ struct CaptureActivityContentStateTests {
     typealias ContentState = CaptureActivityAttributes.ContentState
 
     private static let requiredKeys = ["startedAt", "elapsedSeconds", "kind"]
+    private static let startedAt = Date(timeIntervalSinceReferenceDate: 700_000_000)
 
     private static func decode(_ json: String) throws -> ContentState {
         try JSONDecoder().decode(ContentState.self, from: Data(json.utf8))
@@ -43,66 +44,38 @@ struct CaptureActivityContentStateTests {
 
     // MARK: isPaused fallback
 
-    @Test("a legacy payload without isPaused decodes as not paused")
-    func missingIsPausedDefaultsToFalse() throws {
-        let state = try Self.decode(Self.stateJSON())
-        #expect(state == ContentState(startedAt: Date(timeIntervalSinceReferenceDate: 700_000_000),
-                                      elapsedSeconds: 42,
-                                      kind: .recording,
-                                      isPaused: false))
+    @Test("a verbatim legacy payload without isPaused decodes as not paused")
+    func legacyLiteralPayloadDecodes() throws {
+        let state = try Self.decode(#"{"startedAt":700000000,"elapsedSeconds":42,"kind":"recording"}"#)
+        #expect(state == ContentState(startedAt: Self.startedAt, elapsedSeconds: 42, kind: .recording, isPaused: false))
     }
 
-    @Test("a null isPaused decodes as not paused")
-    func nullIsPausedDefaultsToFalse() throws {
-        let state = try Self.decode(Self.stateJSON(["isPaused": "null"]))
-        #expect(state.isPaused == false)
+    @Test("a verbatim payload with a null isPaused decodes as not paused")
+    func nullLiteralPayloadDecodes() throws {
+        let state = try Self.decode(#"{"startedAt":700000000,"elapsedSeconds":42,"kind":"speaking","isPaused":null}"#)
+        #expect(state == ContentState(startedAt: Self.startedAt, elapsedSeconds: 42, kind: .speaking, isPaused: false))
     }
 
-    @Test("an explicit isPaused survives decode and encode/decode", arguments: [true, false])
+    @Test("an explicit isPaused keeps date, elapsedSeconds and kind intact through decode and encode/decode",
+          arguments: [true, false])
     func explicitIsPausedSurvives(_ isPaused: Bool) throws {
-        let decoded = try Self.decode(Self.stateJSON(["isPaused": "\(isPaused)"]))
-        #expect(decoded.isPaused == isPaused)
+        let decoded = try Self.decode(Self.stateJSON(["isPaused": "\(isPaused)", "kind": #""listening""#]))
+        #expect(decoded == ContentState(startedAt: Self.startedAt, elapsedSeconds: 42, kind: .listening, isPaused: isPaused))
 
-        let original = ContentState(startedAt: Date(timeIntervalSinceReferenceDate: 700_000_000),
-                                    elapsedSeconds: 42,
-                                    kind: .listening,
-                                    isPaused: isPaused)
-        #expect(try Self.roundTrip(original) == original)
-    }
-
-    @Test("encoding writes isPaused so a newer reader never relies on the fallback")
-    func encodingWritesIsPaused() throws {
-        let state = ContentState(startedAt: Date(timeIntervalSinceReferenceDate: 1), elapsedSeconds: 3, isPaused: true)
-        let object = try #require(
-            JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any]
-        )
-        #expect(object["isPaused"] as? Bool == true)
-        #expect(object["kind"] as? String == "recording")
-        #expect(object["elapsedSeconds"] as? Int == 3)
-    }
-
-    // MARK: fields survive intact
-
-    @Test("startedAt, elapsedSeconds and kind survive a round trip alongside isPaused")
-    func fieldsSurviveRoundTrip() throws {
         let original = ContentState(startedAt: Date(timeIntervalSinceReferenceDate: 123_456_789.5),
                                     elapsedSeconds: 3_599,
                                     kind: .speaking,
-                                    isPaused: true)
-        let decoded = try Self.roundTrip(original)
-        #expect(decoded.startedAt == original.startedAt)
-        #expect(decoded.elapsedSeconds == 3_599)
-        #expect(decoded.kind == .speaking)
-        #expect(decoded.isPaused == true)
-    }
+                                    isPaused: isPaused)
+        let object = try #require(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(original)) as? [String: Any]
+        )
+        #expect(object["isPaused"] as? Bool == isPaused)
 
-    @Test("a payload with every field decodes each one")
-    func fullPayloadDecodes() throws {
-        let state = try Self.decode(Self.stateJSON(["isPaused": "true", "kind": #""listening""#, "elapsedSeconds": "7"]))
-        #expect(state.startedAt == Date(timeIntervalSinceReferenceDate: 700_000_000))
-        #expect(state.elapsedSeconds == 7)
-        #expect(state.kind == .listening)
-        #expect(state.isPaused == true)
+        let roundTripped = try Self.roundTrip(original)
+        #expect(roundTripped.startedAt == original.startedAt)
+        #expect(roundTripped.elapsedSeconds == 3_599)
+        #expect(roundTripped.kind == .speaking)
+        #expect(roundTripped.isPaused == isPaused)
     }
 
     // MARK: kind wire strings
@@ -116,18 +89,19 @@ struct CaptureActivityContentStateTests {
     func kindWireStrings(_ wire: String, _ expected: CaptureActivityAttributes.Kind) throws {
         #expect(try Self.decode(Self.stateJSON(["kind": #""\#(wire)""#])).kind == expected)
 
-        let encoded = try JSONEncoder().encode(ContentState(startedAt: Date(timeIntervalSinceReferenceDate: 0),
-                                                            elapsedSeconds: 0,
-                                                            kind: expected))
+        let encoded = try JSONEncoder().encode(ContentState(startedAt: Self.startedAt, elapsedSeconds: 0, kind: expected))
         let object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
         #expect(object["kind"] as? String == wire)
     }
 
     @Test("an unknown kind throws instead of falling back to recording",
-          arguments: [#""paused""#, #""Recording""#, #""""#, "null", "1"])
+          arguments: [#""paused""#, #""Recording""#, #""""#])
     func unknownKindThrows(_ wire: String) {
-        #expect(throws: DecodingError.self) {
+        #expect {
             try Self.decode(Self.stateJSON(["kind": wire]))
+        } throws: { error in
+            guard case DecodingError.dataCorrupted = error else { return false }
+            return true
         }
     }
 
@@ -135,8 +109,11 @@ struct CaptureActivityContentStateTests {
 
     @Test("a missing required field throws", arguments: requiredKeys)
     func missingRequiredFieldThrows(_ key: String) {
-        #expect(throws: DecodingError.self) {
+        #expect {
             try Self.decode(Self.stateJSON([key: nil]))
+        } throws: { error in
+            guard case DecodingError.keyNotFound = error else { return false }
+            return true
         }
     }
 
@@ -152,6 +129,7 @@ struct CaptureActivityContentStateTests {
               ("startedAt", #""yesterday""#),
               ("elapsedSeconds", #""42""#),
               ("elapsedSeconds", "4.5"),
+              ("kind", "1"),
           ])
     func wronglyTypedRequiredFieldThrows(_ key: String, _ value: String) {
         #expect(throws: DecodingError.self) {
