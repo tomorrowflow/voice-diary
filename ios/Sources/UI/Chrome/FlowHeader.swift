@@ -55,7 +55,7 @@ public struct FlowHeader: View {
                                 .fill(i < current
                                       ? Theme.color.text.primary
                                       : Theme.color.border.subdued)
-                                .frame(height: 3)
+                                .frame(height: Theme.spacing.flowProgressThickness)
                         }
                     }
                 } else {
