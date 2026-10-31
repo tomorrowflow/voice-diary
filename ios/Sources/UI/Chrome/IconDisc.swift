@@ -24,7 +24,8 @@ public struct PlayPauseDisc: View {
         ZStack {
             Circle()
                 .fill(fill)
-                .frame(width: 36, height: 36)
+                .frame(width: Theme.spacing.playPauseDiscSize,
+                       height: Theme.spacing.playPauseDiscSize)
             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(tint)
