@@ -35,7 +35,7 @@ private final class Latch {
     func wait() async -> Bool {
         if isOpen { return true }
         let cap = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1))
+            guard (try? await Task.sleep(for: .seconds(1))) != nil else { return }
             self?.resumeWaiters()
         }
         defer { cap.cancel() }
