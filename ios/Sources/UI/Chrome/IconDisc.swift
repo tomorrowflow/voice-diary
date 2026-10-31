@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 36×36 tinted circle holding a play / pause SF Symbol. The play glyph is
+/// Tinted circle (`Theme.spacing.playPauseDiscSize`) holding a play / pause SF Symbol. The play glyph is
 /// nudged 1pt right so it reads as optically centred inside the disc; the
 /// pause glyph (already symmetric) sits dead centre.
 ///
