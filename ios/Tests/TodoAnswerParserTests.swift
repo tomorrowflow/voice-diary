@@ -88,4 +88,32 @@ struct TodoAnswerParserTests {
         #expect(TodoAnswerParser.parse("ähm ja") == .confirm)
         #expect(TodoAnswerParser.parse("uhm no") == .reject)
     }
+
+    @Test("Empty and whitespace-only answers are .unknown")
+    func emptyAnswerIsUnknown() {
+        for s in ["", " ", "   ", "\n\t "] {
+            #expect(TodoAnswerParser.parse(s) == .unknown,
+                    "expected unknown for \"\(s)\"")
+        }
+    }
+
+    @Test("Repeated leading hesitation markers are all stripped")
+    func repeatedHesitationStripping() {
+        #expect(TodoAnswerParser.parse("ähm uhm ja") == .confirm)
+    }
+
+    @Test("Punctuation and repeated spaces do not hide a keyword answer")
+    func punctuationAndSpacesNormalised() {
+        #expect(TodoAnswerParser.parse("JA,   BITTE!!!") == .confirm)
+    }
+
+    @Test("Refinement keeps an internal abbreviation period, drops the trailing one")
+    func refinementKeepsInternalAbbreviation() {
+        #expect(TodoAnswerParser.parse("Stephan am Mon. anrufen.") == .refine("Stephan am mon. anrufen"))
+    }
+
+    @Test("A word that merely starts with a hesitation marker is not stripped")
+    func hesitationPrefixOfLongerWordSurvives() {
+        #expect(TodoAnswerParser.parse("Alsohaus kaufen") == .refine("Alsohaus kaufen"))
+    }
 }
