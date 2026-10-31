@@ -96,7 +96,10 @@ xcodegen --version > features/evidence/ios-<run>/doctor-xcodegen.txt 2>&1
 idb list-targets > features/evidence/ios-<run>/doctor-idb.txt 2>&1
 ```
 
-Must run (the file may be empty before the simulator exists).
+Must run (the file may be empty before the simulator exists). It only proves `idb` works:
+it also lists simulators deleted while their idb companion kept running, under their old
+names (`vd-verify-ios`, `verify-*`). Those are not devices. Whether a `vd-verify-ios` exists
+is decided by the `simctl list devices` check below only.
 
 ```bash
 xcrun simctl list runtimes available > features/evidence/ios-<run>/doctor-runtimes.txt 2>&1
