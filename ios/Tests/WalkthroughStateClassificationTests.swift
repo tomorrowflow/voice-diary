@@ -34,7 +34,7 @@ private struct Classification: Equatable, CustomStringConvertible {
     static let outsideLoop = Classification(speaking: false, listening: false, inEventLoop: false)
 }
 
-private let diagnosis = ConnectionDiagnosis(
+private let unreachableDiagnosis = ConnectionDiagnosis(
     kind: .unreachable, title: "Offline", hint: "", detail: nil, systemImage: "wifi.slash"
 )
 
@@ -53,7 +53,7 @@ struct WalkthroughStateClassificationTests {
             (.voiceNoteOpener(stepIndex: 4), .speakingInLoop),
             (.voiceNoteListening(stepIndex: 4), .listeningInLoop),
             (.confirmingTodos(index: 0), .silentInLoop),
-            (.calendarUnavailable(diagnosis), .outsideLoop),
+            (.calendarUnavailable(unreachableDiagnosis), .outsideLoop),
             (.ingesting, .outsideLoop),
             (.done, .outsideLoop),
             (.failed("boom"), .outsideLoop),
@@ -77,7 +77,7 @@ struct WalkthroughStateClassificationTests {
             .noteReview(stepIndex: 0, noteIndex: 0),
             .voiceNoteOpener(stepIndex: 0),
             .confirmingTodos(index: 0),
-            .calendarUnavailable(diagnosis),
+            .calendarUnavailable(unreachableDiagnosis),
             .ingesting, .done, .failed("x"),
         ]
         for state in listening { #expect(state.isListening, "\(state)") }
@@ -99,7 +99,7 @@ struct WalkthroughStateClassificationTests {
             .noteReview(stepIndex: 0, noteIndex: 0),
             .voiceNoteListening(stepIndex: 0),
             .confirmingTodos(index: 0),
-            .calendarUnavailable(diagnosis),
+            .calendarUnavailable(unreachableDiagnosis),
             .ingesting, .done, .failed("x"),
         ]
         for state in speaking { #expect(state.isSpeaking, "\(state)") }
@@ -120,7 +120,7 @@ struct WalkthroughStateClassificationTests {
             .confirmingTodos(index: 0),
         ]
         let outside: [WalkthroughState] = [
-            .idle, .calendarUnavailable(diagnosis), .ingesting, .done, .failed("x"),
+            .idle, .calendarUnavailable(unreachableDiagnosis), .ingesting, .done, .failed("x"),
         ]
         for state in inLoop { #expect(state.isInEventLoop, "\(state)") }
         for state in outside { #expect(!state.isInEventLoop, "\(state)") }
@@ -129,10 +129,12 @@ struct WalkthroughStateClassificationTests {
     @Test("classification does not depend on step, event, note or todo indices or section IDs")
     func independentOfIndexPayloads() {
         for index in [0, 1, 7, 42, Int.max] {
-            #expect(Classification(.eventOpener(stepIndex: index, eventIndex: index)) == .speakingInLoop)
+            #expect(Classification(.eventOpener(stepIndex: index, eventIndex: 0)) == .speakingInLoop)
+            #expect(Classification(.eventOpener(stepIndex: 0, eventIndex: index)) == .speakingInLoop)
             #expect(Classification(.eventListening(stepIndex: index, eventIndex: 0)) == .listeningInLoop)
             #expect(Classification(.eventListening(stepIndex: 0, eventIndex: index)) == .listeningInLoop)
-            #expect(Classification(.noteReview(stepIndex: index, noteIndex: index)) == .silentInLoop)
+            #expect(Classification(.noteReview(stepIndex: index, noteIndex: 0)) == .silentInLoop)
+            #expect(Classification(.noteReview(stepIndex: 0, noteIndex: index)) == .silentInLoop)
             #expect(Classification(.voiceNoteOpener(stepIndex: index)) == .speakingInLoop)
             #expect(Classification(.voiceNoteListening(stepIndex: index)) == .listeningInLoop)
             #expect(Classification(.confirmingTodos(index: index)) == .silentInLoop)
@@ -140,6 +142,10 @@ struct WalkthroughStateClassificationTests {
         for sectionID in ["", "general-1", "ünïcode ✓", String(repeating: "x", count: 500)] {
             #expect(Classification(.generalOpener(stepIndex: 5, sectionID: sectionID)) == .speakingInLoop)
             #expect(Classification(.generalListening(stepIndex: 5, sectionID: sectionID)) == .listeningInLoop)
+        }
+        for stepIndex in [0, 7, Int.max] {
+            #expect(Classification(.generalOpener(stepIndex: stepIndex, sectionID: "g")) == .speakingInLoop)
+            #expect(Classification(.generalListening(stepIndex: stepIndex, sectionID: "g")) == .listeningInLoop)
         }
     }
 
@@ -153,10 +159,15 @@ struct WalkthroughStateClassificationTests {
             .upstreamFailure, .serverError, .clientError, .malformedResponse, .unknown,
         ]
         for kind in kinds {
-            let state = WalkthroughState.calendarUnavailable(
-                ConnectionDiagnosis(kind: kind, title: "t", hint: "h", detail: "d", systemImage: "wifi.slash")
-            )
-            #expect(Classification(state) == .outsideLoop, "\(kind)")
+            for isRetryable in [true, false] {
+                let state = WalkthroughState.calendarUnavailable(
+                    ConnectionDiagnosis(
+                        kind: kind, title: "t", hint: "h", detail: "d", systemImage: "wifi.slash",
+                        isRetryable: isRetryable
+                    )
+                )
+                #expect(Classification(state) == .outsideLoop, "\(kind) retryable=\(isRetryable)")
+            }
         }
     }
 }
