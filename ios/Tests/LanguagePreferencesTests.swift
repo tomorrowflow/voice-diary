@@ -90,18 +90,14 @@ struct LanguagePreferencesTests {
     private static let legacyRecordingKey = "voiceDiary.recordingLanguage.v1"
     private static let legacyResponseKey = "voiceDiary.responseLanguage.v1"
 
-    /// Saves the exact prior objects of the two legacy keys only, and puts
-    /// them back when `body` returns or throws.
-    private func withLegacyKeysRestored<T>(_ body: (UserDefaults) throws -> T) rethrows -> T {
-        let defaults = UserDefaults.standard
-        let keys = [Self.legacyRecordingKey, Self.legacyResponseKey]
-        let previous = keys.map { defaults.object(forKey: $0) }
-        defer {
-            for (key, value) in zip(keys, previous) {
-                if let value { defaults.set(value, forKey: key) } else { defaults.removeObject(forKey: key) }
+    /// Restores the exact prior objects of the two legacy keys only, whether
+    /// `body` returns or throws. `body` changes the keys through `defaults`.
+    private func withLegacyKeys<T>(_ body: (UserDefaults) throws -> T) rethrows -> T {
+        try withStored(Self.legacyRecordingKey, nil) {
+            try withStored(Self.legacyResponseKey, nil) {
+                try body(UserDefaults.standard)
             }
         }
-        return try body(defaults)
     }
 
     @Test("storage keys keep the strings earlier installs saved under")
@@ -112,37 +108,40 @@ struct LanguagePreferencesTests {
 
     @Test("recording language: every choice saved under the legacy key is read back, in sequence")
     func recordingReadsLegacyKey() {
-        withLegacyKeysRestored { defaults in
-            defaults.removeObject(forKey: Self.legacyRecordingKey)
+        withLegacyKeys { defaults in
             #expect(RecordingLanguage.current == .auto)
             for choice in RecordingLanguage.allCases + RecordingLanguage.allCases.reversed() {
                 defaults.set(choice.rawValue, forKey: Self.legacyRecordingKey)
                 #expect(RecordingLanguage.current == choice)
             }
-            defaults.set("klingon", forKey: Self.legacyRecordingKey)
-            #expect(RecordingLanguage.current == .auto)
+            // "match" is a valid response choice, not a recording one.
+            for unknown in ["klingon", "match"] {
+                defaults.set(unknown, forKey: Self.legacyRecordingKey)
+                #expect(RecordingLanguage.current == .auto)
+            }
         }
     }
 
     @Test("response language: every choice saved under the legacy key is read back, in sequence")
     func responseReadsLegacyKey() {
-        withLegacyKeysRestored { defaults in
-            defaults.removeObject(forKey: Self.legacyResponseKey)
+        withLegacyKeys { defaults in
             #expect(ResponseLanguage.current == .match)
             for choice in ResponseLanguage.allCases + ResponseLanguage.allCases.reversed() {
                 defaults.set(choice.rawValue, forKey: Self.legacyResponseKey)
                 #expect(ResponseLanguage.current == choice)
             }
-            defaults.set("klingon", forKey: Self.legacyResponseKey)
-            #expect(ResponseLanguage.current == .match)
+            // "auto" is a valid recording choice, not a response one.
+            for unknown in ["klingon", "auto"] {
+                defaults.set(unknown, forKey: Self.legacyResponseKey)
+                #expect(ResponseLanguage.current == .match)
+            }
         }
     }
 
     @Test("recording and response choices are stored independently under their legacy keys")
     func legacyKeysAreIndependent() {
-        withLegacyKeysRestored { defaults in
+        withLegacyKeys { defaults in
             defaults.set("en", forKey: Self.legacyRecordingKey)
-            defaults.removeObject(forKey: Self.legacyResponseKey)
             #expect(RecordingLanguage.current == .en)
             #expect(ResponseLanguage.current == .match)
 
@@ -158,21 +157,22 @@ struct LanguagePreferencesTests {
         }
     }
 
-    @Test("legacy key helper restores the exact prior objects, also when the body throws")
-    func legacyKeyHelperRestores() {
+    @Test("legacy keys are put back exactly as they were, also when the body throws")
+    func legacyKeysRestoredAfterThrow() {
         struct Boom: Error {}
-        withLegacyKeysRestored { defaults in
+        let defaults = UserDefaults.standard
+        withLegacyKeys { _ in
             defaults.set("de", forKey: Self.legacyRecordingKey)
-            defaults.removeObject(forKey: Self.legacyResponseKey)
-            do {
-                try withLegacyKeysRestored { inner in
-                    inner.set("en", forKey: Self.legacyRecordingKey)
-                    inner.set("en", forKey: Self.legacyResponseKey)
+            defaults.set("en", forKey: Self.legacyResponseKey)
+            #expect(throws: Boom.self) {
+                try withLegacyKeys { _ in
+                    defaults.set("en", forKey: Self.legacyRecordingKey)
+                    defaults.removeObject(forKey: Self.legacyResponseKey)
                     throw Boom()
                 }
-            } catch {}
+            }
             #expect(defaults.string(forKey: Self.legacyRecordingKey) == "de")
-            #expect(defaults.object(forKey: Self.legacyResponseKey) == nil)
+            #expect(defaults.string(forKey: Self.legacyResponseKey) == "en")
         }
     }
 
