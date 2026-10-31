@@ -61,6 +61,28 @@ struct TodoAnswerParserTests {
         }
     }
 
+    @Test("Leading 'ja' with three more words still confirms (four-word cap)")
+    func confirmAtFourWords() {
+        #expect(TodoAnswerParser.parse("ja eins zwei drei") == .confirm)
+    }
+
+    @Test("Leading 'ja' with four more words refines to the rest")
+    func confirmPastFourWordsRefines() {
+        #expect(TodoAnswerParser.parse("ja eins zwei drei vier") == .refine("Eins zwei drei vier"))
+    }
+
+    @Test("Leading 'nein' stays a reject past the four-word cap")
+    func rejectPastFourWords() {
+        #expect(TodoAnswerParser.parse("nein eins zwei drei") == .reject)
+        #expect(TodoAnswerParser.parse("nein eins zwei drei vier") == .reject)
+    }
+
+    @Test("'anders' with three more words is unknown; with four it refines")
+    func switchToRefineAcrossFourWordCap() {
+        #expect(TodoAnswerParser.parse("anders eins zwei drei") == .unknown)
+        #expect(TodoAnswerParser.parse("anders eins zwei drei vier") == .refine("Anders eins zwei drei vier"))
+    }
+
     @Test("Hesitation markers are stripped before parsing")
     func hesitationStripping() {
         #expect(TodoAnswerParser.parse("ähm ja") == .confirm)
