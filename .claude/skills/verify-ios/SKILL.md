@@ -291,7 +291,7 @@ states:
 | Feature | Reachable | Needs |
 |---|---|---|
 | [first-launch](../ios/first-launch.md) | launch, prompts, light/dark; answering the prompts | `idb` tap |
-| [evening-walkthrough](../ios/evening-walkthrough.md) | Evening tab, day overview, calendar failure cards, retry spinner | stub, `idb` |
+| [evening-walkthrough](../ios/evening-walkthrough.md) | Evening tab, day overview, walkthrough steps with the progress header, calendar failure cards, retry spinner | stub, `idb` |
 | [recording](../ios/recording.md) | nothing | tab, record button (microphone) |
 | [history](../ios/history.md) | tab (tap) | `idb` tap |
 | [more-settings](../ios/more-settings.md) | appearance (system-wide), rows, language toggle, Server | `idb` tap/text |
@@ -346,6 +346,25 @@ Things learned in KA-11:
   `127.0.0.1:8791`. A field showing a placeholder is empty.
 - A tap that changes nothing was probably outside the frame; read the tree again, do not repeat
   it blindly.
+
+### Reaching the walkthrough progress header (`FlowHeader`)
+
+`FlowHeader` draws the progress capsules (one per walkthrough step, filled up to the current
+one) above the title, and keeps the same 32 pt row empty on screens without progress. Both
+states are reachable with the stub's default `ok` calendar; no fixture or seed is needed:
+
+1. **No progress:** on first launch, answer both prompts; the Server screen is a `FlowHeader`
+   with the row empty. Take its screenshots before typing anything.
+2. Set up the server as in step 1 of "Reaching the calendar failure states" below, with the stub
+   left on `ok` (start it without `--route`): `/today/calendar` then answers two events.
+3. Wait for the speech model (step 2 below): **Start session** must be in the tree and enabled.
+4. **Progress:** tap **Start session**. The first event step opens (title `1:1 mit …`, the
+   stub's first event) with the first capsule filled. Screenshot once `Next` is in the tree.
+5. Tap **Next** for the following step; one more capsule is filled.
+
+*Start session* records from the simulator's microphone and writes a session into this
+simulator's app container; Cleanup deletes the simulator with it. Do not open a walkthrough on
+any other simulator.
 
 ### Reaching the calendar failure states (UFH-06)
 
