@@ -40,7 +40,9 @@ tap *Start session*:
 
 ## Side effects
 
-None from viewing. *Start session* starts a recording and talks to the server: not driven here.
+None from viewing. *Start session* starts a recording and talks to the server: drive it only
+against the stub on the run's own simulator (SKILL.md → Drive → "Reaching the walkthrough
+progress header").
 
 ## Evidence
 
