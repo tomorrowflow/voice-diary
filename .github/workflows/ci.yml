@@ -3,6 +3,7 @@ name: CI
 # Linux: Ruff + server pytest through Compose. macOS: XcodeGen + SwiftLint + xcodebuild test.
 # Commands mirror DEVELOPMENT.md §7.4; runner/tool setup is documented in §7.5.
 # No secrets are used: the server .env is a throwaway stub and iOS tests run unsigned.
+# Re-pushed after the 2026-10-31 repo recreation so GitHub registers the push and pull_request triggers.
 
 on:
   pull_request:
