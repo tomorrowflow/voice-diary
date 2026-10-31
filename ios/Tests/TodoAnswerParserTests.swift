@@ -112,6 +112,17 @@ struct TodoAnswerParserTests {
         #expect(TodoAnswerParser.parse("Stephan am Mon. anrufen.") == .refine("Stephan am mon. anrufen"))
     }
 
+    @Test("Multiword reject phrases whose first word is not a token map to .reject",
+          arguments: ["lass weg", "nicht aufnehmen", "doch nicht", "never mind"])
+    func multiwordRejectPhrase(phrase: String) {
+        #expect(TodoAnswerParser.parse(phrase) == .reject)
+    }
+
+    @Test("The multiword edit request 'change it' is .unknown so the edit flow stays open")
+    func multiwordEditRequestIsUnknown() {
+        #expect(TodoAnswerParser.parse("change it") == .unknown)
+    }
+
     @Test("A word that merely starts with a hesitation marker is not stripped")
     func hesitationPrefixOfLongerWordSurvives() {
         #expect(TodoAnswerParser.parse("Alsohaus kaufen") == .refine("Alsohaus kaufen"))
