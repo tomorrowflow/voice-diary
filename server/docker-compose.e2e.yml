@@ -1,0 +1,96 @@
+# Isolated e2e stack, layered on docker-compose.yml (never edited). Driven by
+# scripts/e2e_stack.py, which always passes `-p vd-e2e` and
+# `--env-file .env.e2e`, so a run:
+#   - uses its own Compose project: containers, network and the named volumes
+#     pgdata / qdrant_data / whisper_models are all prefixed `vd-e2e_` and do
+#     not touch the prod stack's volumes of the same base name,
+#   - reads .env.e2e (own bearer token, own Postgres password), never .env,
+#     and never mounts server/data or data/msal_cache.bin,
+#   - publishes the webapp on ${TAILNET_IP}:8100 (prod keeps :8000),
+#   - serves Microsoft Graph from fixtures, with Harvest off,
+#   - talks to fixture Ollama + LightRAG (service `upstreams`), not the LAN,
+#   - runs Whisper on CPU with a small model, so it never competes with prod
+#     for the GPU, and starts no Voxtral at all.
+#
+# Needs Compose >= 2.24 for the !override / !reset tags.
+name: vd-e2e
+
+services:
+  webapp:
+    ports: !override
+      - "${TAILNET_IP:?Set TAILNET_IP in .env.e2e}:8100:8000"
+    env_file: !override
+      - .env.e2e
+    environment:
+      - MSGRAPH_FIXTURE_MODE=true
+      - HARVEST_ACCESS_TOKEN=
+      - HARVEST_ACCOUNT_ID=
+      - HARVEST_USER_ID=
+      # No Voxtral in this stack: an empty URL reports the probe as skipped.
+      - VOXTRAL_BASE_URL=
+      # Every upstream is on the stack network; a proxy that Docker injects
+      # from the host's client config must not sit between them.
+      - NO_PROXY=localhost,127.0.0.1,postgres,qdrant,whisper,upstreams
+      - no_proxy=localhost,127.0.0.1,postgres,qdrant,whisper,upstreams
+    volumes: !override
+      - e2e_data:/data
+    depends_on: !override
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      whisper:
+        condition: service_started
+      upstreams:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 15s
+    restart: "no"
+
+  whisper:
+    # CPU image and a small model, pinned here rather than read from the env
+    # so no .env.e2e value can pull the GPU build in.
+    image: onerahmet/openai-whisper-asr-webservice:latest
+    environment:
+      ASR_MODEL: ${E2E_WHISPER_MODEL:-small}
+      ASR_ENGINE: faster_whisper
+    deploy: !reset null
+    restart: "no"
+
+  postgres:
+    # Same schema as prod, but the fixed fictional cast instead of seed.sql.
+    volumes: !override
+      - pgdata:/var/lib/postgresql/data
+      - ./webapp/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./e2e/seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    restart: "no"
+
+  qdrant:
+    restart: "no"
+
+  # Fixture Ollama (:11434) and LightRAG (:9621); see e2e/fixture_upstreams.py.
+  upstreams:
+    image: python:3.12-slim
+    command: ["python", "-u", "/fixture_upstreams.py"]
+    volumes:
+      - ./e2e/fixture_upstreams.py:/fixture_upstreams.py:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9621/health', timeout=3)"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: "no"
+
+  # Never started here: voxtral is not a dependency of the webapp, and the
+  # profile keeps `up` and `down` from ever creating the GPU services.
+  voxtral:
+    profiles: ["never"]
+  voxtral-engine:
+    profiles: ["never"]
+
+volumes:
+  e2e_data:
