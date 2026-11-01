@@ -507,13 +507,24 @@ printf '%s\n' '{"audio_file_url":"file://<data container>/Library/Application%20
 
 Launch again (`simctl launch`, as in Launch); wait until `describe-all` shows the app's labels.
 
+Two things from KA-12 that look like faults and are not:
+
+- A tree with only `Voice Diary` and no labels, after the Server screen, is a system sheet over
+  the app: *Save Password?* (from the token field). Screenshot it, tap **Not Now**
+  (about (127, 546)).
+- Taps sent while a screen is changing land on the next screen. Taps sent together during
+  onboarding started two real sessions in the container (audio in `s01.m4a`), so the Evening tab
+  showed *Unfinished session — pick it up below* with **Pick up** / **Start fresh**, and History
+  listed them under **TODAY**. Send one tap per call and read the tree between screens; the
+  extra sessions are harmless for this recipe (use **Start fresh**).
+
 **History segment row, History note row.** The tab bar's items are not in the `idb` tree: tap
 by position at y 815 (Evening x 67, Recording x 157, History x 244, More x 329).
 
 1. Tap History (244, 815). Under **FRIDAY, OCTOBER 30** are two rows: the session (label
    `Evening session · 1 event, For Friday, October 30, 2026`) and the loose note (label
    `Synthetic tone fixture, no speech., For …`). Tap the session row (centre of its frame in
-   the tree).
+   the tree; rows under **TODAY** are not the fixture).
 2. The detail lists **SECTIONS** (*Fixture standup*, *Free reflection*) and **NOTES** (17:40).
    The notes are below the tab bar until you scroll:
    `idb ui swipe 200 700 200 200 --duration 0.5 --udid <udid>`, then `describe-all` for the frames.
@@ -526,9 +537,11 @@ by position at y 815 (Evening x 67, Recording x 157, History x 244, More x 329).
    scrubber closes when another row starts, so the layout shifts: read the tree again before
    the pause tap.
 
-**Walkthrough note review.** Needs the stub with the calendar failing and the speech model
-loaded ("Reaching the calendar failure states", steps 1-3), the stub started with
-`--route /today/calendar=retryable`:
+**Walkthrough note review.** Needs the server saved ("Reaching the calendar failure states",
+step 1) and the stub started with `--route /today/calendar=retryable`. *Start session* stays
+disabled until the speech model has loaded (step 2); in KA-12 **Start fresh** on the
+*Unfinished session* card was enabled straight after onboarding, with no model wait, so the
+extra sessions above are also the quick way in:
 
 1. Tap Evening (67, 815). If the tab shows *Unfinished session — pick it up below*, tap **Start
    fresh**; otherwise **Start session**. The card *Calendar and mail aren't available* appears.
@@ -538,8 +551,12 @@ loaded ("Reaching the calendar failure states", steps 1-3), the stub started wit
    transcript. A spoken intro runs first; the tree shows `Play`, `17:40` and `Older — 30. Oct`
    when it is ready.
 3. Tap the **Play** disc (about (50, 222)): the pause glyph, the scrubber and the elapsed time
-   show; a second tap pauses. Screenshot each. The wake-word window ("Listening for
-   “Next”…") may time out and move on; if the card is gone, **Close** and start again.
+   show; a second tap pauses. Screenshot each, one call per step: the 8 s tone ends after about
+   six calls, and a tap on the disc after the end plays it again from 0:00, so a "pause" shot
+   there shows the pause glyph at 0:02, not a paused note. The wake-word window ("Listening
+   for “Next”…") times out a few seconds after the spoken summary and moves on to **Day close**
+   (a timer, **Next**, **Pause**); if the card is gone, tap **Close** (about (378, 90)) and
+   start again with **Start fresh**: the card is back about 20 s later.
 
 **What it proves.** The rows, the play/pause glyph and the scrubber for retained audio in
 History and in the note review, in both appearances. **What it does not.** A real recording
