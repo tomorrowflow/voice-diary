@@ -168,6 +168,9 @@ public enum Theme {
 
         // Quick-capture idle microphone glyph: fixed 48-pt system font, no Dynamic Type scaling.
         public var captureMicGlyph: Font { .system(size: 48) }
+
+        // Flow header close xmark: fixed 14-pt medium system font, no Dynamic Type scaling.
+        public var flowCloseGlyph: Font { .system(size: 14, weight: .medium) }
     }
 
     // ---------- Motion -------------------------------------------------
