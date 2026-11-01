@@ -113,35 +113,43 @@ struct TranscriptExcerptTests {
 
     // MARK: - Exact match versus token overlap
 
-    /// Sentence 1 shares every token of "Marketing Budget prüfen" without
+    /// Sentence 1 of the collision transcript: an earlier partial overlap
+    /// with "Marketing Budget prüfen". The second shares every token without
     /// containing the phrase, so it ties the exact match at the last
     /// sentence on overlap score and would win the earliest-sentence
     /// tie-break if overlap were consulted first.
-    private var overlapBeforeExactTranscript: String {
-        (["Prüfen Marketing Budget."] + (2...8).map { "Satz \($0)." }
-            + ["Marketing Budget prüfen."])
+    private static let earlierOverlapSentences = [
+        "Budget besprechen.",
+        "Prüfen Marketing Budget.",
+    ]
+
+    /// Nine sentences: `first`, "Satz 2." … "Satz 8.", then the exact phrase.
+    private func collisionTranscript(first: String) -> String {
+        ([first] + (2...8).map { "Satz \($0)." } + ["Marketing Budget prüfen."])
             .joined(separator: " ")
     }
 
-    /// Sentences 5-9 of `overlapBeforeExactTranscript`.
-    private let overlapBeforeExactWindow = ((5...8).map { "Satz \($0)." } + ["Marketing Budget prüfen."])
+    /// Sentences 5-9 of `collisionTranscript(first:)`.
+    private let collisionTailWindow = ((5...8).map { "Satz \($0)." } + ["Marketing Budget prüfen."])
         .joined(separator: " ")
 
-    @Test("A later exact match beats an earlier sentence with equal token overlap")
-    func exactMatchBeatsEarlierOverlap() throws {
+    @Test("A later exact match beats an earlier partial overlap",
+          arguments: earlierOverlapSentences)
+    func exactMatchBeatsEarlierOverlap(first: String) throws {
         let ex = try #require(select(
-            overlapBeforeExactTranscript, text: "Marketing Budget prüfen"))
-        #expect(ex.text == overlapBeforeExactWindow)
+            collisionTranscript(first: first), text: "Marketing Budget prüfen"))
+        #expect(ex.text == collisionTailWindow)
         #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Marketing Budget prüfen")
     }
 
-    @Test("A source quote matching exactly beats an earlier overlap and highlights the original casing")
-    func exactSourceQuoteBeatsEarlierOverlap() throws {
+    @Test("A source quote matching exactly beats an earlier overlap and highlights the original casing",
+          arguments: earlierOverlapSentences)
+    func exactSourceQuoteBeatsEarlierOverlap(first: String) throws {
         let ex = try #require(select(
-            overlapBeforeExactTranscript,
+            collisionTranscript(first: first),
             quote: "MARKETING BUDGET PRÜFEN",
             text: "Budget"))
-        #expect(ex.text == overlapBeforeExactWindow)
+        #expect(ex.text == collisionTailWindow)
         #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Marketing Budget prüfen")
     }
 
