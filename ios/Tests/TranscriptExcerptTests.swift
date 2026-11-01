@@ -113,11 +113,10 @@ struct TranscriptExcerptTests {
 
     // MARK: - Exact match versus token overlap
 
-    /// Sentence 1 of the collision transcript: an earlier partial overlap
-    /// with "Marketing Budget prüfen". The second shares every token without
-    /// containing the phrase, so it ties the exact match at the last
-    /// sentence on overlap score and would win the earliest-sentence
-    /// tie-break if overlap were consulted first.
+    /// First sentences that overlap "Marketing Budget prüfen" without
+    /// containing it. The first shares one token. The second shares all
+    /// three, tying the exact match on overlap score, so it would win the
+    /// earliest-sentence tie-break if overlap were consulted first.
     private static let earlierOverlapSentences = [
         "Budget besprechen.",
         "Prüfen Marketing Budget.",
