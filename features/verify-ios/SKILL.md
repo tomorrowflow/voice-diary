@@ -522,7 +522,7 @@ Two things from KA-12 that look like faults and are not:
 by position at y 815 (Evening x 67, Recording x 157, History x 244, More x 329).
 
 1. Tap History (244, 815). Under **FRIDAY, OCTOBER 30** are two rows: the session (label
-   `Evening session · 1 event, For Friday, October 30, 2026`) and the loose note (label
+   `Evening session · 1 event, For Friday, October 30, 2026`) and the voice note on its own (label
    `Synthetic tone fixture, no speech., For …`). Tap the session row (centre of its frame in
    the tree; rows under **TODAY** are not the fixture).
 2. The detail lists **SECTIONS** (*Fixture standup*, *Free reflection*) and **NOTES** (17:40).
@@ -565,7 +565,9 @@ note's pause/resume chunks, or a session the app wrote itself (the manifest carr
 `drive_by` segment for the note, so History shows it only under NOTES). With the stub running,
 History's status route marks both segments **Failed** (UFH-08, "Transcription is taking too
 long"): that is the stub, not the fixture. The walkthrough also writes a session of its own
-into the container; Cleanup deletes the simulator with it.
+into the container; Cleanup deletes the simulator with it. Finishing a walkthrough past the note
+step marks the note surfaced (`surfaced_seed_ids.json`), and later walkthroughs skip it:
+**Close** instead of finishing, or seed a new simulator.
 
 ## Evidence
 

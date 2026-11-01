@@ -6,9 +6,9 @@ reached on a throwaway iPhone 17 simulator (`vd-verify-ios`), what proves it, an
 | Feature | Where in the app | Reached with `simctl` | Mapped from |
 |---|---|---|---|
 | [first-launch](first-launch.md) | first-run Server and Permissions screens, then the system prompts | yes (launch) | `OnboardingFlowView.swift`, `Permissions.swift` |
-| [evening-walkthrough](evening-walkthrough.md) | Evening tab (default) | launch; calendar failure cards with the stub and `idb` | `Walkthrough/WalkthroughView.swift` |
+| [evening-walkthrough](evening-walkthrough.md) | Evening tab (default) | launch; calendar failure cards with the stub and `idb`; note review with a seeded tone note | `Walkthrough/WalkthroughView.swift` |
 | [recording](recording.md) | Recording tab | no (tap) | `DriveBy/CaptureView.swift` |
-| [history](history.md) | History tab | no (tap) | `Verlauf/VerlaufView.swift` |
+| [history](history.md) | History tab | no (tap); playback rows with the seeded tone session (`idb`) | `Verlauf/VerlaufView.swift` |
 | [upstream-impact](upstream-impact.md) | More → Server, History → session, Evening → Start session | stub (`/health=unhealthy`), seeded queue, `idb` | `Settings/ServerSettingsView.swift`, `Backend/UpstreamImpact.swift` |
 | [more-settings](more-settings.md) | More tab, appearance, language | appearance only | `VoiceDiaryApp.swift` (`MehrView`), `Settings/` |
 

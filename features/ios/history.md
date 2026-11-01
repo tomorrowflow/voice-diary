@@ -40,7 +40,7 @@ Viewing is read-only. Delete removes local files only.
 ## Playback UI (retained audio) — seed and `idb`
 
 Reached with the same recipe (SKILL.md → Seed → "Retained audio (History segment + note,
-walkthrough note review)"): History lists the seeded session and a loose note under *Friday,
+walkthrough note review)"): History lists the seeded session and the voice note on its own under *Friday,
 October 30*; the session's detail has segment rows (*Fixture standup*, *Free reflection*) and a
 **NOTES** row (17:40), each with a play/pause disc and, while active, a scrubber. `idb` taps
 drive play and pause (KA-12 captures: `docs/screenshots/KA-12/`).

@@ -69,14 +69,16 @@ func write(_ tone: Tone) throws {
 }
 
 for tone in tones {
-    do { try write(tone) } catch {
+    do {
+        try write(tone)
+        // The file is closed once `write` returns; read it back as the app would.
+        let url = root.appending(path: tone.path)
+        let probe = try AVAudioFile(forReading: url)
+        let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let seconds = Double(probe.length) / probe.processingFormat.sampleRate
+        print("\(tone.path) \(bytes) bytes \(String(format: "%.2f", seconds)) s")
+    } catch {
         FileHandle.standardError.write(Data("\(tone.path): \(error)\n".utf8))
         exit(1)
     }
-    // The file is closed once `write` returns; read it back as the app would.
-    let url = root.appending(path: tone.path)
-    let probe = try AVAudioFile(forReading: url)
-    let bytes = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-    let seconds = Double(probe.length) / probe.processingFormat.sampleRate
-    print("\(tone.path) \(bytes) bytes \(String(format: "%.2f", seconds)) s")
 }
