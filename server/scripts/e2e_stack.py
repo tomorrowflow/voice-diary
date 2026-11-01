@@ -88,14 +88,16 @@ def compose_command(args: list[str]) -> list[str]:
     ]
 
 
+def scrubbed_env() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if k not in SCRUBBED_ENV}
+
+
 def compose(*args: str, stdin: str | None = None) -> None:
-    env = {k: v for k, v in os.environ.items() if k not in SCRUBBED_ENV}
-    subprocess.run(compose_command(list(args)), check=True, env=env, input=stdin, text=True)
+    subprocess.run(compose_command(list(args)), check=True, env=scrubbed_env(), input=stdin, text=True)
 
 
 def compose_output(*args: str) -> str:
-    env = {k: v for k, v in os.environ.items() if k not in SCRUBBED_ENV}
-    done = subprocess.run(compose_command(list(args)), check=True, env=env, capture_output=True, text=True)
+    done = subprocess.run(compose_command(list(args)), check=True, env=scrubbed_env(), capture_output=True, text=True)
     return done.stdout
 
 

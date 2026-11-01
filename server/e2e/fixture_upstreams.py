@@ -19,7 +19,7 @@ recognised by its prompt (`CHAT_KINDS`) and answered with a canned reply:
     analysis               document_processor     /v1/chat/completions
 
 Replies for transcript-bearing kinds are keyed by fixture: the first fixture in
-`FIXTURES` whose marker words appear in the request claims it. A transcript no
+`FIXTURES` whose marker patterns match the request claims it. A transcript no
 fixture claims gets the neutral replies, so any recording still reaches `done`.
 The analysis date comes from the prompt, never the clock, so the same request
 always gets byte-identical bytes back.
@@ -120,7 +120,9 @@ NEUTRAL_REPLIES = {
 # clip (e2e/fixture_speech.m4a) speaks the cast's names, so it lands on this one.
 FIXTURES = {
     "e2e-cast": {
-        "markers": ("Jonas Falk", "Mira", "Leuchtturm", "Fjordwerk"),
+        # Regexes, case-insensitive. Whisper may inflect a name ("Jonas Falke"),
+        # so only the start of a name is anchored; "Mira" alone must be a word.
+        "markers": (r"\bJonas Falk", r"\bMira\b", r"Leuchtturm", r"Fjordwerk"),
         "replies": {
             "analysis": cast_analysis,
             "work_activities": {
@@ -160,9 +162,8 @@ def chat_kind(prompt: str) -> str:
 
 
 def select_fixture(prompt: str) -> str | None:
-    lowered = prompt.lower()
     for name, fixture in FIXTURES.items():
-        if any(marker.lower() in lowered for marker in fixture["markers"]):
+        if any(re.search(marker, prompt, re.IGNORECASE) for marker in fixture["markers"]):
             return name
     return None
 

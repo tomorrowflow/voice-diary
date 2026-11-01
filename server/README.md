@@ -270,7 +270,9 @@ python3 scripts/e2e_stack.py down      # remove containers, network and this pro
 - **Determinism:** `repeat` resets, runs the fixture session, and keeps the final status (without
   `received_at`, the upload clock), the documents LightRAG received and the request log without
   health probes; after the second run it compares the three byte for byte. The one input it does
-  not control is Whisper, whose transcript is the same across runs on the same CPU image.
+  not control is Whisper, whose transcript is the same across runs on the same CPU image. The
+  bundle is dated today and the narrative footer stamps the processing date, so both runs must
+  fall on the same day.
 - **Data:** the DB is seeded from `e2e/seed.sql`, a fixed fictional cast (Jonas Falk, Mira
   Lindqvist, ...), not from `webapp/seed.sql`.
 - **Fixture bundle:** `session` sends `e2e/fixture_speech.m4a`, a short German clip made with

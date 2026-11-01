@@ -153,6 +153,14 @@ async def test_context_summary_is_fixed_and_long_enough_to_be_used(upstreams):
     assert _new_entries(urls, before)[0]["kind"] == "context_summary"
 
 
+def test_a_fixture_claims_inflected_names_but_not_words_that_merely_contain_one(upstreams):
+    module, _ = upstreams
+    assert module.select_fixture("Jonas Falke übernimmt die Abstimmung") == "e2e-cast"
+    assert module.select_fixture("mit mir allen den Testplan für Projekt LEUCHTTURM") == "e2e-cast"
+    assert module.select_fixture("Der Admiral sah ein Wunder, ein miracle.") is None
+    assert module.select_fixture("") is None
+
+
 def test_identical_requests_get_byte_identical_replies(upstreams):
     _, urls = upstreams
     body = {"messages": [{"role": "user", "content": "Du analysierst das Tagebuch eines CTOs vom 2026-03-04.\n" + CAST_TRANSCRIPT}]}

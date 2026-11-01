@@ -202,6 +202,26 @@ def test_session_client_saves_the_final_status_without_the_upload_clock():
     assert first == second and b"received_at" not in first
 
 
+def test_upstreams_command_prints_the_recorded_json_and_rejects_unknown_views(stack, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(stack, "ENV_FILE", tmp_path / ".env.e2e")
+    (tmp_path / ".env.e2e").write_text("TAILNET_IP=100.64.0.1\n")
+    asked = []
+    monkeypatch.setattr(stack, "fixture_upstreams", lambda what: asked.append(what) or '[{"kind":"analysis"}]')
+    stack.cmd_upstreams("documents")
+    assert asked == ["documents"] and '"kind": "analysis"' in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        stack.cmd_upstreams("secrets")
+    assert asked == ["documents"]
+
+
+def test_fixture_upstreams_are_read_from_inside_the_container_through_compose(stack, monkeypatch):
+    seen = []
+    monkeypatch.setattr(stack, "compose_output", lambda *args: seen.append(args) or "[]")
+    assert stack.fixture_upstreams("requests") == "[]"
+    assert seen[0][:4] == ("exec", "-T", "upstreams", "python")
+    assert seen[0][-1] == "http://127.0.0.1:9621/_fixture/requests"
+
+
 class _FakeUpstreams:
     """Stands in for the stack: what `upstreams` would serve after each run."""
 
