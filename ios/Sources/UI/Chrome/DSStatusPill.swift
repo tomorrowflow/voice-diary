@@ -21,7 +21,8 @@ public struct DSStatusPill: View {
         HStack(spacing: Theme.spacing.xs) {
             Circle()
                 .fill(color)
-                .frame(width: 6, height: 6)
+                .frame(width: Theme.spacing.settingsStatusDotSize,
+                       height: Theme.spacing.settingsStatusDotSize)
             Text(text)
                 .font(Theme.font.caption2.weight(.medium))
                 .foregroundStyle(color)
