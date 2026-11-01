@@ -65,7 +65,7 @@ public struct FlowHeader: View {
                 if let onClose, hasProgress {
                     Button(action: onClose) {
                         Image(systemName: "xmark")
-                            .font(.system(size: 14, weight: .medium))
+                            .font(Theme.font.flowCloseGlyph)
                             .foregroundStyle(Theme.color.text.subdued)
                     }
                     .accessibilityLabel(Text("Close"))
