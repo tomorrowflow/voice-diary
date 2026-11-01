@@ -38,6 +38,21 @@ tap *Start session*:
 - **Start without calendar** runs general sections and voice notes only, and uploads as usual;
 - *Pick up where you left off* with Graph down shows the same card with **Try again** only.
 
+## Note review with a playable note — seed, stub and `idb`
+
+The review of a saved voice note (title **Notes**, time, *Older — <day>* badge, duration,
+transcript, play disc) needs a note on disk. SKILL.md → Seed → "Retained audio (History segment +
+note, walkthrough note review)" seeds one (`features/verify-ios/fixtures/retained-audio/`, an 8 s
+tone captured 30 Oct); with the stub on `/today/calendar=retryable`, *Start fresh* or *Start
+session* then **Start without calendar** opens the note review directly, and a tap on the play
+disc shows play and pause (KA-12 captures: `docs/screenshots/KA-12/`).
+
+It proves the card layout and the play/pause glyph and scrubber for retained note audio. It does
+not prove a real recording, upload or transcription: the note is a tone with a canned transcript,
+and the note's `metadata.json` is written by the recipe (its `audio_file_url` needs the
+container path), not by the app. The spoken intro and summary (Piper/AVSpeech) and the wake-word
+window are not part of that proof.
+
 ## Side effects
 
 None from viewing. *Start session* starts a recording and talks to the server: drive it only
