@@ -1,0 +1,62 @@
+{
+  "ai_prompts" : [
+
+  ],
+  "app_version" : "0.1.0",
+  "audio_codec" : {
+    "bitrate" : 32000,
+    "channels" : 1,
+    "codec" : "aac-lc",
+    "sample_rate" : 16000
+  },
+  "date" : "2026-10-30",
+  "device" : "iphone-17-pro",
+  "drive_by_seeds_surfaced" : [
+    "note-2026-10-30T16:40:00Z"
+  ],
+  "drive_by_seeds_unsurfaced" : [
+
+  ],
+  "locale_primary" : "en-US",
+  "response_language_setting" : "match_input",
+  "segments" : [
+    {
+      "audio_file" : "segments\/s01.m4a",
+      "calendar_ref" : {
+        "attendees" : [
+
+        ],
+        "end" : "2026-10-30T09:30:00+01:00",
+        "graph_event_id" : "fixture-event-1",
+        "rsvp_status" : "accepted",
+        "start" : "2026-10-30T09:00:00+01:00",
+        "title" : "Fixture standup"
+      },
+      "language" : "en-US",
+      "linked_seed_ids" : [
+
+      ],
+      "segment_id" : "s01",
+      "segment_type" : "calendar_event",
+      "todos_detected" : [
+
+      ],
+      "transcript" : "Synthetic tone fixture, no speech."
+    },
+    {
+      "audio_file" : "segments\/s02.m4a",
+      "captured_at" : "2026-10-30T18:15:00Z",
+      "language" : "en-US",
+      "segment_id" : "s02",
+      "segment_type" : "free_reflection",
+      "transcript" : "Synthetic tone fixture, no speech."
+    }
+  ],
+  "session_id" : "2026-10-30T18:15:00Z",
+  "todos_implicit_confirmed" : [
+
+  ],
+  "todos_implicit_rejected" : [
+
+  ]
+}
