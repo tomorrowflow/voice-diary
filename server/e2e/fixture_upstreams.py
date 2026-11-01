@@ -7,12 +7,34 @@ knowledge graph on the LAN:
 - :9621   LightRAG GET /health, POST /query, POST /documents/text,
                    DELETE /documents/delete_document
 
-Answers are canned and use the fictional e2e cast only. Every request is
-recorded; `GET /_fixture/requests` on either port returns the log so a test can
-prove the server actually called the upstream. Nothing here is a secret.
+No model is in the loop. Every chat call the session pipeline makes is
+recognised by its prompt (`CHAT_KINDS`) and answered with a canned reply:
+
+    transcript_correction  transcript_corrector   /api/chat
+    fluency_check          fluency_checker        /api/chat
+    entity_validation      llm_validator          /api/chat
+    work_activities        harvest_llm            /api/chat
+    speech_summary         enrichment             /api/chat
+    context_summary        document_processor     /v1/chat/completions
+    analysis               document_processor     /v1/chat/completions
+
+Replies for transcript-bearing kinds are keyed by fixture: the first fixture in
+`FIXTURES` whose marker words appear in the request claims it. A transcript no
+fixture claims gets the neutral replies, so any recording still reaches `done`.
+The analysis date comes from the prompt, never the clock, so the same request
+always gets byte-identical bytes back.
+
+Every pipeline request is recorded with its kind, fixture and body digest;
+`GET /_fixture/requests` on either port returns the log, and
+`GET /_fixture/documents` on the LightRAG port returns the documents inserted
+so far (the day narrative is the `diary:<date>` one). Both live in memory, so
+restarting the service empties them. Answers use the fictional e2e cast only;
+nothing here is a secret.
 """
 
+import hashlib
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -24,63 +46,140 @@ CONTEXT_SUMMARY = (
     "- Offenes TODO: Testplan mit Mira Lindqvist abstimmen\n"
     "**Personen-Kontext:**\n- Mira Lindqvist: Produktleiterin, letzte Interaktion: Planung"
 )
-ANALYSIS = {
-    "relationships": [
-        {
-            "source": "Jonas Falk",
-            "relationship": "diskutierte_mit",
-            "target": "Mira Lindqvist",
-            "context": "Abstimmung zum Testplan",
-            "continuity": "new",
-            "date": "2026-01-01",
-        }
-    ],
-    "projects": [
-        {
-            "name": "Projekt Leuchtturm",
-            "status": "in_arbeit",
-            "status_change": "unchanged",
-            "involved_persons": ["Jonas Falk", "Mira Lindqvist"],
-            "involved_companies": ["Fjordwerk"],
-            "technologies": [],
-            "context": "Release-Planung",
-            "date": "2026-01-01",
-        }
-    ],
-    "decisions": [],
-    "todos": [
-        {
-            "action": "Testplan abstimmen",
-            "assignee": "Jonas Falk",
-            "priority": "mittel",
-            "context": "Vor dem Release",
-            "recurrence": "new",
-            "first_mentioned": None,
-            "date": "2026-01-01",
-        }
-    ],
-    "insights": [],
-    "recurring_themes": [],
+FALLBACK_TEXT = "Fixture-Antwort: Jonas Falk stimmt den Testplan mit Mira Lindqvist ab."
+
+# Matched against the whole prompt (system and user messages), first hit wins.
+CHAT_KINDS = (
+    ("Kontext-Komprimierer", "context_summary"),
+    ("Du analysierst das Tagebuch", "analysis"),
+    ("transcript correction assistant", "transcript_correction"),
+    ("fluency analyser", "fluency_check"),
+    ("entity validation assistant", "entity_validation"),
+    ("time tracking assistant", "work_activities"),
+    ("Stimme einer persönlichen Tagebuch-Assistenz", "speech_summary"),
+    ("voice of a personal diary assistant", "speech_summary"),
+)
+ANALYSIS_DATE = re.compile(r"Du analysierst das Tagebuch eines CTOs vom (\d{4}-\d{2}-\d{2})")
+ANALYSIS_SECTIONS = ("relationships", "projects", "decisions", "todos", "insights", "recurring_themes")
+
+
+def cast_analysis(date: str) -> dict:
+    return {
+        "relationships": [
+            {
+                "source": "Jonas Falk",
+                "relationship": "diskutierte_mit",
+                "target": "Mira Lindqvist",
+                "context": "Abstimmung zum Testplan",
+                "continuity": "new",
+                "date": date,
+            }
+        ],
+        "projects": [
+            {
+                "name": "Projekt Leuchtturm",
+                "status": "in_arbeit",
+                "status_change": "unchanged",
+                "involved_persons": ["Jonas Falk", "Mira Lindqvist"],
+                "involved_companies": ["Fjordwerk"],
+                "technologies": [],
+                "context": "Release-Planung",
+                "date": date,
+            }
+        ],
+        "decisions": [],
+        "todos": [
+            {
+                "action": "Testplan abstimmen",
+                "assignee": "Jonas Falk",
+                "priority": "mittel",
+                "context": "Vor dem Release",
+                "recurrence": "new",
+                "first_mentioned": None,
+                "date": date,
+            }
+        ],
+        "insights": [],
+        "recurring_themes": [],
+    }
+
+
+# What a transcript no fixture claims gets. A reply is JSON-able data, a string
+# (sent as is) or a function of the analysis date.
+NEUTRAL_REPLIES = {
+    "transcript_correction": {"corrections": []},
+    "fluency_check": {"issues": []},
+    "entity_validation": {"validations": []},
+    "work_activities": {"activities": []},
+    "analysis": lambda date: {section: [] for section in ANALYSIS_SECTIONS},
+    "context_summary": CONTEXT_SUMMARY,
+    "speech_summary": FALLBACK_TEXT,
+}
+
+# Fixtures override the neutral replies they have an answer for. The session
+# clip (e2e/fixture_speech.m4a) speaks the cast's names, so it lands on this one.
+FIXTURES = {
+    "e2e-cast": {
+        "markers": ("Jonas Falk", "Mira", "Leuchtturm", "Fjordwerk"),
+        "replies": {
+            "analysis": cast_analysis,
+            "work_activities": {
+                "activities": [
+                    {
+                        "description": "Abstimmung des Testplans für Projekt Leuchtturm",
+                        "estimated_hours": 1.5,
+                        "category": "planning",
+                    }
+                ]
+            },
+        },
+    },
 }
 
 _log: list[dict] = []
-_log_lock = threading.Lock()
+_documents: dict[str, dict] = {}
+_lock = threading.Lock()
 
 
-def _record(service: str, method: str, path: str, body: bytes) -> None:
-    entry = {"service": service, "method": method, "path": path, "bytes": len(body)}
-    with _log_lock:
+def _record(service: str, method: str, path: str, body: bytes, kind: str, fixture: str | None = None) -> None:
+    entry = {
+        "service": service,
+        "method": method,
+        "path": path,
+        "kind": kind,
+        "fixture": fixture,
+        "bytes": len(body),
+        "sha256": hashlib.sha256(body).hexdigest(),
+    }
+    with _lock:
         _log.append(entry)
 
 
-def _chat_answer(payload: dict) -> str:
-    messages = payload.get("messages") or []
-    prompt = str(messages[-1].get("content", "")) if messages else ""
-    if payload.get("response_format", {}).get("type") == "json_object":
-        return json.dumps(ANALYSIS, ensure_ascii=False)
-    if "Kontext-Komprimierer" in prompt:
-        return CONTEXT_SUMMARY
-    return "Fixture-Antwort: Jonas Falk stimmt den Testplan mit Mira Lindqvist ab."
+def chat_kind(prompt: str) -> str:
+    return next((kind for marker, kind in CHAT_KINDS if marker in prompt), "unknown")
+
+
+def select_fixture(prompt: str) -> str | None:
+    lowered = prompt.lower()
+    for name, fixture in FIXTURES.items():
+        if any(marker.lower() in lowered for marker in fixture["markers"]):
+            return name
+    return None
+
+
+def chat_reply(payload: dict) -> tuple[str, str | None, str]:
+    """`(kind, fixture, content)` for one chat request, either wire shape."""
+    prompt = "\n".join(str(m.get("content", "")) for m in payload.get("messages") or [] if isinstance(m, dict))
+    kind = chat_kind(prompt)
+    # The summariser's prompt carries LightRAG text, not the transcript.
+    fixture = None if kind in ("context_summary", "speech_summary", "unknown") else select_fixture(prompt)
+    replies = {**NEUTRAL_REPLIES, **(FIXTURES[fixture]["replies"] if fixture else {})}
+    reply = replies.get(kind, FALLBACK_TEXT)
+    if callable(reply):
+        match = ANALYSIS_DATE.search(prompt)
+        reply = reply(match.group(1) if match else "")
+    content = reply if isinstance(reply, str) else json.dumps(reply, ensure_ascii=False)
+    return kind, fixture, content
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -109,10 +208,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):  # noqa: N802
         if self.path == "/_fixture/requests":
-            with _log_lock:
+            with _lock:
                 return self._send(200, list(_log))
+        if self.path == "/_fixture/documents" and self.service == "lightrag":
+            with _lock:
+                return self._send(200, dict(_documents))
         if self.client_address[0] != "127.0.0.1":  # skip the container's own healthcheck
-            _record(self.service, "GET", self.path, b"")
+            _record(self.service, "GET", self.path, b"", "probe")
         if self.service == "ollama" and self.path == "/api/tags":
             return self._send(200, {"models": [{"name": "fixture"}]})
         if self.service == "lightrag" and self.path == "/health":
@@ -121,27 +223,39 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):  # noqa: N802
         raw = self._body()
-        _record(self.service, "POST", self.path, raw)
         payload = self._json(raw)
-        if self.service == "ollama" and self.path == "/v1/chat/completions":
-            return self._send(
-                200, {"choices": [{"message": {"role": "assistant", "content": _chat_answer(payload)}}]}
-            )
-        if self.service == "ollama" and self.path == "/api/chat":
-            return self._send(
-                200, {"message": {"role": "assistant", "content": _chat_answer(payload)}, "done": True}
-            )
+        if self.service == "ollama" and self.path in ("/v1/chat/completions", "/api/chat"):
+            kind, fixture, content = chat_reply(payload)
+            _record(self.service, "POST", self.path, raw, kind, fixture)
+            message = {"role": "assistant", "content": content}
+            if self.path == "/api/chat":
+                return self._send(200, {"message": message, "done": True})
+            return self._send(200, {"choices": [{"message": message}]})
         if self.service == "lightrag" and self.path == "/query":
+            _record(self.service, "POST", self.path, raw, "lightrag_query")
             return self._send(200, {"response": CONTEXT_SUMMARY})
         if self.service == "lightrag" and self.path == "/documents/text":
+            _record(self.service, "POST", self.path, raw, "lightrag_insert")
+            text = str(payload.get("text", ""))
+            with _lock:  # one id, one document: re-posting replaces, as LightRAG does
+                _documents[str(payload.get("id", ""))] = {
+                    "file_source": payload.get("file_source", ""),
+                    "sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    "text": text,
+                }
             return self._send(200, {"status": "success", "message": "fixture", "track_id": "fixture"})
+        _record(self.service, "POST", self.path, raw, "unknown")
         self._send(404, {"detail": "not_found"})
 
     def do_DELETE(self):  # noqa: N802
         raw = self._body()
-        _record(self.service, "DELETE", self.path, raw)
         if self.service == "lightrag" and self.path == "/documents/delete_document":
+            _record(self.service, "DELETE", self.path, raw, "lightrag_delete")
+            with _lock:
+                for doc_id in self._json(raw).get("doc_ids") or []:
+                    _documents.pop(str(doc_id), None)
             return self._send(200, {"status": "deletion_started", "message": "fixture"})
+        _record(self.service, "DELETE", self.path, raw, "unknown")
         self._send(404, {"detail": "not_found"})
 
 

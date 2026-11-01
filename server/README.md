@@ -243,6 +243,8 @@ python3 scripts/e2e_stack.py up        # first run writes .env.e2e (gitignored) 
 python3 scripts/e2e_stack.py check     # /health, 401 without the bearer, 200 with the e2e bearer
 python3 scripts/e2e_stack.py session   # POST a fixture bundle, poll to done/partial/failed
 python3 scripts/e2e_stack.py reset     # drop + reseed the DB, clear Qdrant and stored bundles
+python3 scripts/e2e_stack.py upstreams [requests|documents]   # what the fixture upstreams were asked / given since the last reset
+python3 scripts/e2e_stack.py repeat    # reset + session, twice; fails unless status, narrative and request log match byte for byte
 python3 scripts/e2e_stack.py down      # remove containers, network and this project's volumes
 ```
 
@@ -253,6 +255,22 @@ python3 scripts/e2e_stack.py down      # remove containers, network and this pro
   LightRAG are answered by the `upstreams` service (`e2e/fixture_upstreams.py`, canned replies);
   Whisper is the CPU image with a small model (`E2E_WHISPER_MODEL`, default `small`), so it
   never touches the GPU. Voxtral is not started.
+- **No model in the loop (E2E-2):** the `upstreams` service recognises each chat call by its
+  prompt (transcript correction, fluency check, entity validation, work activities, speech
+  summary, context summary, analysis) and answers with a canned reply. Replies that depend on the
+  transcript are keyed by fixture: `FIXTURES` in `e2e/fixture_upstreams.py` maps marker words
+  (the cast's names) to replies, and a transcript no fixture claims gets neutral, empty ones, so
+  any recording still reaches `done`. Nothing in a reply comes from the clock, so the same
+  request always gets the same bytes. Only `.env.e2e` and the e2e override point at it; the prod
+  compose file and defaults are unchanged. `upstreams requests` lists every call with its
+  endpoint, kind, fixture and body digest; `upstreams documents` shows what LightRAG was given,
+  the day narrative (`diary:<date>`) among it. The session run itself calls transcript
+  correction, the context queries, the analysis and the LightRAG inserts; the fluency check,
+  entity validation and work activities are answered but only the review UI and Harvest reach them.
+- **Determinism:** `repeat` resets, runs the fixture session, and keeps the final status (without
+  `received_at`, the upload clock), the documents LightRAG received and the request log without
+  health probes; after the second run it compares the three byte for byte. The one input it does
+  not control is Whisper, whose transcript is the same across runs on the same CPU image.
 - **Data:** the DB is seeded from `e2e/seed.sql`, a fixed fictional cast (Jonas Falk, Mira
   Lindqvist, ...), not from `webapp/seed.sql`.
 - **Fixture bundle:** `session` sends `e2e/fixture_speech.m4a`, a short German clip made with
@@ -329,7 +347,7 @@ server/
 │   ├── msgraph_bootstrap.py    one-time MSAL device-code flow
 │   ├── issue_ios_token.py      stateless 256-bit bearer generator
 │   ├── backup.sh               sessions + MSAL + Postgres + Qdrant
-│   └── e2e_stack.py            up|check|session|reset|down for the e2e stack
+│   └── e2e_stack.py            up|check|session|reset|upstreams|repeat|down for the e2e stack
 ├── docs-archive/               historical design docs (reference)
 └── webapp/
     ├── Dockerfile              python:3.11-slim + ffmpeg
