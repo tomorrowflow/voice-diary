@@ -129,6 +129,7 @@ public enum Theme {
         public let captureContentHeight: CGFloat = 360 // quick-capture idle/recording slot
 
         public let playPauseDiscSize: CGFloat = 36 // shared play-pause disc diameter
+        public let settingsStatusDotSize: CGFloat = DSSpacing.spacing_r1_5 // 6, settings status-pill dot diameter
     }
 
     public struct RadiusTokens: Sendable {
