@@ -106,6 +106,34 @@ def test_session_client_defaults_to_the_committed_speech_clip():
     assert clip[4:8] == b"ftyp" and 10_000 < len(clip) < 500_000
 
 
+def test_failed_first_up_leaves_no_env_file_so_a_corrected_retry_initialises(stack, monkeypatch, tmp_path):
+    monkeypatch.setattr(stack, "ENV_FILE", tmp_path / ".env.e2e")
+    monkeypatch.delenv("TAILNET_IP", raising=False)
+    monkeypatch.setattr(stack.shutil, "which", lambda name: None)
+    with pytest.raises(SystemExit):
+        stack.write_env()
+    assert list(tmp_path.iterdir()) == []
+
+    monkeypatch.setenv("TAILNET_IP", "100.64.0.1")
+    stack.write_env()
+    env = stack.parse_env((tmp_path / ".env.e2e").read_text())
+    assert env["TAILNET_IP"] == "100.64.0.1" and len(env["IOS_BEARER_TOKEN"]) == 64
+    assert oct((tmp_path / ".env.e2e").stat().st_mode & 0o777) == "0o600"
+    assert [p.name for p in tmp_path.iterdir()] == [".env.e2e"]
+
+
+def test_up_rewrites_an_empty_env_file_left_by_an_older_failed_run(stack, monkeypatch, tmp_path):
+    env_file = tmp_path / ".env.e2e"
+    env_file.write_text("")
+    written = []
+    monkeypatch.setattr(stack, "ENV_FILE", env_file)
+    monkeypatch.setattr(stack, "write_env", lambda: written.append(True))
+    monkeypatch.setattr(stack, "compose", lambda *args, **kw: None)
+    monkeypatch.setattr(stack, "client", lambda *args: None)
+    stack.cmd_up()
+    assert written == [True]
+
+
 def test_e2e_up_pulls_whisper_through_compose_and_waits_for_health(stack, monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(stack, "ENV_FILE", tmp_path / ".env.e2e")

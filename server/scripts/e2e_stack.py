@@ -120,14 +120,21 @@ def tailnet_ip() -> str:
 
 
 def write_env() -> None:
-    fd = os.open(ENV_FILE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    """Write .env.e2e only once everything it needs is known, and put it in
+    place atomically, so a failed first `up` never leaves a file that blocks a
+    corrected retry."""
+    content = render_env(ENV_EXAMPLE.read_text(), tailnet_ip())
+    partial = ENV_FILE.with_name(ENV_FILE.name + ".partial")
+    partial.unlink(missing_ok=True)
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w") as f:
-        f.write(render_env(ENV_EXAMPLE.read_text(), tailnet_ip()))
+        f.write(content)
+    os.replace(partial, ENV_FILE)
     print(f"✓ Wrote {ENV_FILE.name} (own bearer and Postgres password; prod .env untouched)")
 
 
 def require_env() -> None:
-    if not ENV_FILE.exists():
+    if not ENV_FILE.exists() or ENV_FILE.stat().st_size == 0:
         sys.exit(f"! {ENV_FILE.name} not found; run 'e2e_stack.py up' first")
 
 
@@ -141,7 +148,9 @@ def client(*args: str) -> None:
 
 
 def cmd_up() -> None:
-    if not ENV_FILE.exists():
+    # An empty file is what an older failed first `up` left behind; it holds
+    # nothing worth keeping.
+    if not ENV_FILE.exists() or ENV_FILE.stat().st_size == 0:
         write_env()
     compose("pull", "whisper")
     compose("up", "-d", "--build", "--wait", "webapp")
