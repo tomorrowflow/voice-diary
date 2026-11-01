@@ -2,6 +2,7 @@
 scripts/e2e_stack.py (or by hand).
 
     python3 e2e_client.py health
+    python3 e2e_client.py ready [--timeout SECONDS]
     python3 e2e_client.py session [--audio PATH] [--session-id ID] [--timeout SECONDS]
 
 Reads BASE_URL (default http://$TAILNET_IP:8100) and IOS_BEARER_TOKEN from the
@@ -9,25 +10,24 @@ environment. Each call prints one JSON record; the bearer value is never
 printed. Exit status is non-zero when an assertion fails.
 
 `session` posts a one-segment bundle and polls GET /api/sessions/{id}/status to
-its end state (anything but `processing`). The default audio is two seconds of
-generated tone, which Whisper transcribes to nothing useful; pass `--audio`
-with a real spoken-German file for a bundle that reaches the analysis stage.
+its end state (anything but `processing`). The default audio is
+fixture_speech.m4a next to this file: a short German clip synthesised with
+espeak-ng (no real person's voice) that names only the fictional e2e cast, so
+Whisper returns words and the session reaches analysis. `--audio` replaces it.
 """
 
 import argparse
-import io
 import json
-import math
 import os
-import struct
 import sys
 import time
 import uuid
 import urllib.error
 import urllib.request
-import wave
 from datetime import date
+from pathlib import Path
 
+DEFAULT_AUDIO = Path(__file__).resolve().with_name("fixture_speech.m4a")
 BASE = os.environ.get("BASE_URL") or f"http://{os.environ.get('TAILNET_IP', '127.0.0.1')}:8100"
 TOKEN = os.environ.get("IOS_BEARER_TOKEN", "")
 SEGMENT_ID = "s01"
@@ -66,19 +66,6 @@ def call(method: str, path: str, *, auth: bool, data: bytes | None = None,
         print(json.dumps({"method": method, "path": path, "bearer": "sent" if auth else "none",
                           "status": status, "body": body}, indent=2, sort_keys=True), flush=True)
     return status, body
-
-
-def tone_wav(seconds: float = 2.0, rate: int = 16000) -> bytes:
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(rate)
-        w.writeframes(b"".join(
-            struct.pack("<h", int(6000 * math.sin(2 * math.pi * 220 * i / rate)))
-            for i in range(int(seconds * rate))
-        ))
-    return buf.getvalue()
 
 
 def bundle(session_id: str, audio: bytes) -> tuple[str, bytes]:
@@ -125,8 +112,25 @@ def health() -> None:
     check("route with the e2e bearer -> 200", status == 200)
 
 
+def ready(timeout: float) -> None:
+    """Wait for /health to report `ok`: `up --wait` returns while Whisper is
+    still loading its model, and the first probe after that reads `down`."""
+    deadline = time.monotonic() + timeout
+    status = None
+    while time.monotonic() < deadline:
+        try:
+            code, body = call("GET", "/health", auth=False, quiet=True)
+            status = body.get("status") if code == 200 and isinstance(body, dict) else None
+        except OSError:
+            status = None
+        if status == "ok":
+            break
+        time.sleep(3)
+    check("stack reports /health ok before the timeout", status == "ok")
+
+
 def session(audio_path: str | None, session_id: str | None, timeout: float) -> None:
-    audio = open(audio_path, "rb").read() if audio_path else tone_wav()
+    audio = Path(audio_path or DEFAULT_AUDIO).read_bytes()
     session_id = session_id or f"e2e-{int(time.time())}"
     ctype, data = bundle(session_id, audio)
     status, body = call("POST", "/api/sessions", auth=True, data=data, content_type=ctype)
@@ -150,6 +154,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("health")
+    r = sub.add_parser("ready")
+    r.add_argument("--timeout", type=float, default=300)
     s = sub.add_parser("session")
     s.add_argument("--audio")
     s.add_argument("--session-id")
@@ -160,6 +166,8 @@ def main() -> int:
         return 2
     if args.cmd == "health":
         health()
+    elif args.cmd == "ready":
+        ready(args.timeout)
     else:
         session(args.audio, args.session_id, args.timeout)
     return 1 if failures else 0

@@ -99,6 +99,24 @@ def test_fixture_upstreams_use_only_the_invented_cast(upstreams):
     assert "Jonas Falk" in text and "Mira Lindqvist" in text
 
 
+def test_session_client_defaults_to_the_committed_speech_clip():
+    client = _load("e2e_client", SERVER_DIR / "e2e" / "e2e_client.py")
+    clip = client.DEFAULT_AUDIO.read_bytes()
+    assert client.DEFAULT_AUDIO.parent == SERVER_DIR / "e2e"
+    assert clip[4:8] == b"ftyp" and 10_000 < len(clip) < 500_000
+
+
+def test_e2e_up_pulls_whisper_through_compose_and_waits_for_health(stack, monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(stack, "ENV_FILE", tmp_path / ".env.e2e")
+    (tmp_path / ".env.e2e").write_text("TAILNET_IP=100.64.0.1\n")
+    monkeypatch.setattr(stack, "compose", lambda *args, **kw: calls.append(args))
+    monkeypatch.setattr(stack, "client", lambda *args: calls.append(("client", *args)))
+    stack.cmd_up()
+    assert [c[0] for c in calls] == ["pull", "up", "client"]
+    assert calls[0] == ("pull", "whisper") and calls[2] == ("client", "ready")
+
+
 def test_e2e_override_is_isolated_from_the_prod_stack():
     compose = "\n".join(
         ln for ln in COMPOSE_E2E.read_text().splitlines() if not ln.lstrip().startswith("#")

@@ -255,8 +255,9 @@ python3 scripts/e2e_stack.py down      # remove containers, network and this pro
   never touches the GPU. Voxtral is not started.
 - **Data:** the DB is seeded from `e2e/seed.sql`, a fixed fictional cast (Jonas Falk, Mira
   Lindqvist, ...), not from `webapp/seed.sql`.
-- **Fixture bundle:** `session` sends two seconds of generated tone, which Whisper does not
-  turn into speech. Pass a real recording for a bundle that carries words:
+- **Fixture bundle:** `session` sends `e2e/fixture_speech.m4a`, a short German clip made with
+  espeak-ng that names only the fictional cast, so Whisper returns words and the session
+  reaches analysis. Use another recording with
   `python3 scripts/e2e_stack.py session --audio path/to/speech.m4a`.
 - `down` deletes the Whisper model cache with the other volumes; the next `up` downloads it again.
 

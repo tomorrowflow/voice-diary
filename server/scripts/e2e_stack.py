@@ -143,7 +143,9 @@ def client(*args: str) -> None:
 def cmd_up() -> None:
     if not ENV_FILE.exists():
         write_env()
+    compose("pull", "whisper")
     compose("up", "-d", "--build", "--wait", "webapp")
+    client("ready")
     print(f"✓ vd-e2e up on http://<TAILNET_IP>:{PORT}")
 
 
