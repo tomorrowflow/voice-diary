@@ -17,15 +17,26 @@ import document_processor
 
 SERVER_DIR = Path(__file__).resolve().parents[2]
 COMPOSE_E2E = SERVER_DIR / "docker-compose.e2e.yml"
-STACK_SCRIPT = SERVER_DIR / "scripts" / "e2e_stack.sh"
+STACK_SCRIPT = SERVER_DIR / "scripts" / "e2e_stack.py"
+ENV_EXAMPLE = SERVER_DIR / ".env.e2e.example"
 FIXTURE_UPSTREAMS = SERVER_DIR / "e2e" / "fixture_upstreams.py"
+
+
+def _load(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture(scope="module")
+def stack():
+    return _load("e2e_stack", STACK_SCRIPT)
 
 
 @pytest.fixture(scope="module")
 def upstreams():
-    spec = importlib.util.spec_from_file_location("fixture_upstreams", FIXTURE_UPSTREAMS)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    module = _load("fixture_upstreams", FIXTURE_UPSTREAMS)
     servers = {name: module._serve(name, 0) for name in ("ollama", "lightrag")}
     for server in servers.values():
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -103,7 +114,25 @@ def test_e2e_override_is_isolated_from_the_prod_stack():
     assert compose.count('profiles: ["never"]') == 2
 
 
-def test_e2e_script_scopes_every_compose_call_to_the_e2e_project():
-    calls = [ln for ln in STACK_SCRIPT.read_text().splitlines() if "docker compose" in ln and not ln.lstrip().startswith("#")]
-    assert calls and all('-p "$PROJECT"' in ln and '--env-file "$ENV_FILE"' in ln for ln in calls)
-    assert 'PROJECT="vd-e2e"' in STACK_SCRIPT.read_text()
+def test_e2e_script_scopes_every_compose_call_to_the_e2e_project(stack):
+    cmd = stack.compose_command(["down", "-v"])
+    assert cmd[:3] == ["docker", "compose", "-p"] and cmd[3] == "vd-e2e"
+    assert cmd[cmd.index("--env-file") + 1].endswith("/.env.e2e")
+    files = [cmd[i + 1] for i, a in enumerate(cmd) if a == "-f"]
+    assert [Path(f).name for f in files] == ["docker-compose.yml", "docker-compose.e2e.yml"]
+    assert cmd[-2:] == ["down", "-v"]
+    # `compose_command` is the only place the script builds a docker call.
+    assert STACK_SCRIPT.read_text().count('"docker", "compose"') == 1
+
+
+def test_e2e_env_gets_fresh_secrets_and_keeps_the_example_shape(stack):
+    example = ENV_EXAMPLE.read_text()
+    first = stack.parse_env(stack.render_env(example, "100.64.0.1"))
+    second = stack.parse_env(stack.render_env(example, "100.64.0.1"))
+    assert first["TAILNET_IP"] == "100.64.0.1"
+    assert first["MSGRAPH_FIXTURE_MODE"] == "true" and first["OLLAMA_BASE_URL"] == "http://upstreams:11434"
+    for key in ("POSTGRES_PASSWORD", "IOS_BEARER_TOKEN"):
+        assert re.fullmatch(r"[0-9a-f]{64}", first[key])
+        assert first[key] != second[key]
+    assert first["POSTGRES_PASSWORD"] != first["IOS_BEARER_TOKEN"]
+    assert "<" not in stack.render_env(example, "100.64.0.1")

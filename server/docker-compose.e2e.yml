@@ -1,5 +1,5 @@
 # Isolated e2e stack, layered on docker-compose.yml (never edited). Driven by
-# scripts/e2e_stack.sh, which always passes `-p vd-e2e` and
+# scripts/e2e_stack.py, which always passes `-p vd-e2e` and
 # `--env-file .env.e2e`, so a run:
 #   - uses its own Compose project: containers, network and the named volumes
 #     pgdata / qdrant_data / whisper_models are all prefixed `vd-e2e_` and do

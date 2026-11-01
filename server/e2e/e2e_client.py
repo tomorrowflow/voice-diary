@@ -1,5 +1,5 @@
 """Stdlib HTTP client for the isolated e2e stack, run on the host by
-scripts/e2e_stack.sh (or by hand).
+scripts/e2e_stack.py (or by hand).
 
     python3 e2e_client.py health
     python3 e2e_client.py session [--audio PATH] [--session-id ID] [--timeout SECONDS]

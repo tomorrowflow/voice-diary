@@ -1,7 +1,7 @@
 -- Fixed fictional cast for the isolated e2e stack (project `vd-e2e`).
 --
 -- Applied once to a fresh database, by the postgres init on first `up` and by
--- `e2e_stack.sh reset`, after schema.sql. Every name below is invented: no
+-- `e2e_stack.py reset`, after schema.sql. Every name below is invented: no
 -- real person, company or product. Ids are deterministic because the database
 -- is always recreated before this runs.
 

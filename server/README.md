@@ -239,11 +239,11 @@ and sharing nothing with it. Compose project `vd-e2e`; the webapp is published o
 `${TAILNET_IP}:8100` (prod keeps `:8000`).
 
 ```bash
-bash scripts/e2e_stack.sh up        # first run writes .env.e2e (gitignored) with its own bearer and DB password
-bash scripts/e2e_stack.sh check     # /health, 401 without the bearer, 200 with the e2e bearer
-bash scripts/e2e_stack.sh session   # POST a fixture bundle, poll to done/partial/failed
-bash scripts/e2e_stack.sh reset     # drop + reseed the DB, clear Qdrant and stored bundles
-bash scripts/e2e_stack.sh down      # remove containers, network and this project's volumes
+python3 scripts/e2e_stack.py up        # first run writes .env.e2e (gitignored) with its own bearer and DB password
+python3 scripts/e2e_stack.py check     # /health, 401 without the bearer, 200 with the e2e bearer
+python3 scripts/e2e_stack.py session   # POST a fixture bundle, poll to done/partial/failed
+python3 scripts/e2e_stack.py reset     # drop + reseed the DB, clear Qdrant and stored bundles
+python3 scripts/e2e_stack.py down      # remove containers, network and this project's volumes
 ```
 
 - **Isolation:** every Compose call is `-p vd-e2e --env-file .env.e2e`. It never reads `.env`,
@@ -257,7 +257,7 @@ bash scripts/e2e_stack.sh down      # remove containers, network and this projec
   Lindqvist, ...), not from `webapp/seed.sql`.
 - **Fixture bundle:** `session` sends two seconds of generated tone, which Whisper does not
   turn into speech. Pass a real recording for a bundle that carries words:
-  `bash scripts/e2e_stack.sh session --audio path/to/speech.m4a`.
+  `python3 scripts/e2e_stack.py session --audio path/to/speech.m4a`.
 - `down` deletes the Whisper model cache with the other volumes; the next `up` downloads it again.
 
 ---
@@ -328,7 +328,7 @@ server/
 │   ├── msgraph_bootstrap.py    one-time MSAL device-code flow
 │   ├── issue_ios_token.py      stateless 256-bit bearer generator
 │   ├── backup.sh               sessions + MSAL + Postgres + Qdrant
-│   └── e2e_stack.sh            up|check|session|reset|down for the e2e stack
+│   └── e2e_stack.py            up|check|session|reset|down for the e2e stack
 ├── docs-archive/               historical design docs (reference)
 └── webapp/
     ├── Dockerfile              python:3.11-slim + ffmpeg
