@@ -26,6 +26,7 @@ venv/
 
 # Server runtime + secrets
 server/.env
+server/.env.e2e
 server/data/
 server/**/data/sessions/
 server/**/data/msal_cache.bin

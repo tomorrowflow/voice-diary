@@ -232,6 +232,36 @@ was restored intact.
 
 ---
 
+## Isolated e2e stack
+
+A second stack for contract checks against a running server (E2E-1), on the same host as prod
+and sharing nothing with it. Compose project `vd-e2e`; the webapp is published on
+`${TAILNET_IP}:8100` (prod keeps `:8000`).
+
+```bash
+bash scripts/e2e_stack.sh up        # first run writes .env.e2e (gitignored) with its own bearer and DB password
+bash scripts/e2e_stack.sh check     # /health, 401 without the bearer, 200 with the e2e bearer
+bash scripts/e2e_stack.sh session   # POST a fixture bundle, poll to done/partial/failed
+bash scripts/e2e_stack.sh reset     # drop + reseed the DB, clear Qdrant and stored bundles
+bash scripts/e2e_stack.sh down      # remove containers, network and this project's volumes
+```
+
+- **Isolation:** every Compose call is `-p vd-e2e --env-file .env.e2e`. It never reads `.env`,
+  `data/msal_cache.bin` or prod volumes, and `docker-compose.yml` is not edited. `up` takes the
+  host's Tailscale IP from `tailscale ip -4`, or from `TAILNET_IP` in the shell.
+- **Upstreams:** Microsoft Graph is `MSGRAPH_FIXTURE_MODE=true`; Harvest is off; Ollama and
+  LightRAG are answered by the `upstreams` service (`e2e/fixture_upstreams.py`, canned replies);
+  Whisper is the CPU image with a small model (`E2E_WHISPER_MODEL`, default `small`), so it
+  never touches the GPU. Voxtral is not started.
+- **Data:** the DB is seeded from `e2e/seed.sql`, a fixed fictional cast (Jonas Falk, Mira
+  Lindqvist, ...), not from `webapp/seed.sql`.
+- **Fixture bundle:** `session` sends two seconds of generated tone, which Whisper does not
+  turn into speech. Pass a real recording for a bundle that carries words:
+  `bash scripts/e2e_stack.sh session --audio path/to/speech.m4a`.
+- `down` deletes the Whisper model cache with the other volumes; the next `up` downloads it again.
+
+---
+
 ## Common failure modes
 
 | Symptom | Likely cause | Fix |
@@ -291,10 +321,14 @@ server/
 ├── README.md
 ├── .env.example
 ├── docker-compose.yml          webapp + postgres + qdrant + whisper
+├── docker-compose.e2e.yml      override for the isolated e2e stack (project vd-e2e)
+├── .env.e2e.example            shape of the gitignored .env.e2e
+├── e2e/                        fixture upstreams, e2e seed, stdlib client
 ├── scripts/
 │   ├── msgraph_bootstrap.py    one-time MSAL device-code flow
 │   ├── issue_ios_token.py      stateless 256-bit bearer generator
-│   └── backup.sh               sessions + MSAL + Postgres + Qdrant
+│   ├── backup.sh               sessions + MSAL + Postgres + Qdrant
+│   └── e2e_stack.sh            up|check|session|reset|down for the e2e stack
 ├── docs-archive/               historical design docs (reference)
 └── webapp/
     ├── Dockerfile              python:3.11-slim + ffmpeg
