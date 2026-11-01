@@ -111,6 +111,40 @@ struct TranscriptExcerptTests {
         #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Budget")
     }
 
+    // MARK: - Exact match versus token overlap
+
+    /// Sentence 1 shares every token of "Marketing Budget prüfen" without
+    /// containing the phrase, so it ties the exact match at the last
+    /// sentence on overlap score and would win the earliest-sentence
+    /// tie-break if overlap were consulted first.
+    private var overlapBeforeExactTranscript: String {
+        (["Prüfen Marketing Budget."] + (2...8).map { "Satz \($0)." }
+            + ["Marketing Budget prüfen."])
+            .joined(separator: " ")
+    }
+
+    /// Sentences 5-9 of `overlapBeforeExactTranscript`.
+    private let overlapBeforeExactWindow = ((5...8).map { "Satz \($0)." } + ["Marketing Budget prüfen."])
+        .joined(separator: " ")
+
+    @Test("A later exact match beats an earlier sentence with equal token overlap")
+    func exactMatchBeatsEarlierOverlap() throws {
+        let ex = try #require(select(
+            overlapBeforeExactTranscript, text: "Marketing Budget prüfen"))
+        #expect(ex.text == overlapBeforeExactWindow)
+        #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Marketing Budget prüfen")
+    }
+
+    @Test("A source quote matching exactly beats an earlier overlap and highlights the original casing")
+    func exactSourceQuoteBeatsEarlierOverlap() throws {
+        let ex = try #require(select(
+            overlapBeforeExactTranscript,
+            quote: "MARKETING BUDGET PRÜFEN",
+            text: "Budget"))
+        #expect(ex.text == overlapBeforeExactWindow)
+        #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Marketing Budget prüfen")
+    }
+
     // MARK: - Token overlap
 
     @Test("A paraphrase falls back to the sentence sharing the most tokens")
