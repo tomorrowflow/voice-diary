@@ -1,0 +1,720 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Verlauf auf iPhone und iPad</title>
+<!--
+  Question: How should Verlauf (the session history) be laid out on iPhone, and what would it become on iPad?
+  Plan: Three variants of Verlauf, A/B/C, on iPhone and iPad (iPad portrait and landscape).
+        A "Chronik"  - today's day-grouped list, refined. iPhone: push to detail. iPad: tab bar on top,
+                       split view (list | detail) in landscape, single column with push in portrait.
+        B "Kalender" - not a list: a week strip (iPhone) / month grid (iPad) picks a day, sessions are
+                       cards that expand in place. iPad: sidebar navigation instead of a tab bar,
+                       landscape adds a detail inspector, portrait keeps the sidebar behind a button.
+        C "Feed"     - search-first transcript feed with filter chips and an attention banner; detail
+                       is a reading sheet (full sheet on iPhone, centred form sheet on iPad over a
+                       2/3-column card grid, top tab bar).
+  Moodboard: skipped. The direction is set by DESIGN.md (calm-tech editorial, flat cards, one ink, blue
+             only for interactive things) and the History screenshots in docs/screenshots/KA-12.
+  Assumptions:
+   - Light mode only; dark is the evening default in the app and would use the DESIGN.md dark tokens.
+   - Geist is bundled in the app but cannot load in the tab's sandbox; the system font stands in.
+   - "Today" is Sunday 1 November 2026. All people, firms and transcripts are invented.
+   - Failed segments show "Erneut transkribieren" as in the app's recovery row; buttons are inert stubs.
+   - Variant B starts on yesterday (Samstag) so the evening session is visible; the app itself opens
+     on the newest entry.
+   - The app ships iPhone-only (TARGETED_DEVICE_FAMILY "1"); the iPad half is exploration.
+-->
+<style>
+/* iOS system values (light), overridden with the app's DESIGN.md tokens. */
+:root {
+  --font: Geist, -apple-system, system-ui, "SF Pro Text", "Helvetica Neue", Inter, Roboto, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --tint: #1570ef;
+  --red: #ec2222; --green: #10a861; --orange: #dc6803;
+  --ink: #171717;
+  --label: #171717; --label-2: #737373; --label-3: #9e9e9e;
+  --sep: #e7e7e7;
+  --bg: #f7f7f7; --bg-grouped: #f7f7f7; --cell: #fff; --fill: #f0f0f0;
+  --bar: rgba(255,255,255,.92);
+  --link10: rgba(21,112,239,.10); --warn10: rgba(220,104,3,.10); --ok10: rgba(16,168,97,.10); --bad10: rgba(236,34,34,.10);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; }
+body { background: #d6d9de; font: 17px/1.3 var(--font); color: var(--label); overflow: hidden; }
+
+/* Shell: a device frame scaled to fit the window; full-bleed on a device or in screenshots. */
+#stage { position: fixed; inset: 0 0 56px 0; }
+#device { position: absolute; left: 50%; top: 50%; overflow: hidden; background: var(--bg);
+  border-radius: var(--radius); box-shadow: 0 0 0 10px #1c1c1e, 0 18px 50px rgba(0,0,0,.35); }
+body.bleed #stage { inset: 0; }
+body.bleed #device { left: 0; top: 0; border-radius: 0; box-shadow: none; }
+body.bleed #pill { display: none; }
+#screen { position: absolute; inset: 0; overflow: hidden; }
+
+/* Tooling pill: clearly not part of the design. */
+#pill { position: fixed; left: 50%; bottom: 10px; transform: translateX(-50%); display: flex; gap: 4px;
+  align-items: center; padding: 4px; border-radius: 999px; background: #222; color: #fff;
+  font: 13px/1 ui-monospace, Menlo, monospace; z-index: 10; white-space: nowrap; }
+#pill button { font: inherit; color: inherit; background: #3a3a3c; border: 0; border-radius: 999px; padding: 7px 11px; cursor: pointer; }
+#pill button[aria-pressed="true"] { background: #0a84ff; }
+#pill .label { padding: 0 8px; }
+
+/* Components. Sizes follow the HIG in points (1 CSS px = 1 pt). */
+.status { height: 54px; flex: none; }
+.ipad .status { height: 24px; }
+.nav { position: relative; height: 44px; flex: none; display: flex; align-items: center; justify-content: center; padding: 0 8px; }
+.nav .title { font-weight: 600; }
+.nav .left, .nav .right { position: absolute; top: 0; bottom: 0; display: flex; align-items: center; gap: 16px; color: var(--tint); }
+.nav .left { left: 8px; } .nav .right { right: 16px; }
+.large-title { font: 700 34px/41px var(--font); letter-spacing: .37px; padding: 3px 16px 8px; }
+.page { position: absolute; inset: 0; display: flex; flex-direction: column; background: var(--bg-grouped); }
+.scroll { flex: 1; overflow-y: auto; }
+.section-header { font-size: 13px; text-transform: uppercase; color: var(--label-2); padding: 16px 32px 6px; }
+.list { margin: 0 16px; background: var(--cell); border-radius: 10px; overflow: hidden; }
+.cell { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 11px 16px; position: relative; }
+.cell + .cell::before { content: ""; position: absolute; top: 0; left: 16px; right: 0; border-top: .5px solid var(--sep); }
+.cell .sub { font-size: 15px; color: var(--label-2); }
+.cell .chev::after { content: "›"; color: var(--label-3); font-size: 22px; margin-left: auto; }
+.btn { font: inherit; border: 0; border-radius: 12px; padding: 14px 20px; background: var(--tint); color: #fff; font-weight: 600; }
+.btn.plain { background: none; color: var(--tint); padding: 0; font-weight: 400; }
+.tabbar { flex: none; display: flex; justify-content: space-around; height: 83px; padding-top: 7px; background: var(--bar); border-top: .5px solid var(--sep); font-size: 10px; color: #999; }
+.tabbar .on { color: var(--tint); }
+.ipad .tabbar { height: 50px; padding-top: 0; align-items: center; font-size: 13px; }
+/* iPad: sidebar + content (+ optional inspector). Portrait keeps only the content column. */
+.split { position: absolute; inset: 0; display: grid; grid-template-columns: 320px 1fr; }
+.split > .sidebar { background: var(--bg-grouped); border-right: .5px solid var(--sep); position: relative; }
+.split > .content { position: relative; }
+.portrait .split.collapse { grid-template-columns: 1fr; }
+.portrait .split.collapse > .sidebar { display: none; }
+.sheet-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.25); opacity: 0; transition: opacity .3s; }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; max-height: 92%; background: var(--bg-grouped); border-radius: 12px 12px 0 0; transform: translateY(100%); transition: transform .35s cubic-bezier(.2,.9,.3,1); }
+.ipad .sheet { left: 50%; right: auto; bottom: 50%; width: 540px; max-height: 620px; border-radius: 12px; transform: translate(-50%, 60%) scale(.96); opacity: 0; transition: transform .3s, opacity .3s; }
+.sheet.open { transform: none; } .ipad .sheet.open { transform: translate(-50%, 50%); opacity: 1; }
+.sheet-backdrop.open { opacity: 1; }
+.push-in { animation: push-in .35s cubic-bezier(.2,.9,.3,1); }
+.pop-out { animation: push-in .3s reverse cubic-bezier(.2,.9,.3,1); }
+@keyframes push-in { from { transform: translateX(100%); } }
+
+/* ===== Shared building blocks of the app's look (tokens from DESIGN.md) ===== */
+svg.i { width: 1em; height: 1em; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+svg.i.f { fill: currentColor; stroke: none; }
+button { font-family: inherit; }
+.status { display: flex; align-items: flex-end; justify-content: space-between; padding: 0 34px 10px 38px; font: 600 16px/1 var(--font); }
+.ipad .status { align-items: center; padding: 0 24px; font-size: 13px; }
+.bat { width: 25px; height: 12px; border-radius: 4px; background: var(--ink); position: relative; }
+.bat::after { content: ""; position: absolute; right: -3px; top: 4px; width: 2px; height: 4px; border-radius: 0 2px 2px 0; background: var(--ink); opacity: .5; }
+.tnum { font-variant-numeric: tabular-nums; }
+.disc { display: inline-flex; align-items: center; justify-content: center; border-radius: 50%; flex: none; }
+.disc.evening { background: var(--link10); color: var(--tint); } .disc.note { background: var(--warn10); color: var(--orange); }
+.disc.s20 { width: 20px; height: 20px; font-size: 11px; } .disc.s28 { width: 28px; height: 28px; font-size: 13px; }
+.disc.s32 { width: 32px; height: 32px; font-size: 14px; } .disc.s48 { width: 48px; height: 48px; font-size: 22px; }
+.pill { display: inline-block; font: 500 12px/1 var(--font); padding: 5px 11px; border-radius: 999px; white-space: nowrap; letter-spacing: .01em; }
+.pill.processed { background: var(--ok10); color: var(--green); } .pill.pending { background: var(--warn10); color: var(--orange); }
+.pill.failed { background: var(--bad10); color: var(--red); } .pill.transcribing { background: var(--link10); color: var(--tint); }
+.pill.dur { background: var(--fill); color: var(--label-2); }
+.cap { font: 500 12px/1.375 var(--font); color: var(--label-3); letter-spacing: .01em; }
+.up { text-transform: uppercase; letter-spacing: .6px; }
+.pp { width: 36px; height: 36px; border-radius: 50%; border: 0; background: var(--link10); color: var(--tint); display: inline-flex; align-items: center; justify-content: center; font-size: 15px; flex: none; padding: 0; cursor: pointer; }
+.pp .ic-pause { display: none; } .playing .pp .ic-pause { display: inline-flex; } .playing .pp .ic-play { display: none; }
+.note-pp .pp { background: var(--warn10); color: var(--orange); }
+.scrub { display: none; margin: 10px 0 2px; } .playing .scrub { display: block; }
+.scrub .track { height: 4px; border-radius: 2px; background: var(--fill); position: relative; }
+.scrub .track i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 2px; background: var(--tint); }
+.scrub .track i::after { content: ""; position: absolute; right: -8px; top: -6px; width: 16px; height: 16px; border-radius: 50%; background: var(--tint); }
+.scrub .tt { display: flex; justify-content: space-between; margin-top: 10px; font: 500 12px/1 var(--font); color: var(--label-3); font-variant-numeric: tabular-nums; }
+.dark { background: var(--ink); color: #fff; border-radius: 10px; height: 48px; padding: 0 20px; display: flex; align-items: center; justify-content: center; gap: 10px; font-weight: 500; font-size: 16px; width: 100%; border: 0; }
+.sec2 { background: var(--cell); color: var(--ink); border: 1px solid var(--ink); border-radius: 8px; height: 36px; padding: 0 14px; font: 500 15px var(--font); display: inline-flex; align-items: center; gap: 8px; }
+.ghost { background: none; border: 0; color: var(--ink); font: 500 15px var(--font); height: 36px; padding: 0 10px; display: inline-flex; align-items: center; gap: 8px; }
+.mono { font: 400 12px/1.4 var(--mono); color: var(--label-3); letter-spacing: .5px; }
+mark { background: rgba(21,112,239,.16); color: inherit; border-radius: 3px; padding: 0 1px; }
+/* Floating tab bar of the iPhone app: Abend, Aufnahme, Verlauf, Mehr. */
+.ftab { position: absolute; left: 16px; right: 16px; bottom: 22px; height: 68px; border-radius: 34px; background: var(--bar); border: 1px solid var(--sep); display: flex; padding: 5px; z-index: 6; backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
+.ftab > div { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; font: 600 11px/1 var(--font); border-radius: 29px; color: var(--ink); }
+.ftab > div.on { background: #e8e8e8; } .ftab svg.i { font-size: 24px; }
+/* Top tab bar of iPadOS (used by A and C). */
+.ptabs { flex: none; display: flex; justify-content: center; padding: 6px 0 10px; }
+.ptabs > div { display: flex; gap: 2px; padding: 4px; border-radius: 22px; background: var(--fill); }
+.ptabs span { display: inline-flex; align-items: center; gap: 8px; padding: 0 18px; height: 36px; border-radius: 18px; font: 500 15px var(--font); color: var(--label-2); }
+.ptabs span.on { background: var(--cell); color: var(--ink); box-shadow: 0 0 0 1px var(--sep); }
+.ptabs svg.i { font-size: 17px; }
+.pagetop-ipad { top: 0; }
+
+/* ===== Variant A: Chronik ===== */
+.pop-away { animation: pop-away .3s cubic-bezier(.2,.9,.3,1) forwards; }
+@keyframes pop-away { to { transform: translateX(100%); } }
+.v-A .dh { font: 500 12px/1.4 var(--font); text-transform: uppercase; letter-spacing: .6px; color: var(--label-3); padding: 18px 20px 6px; }
+.v-A .arow { display: flex; align-items: center; gap: 12px; padding: 10px 16px; margin: 0 4px; position: relative; border-radius: 10px; cursor: pointer; }
+.v-A .arow + .arow::before { content: ""; position: absolute; top: 0; left: 60px; right: 12px; border-top: .5px solid var(--sep); }
+.v-A .arow.sel { background: #ececec; } .v-A .arow.sel::before, .v-A .arow.sel + .arow::before { border-color: transparent; }
+.v-A .amain { flex: 1; min-width: 0; }
+.v-A .at { font: 500 17px/1.3 var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v-A .as { font: 500 12px/1.4 var(--font); color: var(--label-3); margin-top: 2px; }
+.v-A .atime { font: 500 13px var(--font); color: var(--label-3); font-variant-numeric: tabular-nums; }
+.v-A .adot { width: 8px; height: 8px; border-radius: 50%; background: var(--red); flex: none; }
+.v-A .adot.w { background: var(--orange); }
+.v-A .chv { color: var(--label-3); font-size: 15px; }
+.v-A .card { background: var(--cell); border: 1px solid var(--sep); border-radius: 10px; padding: 16px; }
+.v-A .hero { display: flex; gap: 16px; align-items: center; }
+.v-A .hero b { font: 500 15px/1.4 var(--font); font-variant-numeric: tabular-nums; }
+.v-A .diary { margin-top: 14px; } .v-A .diary b { display: block; font: 600 15px var(--font); margin-top: 2px; color: var(--ink); }
+.v-A .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 12px; }
+.v-A .tile { background: var(--cell); border: 1px solid var(--sep); border-radius: 10px; padding: 14px 8px; text-align: center; }
+.v-A .tile b { display: block; font: 600 24px/1.2 var(--font); font-variant-numeric: tabular-nums; } .v-A .tile span { font: 500 13px var(--font); color: var(--label-2); }
+.v-A .sh { font: 500 12px/1.4 var(--font); text-transform: uppercase; letter-spacing: .6px; color: var(--label-3); margin: 24px 4px 4px; }
+.v-A .seg { padding: 14px 4px; border-bottom: 1px solid var(--sep); }
+.v-A .segtop { display: flex; gap: 12px; align-items: flex-start; }
+.v-A .segmain { flex: 1; min-width: 0; }
+.v-A .segt { font: 500 17px/1.3 var(--font); } .v-A .segm { font: 500 12px/1.4 var(--font); color: var(--label-3); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.v-A .segx { font: 500 12px/1.4 var(--font); margin-top: 3px; } .v-A .segx.bad { color: var(--red); } .v-A .segx.warn { color: var(--orange); } .v-A .segx.sub { color: var(--label-3); }
+.v-A .segtxt { font: 400 16px/1.5 var(--font); color: var(--label-2); margin-top: 10px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.v-A .rec { margin-top: 12px; background: var(--cell); border: 1px solid var(--sep); border-radius: 10px; padding: 12px; font: 400 15px/1.4 var(--font); color: var(--label-2); display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.v-A .idf { margin: 22px 4px 0; display: flex; flex-direction: column; gap: 4px; }
+.v-A .dpad { padding: 0 16px 130px; }
+.v-A .agrid { flex: 1; min-height: 0; display: grid; }
+.v-A .aside { border-right: .5px solid var(--sep); overflow-y: auto; }
+.v-A .apane { overflow-y: auto; background: var(--bg); }
+.v-A .apane .col { max-width: 560px; margin: 0 auto; padding: 8px 24px 48px; }
+.v-A .acol { max-width: 640px; margin: 0 auto; }
+.v-A .detail-ttl { font: 700 28px/1.25 var(--font); padding: 8px 0 14px; }
+
+/* ===== Variant B: Kalender ===== */
+.v-B .titlerow { display: flex; align-items: flex-end; justify-content: space-between; padding-right: 16px; }
+.v-B .titlerow .btn.plain { margin-bottom: 12px; font-size: 16px; font-weight: 500; }
+.v-B .wkhd { display: flex; align-items: center; justify-content: space-between; padding: 0 16px 6px; font: 500 13px var(--font); color: var(--label-2); }
+.v-B .wkhd button, .v-B .mhd button { border: 0; background: none; color: var(--ink); font-size: 18px; padding: 4px 10px; cursor: pointer; }
+.v-B .wkhd button:disabled, .v-B .mhd button:disabled { color: var(--label-3); opacity: .5; }
+.v-B .week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; padding: 0 10px 10px; border-bottom: 1px solid var(--sep); }
+.v-B .wd { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0 6px; border-radius: 14px; cursor: pointer; }
+.v-B .wd .w { font: 500 12px var(--font); color: var(--label-3); text-transform: uppercase; }
+.v-B .wd .n { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font: 600 17px var(--font); font-variant-numeric: tabular-nums; }
+.v-B .wd.today .n { box-shadow: inset 0 0 0 1.5px var(--tint); color: var(--tint); }
+.v-B .wd.sel .n { background: var(--ink); color: #fff; box-shadow: none; }
+.v-B .dots { display: flex; gap: 3px; height: 6px; } .v-B .dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--tint); }
+.v-B .dots i.o { background: var(--orange); } .v-B .dots i.r { background: var(--red); }
+.v-B .dayhd { display: flex; align-items: baseline; justify-content: space-between; padding: 18px 4px 10px; }
+.v-B .dayhd b { font: 600 17px var(--font); } .v-B .dayhd span { font: 500 12px var(--font); color: var(--label-3); }
+.v-B .bcard { background: var(--cell); border: 1px solid var(--sep); border-radius: 10px; padding: 14px; margin-bottom: 12px; cursor: pointer; }
+.v-B .bh { display: flex; align-items: center; gap: 10px; }
+.v-B .bhm { flex: 1; min-width: 0; display: flex; flex-direction: column; } .v-B .bhm b { font: 600 15px/1.3 var(--font); } .v-B .bhm span { font: 500 12px var(--font); color: var(--label-3); font-variant-numeric: tabular-nums; }
+.v-B .car { color: var(--label-3); font-size: 16px; }
+.v-B .bexc { font: 400 16px/1.45 var(--font); color: var(--label-2); margin-top: 12px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.v-B .sbar { display: flex; gap: 3px; height: 6px; margin-top: 14px; } .v-B .sbar i { border-radius: 3px; background: var(--tint); opacity: .85; }
+.v-B .sbar i.pending { background: var(--orange); } .v-B .sbar i.failed { background: var(--red); }
+.v-B .sbl { font: 500 12px var(--font); color: var(--label-3); margin-top: 8px; }
+.v-B .ev { display: flex; gap: 10px; margin-top: 10px; padding: 12px; border-radius: 8px; background: rgba(21,112,239,.06); border: 1px solid rgba(21,112,239,.2); }
+.v-B .ev.pending { background: rgba(220,104,3,.06); border-color: rgba(220,104,3,.22); } .v-B .ev.failed { background: rgba(236,34,34,.05); border-color: rgba(236,34,34,.2); }
+.v-B .evt { width: 44px; text-align: right; flex: none; font: 500 12px/1.4 var(--font); font-variant-numeric: tabular-nums; color: var(--label-2); } .v-B .evt em { display: block; font-style: normal; color: var(--label-3); }
+.v-B .evb { width: 3px; border-radius: 2px; background: var(--tint); flex: none; } .v-B .ev.pending .evb { background: var(--orange); } .v-B .ev.failed .evb { background: var(--red); }
+.v-B .evd { flex: 1; min-width: 0; } .v-B .evd b { font: 600 15px/1.35 var(--font); display: block; } .v-B .evd .m { font: 500 12px var(--font); color: var(--label-3); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.v-B .evd p { font: 400 15px/1.45 var(--font); color: var(--label-2); margin: 8px 0 0; }
+.v-B .evd .bad { font: 500 12px/1.4 var(--font); color: var(--red); margin-top: 6px; }
+.v-B .evtop { display: flex; gap: 10px; align-items: flex-start; }
+.v-B .bact { display: flex; justify-content: space-between; margin-top: 12px; }
+.v-B .ntxt { font: 400 16px/1.5 var(--font); color: var(--ink); margin-top: 12px; }
+.v-B .bpad { padding: 0 16px 130px; }
+.v-B .bgrid { flex: 1; min-height: 0; display: grid; }
+.v-B .bside { background: #f0f0f0; border-right: .5px solid var(--sep); padding: 20px 14px; }
+.v-B .bside h4 { margin: 0 0 14px 10px; font: 600 20px var(--font); }
+.v-B .bside .it { display: flex; align-items: center; gap: 12px; height: 40px; padding: 0 10px; border-radius: 8px; font: 500 16px var(--font); margin-bottom: 2px; }
+.v-B .bside .it svg.i { font-size: 20px; } .v-B .bside .it.on { background: #e2e2e2; }
+.v-B .bmid { border-right: .5px solid var(--sep); } .v-B .bpane { background: var(--bg); }
+.v-B .mcard { background: var(--cell); border: 1px solid var(--sep); border-radius: 10px; padding: 10px 10px 8px; margin: 0 16px; }
+.v-B .mhd { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px 8px; font: 600 16px var(--font); }
+.v-B .mg { display: grid; grid-template-columns: repeat(7, 1fr); }
+.v-B .mg .h { text-align: center; font: 500 11px var(--font); color: var(--label-3); padding: 2px 0 6px; text-transform: uppercase; }
+.v-B .mc { display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 0 5px; cursor: pointer; }
+.v-B .mc .n { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font: 500 14px var(--font); font-variant-numeric: tabular-nums; }
+.v-B .mc.out .n { color: var(--label-3); } .v-B .mc.today .n { box-shadow: inset 0 0 0 1.5px var(--tint); color: var(--tint); }
+.v-B .mc.sel .n { background: var(--ink); color: #fff; box-shadow: none; }
+.v-B .mc .dots { height: 5px; } .v-B .mc .dots i { width: 5px; height: 5px; }
+.v-B .crow { display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin: 0 16px 8px; background: var(--cell); border: 1px solid var(--sep); border-radius: 10px; cursor: pointer; }
+.v-B .crow.sel { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.v-B .crow .bhm b { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.v-B .pcol { max-width: 560px; margin: 0 auto; padding: 8px 28px 48px; }
+.v-B .pcol .bcard { cursor: default; }
+.v-B .stats { display: grid; grid-template-columns: 1fr; gap: 10px; align-content: start; }
+.v-B .stat { background: var(--cell); border: 1px solid var(--sep); border-radius: 10px; padding: 12px 14px; display: flex; justify-content: space-between; align-items: baseline; }
+.v-B .stat b { font: 600 22px var(--font); font-variant-numeric: tabular-nums; } .v-B .stat span { font: 500 13px var(--font); color: var(--label-2); }
+.v-B .portrait-top { display: grid; grid-template-columns: 380px 1fr; gap: 16px; padding: 0 28px 4px; }
+.v-B .portrait-top .mcard { margin: 0; }
+.v-B .cgrid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 28px 60px; align-items: start; }
+.v-B .cgrid2 .bcard { margin: 0; } .v-B .cgrid2 .bcard.open { grid-column: 1 / -1; }
+.v-B .emptyday { text-align: center; color: var(--label-3); font: 400 15px/1.5 var(--font); padding: 40px 30px; }
+
+/* ===== Variant C: Feed ===== */
+.v-C .search { display: flex; align-items: center; gap: 8px; height: 40px; background: var(--fill); border-radius: 10px; padding: 0 12px; color: var(--label-3); margin: 0 16px; }
+.v-C .search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font: 400 17px var(--font); color: var(--ink); }
+.v-C .chips { display: flex; gap: 8px; padding: 12px 16px 4px; overflow-x: auto; }
+.v-C .chip { border: 1px solid var(--sep); background: var(--cell); color: var(--ink); border-radius: 999px; padding: 0 14px; height: 34px; font: 500 15px var(--font); white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.v-C .chip i { font-style: normal; color: var(--label-3); font-variant-numeric: tabular-nums; }
+.v-C .chip.on { background: var(--ink); color: #fff; border-color: var(--ink); } .v-C .chip.on i { color: rgba(255,255,255,.65); }
+.v-C .attn { margin: 14px 16px 0; padding: 12px 14px; border-radius: 10px; background: var(--bad10); border: 1px solid rgba(236,34,34,.2); display: flex; align-items: center; gap: 12px; }
+.v-C .attn .t { flex: 1; min-width: 0; } .v-C .attn b { display: block; font: 600 15px var(--font); color: var(--red); } .v-C .attn span { font: 400 13px/1.4 var(--font); color: var(--label-2); }
+.v-C .cday { font: 500 12px/1.4 var(--font); text-transform: uppercase; letter-spacing: .6px; color: var(--label-3); padding: 20px 20px 8px; }
+.v-C .cgrid { display: grid; grid-template-columns: 1fr; gap: 10px; padding: 0 16px; align-items: start; }
+.v-C .ccard { background: var(--cell); border: 1px solid var(--sep); border-radius: 10px; padding: 14px 16px; cursor: pointer; }
+.v-C .cm { display: flex; align-items: center; gap: 8px; font: 500 12px var(--font); color: var(--label-2); font-variant-numeric: tabular-nums; }
+.v-C .cm .sp { flex: 1; }
+.v-C .cq { font: 400 17px/1.5 var(--font); color: var(--ink); margin-top: 10px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.v-C .cf { font: 500 12px var(--font); color: var(--label-3); margin-top: 10px; font-variant-numeric: tabular-nums; }
+.v-C .cnone { text-align: center; color: var(--label-3); font: 400 15px/1.5 var(--font); padding: 48px 32px; }
+.v-C.ipad .cgrid { grid-template-columns: 1fr 1fr; padding: 0 28px; gap: 12px; } .v-C.ipad.landscape .cgrid { grid-template-columns: 1fr 1fr 1fr; }
+.v-C.ipad .cday { padding: 22px 32px 8px; } .v-C.ipad .ccard { padding: 16px 18px; } .v-C.ipad .cq { font-size: 18px; }
+.v-C .ctop { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; padding-right: 28px; }
+.v-C .ctop .search { width: 300px; margin: 0 0 10px; } .v-C.ipad .large-title { padding-left: 32px; }
+.v-C.ipad .chips { padding: 4px 28px 4px; } .v-C.ipad .attn { margin: 14px 28px 0; }
+.v-C .sheet-backdrop { z-index: 30; }
+.v-C .sheet { display: flex; flex-direction: column; height: 93%; z-index: 31; }
+.v-C.ipad .sheet { height: min(760px, 88%); width: 600px; max-height: none; }
+.v-C .sh-h { flex: none; padding: 8px 16px 0; text-align: center; }
+.v-C .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--sep); margin: 0 auto 6px; }
+.v-C .sh-t { display: flex; align-items: center; justify-content: space-between; height: 40px; }
+.v-C .sh-t b { font: 600 17px var(--font); } .v-C .sh-t button { border: 0; background: none; color: var(--tint); font: 500 17px var(--font); cursor: pointer; min-width: 60px; padding: 0; }
+.v-C .sh-t button:last-child { text-align: right; font-size: 20px; }
+.v-C .sh-body { flex: 1; overflow-y: auto; padding: 6px 22px 24px; background: var(--cell); border-top: 1px solid var(--sep); }
+.v-C .rd-meta { font: 500 12px/1.5 var(--font); color: var(--label-3); margin: 14px 0 4px; font-variant-numeric: tabular-nums; }
+.v-C .rd-h { font: 700 26px/1.25 var(--font); margin: 0 0 4px; }
+.v-C .rseg { margin-top: 22px; } .v-C .rseg .rt { display: flex; gap: 10px; align-items: baseline; font: 600 15px var(--font); }
+.v-C .rseg .rt span { font: 500 12px var(--font); color: var(--label-3); font-variant-numeric: tabular-nums; }
+.v-C .rseg p { font: 400 18px/1.6 var(--font); margin: 6px 0 0; color: var(--ink); }
+.v-C .rseg .rx { font: 500 14px/1.5 var(--font); color: var(--red); margin-top: 6px; } .v-C .rseg .rw { font: 500 14px/1.5 var(--font); color: var(--orange); margin-top: 6px; }
+.v-C .rseg .rbtn { margin-top: 10px; }
+.v-C .sh-p { flex: none; padding: 12px 22px 22px; border-top: 1px solid var(--sep); background: var(--cell); display: flex; align-items: center; gap: 14px; }
+.v-C .sh-p .pp { width: 44px; height: 44px; font-size: 18px; }
+.v-C .sh-p .pm { flex: 1; } .v-C .sh-p .pm .tr { height: 4px; border-radius: 2px; background: var(--fill); position: relative; } .v-C .sh-p .pm .tr i { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 2px; background: var(--tint); }
+.v-C .sh-p .pm .cap { display: flex; justify-content: space-between; margin-top: 8px; font-variant-numeric: tabular-nums; }
+.v-C .sh-p.playing .tr i { width: 28%; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="device"><div id="screen"></div></div></div>
+<div id="pill">
+  <button data-step="-1" aria-label="Previous variant">◀</button><span class="label"></span><button data-step="1" aria-label="Next variant">▶</button>
+  <button data-device="iphone">iPhone</button><button data-device="ipad">iPad</button>
+  <button data-orient>⟳</button>
+</div>
+<script>
+// Logical sizes in points. Screenshots run full-bleed at the browser's viewport instead.
+const DEVICES = {
+  iphone: { size: [402, 874], radius: 55 }, // iPhone 17
+  ipad: { size: [834, 1194], radius: 18 },  // iPad Pro 11"
+};
+// Keep only the devices this prototype targets.
+const TARGETS = ["iphone", "ipad"];
+
+/* ================= Stub data (all people, firms and texts are invented) ================= */
+const TODAY = "2026-11-01";
+const WD = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+const WDS = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"];
+const MON = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+const dt = (iso) => new Date(iso + "T12:00:00Z");
+const addDays = (iso, n) => { const d = dt(iso); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const dayLong = (iso) => { const d = dt(iso); return `${WD[d.getUTCDay()]}, ${d.getUTCDate()}. ${MON[d.getUTCMonth()]}`; };
+const dayShort = (iso) => { const d = dt(iso); return `${d.getUTCDate()}. ${MON[d.getUTCMonth()].slice(0, 3)}.`; };
+const rel = (iso) => iso === TODAY ? "Heute" : iso === addDays(TODAY, -1) ? "Gestern" : dayLong(iso);
+const dnum = (iso) => dt(iso).getUTCDate();
+const wds = (iso) => WDS[dt(iso).getUTCDay()];
+const secs = (t) => t.split(":").reduce((a, b) => a * 60 + Number(b), 0);
+const mmss = (n) => `${Math.floor(n / 60)}:${String(n % 60).padStart(2, "0")}`;
+const seg = (t, range, dur, status, text) => ({ t, range, dur, status, text });
+
+const SESS = [
+  { id: "n0", type: "note", day: "2026-11-01", time: "07:55", dur: "0:22", size: "176 KB", text: "Brötchen holen, danach die Steuerunterlagen für Mara sortieren." },
+  { id: "n1", type: "note", day: "2026-11-01", time: "09:12", dur: "0:48", size: "384 KB", text: "Idee fürs Onboarding von Jule: in der ersten Woche nur zuhören und mitlaufen, keine eigenen Tickets. Danach gemeinsam ein kleines Thema aussuchen." },
+  { id: "e1", type: "evening", day: "2026-10-31", time: "21:04", events: 3, size: "4,6 MB", segs: [
+    seg("Wochenplanung mit Henrike", "09:30 – 10:00", "4:12", "processed", "Henrike will die Roadmap bis Mittwoch eingefroren haben. Ich habe zugesagt, die offenen Punkte bei Nordlicht vorher zu klären."),
+    seg("Lieferantengespräch Brandt & Söhne", "14:00 – 14:45", "6:31", "processed", "Tilda Brandt hat einen früheren Liefertermin angeboten, wenn wir die Menge bis Montag bestätigen. Der Preis bleibt unverändert."),
+    seg("Elternabend Grundschule", "18:00 – 19:00", "3:05", "processed", "Nur kurz dort gewesen. Frau Reuter hat die Klassenfahrt vorgestellt, die Anmeldung läuft bis zum 14. November."),
+    seg("Freie Reflexion", null, "5:48", "processed", "Der Tag war ruhiger als erwartet. Das Gespräch mit Tilda beschäftigt mich mehr, als es sollte. Ich prüfe am Montag zuerst die Mengen, bevor ich zusage."),
+  ] },
+  { id: "n2", type: "note", day: "2026-10-31", time: "17:40", dur: "0:19", size: "152 KB", text: "Andreas morgen anrufen wegen der Verlängerung." },
+  { id: "e2", type: "evening", day: "2026-10-30", time: "21:22", events: 2, size: "3,1 MB", segs: [
+    seg("Sprint-Review Team Nordlicht", "10:00 – 11:00", "7:40", "processed", "Drei von fünf Tickets sind durch. Jonas hat die Suche fertig, die Exportfunktion rutscht in den nächsten Sprint."),
+    seg("Gespräch mit Mara Völker", "15:30 – 16:00", "4:55", "processed", "Mara möchte ab Januar vier Tage pro Woche arbeiten. Ich muss prüfen, wie wir die Übergaben regeln."),
+    seg("Freie Reflexion", null, "4:02", "failed", ""),
+  ] },
+  { id: "n3", type: "note", day: "2026-10-30", time: "12:03", dur: "0:14", size: "112 KB", text: "Preisliste für das erste Quartal mit Oskar abgleichen." },
+  { id: "e3", type: "evening", day: "2026-10-29", time: "20:48", events: 4, size: "6,2 MB", segs: [
+    seg("Frühstück mit Jule", "08:00 – 08:45", "5:10", "processed", "Jule fühlt sich in der zweiten Woche sicherer. Sie wünscht sich mehr Zeit für Rückfragen, nicht mehr Aufgaben."),
+    seg("Quartalszahlen mit Finanzen", "10:30 – 11:30", "8:22", "processed", "Der Umsatz liegt leicht über Plan, die Marge zwei Punkte darunter. Wir klären nächste Woche, ob es an den Rabatten liegt."),
+    seg("Telefonat Bank", "14:00 – 14:20", "2:48", "processed", "Der Rahmenkredit wird verlängert. Die Unterlagen müssen bis Ende des Monats da sein."),
+    seg("Zahnarzt", "16:30 – 17:15", "1:30", "pending", ""),
+    seg("Freie Reflexion", null, "6:15", "processed", "Zu viele Termine hintereinander. Ich möchte freitags einen Block ohne Meetings freihalten."),
+  ] },
+  { id: "n4", type: "note", day: "2026-10-29", time: "08:15", dur: "0:31", size: "248 KB", text: "Geburtstagsgeschenk für Henrike besorgen, etwas mit Büchern." },
+  { id: "e4", type: "evening", day: "2026-10-28", time: "22:10", events: 1, size: "2,4 MB", segs: [
+    seg("Produktplanung Q1", "13:00 – 14:30", "11:04", "processed", "Wir setzen zwei Schwerpunkte: Suche und Export. Alles andere wandert in den Parkplatz, bis die Schwerpunkte stehen."),
+    seg("Freie Reflexion", null, "3:37", "processed", "Gute Diskussion, aber ich habe zu viel geredet. Beim nächsten Mal zuerst Jonas und Jule fragen."),
+  ] },
+  { id: "n5", type: "note", day: "2026-10-28", time: "19:30", dur: "0:27", size: "216 KB", text: "Rückruf von Herrn Weidemann nicht vergessen, es geht um die Rechnung vom September." },
+  { id: "e5", type: "evening", day: "2026-10-27", time: "21:40", events: 0, size: "1,9 MB", segs: [
+    seg("Freie Reflexion", null, "7:02", "processed", "Ein Tag ohne feste Termine. Ich habe endlich die Angebote sortiert und mit Oskar telefoniert. Das hat sich gut angefühlt."),
+  ] },
+  { id: "n6", type: "note", day: "2026-10-27", time: "18:05", dur: "0:12", size: "96 KB", text: "Milch, Brot, Ersatzakku für die Kamera." },
+  { id: "n7", type: "note", day: "2026-10-27", time: "11:20", dur: "0:36", size: "288 KB", text: "Idee: die wöchentliche Stehrunde auf 15 Minuten kürzen und auf Dienstag legen." },
+];
+// Older days, generated so the month and the long list have realistic density.
+const POOL = [
+  ["Teamrunde", "09:00 – 09:30", "Wir haben die Prioritäten der Woche durchgesprochen. Jule übernimmt die Migration, ich kümmere mich um das Budget."],
+  ["Gespräch mit Tilda Brandt", "11:00 – 11:45", "Tilda schlägt vor, die Lieferungen zu bündeln. Das spart ihr Fahrten und uns Lagerplatz."],
+  ["Mittagsspaziergang mit Oskar", "12:30 – 13:15", "Oskar zweifelt, ob der Vertrieb im Süden den Aufwand wert ist. Ich will erst die Zahlen sehen."],
+  ["Kundentermin Weidemann", "15:00 – 16:00", "Herr Weidemann ist zufrieden, wünscht sich aber eine klarere Rechnung. Ich schicke bis Freitag einen Entwurf."],
+  ["Rückblick Sprint", "16:30 – 17:00", "Das Team war müde, aber stolz. Wir lassen die Retro nächste Woche kürzer ausfallen."],
+];
+const REFL = [
+  "Ein dichter Tag. Ich merke, dass ich Entscheidungen zu lange vor mir herschiebe.",
+  "Gut gelaufen, vor allem das Gespräch am Nachmittag. Morgen früh zuerst die offenen Mails.",
+  "Müde, aber zufrieden. Ich will weniger Termine am Stück und mehr Luft zwischen den Gesprächen.",
+];
+const NOTEPOOL = ["Zahnarzttermin verschieben.", "Frau Reuter wegen der Klassenfahrt zurückrufen.", "Angebot für Weidemann noch einmal prüfen.", "Blumen für den Geburtstag am Samstag."];
+["2026-10-23", "2026-10-22", "2026-10-21", "2026-10-20", "2026-10-19", "2026-10-16", "2026-10-15", "2026-10-14", "2026-10-13", "2026-10-12", "2026-10-08", "2026-10-07", "2026-10-06", "2026-10-05"].forEach((day, i) => {
+  const n = 1 + (i % 3);
+  const segs = [];
+  for (let k = 0; k < n; k++) { const p = POOL[(i + k) % POOL.length]; segs.push(seg(p[0], p[1], mmss(150 + ((i * 53 + k * 97) % 330)), "processed", p[2])); }
+  segs.push(seg("Freie Reflexion", null, mmss(180 + ((i * 41) % 240)), "processed", REFL[i % REFL.length]));
+  SESS.push({ id: "g" + i, type: "evening", day, time: `2${i % 2}:${String(10 + i * 3).padStart(2, "0")}`, events: n, size: `${(2 + (i % 5) * 0.7).toFixed(1).replace(".", ",")} MB`, segs });
+  if (i % 2 === 0) SESS.push({ id: "gn" + i, type: "note", day, time: `1${3 + (i % 5)}:${String(5 + i * 4).padStart(2, "0")}`, dur: `0:${String(14 + i * 2).padStart(2, "0")}`, size: `${110 + i * 9} KB`, text: NOTEPOOL[i % NOTEPOOL.length] });
+});
+SESS.sort((a, b) => (a.day === b.day ? (a.time < b.time ? 1 : -1) : a.day < b.day ? 1 : -1));
+const BYID = Object.fromEntries(SESS.map((s) => [s.id, s]));
+const DAYMAP = {};
+SESS.forEach((s) => (DAYMAP[s.day] = DAYMAP[s.day] || []).push(s));
+const groups = (list) => { const out = []; list.forEach((s) => { const g = out[out.length - 1]; if (g && g.day === s.day) g.items.push(s); else out.push({ day: s.day, items: [s] }); }); return out; };
+
+const total = (s) => s.type === "note" ? secs(s.dur) : s.segs.reduce((a, g) => a + secs(g.dur), 0);
+const failedCount = (s) => (s.segs || []).filter((g) => g.status === "failed").length;
+const pendingCount = (s) => (s.segs || []).filter((g) => g.status === "pending").length;
+const titleOf = (s) => s.type === "note" ? s.text : s.events === 0 ? "Abendsitzung" : s.events === 1 ? "Abendsitzung · 1 Termin" : `Abendsitzung · ${s.events} Termine`;
+const kindOf = (s) => s.type === "note" ? "Notiz" : "Abendsitzung";
+const excerptOf = (s) => s.type === "note" ? s.text : ([...s.segs].reverse().find((g) => g.text) || { text: "" }).text;
+const segMeta = (g) => [g.range, g.dur, "DE"].filter(Boolean).join(" · ");
+const sid = (s) => `${s.id.replace(/\D/g, "").padStart(2, "0")}c1e9a4-7d3e-4b18-9c55-0e62d1b7a3f4`;
+const allFailed = () => SESS.flatMap((s) => (s.segs || []).filter((g) => g.status === "failed").map((g) => ({ s, g })));
+
+/* ================= Small shared fragments (icons, pills, status bar), not layouts ================= */
+const I = {
+  book: '<svg class="i" viewBox="0 0 24 24"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11"/></svg>',
+  mic: '<svg class="i" viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v4"/></svg>',
+  list: '<svg class="i" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>',
+  more: '<svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M8 12h.01M12 12h.01M16 12h.01"/></svg>',
+  play: '<svg class="i f" viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z"/></svg>',
+  pause: '<svg class="i f" viewBox="0 0 24 24"><path d="M7 5h4v14H7zM13 5h4v14h-4z"/></svg>',
+  chev: '<svg class="i" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg>',
+  back: '<svg class="i" viewBox="0 0 24 24" style="font-size:22px"><path d="M15 5l-7 7 7 7"/></svg>',
+  down: '<svg class="i" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>',
+  up: '<svg class="i" viewBox="0 0 24 24"><path d="M6 15l6-6 6 6"/></svg>',
+  search: '<svg class="i" viewBox="0 0 24 24" style="font-size:18px"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.5-4.5"/></svg>',
+  share: '<svg class="i" viewBox="0 0 24 24"><path d="M12 15V4M8 8l4-4 4 4M6 11H5v9h14v-9h-1"/></svg>',
+  side: '<svg class="i" viewBox="0 0 24 24" style="font-size:22px"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="M9 5v14"/></svg>',
+  warn: '<svg class="i" viewBox="0 0 24 24" style="font-size:22px;color:var(--red)"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17h.01"/></svg>',
+};
+const disc = (type, size) => `<span class="disc ${type} s${size}">${type === "note" ? I.mic : I.book}</span>`;
+const PILL = { processed: "Verarbeitet", pending: "Verarbeitung", failed: "Fehlgeschlagen", transcribing: "Transkribiert" };
+const pill = (st) => `<span class="pill ${st}">${PILL[st]}</span>`;
+const sb = () => `<div class="status"><b>9:41</b><span class="bat"></span></div>`;
+const ftab = (on) => `<div class="ftab">${[["Abend", I.book], ["Aufnahme", I.mic], ["Verlauf", I.list], ["Mehr", I.more]].map(([n, ic]) => `<div class="${n === on ? "on" : ""}">${ic}<span>${n}</span></div>`).join("")}</div>`;
+const ptabs = (on) => `<div class="ptabs"><div>${[["Abend", I.book], ["Aufnahme", I.mic], ["Verlauf", I.list], ["Mehr", I.more]].map(([n, ic]) => `<span class="${n === on ? "on" : ""}">${ic}${n}</span>`).join("")}</div></div>`;
+const attnPill = (s) => failedCount(s) ? pill("failed") : pendingCount(s) ? pill("pending") : "";
+// Play/pause is a DOM toggle on the nearest .playable, so scroll position and open pages survive.
+function wirePlay(el) {
+  el.querySelectorAll(".pp").forEach((b) => b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const host = b.closest(".playable");
+    const was = host.classList.contains("playing");
+    el.querySelectorAll(".playable.playing").forEach((h) => h.classList.remove("playing"));
+    if (!was) host.classList.add("playing");
+  }));
+}
+const ppBtn = (note) => `<button class="pp" aria-label="Abspielen"><span class="ic-play">${I.play}</span><span class="ic-pause">${I.pause}</span></button>`;
+function rr() { // re-render in place, keeping scroll positions
+  const tops = [...screen.querySelectorAll(".scroll")].map((e) => e.scrollTop);
+  render();
+  screen.querySelectorAll(".scroll").forEach((e, i) => { e.scrollTop = tops[i] || 0; });
+}
+const ui = { A: { sel: "e1" }, B: { day: "2026-10-31", open: null, week: 0 }, C: { filter: "all", q: "" } };
+
+/* ================= Variant A: Chronik ================= */
+const aRow = (s, sel) => `<div class="arow${sel ? " sel" : ""}" data-open="${s.id}">${disc(s.type, 32)}
+  <div class="amain"><div class="at">${titleOf(s)}</div><div class="as">Für ${rel(s.day)}</div></div>
+  ${failedCount(s) ? '<i class="adot"></i>' : pendingCount(s) ? '<i class="adot w"></i>' : ""}
+  <span class="atime">${s.time}</span><span class="chv">${I.chev}</span></div>`;
+const aList = (sel) => groups(SESS).map((g) => `<div class="dh">${rel(g.day)}</div>${g.items.map((s) => aRow(s, s.id === sel)).join("")}`).join("");
+function aSeg(g) {
+  const bad = g.status === "failed", pend = g.status === "pending";
+  return `<div class="seg playable"><div class="segtop">${ppBtn()}<div class="segmain"><div class="segt">${g.t}</div><div class="segm">${segMeta(g)}</div>
+    ${bad ? '<div class="segx bad">Transkription fehlgeschlagen</div><div class="segx sub">Der Abschnitt fehlt im Tagebucheintrag.</div>' : ""}
+    ${pend ? '<div class="segx warn">Wird noch analysiert</div>' : ""}</div>${pill(g.status)}</div>
+    <div class="scrub"><div class="track"><i style="width:22%"></i></div><div class="tt"><span>0:${String(Math.min(59, secs(g.dur) % 40 + 3)).padStart(2, "0")}</span><span>${g.dur}</span></div></div>
+    ${g.text ? `<div class="segtxt">${g.text}</div>` : ""}
+    ${bad ? `<div class="rec">Die Aufnahme ist gesichert. Die Transkription kann erneut gestartet werden.<button class="sec2">Erneut transkribieren</button></div>` : ""}</div>`;
+}
+function aDetailBody(s) {
+  const d = dt(s.day);
+  const rec = `${WDS[d.getUTCDay()]}., ${dayShort(s.day)} · ${s.time}`;
+  const tiles = s.type === "note"
+    ? [[mmss(secs(s.dur)).replace(/^0:/, "") + " s", "Dauer"], ["DE", "Sprache"], [s.size, "Größe"]]
+    : [[s.events, "Termine"], [s.segs.length, "Abschnitte"], [s.size, "Größe"]];
+  const noteRow = `<div class="seg playable note-pp"><div class="segtop">${ppBtn()}<div class="segmain"><div class="segt">${s.time}</div><div class="segm">${s.dur} · DE</div></div></div>
+    <div class="scrub"><div class="track"><i style="width:22%"></i></div><div class="tt"><span>0:04</span><span>${s.dur}</span></div></div><div class="segtxt" style="-webkit-line-clamp:6">${s.text}</div></div>`;
+  return `<div class="card"><div class="hero">${disc(s.type, 48)}<b>${rec}</b></div>
+    ${s.type === "evening" ? `<div class="diary"><span class="cap">Tagebucheintrag:</span><b>${dayLong(s.day)} 2026</b></div>` : ""}</div>
+    <div class="tiles">${tiles.map(([v, l]) => `<div class="tile"><b>${v}</b><span>${l}</span></div>`).join("")}</div>
+    <div class="sh">${s.type === "note" ? "Notiz" : "Abschnitte"}</div>
+    ${s.type === "note" ? noteRow : s.segs.map(aSeg).join("")}
+    <button class="dark" style="margin-top:24px">${I.share} Audio teilen</button>
+    <div class="idf"><span class="mono up">${s.type === "note" ? "Seed-ID" : "Session-ID"}</span><span class="mono">${sid(s)}</span></div>`;
+}
+const aPushHTML = (s, ipad) => `${ipad ? "" : sb()}<div class="nav"><div class="left" data-back>${I.back}<span>Verlauf</span></div></div>
+  <div class="scroll"><div class="large-title" style="${ipad ? "max-width:640px;margin:0 auto" : ""}">${s.type === "note" ? "Notiz" : "Abend"}</div><div class="dpad" style="${ipad ? "max-width:640px;margin:0 auto;padding-bottom:40px" : ""}">${aDetailBody(s)}</div></div>`;
+function aOpenPush(root, id, ipad) {
+  const page = push(root, aPushHTML(BYID[id], ipad));
+  if (ipad) page.style.top = "74px";
+  // The shell's pop() reverses the same keyframes, which does not restart the animation, so slide out with our own.
+  page.querySelector("[data-back]").onclick = () => {
+    page.classList.remove("push-in");
+    page.classList.add("pop-away");
+    setTimeout(() => page.remove(), 320);
+  };
+  wirePlay(page);
+}
+const A = {
+  name: "Chronik",
+  render: (s) => {
+    if (s.device === "iphone") return `<div class="page">${sb()}<div class="scroll" style="padding-bottom:110px"><div class="large-title">Verlauf</div>${aList()}</div>${ftab("Verlauf")}</div>`;
+    if (s.orient === "portrait") return `<div class="page">${sb()}${ptabs("Verlauf")}<div class="scroll"><div class="acol"><div class="large-title" style="padding-left:20px">Verlauf</div>${aList()}</div></div></div>`;
+    const sel = BYID[ui.A.sel];
+    return `<div class="page">${sb()}${ptabs("Verlauf")}<div class="agrid" style="grid-template-columns:380px 1fr">
+      <div class="aside"><div class="large-title" style="padding-left:20px">Verlauf</div><div id="alist">${aList(ui.A.sel)}</div></div>
+      <div class="apane" id="apane"><div class="col"><div class="detail-ttl">${sel.type === "note" ? "Notiz" : "Abend"}</div>${aDetailBody(sel)}</div></div></div></div>`;
+  },
+  wire: (root, s) => {
+    const split = s.device === "ipad" && s.orient === "landscape";
+    root.querySelectorAll("[data-open]").forEach((row) => row.addEventListener("click", () => {
+      const id = row.dataset.open;
+      if (!split) return aOpenPush(root, id, s.device === "ipad");
+      ui.A.sel = id;
+      root.querySelectorAll(".arow").forEach((r) => r.classList.toggle("sel", r.dataset.open === id));
+      const pane = root.querySelector("#apane");
+      pane.innerHTML = `<div class="col"><div class="detail-ttl">${BYID[id].type === "note" ? "Notiz" : "Abend"}</div>${aDetailBody(BYID[id])}</div>`;
+      pane.scrollTop = 0; wirePlay(pane);
+    }));
+    wirePlay(root);
+  },
+};
+
+/* ================= Variant B: Kalender ================= */
+const dotsFor = (day) => `<div class="dots">${(DAYMAP[day] || []).slice(0, 4).map((x) => `<i class="${failedCount(x) ? "r" : x.type === "note" ? "o" : ""}"></i>`).join("")}</div>`;
+const dayStats = (day) => { const l = DAYMAP[day] || []; return l.length ? `${l.length} ${l.length === 1 ? "Sitzung" : "Sitzungen"} · ${mmss(l.reduce((a, x) => a + total(x), 0))} min` : "keine Sitzung"; };
+const weekStart = () => addDays("2026-10-26", 7 * ui.B.week);
+const weekRange = () => { const a = weekStart(), b = addDays(a, 6); return `${dayShort(a)} – ${dayShort(b)}`; };
+const weekStrip = () => `<div class="wkhd"><button data-wk="-1" ${ui.B.week <= -2 ? "disabled" : ""}>‹</button><span>${weekRange()}</span><button data-wk="1" ${ui.B.week >= 0 ? "disabled" : ""}>›</button></div>
+  <div class="week">${[0, 1, 2, 3, 4, 5, 6].map((k) => { const d = addDays(weekStart(), k); return `<div class="wd${d === ui.B.day ? " sel" : ""}${d === TODAY ? " today" : ""}" data-day="${d}"><span class="w">${wds(d)}</span><span class="n">${dnum(d)}</span>${dotsFor(d)}</div>`; }).join("")}</div>`;
+function bDetail(s) {
+  if (s.type === "note") return `<div class="playable note-pp"><div class="evtop">${ppBtn()}<div class="evd"><b>${s.time}</b><div class="m">${s.dur} · DE</div></div></div>
+    <div class="scrub"><div class="track"><i style="width:22%"></i></div><div class="tt"><span>0:04</span><span>${s.dur}</span></div></div></div><div class="ntxt">${s.text}</div>
+    <div class="bact"><button class="ghost">${I.share} Teilen</button><span class="mono" style="align-self:center">${sid(s).slice(0, 8)}</span></div>`;
+  return s.segs.map((g) => { const end = g.range ? g.range.split(" – ")[1] : ""; return `<div class="ev playable ${g.status}"><div class="evt">${g.range ? g.range.split(" – ")[0] : s.time}<em>${end || "Abend"}</em></div><div class="evb"></div>
+    <div class="evd"><div class="evtop"><div style="flex:1;min-width:0"><b>${g.t}</b><div class="m">${g.dur} · DE</div></div>${g.status === "processed" ? "" : pill(g.status)}${g.status === "failed" ? "" : ppBtn()}</div>
+    <div class="scrub"><div class="track"><i style="width:22%"></i></div><div class="tt"><span>0:12</span><span>${g.dur}</span></div></div>
+    ${g.text ? `<p>${g.text}</p>` : ""}${g.status === "failed" ? '<div class="bad">Die Aufnahme ist gesichert. Transkription fehlgeschlagen.</div><div style="margin-top:8px"><button class="sec2">Erneut transkribieren</button></div>' : ""}
+    ${g.status === "pending" ? '<div class="bad" style="color:var(--orange)">Wird noch analysiert</div>' : ""}</div></div>`; }).join("")
+    + `<div class="bact"><button class="ghost">${I.share} Audio teilen</button><span class="mono" style="align-self:center">${sid(s).slice(0, 8)}</span></div>`;
+}
+function bCard(s, open) {
+  const preview = s.type === "note" ? `<div class="bexc">${s.text}</div>`
+    : `<div class="bexc">${excerptOf(s) || "Abschnitt wird noch verarbeitet."}</div><div class="sbar">${s.segs.map((g) => `<i class="${g.status}" style="flex:${secs(g.dur)}"></i>`).join("")}</div><div class="sbl">${s.segs.length} ${s.segs.length === 1 ? "Abschnitt" : "Abschnitte"}</div>`;
+  return `<div class="bcard${open ? " open" : ""}" data-card="${s.id}"><div class="bh">${disc(s.type, 28)}<div class="bhm"><b>${kindOf(s)}</b><span>${s.time}${s.type === "evening" ? ` · ${s.events === 0 ? "kein Termin" : s.events === 1 ? "1 Termin" : s.events + " Termine"}` : ""} · ${mmss(total(s))} min</span></div>${attnPill(s)}<span class="car">${open ? I.up : I.down}</span></div>
+    ${open ? `<div>${bDetail(s)}</div>` : preview}</div>`;
+}
+const bDayList = (cls) => { const l = DAYMAP[ui.B.day] || []; return l.length ? l.map((s) => bCard(s, ui.B.open === s.id)).join("") : `<div class="emptyday">Keine Sitzungen am ${dayLong(ui.B.day)}.<br>Aufnahmen für diesen Tag erscheinen hier.</div>`; };
+function monthGrid() {
+  const cells = []; for (let k = 0; k < 35; k++) cells.push(addDays("2026-09-28", k));
+  return `<div class="mcard"><div class="mhd"><button disabled>‹</button><span>Oktober 2026</span><button disabled>›</button></div><div class="mg">${WDS.slice(1).concat(WDS[0]).map((w) => `<div class="h">${w}</div>`).join("")}
+    ${cells.map((d) => `<div class="mc${d === ui.B.day ? " sel" : ""}${d === TODAY ? " today" : ""}${d.slice(0, 7) !== "2026-10" ? " out" : ""}" data-day="${d}"><span class="n">${dnum(d)}</span>${dotsFor(d)}</div>`).join("")}</div></div>`;
+}
+const compactRow = (s) => `<div class="crow${ui.B.open === s.id ? " sel" : ""}" data-pick="${s.id}">${disc(s.type, 28)}<div class="bhm"><b>${s.type === "note" ? s.text : titleOf(s)}</b><span>${s.time} · ${mmss(total(s))} min</span></div>${attnPill(s)}</div>`;
+const monthStats = () => { const oct = SESS.filter((s) => s.day.startsWith("2026-10")); return `<div class="stats"><div class="stat"><span>Sitzungen im Oktober</span><b>${oct.length}</b></div><div class="stat"><span>Aufnahmezeit</span><b>${(oct.reduce((a, s) => a + total(s), 0) / 3600).toFixed(1).replace(".", ",")} h</b></div><div class="stat"><span>Fehlgeschlagen</span><b style="color:var(--red)">${allFailed().length}</b></div></div>`; };
+const B = {
+  name: "Kalender",
+  render: (s) => {
+    const l = DAYMAP[ui.B.day] || [];
+    if (s.device === "iphone") return `<div class="page">${sb()}<div class="titlerow"><div class="large-title">Verlauf</div><button class="btn plain" data-today>Heute</button></div>${weekStrip()}
+      <div class="scroll bpad"><div class="dayhd"><b>${rel(ui.B.day)}</b><span>${dayStats(ui.B.day)}</span></div><div id="blist">${bDayList()}</div></div>${ftab("Verlauf")}</div>`;
+    if (s.orient === "portrait") return `<div class="page">${sb()}<div class="nav" style="justify-content:flex-start;padding:0 20px"><span style="color:var(--ink)">${I.side}</span></div>
+      <div class="scroll"><div class="titlerow"><div class="large-title" style="padding-left:28px">Verlauf</div><button class="btn plain" data-today style="margin-right:12px">Heute</button></div>
+      <div class="portrait-top">${monthGrid()}${monthStats()}</div>
+      <div class="dayhd" style="padding:18px 32px 10px"><b>${rel(ui.B.day)}</b><span>${dayStats(ui.B.day)}</span></div><div class="cgrid2" id="blist">${bDayList()}</div></div></div>`;
+    const open = BYID[ui.B.open] || l[0];
+    if (open) ui.B.open = open.id;
+    return `<div class="page">${sb()}<div class="bgrid" style="grid-template-columns:240px 400px 1fr">
+      <div class="bside"><h4>Voice Diary</h4>${[["Abend", I.book], ["Aufnahme", I.mic], ["Verlauf", I.list], ["Mehr", I.more]].map(([n, ic]) => `<div class="it${n === "Verlauf" ? " on" : ""}">${ic}${n}</div>`).join("")}</div>
+      <div class="bmid scroll"><div class="titlerow"><div class="large-title">Verlauf</div><button class="btn plain" data-today>Heute</button></div>${monthGrid()}
+        <div class="dayhd" style="padding:18px 20px 10px"><b>${rel(ui.B.day)}</b><span>${dayStats(ui.B.day)}</span></div>${l.length ? l.map(compactRow).join("") : '<div class="emptyday">Keine Sitzungen an diesem Tag.</div>'}</div>
+      <div class="bpane scroll"><div class="pcol">${open ? `<div class="detail-ttl" style="font:700 28px/1.25 var(--font);padding:8px 0 14px">${kindOf(open)}</div><div class="bcard open" style="margin:0">${(() => { const c = bCard(open, true); return c.slice(c.indexOf(">") + 1, c.lastIndexOf("</div>")); })()}</div>` : '<div class="emptyday">Wähle eine Sitzung.</div>'}</div></div></div></div>`;
+  },
+  wire: (root, s) => {
+    const landscape = s.device === "ipad" && s.orient === "landscape";
+    root.querySelectorAll("[data-day]").forEach((c) => c.addEventListener("click", () => { ui.B.day = c.dataset.day; ui.B.open = null; rr(); }));
+    root.querySelectorAll("[data-wk]").forEach((b) => b.addEventListener("click", () => { ui.B.week += Number(b.dataset.wk); ui.B.day = addDays(weekStart(), ui.B.week === 0 ? 5 : 3); ui.B.open = null; rr(); }));
+    root.querySelectorAll("[data-today]").forEach((b) => b.addEventListener("click", () => { ui.B.week = 0; ui.B.day = TODAY; ui.B.open = null; rr(); }));
+    root.querySelectorAll("[data-pick]").forEach((c) => c.addEventListener("click", () => { ui.B.open = c.dataset.pick; rr(); }));
+    if (!landscape) root.querySelectorAll("[data-card]").forEach((c) => c.addEventListener("click", (e) => {
+      if (e.target.closest("button")) return;
+      ui.B.open = ui.B.open === c.dataset.card ? null : c.dataset.card; rr();
+    }));
+    wirePlay(root);
+  },
+};
+
+/* ================= Variant C: Feed ================= */
+const cMatch = (s) => {
+  const f = ui.C.filter, q = ui.C.q.trim().toLowerCase();
+  if (f === "evening" && s.type !== "evening") return false;
+  if (f === "note" && s.type !== "note") return false;
+  if (f === "failed" && !failedCount(s)) return false;
+  if (!q) return true;
+  return (titleOf(s) + " " + (s.segs || []).map((g) => g.t + " " + g.text).join(" ") + " " + (s.text || "")).toLowerCase().includes(q);
+};
+const hl = (text) => { const q = ui.C.q.trim(); if (!q) return text; return text.replace(new RegExp("(" + q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")", "ig"), "<mark>$1</mark>"); };
+const cCard = (s) => `<div class="ccard" data-open="${s.id}"><div class="cm">${disc(s.type, 20)}<span>${kindOf(s)} · ${s.time}</span><span class="sp"></span>${attnPill(s) || `<span class="cap">${mmss(total(s))} min</span>`}</div>
+  <div class="cq">${hl(excerptOf(s) || "Abschnitte werden noch verarbeitet.")}</div>
+  <div class="cf">${s.type === "evening" ? `${s.events === 0 ? "kein Termin" : s.events === 1 ? "1 Termin" : s.events + " Termine"} · ${s.segs.length} Abschnitte · ${mmss(total(s))} min` : `Für ${rel(s.day)} · ${s.dur} min`}</div></div>`;
+const cFeed = () => { const list = SESS.filter(cMatch); return list.length ? groups(list).map((g) => `<div class="cday">${rel(g.day)}</div><div class="cgrid">${g.items.map(cCard).join("")}</div>`).join("") : `<div class="cnone">Nichts gefunden für „${ui.C.q}“.<br>Die Suche durchsucht alle Transkripte auf diesem Gerät.</div>`; };
+const cCount = (f) => SESS.filter((s) => f === "all" || (f === "evening" ? s.type === "evening" : f === "note" ? s.type === "note" : failedCount(s))).length;
+const cChips = () => `<div class="chips">${[["all", "Alle"], ["evening", "Abende"], ["note", "Notizen"], ["failed", "Fehlgeschlagen"]].map(([k, n]) => `<button class="chip${ui.C.filter === k ? " on" : ""}" data-f="${k}">${n}<i>${cCount(k)}</i></button>`).join("")}</div>`;
+const cAttn = () => { const f = allFailed()[0]; return f && ui.C.filter === "all" && !ui.C.q ? `<div class="attn" id="cattn">${I.warn}<div class="t"><b>1 Abschnitt fehlgeschlagen</b><span>${rel(f.s.day)} · ${f.g.t}</span></div><button class="sec2" data-open="${f.s.id}">Ansehen</button></div>` : ""; };
+const cSearch = () => `<div class="search">${I.search}<input type="text" placeholder="Transkripte durchsuchen" value="${ui.C.q.replace(/"/g, "&quot;")}"></div>`;
+function cSheetHTML(s) {
+  const reading = s.type === "note" ? `<div class="rseg"><p>${s.text}</p></div>`
+    : s.segs.map((g) => `<div class="rseg"><div class="rt">${g.t}<span>${g.range || "Abend"} · ${g.dur}</span></div>
+      ${g.text ? `<p>${g.text}</p>` : ""}${g.status === "failed" ? '<div class="rx">Transkription fehlgeschlagen. Die Aufnahme ist gesichert.</div><button class="sec2 rbtn">Erneut transkribieren</button>' : ""}${g.status === "pending" ? '<div class="rw">Wird noch analysiert. Das Transkript erscheint hier.</div>' : ""}</div>`).join("");
+  return `<div class="sh-h"><div class="grab"></div><div class="sh-t"><button data-close>Fertig</button><b>${kindOf(s)}</b><button aria-label="Teilen">${I.share}</button></div></div>
+    <div class="sh-body"><div class="rd-meta">${dayLong(s.day)} · ${s.time} · ${mmss(total(s))} min · ${s.size}</div><h2 class="rd-h">${s.type === "note" ? "Notiz" : titleOf(s)}</h2>${reading}<div class="mono" style="margin-top:28px">${sid(s)}</div></div>
+    <div class="sh-p playable">${ppBtn()}<div class="pm"><div class="tr"><i></i></div><div class="cap"><span>${s.type === "note" ? "0:04" : "Abschnitt 1 von " + s.segs.length}</span><span>${mmss(total(s))}</span></div></div></div>`;
+}
+const C = {
+  name: "Feed",
+  render: (s) => {
+    const body = `${cChips()}${cAttn()}<div id="cfeed">${cFeed()}</div>`;
+    if (s.device === "iphone") return `<div class="page">${sb()}<div class="scroll" style="padding-bottom:110px"><div class="large-title">Verlauf</div>${cSearch()}${body}</div>${ftab("Verlauf")}</div>`;
+    return `<div class="page">${sb()}${ptabs("Verlauf")}<div class="scroll" style="padding-bottom:40px"><div class="ctop"><div class="large-title">Verlauf</div>${cSearch()}</div>${body}</div></div>`;
+  },
+  wire: (root, s) => {
+    const open = (id) => {
+      const { panel, close } = sheet(root, cSheetHTML(BYID[id]));
+      panel.querySelector("[data-close]").onclick = close;
+      wirePlay(panel);
+    };
+    const bindCards = (scope) => scope.querySelectorAll("[data-open]").forEach((c) => c.addEventListener("click", (e) => { if (e.target.closest("button") && !c.matches("button")) { /* banner button opens too */ } open(c.dataset.open); }));
+    bindCards(root);
+    root.querySelectorAll("[data-f]").forEach((b) => b.addEventListener("click", () => { ui.C.filter = b.dataset.f; rr(); }));
+    const input = root.querySelector(".search input");
+    input.addEventListener("input", () => {
+      ui.C.q = input.value;
+      const banner = root.querySelector("#cattn"); if (banner) banner.style.display = ui.C.q ? "none" : "";
+      const feed = root.querySelector("#cfeed"); feed.innerHTML = cFeed(); bindCards(feed);
+    });
+  },
+};
+
+// Each variant owns its layout. render(state) returns HTML for #screen; wire(root, state) adds handlers.
+const VARIANTS = { A, B, C };
+
+const q = new URLSearchParams(location.search);
+const state = {
+  variant: VARIANTS[q.get("variant")] ? q.get("variant") : "A",
+  device: TARGETS.includes(q.get("device")) ? q.get("device") : TARGETS[0],
+  orient: q.get("orient") === "landscape" ? "landscape" : "portrait",
+};
+const bleed = q.has("bleed") || matchMedia("(pointer: coarse)").matches;
+const device = document.getElementById("device");
+const screen = document.getElementById("screen");
+document.body.classList.toggle("bleed", bleed);
+if (TARGETS.length < 2) document.querySelectorAll("[data-device]").forEach((b) => b.remove());
+if (!TARGETS.includes("ipad")) document.querySelector("[data-orient]").remove();
+
+function layout() {
+  const d = DEVICES[state.device];
+  const [w, h] = state.orient === "landscape" ? [d.size[1], d.size[0]] : d.size;
+  if (bleed) {
+    Object.assign(device.style, { width: "100vw", height: "100vh", transform: "none" });
+    return;
+  }
+  const stage = document.getElementById("stage").getBoundingClientRect();
+  const scale = Math.min(1, (stage.width - 32) / w, (stage.height - 32) / h);
+  device.style.setProperty("--radius", d.radius + "px");
+  Object.assign(device.style, { width: w + "px", height: h + "px", transform: `translate(-50%, -50%) scale(${scale})` });
+}
+
+function render() {
+  const v = VARIANTS[state.variant];
+  screen.className = `v-${state.variant} ${state.device} ${state.orient}`;
+  screen.innerHTML = v.render(state);
+  v.wire(screen, state);
+  document.querySelector("#pill .label").textContent = `${state.variant} (${v.name})`;
+  document.querySelectorAll("[data-device]").forEach((b) => b.setAttribute("aria-pressed", b.dataset.device === state.device));
+  layout();
+}
+
+// Navigation helpers for flow variants: push a page over the current one, pop it, open a sheet.
+function push(container, html) {
+  const page = document.createElement("div");
+  page.className = "page push-in";
+  page.innerHTML = html;
+  container.appendChild(page);
+  return page;
+}
+function pop(page) {
+  page.classList.replace("push-in", "pop-out");
+  page.addEventListener("animationend", () => page.remove(), { once: true });
+}
+function sheet(container, html) {
+  const backdrop = document.createElement("div");
+  const panel = document.createElement("div");
+  backdrop.className = "sheet-backdrop";
+  panel.className = "sheet";
+  panel.innerHTML = html;
+  container.append(backdrop, panel);
+  requestAnimationFrame(() => requestAnimationFrame(() => { backdrop.classList.add("open"); panel.classList.add("open"); }));
+  const close = () => { backdrop.remove(); panel.remove(); };
+  backdrop.onclick = close;
+  return { panel, close };
+}
+
+function step(n) {
+  const keys = Object.keys(VARIANTS);
+  state.variant = keys[(keys.indexOf(state.variant) + n + keys.length) % keys.length];
+  render();
+}
+document.getElementById("pill").addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b) return;
+  if (b.dataset.step) step(Number(b.dataset.step));
+  if (b.dataset.device) { state.device = b.dataset.device; render(); }
+  if (b.hasAttribute("data-orient")) { state.orient = state.orient === "portrait" ? "landscape" : "portrait"; render(); }
+});
+addEventListener("keydown", (e) => {
+  if (e.target.matches && e.target.matches("input")) return;
+  if (e.key === "ArrowLeft") step(-1);
+  if (e.key === "ArrowRight") step(1);
+});
+addEventListener("resize", layout);
+render();
+
+// Screenshot tour for sim-shot.sh (?tour=A,B,C): one Safari tab shows each variant in turn and
+// pings the loopback server, which captures the screen while the variant holds.
+if (q.has("tour")) {
+  const order = q.get("tour").split(",").filter((v) => VARIANTS[v]);
+  const show = (i) => {
+    if (i >= order.length) return;
+    state.variant = order[i];
+    render();
+    setTimeout(() => fetch(`__shot?${order[i]}`).catch(() => {}).finally(() => setTimeout(() => show(i + 1), 4000)), 800);
+  };
+  show(0);
+}
+</script>
+</body>
+</html>
