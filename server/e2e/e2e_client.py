@@ -4,6 +4,7 @@ scripts/e2e_stack.py (or by hand).
     python3 e2e_client.py health
     python3 e2e_client.py ready [--timeout SECONDS]
     python3 e2e_client.py session [--audio PATH] [--session-id ID] [--timeout SECONDS]
+                                  [--expect-done] [--save PATH]
 
 Reads BASE_URL (default http://$TAILNET_IP:8100) and IOS_BEARER_TOKEN from the
 environment. Each call prints one JSON record; the bearer value is never
@@ -129,7 +130,16 @@ def ready(timeout: float) -> None:
     check("stack reports /health ok before the timeout", status == "ok")
 
 
-def session(audio_path: str | None, session_id: str | None, timeout: float) -> None:
+def canonical_status(final: dict) -> bytes:
+    """The final status as bytes that two runs of one bundle can be compared
+    on: `received_at` is the server's wall clock at upload and the only field
+    that differs."""
+    return (json.dumps({k: v for k, v in final.items() if k != "received_at"},
+                       indent=2, sort_keys=True, ensure_ascii=False) + "\n").encode()
+
+
+def session(audio_path: str | None, session_id: str | None, timeout: float,
+            expect_done: bool = False, save: str | None = None) -> None:
     audio = Path(audio_path or DEFAULT_AUDIO).read_bytes()
     session_id = session_id or f"e2e-{int(time.time())}"
     ctype, data = bundle(session_id, audio)
@@ -147,6 +157,10 @@ def session(audio_path: str | None, session_id: str | None, timeout: float) -> N
     print(json.dumps({"session_status": final}, indent=2, sort_keys=True), flush=True)
     state = final.get("state") if isinstance(final, dict) else None
     check("session reached an end state before the timeout", state in ("done", "partial", "failed"))
+    if expect_done:
+        check("session ended `done`", state == "done")
+    if save and isinstance(final, dict):
+        Path(save).write_bytes(canonical_status(final))
     print(f"END_STATE={state}", flush=True)
 
 
@@ -160,6 +174,8 @@ def main() -> int:
     s.add_argument("--audio")
     s.add_argument("--session-id")
     s.add_argument("--timeout", type=float, default=600)
+    s.add_argument("--expect-done", action="store_true", help="fail unless the end state is `done`")
+    s.add_argument("--save", metavar="PATH", help="write the final status, without received_at, to PATH")
     args = parser.parse_args()
     if not TOKEN:
         print("IOS_BEARER_TOKEN is not set", file=sys.stderr)
@@ -169,7 +185,7 @@ def main() -> int:
     elif args.cmd == "ready":
         ready(args.timeout)
     else:
-        session(args.audio, args.session_id, args.timeout)
+        session(args.audio, args.session_id, args.timeout, args.expect_done, args.save)
     return 1 if failures else 0
 
 

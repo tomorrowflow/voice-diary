@@ -51,7 +51,7 @@ def test_ollama_analysis_reply_parses_into_the_six_analysis_sections(upstreams):
     _, urls = upstreams
     resp = httpx.post(
         urls["ollama"] + "/v1/chat/completions",
-        json={"messages": [{"role": "user", "content": "x"}], "response_format": {"type": "json_object"}},
+        json={"messages": [{"role": "user", "content": "Du analysierst das Tagebuch eines CTOs vom 2026-01-01."}]},
     )
     content = document_processor._extract_chat_content(resp.json())
     assert set(json.loads(content)) == {
@@ -95,7 +95,7 @@ def test_lightrag_routes_answer_and_requests_are_logged(upstreams):
 
 def test_fixture_upstreams_use_only_the_invented_cast(upstreams):
     module, _ = upstreams
-    text = json.dumps(module.ANALYSIS, ensure_ascii=False) + module.CONTEXT_SUMMARY
+    text = json.dumps(module.cast_analysis("2026-01-01"), ensure_ascii=False) + module.CONTEXT_SUMMARY
     assert "Jonas Falk" in text and "Mira Lindqvist" in text
 
 
@@ -182,3 +182,102 @@ def test_e2e_env_gets_fresh_secrets_and_keeps_the_example_shape(stack):
         assert first[key] != second[key]
     assert first["POSTGRES_PASSWORD"] != first["IOS_BEARER_TOKEN"]
     assert "<" not in stack.render_env(example, "100.64.0.1")
+
+
+def test_e2e_env_turns_the_llm_steps_on_because_the_fixture_answers_them(stack):
+    env = stack.parse_env(stack.render_env(ENV_EXAMPLE.read_text(), "100.64.0.1"))
+    assert {env[k] for k in ("LLM_VALIDATION_ENABLED", "LLM_CORRECTION_ENABLED", "FLUENCY_CHECK_ENABLED")} == {"true"}
+
+
+def test_only_the_e2e_files_point_the_webapp_at_the_fixture_upstreams():
+    prod = (SERVER_DIR / "docker-compose.yml").read_text()
+    assert "upstreams" not in prod
+    assert "OLLAMA_BASE_URL=http://upstreams:11434" in ENV_EXAMPLE.read_text()
+
+
+def test_session_client_saves_the_final_status_without_the_upload_clock():
+    client = _load("e2e_client", SERVER_DIR / "e2e" / "e2e_client.py")
+    first = client.canonical_status({"session_id": "s", "state": "done", "received_at": "2026-01-01T10:00:00Z"})
+    second = client.canonical_status({"state": "done", "received_at": "2026-01-02T11:30:00Z", "session_id": "s"})
+    assert first == second and b"received_at" not in first
+
+
+def test_upstreams_command_prints_the_recorded_json_and_rejects_unknown_views(stack, monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(stack, "ENV_FILE", tmp_path / ".env.e2e")
+    (tmp_path / ".env.e2e").write_text("TAILNET_IP=100.64.0.1\n")
+    asked = []
+    monkeypatch.setattr(stack, "fixture_upstreams", lambda what: asked.append(what) or '[{"kind":"analysis"}]')
+    stack.cmd_upstreams("documents")
+    assert asked == ["documents"] and '"kind": "analysis"' in capsys.readouterr().out
+    with pytest.raises(SystemExit):
+        stack.cmd_upstreams("secrets")
+    assert asked == ["documents"]
+
+
+def test_fixture_upstreams_are_read_from_inside_the_container_through_compose(stack, monkeypatch):
+    seen = []
+    monkeypatch.setattr(stack, "compose_output", lambda *args: seen.append(args) or "[]")
+    assert stack.fixture_upstreams("requests") == "[]"
+    assert seen[0][:4] == ("exec", "-T", "upstreams", "python")
+    assert seen[0][-1] == "http://127.0.0.1:9621/_fixture/requests"
+
+
+class _FakeUpstreams:
+    """Stands in for the stack: what `upstreams` would serve after each run."""
+
+    def __init__(self, runs):
+        self.runs = iter(runs)
+        self.current = None
+
+    def reset(self):
+        self.current = next(self.runs)
+
+    def fetch(self, what):
+        return json.dumps(self.current[what])
+
+
+def _repeat(stack, monkeypatch, tmp_path, runs):
+    fake = _FakeUpstreams(runs)
+    monkeypatch.setattr(stack, "ENV_FILE", tmp_path / ".env.e2e")
+    (tmp_path / ".env.e2e").write_text("TAILNET_IP=100.64.0.1\n")
+    monkeypatch.setattr(stack.tempfile, "mkdtemp", lambda prefix: str(tmp_path))
+    monkeypatch.setattr(stack, "cmd_reset", fake.reset)
+    monkeypatch.setattr(stack, "fixture_upstreams", fake.fetch)
+
+    def session(*args):
+        (tmp_path / args[args.index("--save") + 1].rsplit("/", 1)[-1]).write_text('{"state": "done"}\n')
+
+    monkeypatch.setattr(stack, "client", lambda *args: session(*args[1:]))
+    stack.cmd_repeat()
+
+
+def _run(narrative="# Narrativ", probes=1):
+    entry = {"service": "ollama", "method": "POST", "path": "/v1/chat/completions", "kind": "analysis",
+             "fixture": "e2e-cast", "bytes": 1, "sha256": "ab"}
+    probe = {**entry, "method": "GET", "path": "/api/tags", "kind": "probe", "fixture": None}
+    return {
+        "requests": [probe] * probes + [entry],
+        "documents": {"diary:2026-03-04": {"file_source": "f", "sha256": "x", "text": narrative}},
+    }
+
+
+def test_repeat_passes_when_two_clean_runs_produce_the_same_bytes_whatever_the_probe_count(
+    stack, monkeypatch, tmp_path, capsys
+):
+    _repeat(stack, monkeypatch, tmp_path, [_run(probes=2), _run(probes=5)])
+    out = capsys.readouterr().out
+    assert "byte-identical" in out
+    assert "kind=analysis fixture=e2e-cast" in out and "/api/tags" in out
+
+
+def test_repeat_fails_when_the_narrative_differs_between_runs(stack, monkeypatch, tmp_path):
+    with pytest.raises(SystemExit) as failed:
+        _repeat(stack, monkeypatch, tmp_path, [_run("# Eins"), _run("# Zwei")])
+    assert "documents" in str(failed.value)
+
+
+def test_repeat_fails_when_no_narrative_reached_lightrag(stack, monkeypatch, tmp_path):
+    empty = {**_run(), "documents": {}}
+    with pytest.raises(SystemExit) as failed:
+        _repeat(stack, monkeypatch, tmp_path, [empty, empty])
+    assert "no diary narrative" in str(failed.value)
