@@ -182,6 +182,38 @@ struct TranscriptExcerptTests {
         #expect(ex.highlightRange == nil)
     }
 
+    /// Nine sentences: `first`, then "Satz 2." … "Satz 9.".
+    private func boundaryTranscript(first: String) -> String {
+        ([first] + (2...9).map { "Satz \($0)." }).joined(separator: " ")
+    }
+
+    /// The window text for sentences `range` of `boundaryTranscript(first:)`.
+    private func boundaryWindow(_ range: ClosedRange<Int>, first: String) -> String {
+        range.map { $0 == 1 ? first : "Satz \($0)." }.joined(separator: " ")
+    }
+
+    @Test("A four-character token is enough for token overlap to pick a sentence")
+    func fourCharacterTokenCounts() throws {
+        // "plan" (4) matches the first sentence; "prüfen" matches nothing,
+        // and the query is not a substring, so this is overlap, not exact.
+        let first = "Plan heute."
+        let ex = try #require(select(
+            boundaryTranscript(first: first), text: "Plan prüfen"))
+        #expect(ex.text == boundaryWindow(1...5, first: first))
+        #expect(ex.highlightRange == nil)
+    }
+
+    @Test("A three-character token is ignored, so the tail window shows")
+    func threeCharacterTokenIgnored() throws {
+        // Same shape as above, but "tag" (3) is too short to count and
+        // "prüfen" matches nothing: no overlap, so the transcript tail.
+        let first = "Tag heute."
+        let ex = try #require(select(
+            boundaryTranscript(first: first), text: "Tag prüfen"))
+        #expect(ex.text == boundaryWindow(5...9, first: first))
+        #expect(ex.highlightRange == nil)
+    }
+
     @Test("Ties in token overlap go to the earliest sentence")
     func tokenOverlapTieGoesToFirst() throws {
         let t = (["Anruf bei Andreas."] + (2...8).map { "Satz \($0)." } + ["Anruf bei Andreas."])
