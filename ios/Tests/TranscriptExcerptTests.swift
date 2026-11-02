@@ -111,6 +111,47 @@ struct TranscriptExcerptTests {
         #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Budget")
     }
 
+    // MARK: - Exact match versus token overlap
+
+    /// First sentences that overlap "Marketing Budget prüfen" without
+    /// containing it. The first shares one token. The second shares all
+    /// three, tying the exact match on overlap score, so it would win the
+    /// earliest-sentence tie-break if overlap were consulted first.
+    private static let earlierOverlapSentences = [
+        "Budget besprechen.",
+        "Prüfen Marketing Budget.",
+    ]
+
+    /// Nine sentences: `first`, "Satz 2." … "Satz 8.", then the exact phrase.
+    private func collisionTranscript(first: String) -> String {
+        ([first] + (2...8).map { "Satz \($0)." } + ["Marketing Budget prüfen."])
+            .joined(separator: " ")
+    }
+
+    /// Sentences 5-9 of `collisionTranscript(first:)`.
+    private let collisionTailWindow = ((5...8).map { "Satz \($0)." } + ["Marketing Budget prüfen."])
+        .joined(separator: " ")
+
+    @Test("A later exact match beats an earlier partial overlap",
+          arguments: earlierOverlapSentences)
+    func exactMatchBeatsEarlierOverlap(first: String) throws {
+        let ex = try #require(select(
+            collisionTranscript(first: first), text: "Marketing Budget prüfen"))
+        #expect(ex.text == collisionTailWindow)
+        #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Marketing Budget prüfen")
+    }
+
+    @Test("A source quote matching exactly beats an earlier overlap and highlights the original casing",
+          arguments: earlierOverlapSentences)
+    func exactSourceQuoteBeatsEarlierOverlap(first: String) throws {
+        let ex = try #require(select(
+            collisionTranscript(first: first),
+            quote: "MARKETING BUDGET PRÜFEN",
+            text: "Budget"))
+        #expect(ex.text == collisionTailWindow)
+        #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Marketing Budget prüfen")
+    }
+
     // MARK: - Token overlap
 
     @Test("A paraphrase falls back to the sentence sharing the most tokens")
