@@ -86,6 +86,23 @@ struct TranscriptExcerptTests {
         }
     }
 
+    @Test("An unmatched source quote does not fall back to the candidate text")
+    func unmatchedQuoteIgnoresCandidate() throws {
+        // "Sentence 2" would match sentence 2 (window 1-5), but the
+        // non-blank quote is the needle and matches nothing: tail window.
+        let ex = try #require(select(
+            transcript(9), quote: "Unauffindbarer Beleg", text: "Sentence 2"))
+        #expect(ex.text == window(5...9))
+        #expect(ex.highlightRange == nil)
+    }
+
+    @Test("A blank source quote with the same candidate text matches the candidate")
+    func blankQuoteMatchesCandidate() throws {
+        let ex = try #require(select(transcript(9), quote: "  ", text: "Sentence 2"))
+        #expect(ex.text == window(1...5))
+        #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Sentence 2")
+    }
+
     @Test("The source quote is trimmed before matching")
     func quoteIsTrimmed() throws {
         let ex = try #require(select(
