@@ -172,6 +172,9 @@ public enum Theme {
 
         // Flow header close xmark: fixed 14-pt medium system font, no Dynamic Type scaling.
         public var flowCloseGlyph: Font { .system(size: 14, weight: .medium) }
+
+        // Shared play-pause disc glyph: fixed 14-pt semibold system font, no Dynamic Type scaling.
+        public var playPauseGlyph: Font { .system(size: 14, weight: .semibold) }
     }
 
     // ---------- Motion -------------------------------------------------
