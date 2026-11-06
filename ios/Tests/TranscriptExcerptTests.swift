@@ -190,6 +190,38 @@ struct TranscriptExcerptTests {
         #expect(ex.highlightRange == nil)
     }
 
+    /// Nine sentences: a weak one-token overlap first, then "Satz 2." …
+    /// "Satz 8.", then a stronger two-token overlap last.
+    private let unequalOverlapTranscript = (
+        ["Budget besprechen."] + (2...8).map { "Satz \($0)." } + ["Marketing und Budget."]
+    ).joined(separator: " ")
+
+    /// Sentences 5-9 of `unequalOverlapTranscript`.
+    private let unequalOverlapTailWindow = (
+        (5...8).map { "Satz \($0)." } + ["Marketing und Budget."]
+    ).joined(separator: " ")
+
+    @Test("A later higher overlap score beats an earlier weaker one")
+    func higherOverlapBeatsEarlierWeakOverlap() throws {
+        // "Marketing Budget prüfen" is no substring. Sentence 1 shares one
+        // token (budget), sentence 9 shares two (marketing, budget): the
+        // best score wins, not the first positive one (window 1-5).
+        let ex = try #require(select(
+            unequalOverlapTranscript, text: "Marketing Budget prüfen"))
+        #expect(ex.text == unequalOverlapTailWindow)
+        #expect(ex.highlightRange == nil)
+    }
+
+    @Test("A source quote's higher overlap beats an earlier weaker one over unrelated candidate text")
+    func higherSourceQuoteOverlapBeatsEarlierWeakOverlap() throws {
+        let ex = try #require(select(
+            unequalOverlapTranscript,
+            quote: "Marketing Budget prüfen",
+            text: "zzz"))
+        #expect(ex.text == unequalOverlapTailWindow)
+        #expect(ex.highlightRange == nil)
+    }
+
     @Test("Token overlap ignores tokens shorter than four characters")
     func shortTokensIgnored() throws {
         let t = transcript(9)
