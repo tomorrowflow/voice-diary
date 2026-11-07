@@ -67,6 +67,65 @@ struct TranscriptExcerptTests {
         #expect(ex.highlightRange.map { String(ex.text[$0]) } == "Sentence 2")
     }
 
+    // MARK: - Window boundary
+
+    /// Six sentences with no shared four-letter tokens, so a query for one
+    /// can neither match another exactly nor overlap it.
+    private static let boundarySentences = [
+        "Apfelkuchen backen.",
+        "Brief schreiben.",
+        "Computer reparieren.",
+        "Dachfenster putzen.",
+        "Einkaufsliste ergänzen.",
+        "Fahrrad aufpumpen.",
+    ]
+
+    /// Where the needle sits in the transcript.
+    enum BoundaryMatch {
+        case first, last, unmatched
+    }
+
+    struct BoundaryCase: CustomTestStringConvertible {
+        let count: Int
+        let match: BoundaryMatch
+        /// Inclusive, 1-based sentences expected in the excerpt.
+        let window: ClosedRange<Int>
+
+        var testDescription: String { "\(count) sentences, \(match) match" }
+    }
+
+    private static let boundaryCases: [BoundaryCase] = [
+        .init(count: 4, match: .first, window: 1...4),
+        .init(count: 4, match: .last, window: 1...4),
+        .init(count: 5, match: .first, window: 1...5),
+        .init(count: 5, match: .last, window: 1...5),
+        .init(count: 6, match: .first, window: 1...5),
+        .init(count: 6, match: .last, window: 2...6),
+        .init(count: 6, match: .unmatched, window: 2...6),
+    ]
+
+    @Test("The window holds at most five sentences: whole up to five, sliding from six",
+          arguments: boundaryCases)
+    func windowBoundary(_ boundaryCase: BoundaryCase) throws {
+        let sentences = Array(Self.boundarySentences.prefix(boundaryCase.count))
+        let expectedText = sentences[(boundaryCase.window.lowerBound - 1)..<boundaryCase.window.upperBound]
+            .joined(separator: " ")
+
+        // The needle sentence without its full stop, as written.
+        let highlighted: String? = switch boundaryCase.match {
+        case .first: String(sentences[0].dropLast())
+        case .last: String(sentences[boundaryCase.count - 1].dropLast())
+        case .unmatched: nil
+        }
+        // Lowercased, so the highlight must keep the transcript's casing.
+        // The unmatched query has meaningful tokens that no sentence shares.
+        let query = highlighted?.lowercased() ?? "Quartalsbericht abgeben"
+
+        let ex = try #require(select(sentences.joined(separator: " "), text: query))
+        #expect(ex.text == expectedText)
+        #expect(ex.highlightRange.map { String(ex.text[$0]) } == highlighted)
+    }
+
     // MARK: - Needle selection
 
     @Test("The source quote wins over the candidate text")
