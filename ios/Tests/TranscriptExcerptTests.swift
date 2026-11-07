@@ -106,30 +106,24 @@ struct TranscriptExcerptTests {
 
     @Test("The window holds at most five sentences: whole up to five, sliding from six",
           arguments: boundaryCases)
-    func windowBoundary(_ c: BoundaryCase) throws {
-        let sentences = Array(Self.boundarySentences.prefix(c.count))
-        let transcript = sentences.joined(separator: " ")
-        let expected = sentences[(c.window.lowerBound - 1)..<c.window.upperBound]
+    func windowBoundary(_ boundaryCase: BoundaryCase) throws {
+        let sentences = Array(Self.boundarySentences.prefix(boundaryCase.count))
+        let expectedText = sentences[(boundaryCase.window.lowerBound - 1)..<boundaryCase.window.upperBound]
             .joined(separator: " ")
 
-        let matched: String?
-        switch c.match {
-        case .first: matched = sentences[0]
-        case .last: matched = sentences[c.count - 1]
-        case .unmatched: matched = nil
+        // The needle sentence without its full stop, as written.
+        let highlighted: String? = switch boundaryCase.match {
+        case .first: String(sentences[0].dropLast())
+        case .last: String(sentences[boundaryCase.count - 1].dropLast())
+        case .unmatched: nil
         }
-        // Lowercased and without the full stop: matching must be exact
-        // enough to find it, and the highlight must keep the original case.
-        let query = matched.map { String($0.dropLast()).lowercased() }
-            ?? "Quartalsbericht abgeben"
+        // Lowercased, so the highlight must keep the transcript's casing.
+        // The unmatched query has meaningful tokens that no sentence shares.
+        let query = highlighted?.lowercased() ?? "Quartalsbericht abgeben"
 
-        let ex = try #require(select(transcript, text: query))
-        #expect(ex.text == expected)
-        if let matched {
-            #expect(ex.highlightRange.map { String(ex.text[$0]) } == String(matched.dropLast()))
-        } else {
-            #expect(ex.highlightRange == nil)
-        }
+        let ex = try #require(select(sentences.joined(separator: " "), text: query))
+        #expect(ex.text == expectedText)
+        #expect(ex.highlightRange.map { String(ex.text[$0]) } == highlighted)
     }
 
     // MARK: - Needle selection
