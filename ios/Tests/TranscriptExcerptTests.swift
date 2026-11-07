@@ -119,6 +119,34 @@ struct TranscriptExcerptTests {
         #expect(ex.highlightRange.map { String(ex.text[$0]) } == "ANDREAS Anrufen")
     }
 
+    /// One sentence with a ZWJ family emoji (7 scalars, 25 UTF-8 bytes, one
+    /// grapheme) before the phrase and a decomposed "é" ("e" + U+0301)
+    /// inside it, so character, scalar and byte offsets all differ.
+    private static let unicodeTranscript =
+        "Heute 👨‍👩‍👧‍👦 rufe ich ANDRE\u{301}AS Anrufen wegen Montag. Danke."
+
+    /// The phrase as written in `unicodeTranscript`, original casing.
+    private static let unicodePhrase = "ANDRE\u{301}AS Anrufen"
+
+    @Test("Highlight range survives an emoji before and a decomposed accent inside the phrase",
+          arguments: [
+            (quote: String?.none, text: "andre\u{301}as anrufen"),
+            (quote: "  andre\u{301}as anrufen\n", text: "zzz"),
+          ])
+    func unicodeHighlightRange(quote: String?, text: String) throws {
+        let ex = try #require(select(
+            Self.unicodeTranscript, quote: quote, text: text))
+        #expect(ex.text == Self.unicodeTranscript)
+        let range = try #require(ex.highlightRange)
+        let slice = String(ex.text[range])
+        // `String ==` treats composed and decomposed accents as equal, so
+        // compare scalars to pin the exact original representation.
+        #expect(Array(slice.unicodeScalars) == Array(Self.unicodePhrase.unicodeScalars))
+        #expect(slice.count == 15)
+        #expect(ex.text[..<range.lowerBound] == "Heute 👨‍👩‍👧‍👦 rufe ich ")
+        #expect(ex.text[range.upperBound...] == " wegen Montag. Danke.")
+    }
+
     @Test("The first sentence containing the needle wins")
     func firstExactMatchWins() throws {
         let t = (["Budget zuerst."] + (2...8).map { "Satz \($0)." } + ["Budget zuletzt."])
