@@ -5,6 +5,7 @@ import Foundation
 // reads these straight from the API; opener selection is computed
 // locally on-device per SPEC §11.1.
 
+/// One attendee of a `ServerCalendarEvent`, as the server's `/today/calendar` response lists it.
 public struct ServerAttendee: Codable, Sendable, Hashable {
     public var name: String
     public var email: String
