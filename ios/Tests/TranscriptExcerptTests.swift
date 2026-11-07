@@ -81,16 +81,8 @@ struct TranscriptExcerptTests {
     ]
 
     /// Where the needle sits in the transcript.
-    enum BoundaryMatch: CustomStringConvertible {
+    enum BoundaryMatch {
         case first, last, unmatched
-
-        var description: String {
-            switch self {
-            case .first: "first"
-            case .last: "last"
-            case .unmatched: "unmatched"
-            }
-        }
     }
 
     struct BoundaryCase: CustomTestStringConvertible {
