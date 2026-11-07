@@ -134,17 +134,53 @@ struct TranscriptExcerptTests {
             (quote: "  andre\u{301}as anrufen\n", text: "zzz"),
           ])
     func unicodeHighlightRange(quote: String?, text: String) throws {
-        let ex = try #require(select(
-            Self.unicodeTranscript, quote: quote, text: text))
-        #expect(ex.text == Self.unicodeTranscript)
-        let range = try #require(ex.highlightRange)
+        try expectUnicodeHighlight(
+            in: Self.unicodeTranscript, quote: quote, text: text,
+            before: "Heute 👨‍👩‍👧‍👦 rufe ich ")
+    }
+
+    /// Three "İ" (U+0130) before the phrase. Lowercasing turns each into
+    /// "i" + U+0307: one extra scalar and one extra UTF-8 byte apiece
+    /// (2 bytes become 3), though the Character count stays the same. A
+    /// range found in `haystack.lowercased()` therefore lands 3 bytes late
+    /// when applied to the original excerpt.
+    private static let lowercaseShiftTranscript =
+        "İİİ rufe ich ANDRE\u{301}AS Anrufen wegen Montag. Danke."
+
+    @Test("Highlight range is taken from the original text even where lowercasing changes its offsets",
+          arguments: [
+            (quote: String?.none, text: "andre\u{301}as anrufen"),
+            (quote: "  andre\u{301}as anrufen\n", text: "zzz"),
+          ])
+    func lowercasingShiftedHighlightRange(quote: String?, text: String) throws {
+        try expectUnicodeHighlight(
+            in: Self.lowercaseShiftTranscript, quote: quote, text: text,
+            before: "İİİ rufe ich ")
+    }
+
+    /// Expects the whole one-window transcript back, with the highlight on
+    /// `unicodePhrase` exactly as written and `before` / the shared tail
+    /// around it.
+    private func expectUnicodeHighlight(
+        in transcript: String,
+        quote: String?,
+        text: String,
+        before: String,
+        sourceLocation: SourceLocation = #_sourceLocation
+    ) throws {
+        let ex = try #require(
+            select(transcript, quote: quote, text: text), sourceLocation: sourceLocation)
+        #expect(ex.text == transcript, sourceLocation: sourceLocation)
+        let range = try #require(ex.highlightRange, sourceLocation: sourceLocation)
         let slice = String(ex.text[range])
         // `String ==` treats composed and decomposed accents as equal, so
         // compare scalars to pin the exact original representation.
-        #expect(Array(slice.unicodeScalars) == Array(Self.unicodePhrase.unicodeScalars))
-        #expect(slice.count == 15)
-        #expect(ex.text[..<range.lowerBound] == "Heute 👨‍👩‍👧‍👦 rufe ich ")
-        #expect(ex.text[range.upperBound...] == " wegen Montag. Danke.")
+        #expect(Array(slice.unicodeScalars) == Array(Self.unicodePhrase.unicodeScalars),
+                sourceLocation: sourceLocation)
+        #expect(slice.count == 15, sourceLocation: sourceLocation)
+        #expect(ex.text[..<range.lowerBound] == before[...], sourceLocation: sourceLocation)
+        #expect(ex.text[range.upperBound...] == " wegen Montag. Danke.",
+                sourceLocation: sourceLocation)
     }
 
     @Test("The first sentence containing the needle wins")
