@@ -27,7 +27,7 @@ public struct PlayPauseDisc: View {
                 .frame(width: Theme.spacing.playPauseDiscSize,
                        height: Theme.spacing.playPauseDiscSize)
             Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                .font(.system(size: 14, weight: .semibold))
+                .font(Theme.font.playPauseGlyph)
                 .foregroundStyle(tint)
                 // Optically centre the play glyph inside the disc.
                 .offset(x: isPlaying ? 0 : 1)
